@@ -29,7 +29,7 @@ class GPUProfile:
     | RPS | # OUTs 1 | # OUTs 2 |
     |---|---|---|
     | # INs 1 | 2 | 1 |
-    | # INs s 2 | 5 | 2 |
+    | # INs 2 | 5 | 2 |
     """
 
     gpu: str = ""
@@ -39,7 +39,7 @@ class GPUProfile:
     created: float = 0.0
 
 
-WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], None]
+WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], bool]
 """A function to handle the error with parameters(dimension, value, index assigned, value of index, value offset)."""
 
 

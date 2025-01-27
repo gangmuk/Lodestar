@@ -26,33 +26,29 @@ class ProfileReader(Protocol):
 
 
 class FileProfileReader:
-    def __init__(self, filepath: str) -> None:
-        self.filepath = filepath
+    def __init__(self, filepaths: List[str]) -> None:
+        self.filepaths = filepaths
 
     def read(self) -> List[GPUProfile]:
         """Read the next batch of records from the data source."""
-        with open(self.filepath, "r") as f:
-            try:
-                # Try parse as singal json
-                profiles = json.load(f)
-            except Exception:
+        profiles = []
+        for _, filepath in enumerate(self.filepaths):
+            with open(filepath, "r") as f:
                 try:
-                    # Try parse as list of json (jsonl)
-                    profiles = []
-                    for line in f:
-                        if line.strip() == "":
-                            continue
-                        profiles.append(json.loads(line))
-                except Exception as e:
-                    logger.warning(
-                        f"Invalid profile file format, expected list or dict: {e}"
-                    )
-
-        if isinstance(profiles, dict):
-            profiles = [profiles]
-        elif not isinstance(profiles, list):
-            logger.warning("Invalid profile file format, expected list or dict.")
-
+                    # Try parse as singal json
+                    profile = json.load(f)
+                    profiles.append(profile)
+                except Exception:
+                    try:
+                        # Try parse as list of json (jsonl)
+                        for line in f:
+                            if line.strip() == "":
+                                continue
+                            profiles.append(json.loads(line))
+                    except Exception as e:
+                        logger.warning(
+                            f"Invalid profile file format, expected list or dict: {e}"
+                        )
         return [GPUProfile(**profile) for profile in profiles]
 
 

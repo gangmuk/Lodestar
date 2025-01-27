@@ -83,6 +83,12 @@ class DeploymentStates:
         """Set replica to minimum mode."""
         self.replicas = max(0, self.min_replicas)
 
+    def is_modified(self, another) -> bool:
+        return self.min_replicas != another.min_replicas
+
+    def update(self, newer):
+        self.min_replicas = newer.min_replicas
+
     def __repr__(self):
         if self.overriden:
             return f"overriden {self.name}: {self.replicas}(${self.cost}), should be {self._replicas}"
@@ -112,7 +118,7 @@ class ModelMonitor:
             namespace: (optional) The Kubernetes namespace where the model deployment resides.
             replicas: (optional) The initial number of replicas for the model deployment.
             interval: (optional) The interval (in seconds) at which to monitor the model. Defaults to 10 seconds.
-            window: (optional) The window (in seconds) to consider for clustering. Defaults to 300 seconds.
+            window: (optional) The window (in seconds) to consider for clustering. Defaults to 240 seconds.
             debug: (optional) Whether to enable debugging behavior. Defaults to False.
         """
         self.model_name = model_name
@@ -158,7 +164,7 @@ class ModelMonitor:
         deployment_name: str,
         namespace: Optional[str],
         deployment: Union[DeploymentStates, Callable[[], DeploymentStates]],
-    ):
+    ) -> bool:
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
@@ -176,16 +182,31 @@ class ModelMonitor:
             )
 
         # add to deployment registry
+        dp = deployment() if callable(deployment) else deployment
         self._lock.acquire(blocking=True)
+        # Save previously calcuated cost before possible change.
+        old_cost = 0.0
         if key not in self.deployments:
-            self.deployments[key] = deployment() if callable(deployment) else deployment
+            self.deployments[key] = dp
+        elif self.deployments[key].is_modified(dp):
+            old_cost = self.deployments[key].cost
+            # Update deployment changes
+            self.deployments[key].update(dp)
+        else:
+            # Abandon
+            self._lock.release()
+            return False
 
-        old_cost = self.deployments[key].cost
+        # Update newly matched profiles if any
         self.deployments[key].profile = profile
+        # Update watch_ver
         self.deployments[key].watch_ver = watch_ver
+        # With profile set, now we can adjust cost
         self._cost += self.deployments[key].cost - old_cost
+        # Update global watch_ver
         self.last_resource_version = watch_ver
         self._lock.release()
+        return True
 
     def remove_deployment(self, deployment_name: str, namespace: str) -> int:
         """remove deployment from monitor, return the number of deployments left."""
@@ -370,9 +391,9 @@ class ModelMonitor:
                 self._data.trim_head(-movingCluster.length)
 
             # Read new tokens
-            tokens = list(
-                self._expand_records(self._load_reader.read(datetime.now().timestamp()))
-            )  # read data
+            records, cur_rate = self._load_reader.read(datetime.now().timestamp())
+            tokens = list(self._expand_records(records))  # read data
+            logger.debug(f"Records read from the load reader: {len(tokens)}")
             if len(tokens) > 0:
                 self._data.reconcile(
                     movingCluster.length + len(tokens)
@@ -403,8 +424,10 @@ class ModelMonitor:
             )
 
             if len(centers) > 0:
-                # Optimize
-                self._optimize(centers, self._data.len)
+                # Optimize, we use the larger of average request rate in window and current request rate to get sufficient resources.
+                self._optimize(
+                    centers, max(self._data.len / movingCluster.window, cur_rate)
+                )
             elif self._data.len == 0:
                 self._minimize()
             else:
@@ -434,7 +457,7 @@ class ModelMonitor:
         for record in records:
             for i in range(record.freq):
                 yield DataPoint(
-                    record.input_tokens, record.output_tokens, age=record.ts
+                    record.output_tokens, record.input_tokens, age=record.ts
                 )
 
     def _deployment_entry_point(self, deployment_name: str, namespace: Optional[str]):
@@ -455,7 +478,7 @@ class ModelMonitor:
 
         return None
 
-    def _optimize(self, centers: Iterable[Centeroid], total_request_rate: int):
+    def _optimize(self, centers: Iterable[Centeroid], total_request_rate: float):
         # Update profiles.
         self.load_profiles()
 
@@ -519,7 +542,7 @@ class ModelMonitor:
 
         df = pd.DataFrame(
             data=np.array([self._data.x, self._data.y, self._labels]).transpose(),
-            columns=["input_tokens", "output_tokens", "label"],
+            columns=["output_tokens", "input_tokens", "label"],
         )
         return df
 

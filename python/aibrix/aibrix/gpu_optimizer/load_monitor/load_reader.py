@@ -16,7 +16,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, List, Optional, Protocol, Union
+from typing import Any, List, Optional, Protocol, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -53,8 +53,8 @@ class LoadRecord(tuple):
 
 
 class LoadReader(Protocol):
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
-        """Read the next batch of records from the data source."""
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
+        """Read the next batch of records from the data source. Returns records and rate"""
 
     def progress(self) -> str:
         """Return the progress description of the data source."""
@@ -83,7 +83,7 @@ class DatasetLoadReader:
             # self.df['output_tokens'] = self.stair_aggregate(self.df['output_tokens'] * scale)
 
         self.rps = rps
-        self.interval = 10
+        self.interval = interval
         self.n_read = 0
         self.n = 0
 
@@ -103,7 +103,7 @@ class DatasetLoadReader:
         aggregated = np.maximum(series - np.mod(series, 2**bucketbits), 1)
         return aggregated if skip_log2 else np.log2(aggregated)
 
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source.
 
         args:
@@ -127,13 +127,88 @@ class DatasetLoadReader:
             )
         self.n += 1
 
-        return records
+        if len(records) == 0:
+            return records, 0.0
+
+        return records, self.rps
 
     def progress(self) -> str:
         return f"{round(self.n_read / len(self.df) * 100, 2)}%"
 
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
+        return datetime.now().timestamp()
+
+
+class WorkloadReader:
+    """WorkloadReader reads the load records from a timestamped workload trace.
+    To match the behavior of the gateway, the input and output tokens are rounded to the nearest integer of log2.
+    """
+
+    def __init__(self, filepath, scale: float = 1.0, interval: int = 10) -> None:
+        if filepath != unittest_filepath:
+            self.df = pd.read_json(filepath)
+
+        self.scale = scale
+        self.interval = interval
+        self.n_read = 0  # the number that track df reading progress
+        self.n = 0  # the number of batch
+        self.tick, self.tick_df = self._read_next_tick()
+        self.start = self.tick
+
+    def log2_aggregate(self, series: pd.Series, precision: int = 0) -> List:
+        return np.round(np.log2(series), precision)
+
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
+        """Read the next batch of records from the data source.
+
+        args:
+            ts: float, ignored.
+        """
+        if self.tick_df is None:
+            return [], 0.0
+
+        records = []
+        # Simulate the arrival of requests using Poisson distribution
+        tick_start = self.start + self.n * self.interval
+        while (
+            self.tick_df is not None
+            and self.tick >= tick_start
+            and self.tick < tick_start + self.interval
+        ):
+            for input_tokens, output_tokens in zip(
+                self.log2_aggregate(self.tick_df["Prompt Length"] * self.scale, 1),
+                self.log2_aggregate(self.tick_df["Output Length"] * self.scale, 1),
+            ):
+                records.append(
+                    LoadRecord(
+                        (self.tick - self.start),
+                        input_tokens,
+                        output_tokens,
+                    )
+                )
+            self.tick, self.tick_df = self._read_next_tick()
+
+        self.n += 1
+        # if self.tick_df is None:
+        #     print(f"read {len(records)} records for {self.interval}s, no more available records")
+        # else:
+        #     print(f"read {len(records)} records for {self.interval}s, next avaialbe at {self.tick}({len(self.df)} records)")
+        return records, float(len(records)) / float(self.interval)
+
+    def _read_next_tick(self):
+        if self.n_read >= len(self.df):
+            return 0, None
+
+        record = self.df.iloc[self.n_read]
+        self.n_read += 1
+        return record["Timestamp"] / 1000, pd.DataFrame(record["Requests"])
+
+    def progress(self) -> str:
+        return ""
+
+    def next_available(self) -> float:
+        """Workload is available to read anytime."""
         return datetime.now().timestamp()
 
 
@@ -158,8 +233,11 @@ class GatewayLoadReader:
         self.last_ts = 0.0
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
+        self.ver = 3  # Change here or negotiate with Redis to be legacy compatible
+        # self.accumulated_total = 0.0
+        # self.accumulated_pending = 0.0
 
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source."""
         try:
             if self.start == 0:
@@ -170,24 +248,28 @@ class GatewayLoadReader:
             ts = ts - ts % self.key_ts_alignment
             if ts <= self.last_ts:
                 # Seen
-                return []
+                return [], 0.0
 
             # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
-            profiles = self.read_key(
-                f"{self.prefix}{int(ts - self.key_ts_alignment)}", True
-            )
+            key = f"{self.prefix}{int(ts)}"
+            if self.ver < 3:
+                # Legacy version has guarentee on the time of profile creation time, use one window before to make sure the profile is available.
+                key = f"{self.prefix}{int(ts-self.key_ts_alignment)}"
+            profiles = self.read_key(key, True)
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
-                return []
+                return [], 0.0
 
-            return self._parse_profiles(profiles, ts)
+            records, total, pending = self._parse_profiles(profiles, ts)
+            logger.debug(f"TotalRequests={total},PendingRequests={pending}")
+            return records, self._get_rate(total, pending)
 
         except Exception as e:
             logger.warning(f"Failed to read from Redis: {e}")
-            return []
+            return [], 0.0
 
-    def read_first(self) -> List[LoadRecord]:
+    def read_first(self) -> Tuple[List[LoadRecord], float]:
         """Read the first batch of records from the data source."""
         cursor = 0
         matching_keys = []
@@ -208,13 +290,14 @@ class GatewayLoadReader:
             logger.info(
                 f"No pre-existed load profile matching {self.prefix}* found in Redis"
             )
-            return []
+            return [], 0.0
 
         # Sort by ts to ensure profiles are processed by time order.
         matching_keys = sorted(matching_keys, key=lambda k: k[1])
 
         # Retrieve the objects associated with the keys
         records: List[LoadRecord] = []
+        last_rate = 0.0
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
@@ -223,12 +306,17 @@ class GatewayLoadReader:
                 if profiles is None or len(profiles) == 0:
                     continue
 
-                self._parse_profiles(profiles, key[1], records)
+                records, total, pending = self._parse_profiles(
+                    profiles, key[1], records
+                )
+                # We need to call _get_rate for each profile to accumulate history value.
+                logger.debug(f"TotalRequests={total},PendingRequests={pending}")
+                last_rate = self._get_rate(total, pending)
             except Exception as e:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")
                 continue
 
-        return records
+        return records, last_rate
 
     def read_key(self, key: Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
@@ -260,18 +348,58 @@ class GatewayLoadReader:
         """Dataset is available to read anytime."""
         return (
             self.last_ts + self.key_ts_alignment + 2
-        )  # Add 1 second to tolerate possible delay
+        )  # Add 2 seconds to tolerate possible delay
+
+    def _get_rate(self, total, pending) -> float:
+        # Pending requests includes in window pending and out of window pending.
+        # Most of pending requests are in window pending
+        # We add pending to total proportionally to request more resources.
+        # if pending == 0.0:
+        #     # reset accumulated
+        #     self.accumulated_pending = 0.0
+        #     self.accumulated_total = 0.0
+        #     return float(total) / self.key_ts_alignment
+
+        # self.accumulated_pending += pending
+        # self.accumulated_total += total
+        # if self.accumulated_pending < self.accumulated_total:
+        #     # gap_ratio = pending(gap)/completed(real)
+        #     gap_ratio = self.accumulated_pending / (
+        #         self.accumulated_total - self.accumulated_pending
+        #     )
+        #     return (gap_ratio + 1) * total / self.key_ts_alignment
+        # else:
+        #     # Abnormal, simply compensate for 2 times.
+        #     return 2.0 * total / self.key_ts_alignment
+        return total / self.key_ts_alignment
 
     def _parse_profiles(
-        self, profiles: dict, ts: float, out_records: List[LoadRecord] = []
-    ) -> List[LoadRecord]:
+        self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None
+    ) -> Tuple[List[LoadRecord], int, int]:
+        """Parse profile dictionary and return records, total requests, and pending requests
+
+        Return:
+        records: load profile of completed requests that contains input and output tokens. Records can be accumulated if out_records is specified.
+        total requests: total incoming requests in the reporting window. total requests may not equals to sum(records.freq).
+        pending requests: total unfinished requests that issued before the reporing window.
+        """
+        if out_records is None:
+            out_records = []
+        total_reqs = 0
+        pending_reqs = 0
+
         # Load metainfo.
-        version = profiles.get("meta_version", 1)
+        version = profiles.get("meta_v", 1)
         precision = profiles.get("meta_precision", 1)
         if version >= 2:
             self.key_ts_alignment = profiles.get("meta_interval_sec", 10)
+        # Using gateway reported total requests if meta_v >= 3
+        if version >= 3:
+            total_reqs = profiles.get("meta_total_reqs", 0)
+            pending_reqs = profiles.get("meta_pending_reqs", 0)
 
         # Parse load profile entries.
+        total = 0
         for k, v in profiles.items():
             # skip metainfos.
             if re.match(r"^meta_", k):
@@ -288,6 +416,11 @@ class GatewayLoadReader:
 
             input_tokens = int(match.group(1)) / precision
             output_tokens = int(match.group(2)) / precision
+            total += value
             out_records.append(LoadRecord(ts, input_tokens, output_tokens, value))
 
-        return out_records
+        # Using total completed requests if meta_v < 3
+        if version < 3:
+            total_reqs = total
+
+        return out_records, total_reqs, pending_reqs

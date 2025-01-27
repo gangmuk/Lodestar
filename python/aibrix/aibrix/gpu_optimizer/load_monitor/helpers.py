@@ -152,16 +152,22 @@ class DataBuffer:
 
 
 class Centeroid:
-    def __init__(self):
+    def __init__(self, span=0):
         """Centeroid calculates the mass center, radius, and size of data points."""
         self._sum_center = None
         self._range_max = None
         self._range_min = None
         self._span_max = 0
         self._span_min = 0
+        self._span = span  # Used to override span if set
         self._size = 0
         self._signature = None
         self._up_to_date = False  # Whether the signature is up to date.
+        self._signature_tolerance = 0.5
+        """Assuming indexes are of equal distances, the signature_tolerance 
+        control how a value in the middle of two indexes should aligned to a 
+        certain index. While 0.5 indicate neutual preference. 0.25 set 
+        threshold closer to lower index and then prefer higher index."""
 
     def add(self, point: DataPoint):
         if self._sum_center is None:
@@ -186,14 +192,14 @@ class Centeroid:
         self,
         indexes: List[List[float]],
         error_suppressor: Optional[
-            Callable[[int, float, float, float, float], None]
+            Callable[[int, float, float, float, float], bool]
         ] = None,
     ) -> Tuple[int]:
         """Generate the index signature of the centroid within the indexes' range.
 
         Args:
             indexes: A list of list of float, each list is a range of values.
-            error_suppressor: A function to handle the error with parameters(value, index assigned, value of index, offset). If None, raise an exception.
+            error_suppressor: A function to handle the error with parameters(value, index assigned, value of index, offset). Return True to accept closest value. If None, raise an exception.
         """
         if len(self._signature) != len(indexes):
             raise Exception(
@@ -212,23 +218,33 @@ class Centeroid:
 
             # Assuming indexes are ascending ordered.
             distance = (indexes[i][-1] - indexes[i][0]) / (len(indexes[i]) - 1)
-            if value < indexes[i][0] - distance / 2:
-                if error_suppressor is not None:
+            if value < indexes[i][0]:
+                offset = -distance * (1 - self._signature_tolerance)
+                if value >= indexes[i][0] + offset:
+                    # with in threshold, no warning
                     self._signature[i] = 0
-                    error_suppressor(i, value, 0, indexes[i][0], -distance / 2)
+                elif error_suppressor is not None:
+                    # error suppressor is available, let error_suppressor decide how to proceed.
+                    if error_suppressor(i, value, 0, indexes[i][0], offset):
+                        self._signature[i] = 0
                 else:
                     raise Exception(
-                        f"Centeroid is out of range: {i}:{value} and accepted minimum {indexes[i][0]} (with offset {- distance / 2})."
+                        f"Centeroid is out of range: {i}:{value} and accepted minimum {indexes[i][0]} (with offset {offset})."
                     )
-            elif value > indexes[i][-1] + distance / 2:
-                if error_suppressor is not None:
+            elif value > indexes[i][-1]:
+                offset = distance * self._signature_tolerance
+                if value <= indexes[i][0] + offset:
+                    # with in threshold, no warning
                     self._signature[i] = len(indexes[i]) - 1
-                    error_suppressor(
-                        i, value, len(indexes[i]) - 1, indexes[i][-1], distance / 2
-                    )
+                elif error_suppressor is not None:
+                    # error suppressor is available, let error_suppressor decide how to proceed.
+                    if error_suppressor(
+                        i, value, len(indexes[i]) - 1, indexes[i][-1], distance
+                    ):
+                        self._signature[i] = len(indexes[i]) - 1
                 else:
                     raise Exception(
-                        f"Centeroid is out of range: {i}:{value} and accepted maximum {indexes[i][-1]} (with offset {distance / 2})."
+                        f"Centeroid is out of range: {i}:{value} and accepted maximum {indexes[i][-1]} (with offset {offset})."
                     )
             else:
                 # Find the index using binary search.
@@ -247,7 +263,10 @@ class Centeroid:
                 if not found:
                     self._signature[i] = (
                         left
-                        if value < (indexes[i][left] + indexes[i][left]) / 2
+                        if value
+                        < indexes[i][left]
+                        + (indexes[i][right] - indexes[i][left])
+                        * self._signature_tolerance
                         else right
                     )
 
@@ -270,7 +289,17 @@ class Centeroid:
 
     @property
     def span(self):
-        return self._span_max - self._span_min + 1
+        return (
+            self._span
+            if self._span > 0
+            else 1.0
+            if self._span_max == self._span_min
+            else self._span_max - self._span_min
+        )
+
+    @span.setter
+    def span(self, value):
+        self._span = value
 
     @property
     def signature(self) -> Tuple[int]:
@@ -289,4 +318,4 @@ class Centeroid:
         return ret
 
     def __str__(self) -> str:
-        return f"Centeroid(center={self.center}, rps={self.rate})"
+        return f"Centeroid[center={self.center}, rps={self.rate}]"

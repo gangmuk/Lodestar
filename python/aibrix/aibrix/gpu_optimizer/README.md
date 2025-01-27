@@ -2,10 +2,13 @@
 
 ## Run in kubernetes
 
-1. Make sure Aibrix components are up-to-date. In particular, GPU Optimizer can be updated independently by:
+1. Make sure Aibrix components are up-to-date. In particular, debugged version of GPU Optimizer can be updated independently by:
 ```shell
 cd ../../../../ && make docker-build-runtime
-kubectl create -k config/gpu-optimizer
+kubectl create -k config/dependency
+kubectl create -k config/default
+kubectl delete -k config/overlays/dev/gpu-optimizer
+kubectl apply -k config/overlays/dev/gpu-optimizer
 ```
 
 2. Deploy your vLLM model. If run locally a CPU based vLLM simulator is provided. See development/app for details
@@ -31,7 +34,7 @@ make DP=simulator-llama2-7b-a100 gen-profile
 ```
 Replace simulator-llama2-7b-a100 with your deployment name.
 
-4. Notify GPU optimizer that profiles are ready
+4. Notify GPU optimizer that profiles are ready (This is usually not necessary, the optimizer will reload profiles while there are enough data to re-optimize)
 ```shell
 kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
 

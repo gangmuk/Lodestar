@@ -14,6 +14,8 @@
 
 import argparse
 import json
+import logging
+import math
 import os
 from datetime import datetime
 
@@ -21,6 +23,10 @@ import numpy as np
 import pandas as pd
 
 REDIS_PROFILE_KEY = "aibrix:profile_%s_%s"
+TPUT_TOLERANCE = 0.9
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aibrix.gpu_optimizer.profiling")
 
 
 def main(args):
@@ -59,6 +65,15 @@ def main(args):
     output_tokens.sort()
     slo_tputs = np.zeros((len(output_tokens), len(input_tokens)), dtype=float)
 
+    # Create TPAT metric
+    tpat_df = benchmark_df[benchmark_df["metric"] == "E2E"].copy()
+    tpat_df["metric"] = ["TPAT"] * len(tpat_df)
+    for _, percentile in enumerate(["mean", "P50", "P90", "P99"]):
+        tpat_df[percentile] = tpat_df[percentile] / (
+            tpat_df["input_tokens"] + tpat_df["output_tokens"]
+        )
+    benchmark_df = pd.concat([benchmark_df, tpat_df], ignore_index=True)
+
     # Decide the percentile to use for SLO calculation
     percentile_field = "mean"
     if args.percentile > 0:
@@ -72,9 +87,11 @@ def main(args):
                 & (benchmark_df["output_tokens"] == output_tokens[i])
             ]
 
-            # Filter the bencmarks by throughput SLO
+            # Filter the bencmarks by throughput SLO. Besides, we arbitarily filter out instable throughput as TPUT < request_rate * TPUT_TOLERANCE
             tput_df = filtered_df.loc[
-                (filtered_df["metric"] == "TPUT") & (filtered_df["mean"] >= args.tput)
+                (filtered_df["metric"] == "TPUT")
+                & (filtered_df["mean"] >= args.tput)
+                & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
             if len(tput_df) == 0:
                 continue
@@ -114,10 +131,22 @@ def main(args):
                 filtered_df["request_rate"].isin(ttft_df["request_rate"])
             ]
 
+            # Filter the bencmarks by TPAT SLO
+            tpat_df = filtered_df.loc[
+                (filtered_df["metric"] == "TPAT")
+                & (filtered_df[percentile_field] <= args.tpat)
+            ]
+            if len(tpat_df) == 0:
+                continue
+            filtered_df = filtered_df.loc[
+                filtered_df["request_rate"].isin(tpat_df["request_rate"])
+            ]
+
             # Filter the bencmarks by TPOT SLO
+
             tpot_df = filtered_df.loc[
                 (filtered_df["metric"] == "TPOT")
-                & (filtered_df[percentile_field] <= args.TPOT)
+                & (filtered_df[percentile_field] <= args.tpot)
             ]
             if len(tpot_df) == 0:
                 continue
@@ -129,11 +158,16 @@ def main(args):
             slo_tputs[i, j] = np.max(
                 filtered_df.loc[filtered_df["metric"] == "TPUT", "mean"]
             )
+            msg = filtered_df.loc[
+                filtered_df["metric"] == "TPUT", ["request_rate", "mean"]
+            ]
+            logger.debug(
+                f"Candidate for {input_tokens[j]}:{output_tokens[i]} tputs: {msg}"
+            )
 
     # Print the matrix
-    filename = os.path.splitext(os.path.basename(benchmark))[0]
     result = {
-        "gpu": filename,
+        "gpu": args.deployment,
         "cost": args.cost,
         "tputs": slo_tputs.tolist(),
         "indexes": [output_tokens.tolist(), input_tokens.tolist()],
@@ -205,13 +239,16 @@ if __name__ == "__main__":
         "--tt", type=float, default=0, help="Token Throughput SLO target."
     )
     parser.add_argument(
-        "--e2e", type=float, default=300, help="E2E latency SLO target."
+        "--e2e", type=float, default=math.inf, help="E2E latency SLO target."
     )
     parser.add_argument(
-        "--ttft", type=float, default=60, help="Time To First Token SLO target."
+        "--ttft", type=float, default=math.inf, help="Time To First Token SLO target."
     )
     parser.add_argument(
-        "--TPOT", type=float, default=1, help="Time Per Output Token SLO target."
+        "--tpat", type=float, default=math.inf, help="Time Per All Token SLO target."
+    )
+    parser.add_argument(
+        "--tpot", type=float, default=math.inf, help="Time Per Output Token SLO target."
     )
     parser.add_argument(
         "--percentile",
@@ -227,5 +264,15 @@ if __name__ == "__main__":
         default=None,
         help="Output file name. support redis as: redis://[username:password@]hostname:port[/db_name]?model=[model_name]",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print more information for understanding the generated profile",
+    )
+
     args = parser.parse_args()
+    if args.verbose:
+        logger.setLevel(level=logging.DEBUG)
+
     main(args)

@@ -4,9 +4,13 @@ DP ?= profiling
 DATASET ?= [set your DATASET path]
 COST ?= 1.0
 
+.PHONY: unittest
+unittest:
+	python -m unittest tests
+
 .PHONY: benchmark
 benchmark:
-	optimizer/profiling/benchmark.sh $(DP)
+	optimizer/profiling/benchmark.sh -o $(DP) --input-start 128
 
 .PHONY: gen-profile
 gen-profile:
@@ -53,8 +57,9 @@ debug-metrics:
 
 .PHONY: debug-workload
 debug-workload:
-	python optimizer/profiling/gpu_benchmark.py --backend=vllm --port 8888 --request-rate=10 --num-prompts=100 --input_len 2000 --output_len 512 --model=llama2-7b --verbose
+	python optimizer/profiling/gpu_benchmark.py --backend=vllm --port 8888 --request-rate=10 --num-prompts=100 --input-len 2000 --output-len 512 --model=llama2-7b --verbose
 
 .PHONY: visualizer
 visualizer:
 	python -m load_monitor.visualizer --dataset $(DATASET) --redisprofile "redis://localhost:6379/?model=llama2-7b"
+# python -m aibrix.gpu_optimizer.load_monitor.visualizer --dataset [path to dataset] --profiles [path to profile 1] [path to profile 2]

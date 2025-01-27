@@ -28,8 +28,8 @@ from dash.dependencies import Input, Output
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
 
-from .load_reader import DatasetLoadReader, LoadReader
-from .monitor import ModelMonitor
+from .load_reader import DatasetLoadReader, LoadReader, WorkloadReader
+from .monitor import DeploymentStates, ModelMonitor
 from .profile_reader import FileProfileReader, ProfileReader, RedisProfileReader
 
 canvas_size = 1000
@@ -88,8 +88,9 @@ logger = logging.getLogger("aibrix.gpu_optimizer.load_monitor.visualizer")
 
 def get_debug_model_montior(
     path: Optional[str],
+    is_workload: bool = True,
     scale: float = 1.0,
-    profile: Optional[str] = None,
+    profiles: Optional[List[str]] = None,
     redisprofile: Optional[str] = None,
 ) -> Optional[ModelMonitor]:
     global debug_monitor
@@ -98,21 +99,31 @@ def get_debug_model_montior(
         if path is None:
             directory = os.path.dirname(os.path.abspath(__file__))
             path = directory + "/data/sharegpt.csv"
-        loadReader: LoadReader = DatasetLoadReader(
-            path, rps=10, scale=scale, interval=reader_interval
-        )
+
+        loadReader: Optional[LoadReader] = None
+        if is_workload:
+            loadReader = WorkloadReader(path, scale=scale, interval=reader_interval)
+        else:
+            loadReader = DatasetLoadReader(
+                path, rps=10, scale=scale, interval=reader_interval
+            )
 
         profile_reader: Optional[ProfileReader] = None
-        if profile is not None:
-            profile_reader = FileProfileReader(profile)
+        if profiles is not None:
+            profile_reader = FileProfileReader(profiles)
         elif redisprofile is not None:
             profile_reader = RedisProfileReader(
                 *parse_redis_connection_str(redisprofile)
             )
 
         debug_monitor = ModelMonitor(
-            "sharegpt", "0", loadReader, profile_reader=profile_reader, debug=True
+            "model", "0", loadReader, profile_reader=profile_reader, debug=True
         )
+        if profile_reader is not None:
+            for _, profile in enumerate(profile_reader.read()):
+                debug_monitor.add_deployment(
+                    "0", profile.gpu, None, DeploymentStates(profile.gpu, 0)
+                )
 
     return debug_monitor
 
@@ -170,8 +181,8 @@ def update_graph(n, model_name):
                 "data": [],
                 "layout": go.Layout(
                     title=f"Live data update of {model_name} is unavailable: model not monitored",
-                    xaxis=dict(range=[0, scale], title="input_tokens(log2)"),
-                    yaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    xaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    yaxis=dict(range=[0, scale], title="input_tokens(log2)"),
                 ),
             }
             return figure.last
@@ -191,8 +202,8 @@ def update_graph(n, model_name):
                 "data": [],
                 "layout": go.Layout(
                     title=f"Live data update of {model_name} is unavailable: insufficient data",
-                    xaxis=dict(range=[0, scale], title="input_tokens(log2)"),
-                    yaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    xaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    yaxis=dict(range=[0, scale], title="input_tokens(log2)"),
                 ),
             }
             return figure.last
@@ -246,7 +257,7 @@ def update_graph(n, model_name):
         if len(centers) > 0:
             center_df = pd.DataFrame(
                 data=np.array([center.to_array() for center in centers]),
-                columns=["x", "y", "radius", "size"],
+                columns=["y", "x", "radius", "size"],
             )
             # assign color to center_df
             center_colors = [
@@ -353,10 +364,26 @@ if __name__ == "__main__":
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Please provide dataset path:")
-    parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
-    parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
+    parser = argparse.ArgumentParser(
+        description="Please provide dataset or workload path:"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Dataset path. A Dataset has no timestamp info.",
+    )
+    parser.add_argument("--workload", type=str, default=None, help="Workload path.")
+    parser.add_argument(
+        "--scaledata",
+        type=float,
+        default=1,
+        help="A factor to scale the number of input/output tokens.",
+    )
     parser.add_argument("--profile", type=str, default=None, help="Profile path.")
+    parser.add_argument(
+        "--profiles", nargs="+", type=str, default=None, help="Profile path."
+    )
     parser.add_argument(
         "--redisprofile",
         type=str,
@@ -364,11 +391,19 @@ if __name__ == "__main__":
         help="Redis connection string for profiles.",
     )
     args = parser.parse_args()
-    if args.dataset is not None:
+    filepath, is_workload = (
+        (args.workload, True) if args.workload is not None else (args.dataset, False)
+    )
+    if filepath is not None:
         figure.datasource = lambda _: get_debug_model_montior(
-            args.dataset,
+            filepath,
+            is_workload,
             args.scaledata,
-            profile=args.profile,
+            profiles=args.profiles
+            if args.profiles is not None
+            else [args.profile]
+            if args.profile is not None
+            else None,
             redisprofile=args.redisprofile,
         )
     init().run_server(debug=True)
