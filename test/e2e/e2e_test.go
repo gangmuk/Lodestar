@@ -17,106 +17,141 @@ limitations under the License.
 package e2e
 
 import (
-	"fmt"
-	"os/exec"
-	"time"
+	"context"
+	"net/http"
+	"os"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
-	"github.com/aibrix/aibrix/test/utils"
+	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
+	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 )
 
-const namespace = "aibrix-system"
+const (
+	baseURL   = "http://localhost:8888"
+	apiKey    = "test-key-1234567890"
+	modelName = "llama2-7b"
+	namespace = "aibrix-system"
+)
 
-var _ = Describe("controller", Ordered, func() {
-	BeforeAll(func() {
-		By("installing prometheus operator")
-		Expect(utils.InstallPrometheusOperator()).To(Succeed())
+func TestBaseModelInference(t *testing.T) {
+	initializeClient(context.Background(), t)
 
-		By("installing the cert-manager")
-		Expect(utils.InstallCertManager()).To(Succeed())
-
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
+	client := createOpenAIClient(baseURL, apiKey)
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(modelName),
 	})
+	if err != nil {
+		t.Error("chat completions failed", err)
+	}
+	assert.Equal(t, modelName, chatCompletion.Model)
+}
 
-	AfterAll(func() {
-		By("uninstalling the Prometheus manager bundle")
-		utils.UninstallPrometheusOperator()
-
-		By("uninstalling the cert-manager bundle")
-		utils.UninstallCertManager()
-
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+func TestBaseModelInferenceFailures(t *testing.T) {
+	// error on invalid api key
+	client := createOpenAIClient(baseURL, "fake-api-key")
+	_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(modelName),
 	})
+	assert.Contains(t, err.Error(), "500 Internal Server Error")
+	if err == nil {
+		t.Error("500 Internal Server Error expected for invalid api-key")
+	}
 
-	Context("Operator", func() {
-		It("should run successfully", func() {
-			var controllerPodName string
-			var err error
-
-			// projectimage stores the name of the image used in the example
-			var projectimage = "example.com/aibrix:v0.0.1"
-
-			By("building the manager(Operator) image")
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("loading the the manager(Operator) image on Kind")
-			err = utils.LoadImageToKindClusterWithName(projectimage)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("installing CRDs")
-			cmd = exec.Command("make", "install")
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("deploying the controller-manager")
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("validating that the controller-manager pod is running as expected")
-			verifyControllerUp := func() error {
-				// Get pod name
-
-				cmd = exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				ExpectWithOffset(2, err).NotTo(HaveOccurred())
-				podNames := utils.GetNonEmptyLines(string(podOutput))
-				if len(podNames) != 1 {
-					return fmt.Errorf("expect 1 controller pods running, but got %d", len(podNames))
-				}
-				controllerPodName = podNames[0]
-				ExpectWithOffset(2, controllerPodName).Should(ContainSubstring("controller-manager"))
-
-				// Validate pod status
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				status, err := utils.Run(cmd)
-				ExpectWithOffset(2, err).NotTo(HaveOccurred())
-				if string(status) != "Running" {
-					return fmt.Errorf("controller pod in %s status", status)
-				}
-				return nil
-			}
-			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
-
-		})
+	// error on invalid model name
+	client = createOpenAIClient(baseURL, apiKey)
+	_, err = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F("fake-model-name"),
 	})
-})
+	assert.Contains(t, err.Error(), "400 Bad Request")
+	if err == nil {
+		t.Error("400 Bad Request expected for invalid api-key")
+	}
+
+	// invalid routing strategy
+	client = openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+		option.WithHeader("routing-strategy", "invalid-routing-strategy"),
+	)
+	client.Options = append(client.Options, option.WithHeader("routing-strategy", "invalid-routing-strategy"))
+	_, err = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(modelName),
+	})
+	if err == nil {
+		t.Error("400 Bad Request expected for invalid routing-strategy")
+	}
+	assert.Contains(t, err.Error(), "400 Bad Request")
+}
+
+func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
+	var err error
+	var config *rest.Config
+
+	kubeConfig := os.Getenv("KUBECONFIG")
+	if kubeConfig == "" {
+		t.Error("kubeConfig not set")
+	}
+	klog.Infof("using configuration from '%s'", kubeConfig)
+
+	config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+	k8sClientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+	crdClientSet, err := v1alpha1.NewForConfig(config)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+
+	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
+	crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
+
+	podInformer := factory.Core().V1().Pods().Informer()
+	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+
+	defer runtime.HandleCrash()
+	factory.Start(ctx.Done())
+	crdFactory.Start(ctx.Done())
+
+	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, modelInformer.HasSynced) {
+		t.Error("timed out waiting for caches to sync")
+	}
+
+	return k8sClientSet, crdClientSet
+}
+
+func createOpenAIClient(baseURL, apiKey string) *openai.Client {
+	return openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+		option.WithMiddleware(func(r *http.Request, mn option.MiddlewareNext) (*http.Response, error) {
+			r.URL.Path = "/v1" + r.URL.Path
+			return mn(r)
+		}),
+	)
+}
