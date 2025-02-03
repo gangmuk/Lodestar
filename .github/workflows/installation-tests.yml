@@ -1,6 +1,7 @@
 name: Installation Tests
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   push:
     branches: [ "main" ]
     paths:
@@ -79,7 +80,7 @@ jobs:
       - name: Set up testing environment
         run: |
           # Set up the cluster with kind or other Kubernetes environment needed
-          kind create cluster --name installation-test
+          kind create cluster --name installation-test --config=./hack/kind_config.yaml
           kubectl cluster-info --context kind-installation-test
 
       - name: Load image into Kind
@@ -95,7 +96,7 @@ jobs:
             kind load docker-image aibrix/${image}:${{ github.sha }} --name installation-test
             kind load docker-image aibrix/${image}:nightly --name installation-test
           done
-          
+
       - name: Deploy controller with the built image
         run: |
           kubectl create -k config/dependency
@@ -112,12 +113,21 @@ jobs:
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
-
+        
       - name: Check pod status
         run: |
           sleep 60s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
-
+      
+          kubectl port-forward svc/llama2-7b 8000:8000 &
+          kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
+      
+      - name: Run e2e tests
+        run: |
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
+          make test-e2e
+          
       - name: Clean up
         run: kind delete cluster --name installation-test
