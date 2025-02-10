@@ -17,20 +17,20 @@ limitations under the License.
 package cache
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
-
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/cespare/xxhash"
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -44,6 +44,7 @@ import (
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/aibrix/aibrix/pkg/utils"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -52,6 +53,7 @@ import (
 var once sync.Once
 
 // type global
+// TODO: split pod/model events, request trace and prefix cache into separate modules.
 type Cache struct {
 	mu                sync.RWMutex
 	redisClient       *redis.Client
@@ -68,13 +70,23 @@ type Cache struct {
 	requestTrace      *sync.Map                                            // model_name: RequestTrace
 	numRequestsTraces int32                                                // counter for requestTrace
 	pendingRequests   *sync.Map                                            // model_name: *int32
+
+	prefixBlocks map[uint64]Block //prefix_hash:Block
+}
+
+type Block struct {
+	modelToPods    map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
+	lastAccessTime time.Time                       //block_last_access_time
 }
 
 const (
-	modelIdentifier                       = "model.aibrix.ai/name"
-	podPort                               = 8000
-	defaultPodMetricRefreshIntervalInMS   = 50
-	expireWriteRequestTraceIntervalInMins = 10
+	modelIdentifier                          = "model.aibrix.ai/name"
+	podPort                                  = 8000
+	defaultPodMetricRefreshIntervalInMS      = 50
+	expireWriteRequestTraceIntervalInMins    = 10
+	defaultPrefixCacheBlockSize              = 16
+	defaultPrefixCacheEvictionInternalInMS   = 50
+	defaultPrefixCacheEvictionDurationInMins = 60
 )
 
 var (
@@ -120,14 +132,18 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 
-	podMetricRefreshInterval = getPodMetricRefreshInterval()
+	// TODO: add a helper function for get methods.
+	podMetricRefreshInterval    = getPodMetricRefreshInterval()
+	prefixCacheBlockSize        = getPrefixCacheBlockSize()
+	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
+	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
 )
 
 func getPodMetricRefreshInterval() time.Duration {
-	value := LoadEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
+	value := utils.LoadEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
-		if err != nil {
+		if err != nil || intValue <= 0 {
 			klog.Infof("invalid AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: %s, falling back to default", value)
 		} else {
 			klog.Infof("using AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS env value for pod metrics refresh interval: %d ms", intValue)
@@ -138,21 +154,56 @@ func getPodMetricRefreshInterval() time.Duration {
 	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
+func getPrefixCacheBlockSize() int {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_SIZE: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_SIZE env value for prefix cache block size: %d", intValue)
+			return intValue
+		}
+	}
+	klog.Infof("using default prefix cache block size: %d", defaultPrefixCacheBlockSize)
+	return defaultPrefixCacheBlockSize
+}
+
+func getPrefixCacheEvictionInterval() time.Duration {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS env value for prefix cache eviction interval: %d ms", intValue)
+			return time.Duration(intValue) * time.Millisecond
+		}
+	}
+	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInMS)
+	return defaultPrefixCacheEvictionInternalInMS * time.Millisecond
+}
+
+func getPrefixCacheEvictionDuration() time.Duration {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS env value for prefix cache eviction duration: %d ms", intValue)
+			return time.Duration(intValue) * time.Minute
+		}
+	}
+	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInMins)
+	return defaultPrefixCacheEvictionDurationInMins * time.Minute
+}
+
 func GetCache() (*Cache, error) {
 	if !instance.initialized {
 		return nil, errors.New("cache is not initialized")
 	}
 	return &instance, nil
-}
-
-// LoadEnv loads an environment variable or returns a default value if not set.
-func LoadEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		klog.Warningf("environment variable %s is not set, using default value: %s", key, defaultValue)
-		return defaultValue
-	}
-	return value
 }
 
 func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
@@ -187,9 +238,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 		}
 
 		// Load environment variables
-		prometheusEndpoint := LoadEnv("PROMETHEUS_ENDPOINT", "")
-		prometheusBasicAuthUsername := LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
-		prometheusBasicAuthPassword := LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+		prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
+		prometheusBasicAuthUsername := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+		prometheusBasicAuthPassword := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
 
 		// Initialize Prometheus API
 		var prometheusApi prometheusv1.API
@@ -214,6 +265,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      &sync.Map{},
 			pendingRequests:   &sync.Map{},
+			prefixBlocks:      map[uint64]Block{},
 		}
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
@@ -239,6 +291,19 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 					instance.updatePodMetrics()
 					instance.updateModelMetrics()
 					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		ticker = time.NewTicker(prefixCacheEvictionInterval)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					instance.prefixCacheEviction(time.Now())
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -962,4 +1027,101 @@ func (c *Cache) aggregateMetrics() {
 			}
 		}
 	}
+}
+
+// returns matchedTokens, unMatchedTokens, matchedPods
+// TODO: add an interface with multiple implementations such as hash or radix tree
+func (c *Cache) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var block, lastMatchedBlock Block
+	var ok bool
+	var lastTokenMatchIndex int
+
+	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(tokens) {
+			end = len(tokens)
+		}
+
+		chunk := tokens[i:end]
+		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		block, ok = c.prefixBlocks[prefixHash]
+		if !ok || len(block.modelToPods[model]) == 0 {
+			lastTokenMatchIndex = i
+			break
+		}
+
+		lastTokenMatchIndex = end
+		lastMatchedBlock = block
+		block.lastAccessTime = time.Now()
+		c.prefixBlocks[prefixHash] = block
+	}
+
+	matchedTokens := tokens[0:lastTokenMatchIndex]
+	unMatchedTokens := tokens[lastTokenMatchIndex:]
+
+	var matchedPods []*v1.Pod
+	blockPods := lastMatchedBlock.modelToPods[model]
+	for _, pod := range pods {
+		if _, ok := blockPods[pod.Name]; ok {
+			matchedPods = append(matchedPods, pod)
+		}
+	}
+
+	return matchedTokens, unMatchedTokens, matchedPods
+}
+
+func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := 0; i < len(unMatchedTokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(unMatchedTokens) {
+			end = len(unMatchedTokens)
+		}
+
+		chunk := unMatchedTokens[i:end]
+		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		block, ok := c.prefixBlocks[prefixHash]
+		if !ok {
+			block = Block{
+				modelToPods:    map[string]map[string]time.Time{},
+				lastAccessTime: time.Now(),
+			}
+			c.prefixBlocks[prefixHash] = block
+		}
+
+		blockPods, ok := block.modelToPods[model]
+		if !ok {
+			blockPods = map[string]time.Time{}
+			block.modelToPods[model] = blockPods
+		}
+
+		blockPods[pod] = time.Now()
+	}
+}
+
+func (c *Cache) prefixCacheEviction(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for hash, block := range c.prefixBlocks {
+		if now.Sub(block.lastAccessTime) > prefixCacheEvictionDuration {
+			delete(c.prefixBlocks, hash)
+			klog.InfoS("prefix cache block evicted", "hash", hash)
+		}
+	}
+}
+
+func IntArrayToByteArray(intArray []int) []byte {
+	buf := new(bytes.Buffer)
+	for _, val := range intArray {
+		err := binary.Write(buf, binary.LittleEndian, int32(val))
+		if err != nil {
+			panic(err)
+		}
+	}
+	return buf.Bytes()
 }

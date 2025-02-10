@@ -17,39 +17,14 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
-	"math/rand"
-
-	v1 "k8s.io/api/core/v1"
 )
 
-type randomRouter struct {
-}
+const podMetricPort = "8000"
 
-func NewRandomRouter() Router {
-	return randomRouter{}
-}
-
-func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-	var targetPodIP string
-	if len(pods) == 0 {
+func getPodAddress(podIP string) (string, error) {
+	if podIP == "" {
 		return "", fmt.Errorf("no pods to forward request")
 	}
-
-	var err error
-	targetPodIP, err = selectRandomPod(pods, rand.Intn)
-	if err != nil {
-		return "", err
-	}
-
-	if targetPodIP == "" {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	return targetPodIP + ":" + podMetricPort, nil
-}
-
-func (r *randomRouter) SubscribedMetrics() []string {
-	return []string{}
+	return fmt.Sprintf("%v:%v", podIP, podMetricPort), nil
 }

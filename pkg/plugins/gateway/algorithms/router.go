@@ -25,12 +25,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-const podMetricPort = "8000"
-
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
+	// TODO: add routeContext as a function parameter.
 	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error)
+	Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error)
 }
 
 // selectRandomPodWithRand selects a random pod from the provided pod map.
