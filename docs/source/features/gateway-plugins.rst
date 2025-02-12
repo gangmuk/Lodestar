@@ -91,4 +91,119 @@ To set up rate limiting, add the user header in the request, like this:
     If rate limit support is required, ensure this `user` header is always set in the request. if you do not need rate limit, you do not need to set this header.
 
 
+Headers Explanation
+--------------------
 
+This sections describes various **custom headers** used in request processing for debugging and routing in the system.
+
+Target Headers & General Error Headers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-went-into-req-headers``
+     - Indicates whether the request headers were processed correctly. Used for debugging header parsing issues.
+   * - ``target-pod``
+     - Specifies the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+   * - ``routing-strategy``
+     - Defines the routing strategy applied to this request. Ensures correct routing logic is followed.
+
+
+Routing & Error Debugging Headers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-error-user``
+     - Identifies errors related to incorrect user input. Useful for client-side debugging.
+   * - ``x-error-routing``
+     - Indicates an issue in routing logic, such as failed to select target pod.
+   * - ``x-error-response-unmarshal``
+     - Signals that the response body could not be parsed correctly, often due to an internal issue.
+   * - ``x-error-response-unknown``
+     - Generic error header when no specific issue is identified.
+   * - ``x-error-request-body-processing``
+     - Marks an issue with request body parsing, such as invalid JSON.
+   * - ``x-error-no-model-in-request``
+     - Specifies that no model option was given for the request. Useful for model parameter validation debugging.
+   * - ``x-error-no-model-backends``
+     - Indicates that the requested model exists but has no active backends(pods).
+   * - ``x-error-invalid-routing-strategy``
+     - User passes invalid routing strategy name that AIBrix doesn't support.
+
+
+Streaming Headers
+^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-error-streaming``
+     - Signals an error during a streaming request, helping to diagnose streaming-related failures.
+   * - ``x-error-no-stream-options``
+     - Lists enabled streaming options for the request. Used to debug streaming feature behavior.
+   * - ``x-error-no-stream-options-include-usage``
+     - Indicates whether usage statistics were included in the streaming response.
+
+
+Rate Limiting Headers
+^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-update-tpm``
+     - Indicates that the RPM (requests per minute) count was updated successfully
+   * - ``x-update-rpm``
+     - Indicates that the TPM (tokens per minute) count was updated successfully
+   * - ``x-error-rpm-exceeded``
+     - Signals that the request exceeded the allowed RPM threshold.
+   * - ``x-error-tpm-exceeded``
+     - Signals that the request exceeded the allowed TPM threshold.
+   * - ``x-error-incr-rpm``
+     - Error encountered while increasing the RPM counter.
+   * - ``x-error-incr-tpm``
+     - Error encountered while increasing the TPM counter.
+
+
+Debugging Guidelines
+^^^^^^^^^^^^^^^^^^^^
+
+1. **Identify error headers**
+
+   - If an issue occurs, inspect ``x-error-user``, ``x-error-routing``, ``x-error-response-unmarshal``, and ``x-error-response-unknown`` to determine the root cause.
+   - For request processing issues, check ``x-error-request-body-processing`` and ``x-error-no-model-in-request``.
+
+2. **Verify routing and model assignment**
+
+   - Ensure ``target-pod`` is correctly set to confirm the routing algorithm selected the right backend.
+   - If ``x-error-no-model-in-request`` or ``x-error-no-model-backends`` appears, verify that the request includes a valid model and that the model has active backends.
+   - If ``x-error-invalid-routing-strategy`` is present, confirm that the routing strategy used is supported by AIBrix.
+
+3. **Diagnose streaming issues**
+
+   - If encountering problems with streamed responses, check ``x-error-streaming`` for any reported errors.
+   - Ensure that ``x-error-no-stream-options`` provides the expected streaming options.
+   - If usage statistics are missing from the streaming response, verify ``x-error-no-stream-options-include-usage``.
+
+4. **Investigate rate limiting issues**
+
+   - If the request was blocked, inspect ``x-error-rpm-exceeded`` or ``x-error-tpm-exceeded`` to confirm whether it exceeded rate limits.
+   - If rate limit updates failed, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``.
+   - Successful rate limit updates will be indicated by ``x-update-rpm`` and ``x-update-tpm``.
+
+By following these steps, you can efficiently debug request processing, routing, streaming, and rate-limiting behavior in the system.
