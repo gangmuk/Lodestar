@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -171,8 +172,9 @@ func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Healt
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
 	var rpm, traceTerm int64
+	var respErrorCode int
 	var model, routingStrategy, targetPodIP string
-	var stream bool
+	var stream, isRespError bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
 	completed := false
@@ -202,11 +204,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, model, targetPodIP, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
-
+			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+			if isRespError {
+				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
+				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+			} else {
+				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
+			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
 		}
@@ -218,7 +225,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n")
 	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
@@ -358,7 +364,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
 		message, extErr := getRequestMessage(jsonMap)
-		if err != nil {
+		if extErr != nil {
 			return extErr, model, targetPodIP, stream, term
 		}
 
@@ -403,8 +409,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}, model, targetPodIP, stream, term
 }
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) (*extProcPb.ProcessingResponse, bool, int) {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -421,6 +428,24 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 		})
 	}
 
+	var isProcessingError bool
+	var processingErrorCode int
+	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
+		if headerValue.Key == ":status" {
+			code, _ := strconv.Atoi(string(headerValue.RawValue))
+			if code != 200 {
+				isProcessingError = true
+				processingErrorCode = code
+			}
+		}
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      headerValue.Key,
+				RawValue: headerValue.RawValue,
+			},
+		})
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
 			ResponseHeaders: &extProcPb.HeadersResponse{
@@ -432,7 +457,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 				},
 			},
 		},
-	}
+	}, isProcessingError, processingErrorCode
 }
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {

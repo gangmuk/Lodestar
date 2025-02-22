@@ -55,11 +55,10 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 		expectErrCode   int
 	}{
 		{
-			name:      "Invalid API Key",
-			apiKey:    "fake-api-key",
-			modelName: modelName,
-			// TODO: it is supposed to be 401. Let's handle such case and fix this.
-			expectErrCode: 500,
+			name:          "Invalid API Key",
+			apiKey:        "fake-api-key",
+			modelName:     modelName,
+			expectErrCode: 401,
 		},
 		{
 			name:          "Invalid Model Name",
@@ -100,7 +99,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 				t.Fatalf("Error is not an APIError: %+v", err)
 			}
 			if assert.ErrorAs(t, err, &apiErr) {
-				assert.Equal(t, apiErr.StatusCode, tc.expectErrCode)
+				assert.Equal(t, tc.expectErrCode, apiErr.StatusCode, t.Name())
 			}
 		})
 	}
