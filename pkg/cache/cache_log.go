@@ -15,43 +15,38 @@ limitations under the License.
 */
 package cache
 
-import "k8s.io/klog/v2"
+import (
+	"strings"
 
-func (c *Store) updateDebugInfo() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"k8s.io/klog/v2"
+)
 
-	c.metricsDebugInfo()
-}
+func (c *Store) debugInfo() {
+	if !klog.V(4).Enabled() {
+		// skip debug info
+		return
+	}
 
-func (c *Store) metricsDebugInfo() {
-	for _, pod := range c.Pods {
-		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
-	}
-	for podName, models := range c.PodToModelMapping {
-		var modelList string
-		for modelName := range models {
-			modelList += modelName + " "
-		}
-		klog.V(4).Infof("pod: %s, models: %s", podName, modelList)
-	}
-	for modelName, pods := range c.ModelToPodMapping {
-		var podList string
-		for podName := range pods {
-			podList += podName + " "
-		}
-		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
-	}
-	for podName, metrics := range c.PodMetrics {
-		for metricName, metricVal := range metrics {
+	c.metaPods.Range(func(podName string, pod *Pod) bool {
+		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
+		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
 			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+			return true
+		})
+		pod.ModelMetrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+			return true
+		})
+		return true
+	})
+	c.metaModels.Range(func(modelName string, meta *Model) bool {
+		var podList strings.Builder
+		for _, pod := range meta.Pods.Registry.Array() {
+			podList.WriteString(pod.Name)
+			podList.WriteByte(' ')
 		}
-	}
-	for podName, models := range c.PodModelMetrics {
-		for modelName, metrics := range models {
-			for metricName, metricVal := range metrics {
-				klog.V(5).Infof("%v_%v_%v_%v", podName, modelName, metricName, metricVal)
-			}
-		}
-	}
+		klog.V(4).Infof("model: %s, pods: %s", modelName, podList.String())
+		return true
+	})
 }

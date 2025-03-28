@@ -19,11 +19,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
@@ -39,26 +38,14 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 	} else {
 		atomic.AddInt32(&c.numRequestsTraces, 1)
 	}
-	return newer.(*RequestTrace)
-}
-
-func (c *Store) getTraceKey(inputTokens, outputTokens int64) (traceKey string) {
-	if inputTokens > 0 && outputTokens > 0 {
-		inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
-		outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
-		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
-
-		klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
-			inputTokens, inputIndex, outputTokens, outputIndex)
-	}
-	return
+	return newer
 }
 
 func (c *Store) writeRequestTraceToStorage(roundT int64) {
 	// Save and reset trace context, atomicity is guaranteed.
-	var requestTrace *sync.Map
+	var requestTrace *utils.SyncMap[string, *RequestTrace]
 	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
-	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}
+	requestTrace, c.requestTrace = c.requestTrace, &utils.SyncMap[string, *RequestTrace]{}
 	numResetTo := int32(0)
 	// TODO: Adding a unit test here.
 	for !atomic.CompareAndSwapInt32(&c.numRequestsTraces, numTraces, numResetTo) {
@@ -67,15 +54,13 @@ func (c *Store) writeRequestTraceToStorage(roundT int64) {
 		numTraces, numResetTo = updatedNumTraces, updatedNumTraces-numTraces
 	}
 
-	requestTrace.Range(func(iModelName, iTrace any) bool {
-		modelName := iModelName.(string)
-		trace := iTrace.(*RequestTrace)
+	requestTrace.Range(func(modelName string, trace *RequestTrace) bool {
 		requestTrace.Store(modelName, nil) // Simply assign nil instead of delete
 
 		trace.Lock()
 		pending := int32(0)
-		if pCounter, loaded := c.pendingRequests.Load(modelName); loaded {
-			pending = atomic.LoadInt32(pCounter.(*int32))
+		if meta, loaded := c.metaModels.Load(modelName); loaded {
+			pending = atomic.LoadInt32(&meta.pendingRequests)
 		}
 		traceMap := trace.ToMapLocked(pending)
 		trace.RecycleLocked()

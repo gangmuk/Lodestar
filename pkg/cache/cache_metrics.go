@@ -25,7 +25,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -115,50 +114,53 @@ func getPodMetricRefreshInterval() time.Duration {
 	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
-func (c *Store) updatePodMetrics() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	readyPods := utils.FilterReadyPods(c.Pods)
-	if len(readyPods) == 0 {
-		return
+func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
+	metricVal, ok := metricStore.Load(metricName)
+	if !ok {
+		return nil, fmt.Errorf("no metric available for %s - %v", podName, metricName)
 	}
 
-	for _, pod := range readyPods {
-		podName := pod.Name
-		if len(c.PodMetrics[podName]) == 0 {
-			c.PodMetrics[podName] = map[string]metrics.MetricValue{}
-		}
-		if len(c.PodModelMetrics[podName]) == 0 {
-			c.PodModelMetrics[podName] = make(map[string]map[string]metrics.MetricValue)
+	return metricVal, nil
+}
+
+func (c *Store) getPodModelMetricName(modelName string, metricName string) string {
+	return fmt.Sprintf("%s/%s", modelName, metricName)
+}
+
+func (c *Store) updatePodMetrics() {
+	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
+		if !utils.FilterReadyPod(metaPod.Pod) {
+			// Skip unready pod
+			return true
 		}
 
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
-		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		url := fmt.Sprintf("http://%s:%d/metrics", metaPod.Status.PodIP, podPort)
 		allMetrics, err := metrics.ParseMetricsURL(url)
 		if err != nil {
 			klog.V(4).Infof("Error parsing metric families: %v\n", err)
 		}
 
 		// parse counterGaugeMetricsNames
-		c.updateSimpleMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateSimpleMetricFromRawMetrics(metaPod, allMetrics)
 
 		// parse histogramMetrics
-		c.updateHistogramMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateHistogramMetricFromRawMetrics(metaPod, allMetrics)
 
 		// parse QueryLabel metrics
-		c.updateQueryLabelMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateQueryLabelMetricFromRawMetrics(metaPod, allMetrics)
 
 		if c.prometheusApi == nil {
 			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-			continue
+			return true
 		}
 		// parse prometheus metrics
-		c.updateMetricFromPromQLLocked(pod)
-	}
+		c.updateMetricFromPromQL(metaPod)
+		return true
+	})
 }
 
-func (c *Store) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	for _, metricName := range counterGaugeMetricNames {
 		metric, exists := metrics.Metrics[metricName]
@@ -183,7 +185,7 @@ func (c *Store) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics m
 				continue
 			}
 
-			err = c.updatePodRecordLocked(podName, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
+			err = c.updatePodRecord(pod, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
 			if err != nil {
 				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 				continue
@@ -194,7 +196,7 @@ func (c *Store) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics m
 	}
 }
 
-func (c *Store) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	for _, metricName := range histogramMetricNames {
 		metric, exists := metrics.Metrics[metricName]
@@ -222,7 +224,7 @@ func (c *Store) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetric
 				Count:   metricValue.Count,
 				Buckets: metricValue.Buckets,
 			}
-			err = c.updatePodRecordLocked(podName, modelName, metricName, scope, histogramValue)
+			err = c.updatePodRecord(pod, modelName, metricName, scope, histogramValue)
 			if err != nil {
 				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 				continue
@@ -234,9 +236,7 @@ func (c *Store) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetric
 	}
 }
 
-func (c *Store) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
-	podName := pod.Name
-
+func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	for _, labelMetricName := range labelQueryMetricNames {
 		metric, exists := metrics.Metrics[labelMetricName]
 		if !exists {
@@ -253,9 +253,9 @@ func (c *Store) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetri
 		for _, familyMetric := range metricFamily.Metric {
 			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
 			labelValue, _ := metrics.GetLabelValueForKey(familyMetric, labelMetricName)
-			err := c.updatePodRecordLocked(podName, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
+			err := c.updatePodRecord(pod, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
 			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, podName, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
 
@@ -264,7 +264,7 @@ func (c *Store) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetri
 	}
 }
 
-func (c *Store) updateMetricFromPromQLLocked(pod *v1.Pod) {
+func (c *Store) updateMetricFromPromQL(pod *Pod) {
 	podName := pod.Name
 
 	for _, metricName := range prometheusMetricNames {
@@ -278,16 +278,16 @@ func (c *Store) updateMetricFromPromQLLocked(pod *v1.Pod) {
 		}
 		scope := metric.MetricScope
 		if scope == metrics.PodMetricScope {
-			err := c.queryUpdatePromQLMetricsLocked(metric, queryLabels, podName, "", metricName)
+			err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, "", metricName)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 				continue
 			}
 		} else if scope == metrics.PodModelMetricScope {
-			if modelNames, ok := c.PodToModelMapping[podName]; ok {
-				for modelName := range modelNames {
+			if pod.Models.Len() > 0 {
+				for _, modelName := range pod.Models.Array() {
 					queryLabels["model_name"] = modelName
-					err := c.queryUpdatePromQLMetricsLocked(metric, queryLabels, podName, modelName, metricName)
+					err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, modelName, metricName)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 						continue
@@ -302,7 +302,7 @@ func (c *Store) updateMetricFromPromQLLocked(pod *v1.Pod) {
 	}
 }
 
-func (c *Store) queryUpdatePromQLMetricsLocked(metric metrics.Metric, queryLabels map[string]string, podName string, modelName string, metricName string) error {
+func (c *Store) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
 	// Querying metrics
@@ -317,30 +317,27 @@ func (c *Store) queryUpdatePromQLMetricsLocked(metric metrics.Metric, queryLabel
 
 	// Update metrics
 	metricValue := &metrics.PrometheusMetricValue{Result: &result}
-	err = c.updatePodRecordLocked(podName, modelName, metricName, scope, metricValue)
+	err = c.updatePodRecord(pod, modelName, metricName, scope, metricValue)
 	if err != nil {
-		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, podName, err)
+		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, pod.Name, err)
 	}
-	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", podName, "Port", podPort, "metricValue", metricValue)
+	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", pod.Name, "Port", podPort, "metricValue", metricValue)
 	return nil
 }
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
-func (c *Store) updatePodRecordLocked(podName string, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
+func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
 	if scope == metrics.PodMetricScope {
 		if modelName != "" {
 			return fmt.Errorf("modelName should be empty for scope %v", scope)
 		}
-		c.PodMetrics[podName][metricName] = metricValue
+		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
 		if modelName == "" {
 			return fmt.Errorf("modelName should not be empty for scope %v", scope)
 		}
-		if len(c.PodModelMetrics[podName][modelName]) == 0 {
-			c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
-		}
-		c.PodModelMetrics[podName][modelName][metricName] = metricValue
+		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
 	} else {
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
@@ -348,13 +345,13 @@ func (c *Store) updatePodRecordLocked(podName string, modelName string, metricNa
 }
 
 func (c *Store) updateModelMetrics() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// c.mu.Lock()
+	// defer c.mu.Unlock()
 
-	if c.prometheusApi == nil {
-		klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-		return
-	}
+	// if c.prometheusApi == nil {
+	// 	klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
+	// 	return
+	// }
 }
 
 func (c *Store) aggregateMetrics() {

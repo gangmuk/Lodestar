@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -88,9 +89,6 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 }
 
 func (c *Store) addPod(obj interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	pod := obj.(*v1.Pod)
 	// only track pods with model deployments
 	modelName, ok := pod.Labels[modelIdentifier]
@@ -104,78 +102,82 @@ func (c *Store) addPod(obj interface{}) {
 		return
 	}
 
-	c.Pods[pod.Name] = pod
-	c.addPodAndModelMappingLocked(pod.Name, modelName)
-	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	c.metricsDebugInfo()
-}
-
-func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	metaPod := c.addPodLocked(pod)
+	c.addPodAndModelMappingLocked(metaPod, modelName)
+
+	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
+	c.debugInfo()
+}
+
+func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	oldModelName, oldOk := oldPod.Labels[modelIdentifier]
+	_, oldOk := oldPod.Labels[modelIdentifier]
+	_, existed := c.metaPods.Load(oldPod.Name) // Make sure nothing left.
 	newModelName, newOk := newPod.Labels[modelIdentifier]
 
-	if !oldOk && !newOk {
+	if !oldOk && !existed && !newOk {
 		return // No model information to track in either old or new pod
 	}
 
-	// Remove old mappings if present
-	if oldOk {
-		delete(c.Pods, oldPod.Name)
-		c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// TODO: No in place update is handled here
+
+	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	if oldOk || existed {
+		odlMetaPod := c.deletePodLocked(oldPod.Name)
+		if odlMetaPod != nil {
+			for _, modelName := range odlMetaPod.Models.Array() {
+				c.deletePodAndModelMappingLocked(odlMetaPod.Name, modelName, 1)
+			}
+		}
 	}
 
 	// ignore worker pods
-	nodeType, ok := oldPod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.InfoS("ignored ray worker pod", "name", oldPod.Name)
-		return
-	}
-
-	// ignore worker pods
-	nodeType, ok = newPod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.InfoS("ignored ray worker pod", "name", newPod.Name)
+	oldNodeType := oldPod.Labels[nodeType]
+	newNodeType := newPod.Labels[nodeType]
+	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
 		return
 	}
 
 	// Add new mappings if present
 	if newOk {
-		c.Pods[newPod.Name] = newPod
-		c.addPodAndModelMappingLocked(newPod.Name, newModelName)
+		metaPod := c.addPodLocked(newPod)
+		c.addPodAndModelMappingLocked(metaPod, newModelName)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	c.metricsDebugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) deletePod(obj interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	pod := obj.(*v1.Pod)
 	_, ok := pod.Labels[modelIdentifier]
-	if !ok {
+	_, existed := c.metaPods.Load(pod.Name) // Make sure nothing left.
+	if !ok && !existed {
 		return
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// delete base model and associated lora models on this pod
-	if models, ok := c.PodToModelMapping[pod.Name]; ok {
-		for modelName := range models {
-			c.deletePodAndModelMapping(pod.Name, modelName)
+	metaPod := c.deletePodLocked(pod.Name)
+	if metaPod != nil {
+		for _, modelName := range metaPod.Models.Array() {
+			c.deletePodAndModelMappingLocked(pod.Name, modelName, 1)
 		}
 	}
-	delete(c.Pods, pod.Name)
-	delete(c.PodMetrics, pod.Name)
-	delete(c.PodModelMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	c.metricsDebugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) addModelAdapter(obj interface{}) {
@@ -184,11 +186,11 @@ func (c *Store) addModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.addPodAndModelMappingLocked(pod, model.Name)
+		c.addPodAndModelMappingLockedByName(pod, model.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	c.metricsDebugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -197,17 +199,16 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
-
 	for _, pod := range oldModel.Status.Instances {
-		c.deletePodAndModelMapping(pod, oldModel.Name)
+		c.deletePodAndModelMappingLocked(pod, oldModel.Name, 0)
 	}
 
 	for _, pod := range newModel.Status.Instances {
-		c.addPodAndModelMappingLocked(pod, newModel.Name)
+		c.addPodAndModelMappingLockedByName(pod, newModel.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	c.metricsDebugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
@@ -216,57 +217,76 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.deletePodAndModelMapping(pod, model.Name)
+		c.deletePodAndModelMappingLocked(pod, model.Name, 0)
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	c.metricsDebugInfo()
+	c.debugInfo()
 }
 
-func (c *Store) addPodAndModelMappingLocked(podName, modelName string) {
-	pod, ok := c.Pods[podName]
+func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
+	if c.bufferPod == nil {
+		c.bufferPod = &Pod{
+			Pod:    pod,
+			Models: utils.NewRegistry[string](),
+		}
+	} else {
+		c.bufferPod.Pod = pod
+	}
+	metaPod, loaded := c.metaPods.LoadOrStore(pod.Name, c.bufferPod)
+	if !loaded {
+		c.bufferPod = nil
+	}
+	return metaPod
+}
+
+func (c *Store) addPodAndModelMappingLockedByName(podName, modelName string) {
+	pod, ok := c.metaPods.Load(podName)
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
 	}
 
-	models, ok := c.PodToModelMapping[podName]
-	if !ok {
-		c.PodToModelMapping[podName] = map[string]struct{}{
-			modelName: {},
-		}
-	} else {
-		models[modelName] = struct{}{}
-		c.PodToModelMapping[podName] = models
-	}
-
-	pods, ok := c.ModelToPodMapping[modelName]
-	if !ok {
-		c.ModelToPodMapping[modelName] = map[string]*v1.Pod{
-			podName: pod,
-		}
-	} else {
-		pods[podName] = pod
-		c.ModelToPodMapping[modelName] = pods
-	}
+	c.addPodAndModelMappingLocked(pod, modelName)
 }
 
-func (c *Store) deletePodAndModelMapping(podName, modelName string) {
-	if models, ok := c.PodToModelMapping[podName]; ok {
-		delete(models, modelName)
-		if len(models) != 0 {
-			c.PodToModelMapping[podName] = models
-		} else {
-			delete(c.PodToModelMapping, podName)
+func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
+	if c.bufferModel == nil {
+		c.bufferModel = &Model{
+			Pods: utils.NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
+		}
+	}
+	metaModel, loaded := c.metaModels.LoadOrStore(modelName, c.bufferModel)
+	if !loaded {
+		c.bufferModel = nil
+	}
+
+	metaPod.Models.Store(modelName, modelName)
+	metaModel.Pods.Store(metaPod.Name, metaPod.Pod)
+}
+
+func (c *Store) deletePodLocked(podName string) *Pod {
+	metaPod, _ := c.metaPods.LoadAndDelete(podName)
+	return metaPod
+}
+
+// deletePodAndModelMapping delete mappings between pods and model by specified names.
+// If ignoreMapping > 0, podToModel mapping will be ignored.
+// If ignoreMapping < 0, modelToPod mapping will be ignored
+func (c *Store) deletePodAndModelMappingLocked(podName, modelName string, ignoreMapping int) {
+	if ignoreMapping <= 0 {
+		if metaPod, ok := c.metaPods.Load(podName); ok {
+			metaPod.Models.Delete(modelName)
+			// PodToModelMapping entry should only be deleted during pod deleting.
 		}
 	}
 
-	if pods, ok := c.ModelToPodMapping[modelName]; ok {
-		delete(pods, podName)
-		if len(pods) != 0 {
-			c.ModelToPodMapping[modelName] = pods
-		} else {
-			delete(c.ModelToPodMapping, modelName)
+	if ignoreMapping >= 0 {
+		if meta, ok := c.metaModels.Load(modelName); ok {
+			meta.Pods.Delete(podName)
+			if meta.Pods.Len() == 0 {
+				c.metaModels.Delete(modelName)
+			}
 		}
 	}
 }

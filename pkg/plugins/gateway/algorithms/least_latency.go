@@ -17,19 +17,19 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 var (
-	RouterLeastLatency Algorithms = "least-latency"
+	RouterLeastLatency types.RoutingAlgorithm = "least-latency"
 )
 
 func init() {
@@ -40,7 +40,7 @@ type leastExpectedLatencyRouter struct {
 	cache cache.Cache
 }
 
-func NewLeastExpectedLatencyRouter() (Router, error) {
+func NewLeastExpectedLatencyRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
 		return nil, err
@@ -51,11 +51,11 @@ func NewLeastExpectedLatencyRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
-	var targetPodIP string
+func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	var targetPod *v1.Pod
 	minExpectedLatency := math.MaxFloat64
 
-	if len(pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
@@ -63,13 +63,13 @@ func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*
 	sumGenerationTokens := 0.0
 	cntPromt := 0
 	cntGeneration := 0
-	for _, pod := range pods {
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgPromptToksPerReq)
+	for _, pod := range pods.All() {
+		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgGenerationToksPerReq)
+		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -92,25 +92,25 @@ func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*
 		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
 	}
 
-	for _, pod := range pods {
+	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			continue
 		}
 
 		// expected queuing latency
-		queuingLatency, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.RequestQueueTimeSeconds)
+		queuingLatency, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestQueueTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
 
 		// expected prefill latency
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgPromptToksPerReq)
+		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		PrefillTime, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.RequestPrefillTimeSeconds)
+		PrefillTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestPrefillTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -118,12 +118,12 @@ func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*
 		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
 
 		// expected decode latency
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgGenerationToksPerReq)
+		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		DecodeTime, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.RequestDecodeTimeSeconds)
+		DecodeTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestDecodeTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -136,23 +136,24 @@ func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*
 
 		if totalExpectedLatency <= minExpectedLatency {
 			minExpectedLatency = totalExpectedLatency
-			targetPodIP = pod.Status.PodIP
+			targetPod = pod
 		}
 	}
 
 	// Use fallback if no valid metrics
-	if targetPodIP == "" {
+	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podMetricPort, nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

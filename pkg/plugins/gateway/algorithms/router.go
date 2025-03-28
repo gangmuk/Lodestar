@@ -17,63 +17,51 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
-
-	v1 "k8s.io/api/core/v1"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
 
-type Algorithms string
-
-// RoutingContext encapsulates the context information required for routing.
-// It can be extended with more fields as needed in the future.
-type RoutingContext struct {
-	Model   string
-	Message string
-	// Additional fields can be added here to expand the routing context.
-}
-
-// Router defines the interface for routing logic to select target pods.
-type Router interface {
-	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error)
-}
+const (
+	RouterNotSet = ""
+)
 
 // Validate validates if user provided routing routers is supported by gateway
-func Validate(algorithms Algorithms) bool {
-	_, ok := routerRegistry[algorithms]
-	return ok
-}
-
-// Select the user provided routing routers is supported by gateway
-func Select(algorithms Algorithms) routerFunc {
-	if !Validate(algorithms) {
-		algorithms = RouterRandom
+func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
+	if _, ok := routerRegistry[types.RoutingAlgorithm(algorithms)]; ok {
+		return types.RoutingAlgorithm(algorithms), ok
+	} else {
+		return RouterNotSet, false
 	}
-	return routerRegistry[algorithms]
 }
 
-func Register(algorithms Algorithms, router routerFunc) {
-	if router == nil {
-		return
+// Select the user provided router provider supported by gateway, no error reported and fallback to random router
+// Call Validate before this function to ensure expected behavior.
+func Select(algorithms types.RoutingAlgorithm) types.RouterProviderFunc {
+	if provider, ok := routerRegistry[algorithms]; ok {
+		return provider
+	} else {
+		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algorithms, RouterRandom)
+		return routerRegistry[RouterRandom]
 	}
-
-	routerRegistry[algorithms] = router
-	klog.Infof("Registered router for %s", algorithms)
 }
 
-func RegisterDelayed(algorithms Algorithms, router routerDelayedFunc) {
-	routerDelayedRegistry[algorithms] = router
+func Register(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
+	routerRegistry[algorithm] = provider
+	klog.Infof("Registered router for %s", algorithm)
 }
 
-func RegisterDelayedConstructor(algorithms Algorithms, router routerConstructor) {
-	routerDelayedRegistry[algorithms] = func() routerFunc {
-		router, err := router()
+func RegisterDelayed(algorithm types.RoutingAlgorithm, delayedProvider types.RouterProviderRegistrationFunc) {
+	routerDelayedRegistry[algorithm] = delayedProvider
+}
+
+func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstructor types.RouterConstructor) {
+	routerDelayedRegistry[algorithm] = func() types.RouterProviderFunc {
+		router, err := routerConstructor()
 		if err != nil {
-			klog.Errorf("Failed to construct router for %s: %v", algorithms, err)
+			klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
 			return nil
 		}
-		return func(_ *RoutingContext) (Router, error) {
+		return func(_ *types.RoutingContext) (types.Router, error) {
 			return router, nil
 		}
 	}
@@ -85,14 +73,5 @@ func Init() {
 	}
 }
 
-var routerRegistry = map[Algorithms]routerFunc{}
-var routerDelayedRegistry = map[Algorithms]routerDelayedFunc{}
-
-// routerConstructor is used to construct router instance.
-type routerConstructor func() (Router, error)
-
-// routerFunc is used to get router instance.
-type routerFunc func(*RoutingContext) (Router, error)
-
-// routerDelayedFunc is used to get router instance in delayed way.
-type routerDelayedFunc func() routerFunc
+var routerRegistry = map[types.RoutingAlgorithm]types.RouterProviderFunc{}
+var routerDelayedRegistry = map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc{}

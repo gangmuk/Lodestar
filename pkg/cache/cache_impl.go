@@ -21,7 +21,9 @@ import (
 	"sync/atomic"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 // GetPod retrieves a Pod object by name from the cache
@@ -34,26 +36,26 @@ import (
 //	*v1.Pod: The found Pod object
 //	error: Error if pod doesn't exist
 func (c *Store) GetPod(podName string) (*v1.Pod, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	pod, ok := c.Pods[podName]
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	return pod, nil
+	return metaPod.Pod, nil
 }
 
 // ListPods returns all cached Pod objects
+// Do not call this directly, for debug purpose and less efficient.
 // Returns:
 //
-//	map[string]*v1.Pod: Map of pod names to Pod objects
-func (c *Store) ListPods() map[string]*v1.Pod {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.Pods
+//	[]*v1.Pod: Slice of Pod objects
+func (c *Store) ListPods() []*v1.Pod {
+	pods := make([]*v1.Pod, 0, c.metaPods.Len())
+	c.metaPods.Range(func(_ string, metaPod *Pod) bool {
+		pods = append(pods, metaPod.Pod)
+		return true
+	})
+	return pods
 }
 
 // ListPodsByModel gets Pods associated with a specific model
@@ -63,18 +65,15 @@ func (c *Store) ListPods() map[string]*v1.Pod {
 //
 // Returns:
 //
-//	map[string]*v1.Pod: Map of pod names to Pod objects
+//	*utils.PodArray: PodArray wrapper for a slice of Pod objects
 //	error: Error if model doesn't exist
-func (c *Store) ListPodsByModel(modelName string) (map[string]*v1.Pod, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podsMap, ok := c.ModelToPodMapping[modelName]
+func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
+	meta, ok := c.metaModels.Load(modelName)
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
 	}
 
-	return podsMap, nil
+	return meta.Pods.Array(), nil
 }
 
 // ListModels returns all cached model names
@@ -82,18 +81,10 @@ func (c *Store) ListPodsByModel(modelName string) (map[string]*v1.Pod, error) {
 //
 //	[]string: Slice of model names
 func (c *Store) ListModels() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	models := []string{}
-	for model := range c.ModelToPodMapping {
-		models = append(models, model)
-	}
-
-	return models
+	return c.metaModels.Keys()
 }
 
-// GetModel checks if a model exists in the cache
+// HasModel checks if a model exists in the cache
 // Parameters:
 //
 //	modelName: Name of the model to check
@@ -101,11 +92,8 @@ func (c *Store) ListModels() []string {
 // Returns:
 //
 //	bool: True if model exists
-func (c *Store) GetModel(modelName string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	_, ok := c.ModelToPodMapping[modelName]
+func (c *Store) HasModel(modelName string) bool {
+	_, ok := c.metaModels.Load(modelName)
 
 	return ok
 }
@@ -117,18 +105,15 @@ func (c *Store) GetModel(modelName string) bool {
 //
 // Returns:
 //
-//	map[string]struct{}: Set of model names
+//	[]string: Slice of model names
 //	error: Error if Pod doesn't exist
-func (c *Store) ListModelsByPod(podName string) (map[string]struct{}, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	models, ok := c.PodToModelMapping[podName]
+func (c *Store) ListModelsByPod(podName string) ([]string, error) {
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	return models, nil
+	return metaPod.Models.Array(), nil
 }
 
 // GetMetricValueByPod retrieves metric value for a Pod
@@ -142,20 +127,12 @@ func (c *Store) ListModelsByPod(podName string) (map[string]struct{}, error) {
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod or metric doesn't exist
 func (c *Store) GetMetricValueByPod(podName, metricName string) (metrics.MetricValue, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podMetrics, ok := c.PodMetrics[podName]
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
+		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	metricVal, ok := podMetrics[metricName]
-	if !ok {
-		return nil, fmt.Errorf("no metric available for %v", metricName)
-	}
-
-	return metricVal, nil
+	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
 }
 
 // GetMetricValueByPodModel retrieves metric value for Pod-Model combination
@@ -170,108 +147,88 @@ func (c *Store) GetMetricValueByPod(podName, metricName string) (metrics.MetricV
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod, model or metric doesn't exist
 func (c *Store) GetMetricValueByPodModel(podName, modelName string, metricName string) (metrics.MetricValue, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podMetrics, ok := c.PodModelMetrics[podName]
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
+		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	modelMetrics, ok := podMetrics[modelName]
-	if !ok {
-		return nil, fmt.Errorf("model does not exist in the podMetrics cache")
-	}
-
-	metricVal, ok := modelMetrics[metricName]
-	if !ok {
-		return nil, fmt.Errorf("no metric available for %v", metricName)
-	}
-
-	return metricVal, nil
+	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
 }
 
 // AddRequestCount tracks new request initiation
 // Parameters:
 //
+//	ctx: Routing context
 //	requestID: Unique request identifier
 //	modelName: Model handling the request
 //
 // Returns:
 //
 //	int64: Trace term identifier
-func (c *Store) AddRequestCount(requestID string, modelName string) (traceTerm int64) {
-	success := false
-	for {
-		trace := c.getRequestTrace(modelName)
-		// TODO: use non-empty key if we have output prediction to decide buckets early.
-		if traceTerm, success = trace.AddRequest(requestID, ""); success {
-			break
+func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	if enableGPUOptimizerTracing {
+		success := false
+		for {
+			trace := c.getRequestTrace(modelName)
+			// TODO: use non-empty key if we have output prediction to decide buckets early.
+			if traceTerm, success = trace.AddRequest(requestID, ""); success {
+				break
+			}
+			// In case AddRequest return false, it has been recycled and we want to retry.
 		}
-		// In case AddRequest return false, it has been recycled and we want to retry.
 	}
 
-	newPendingCounter := int32(0)
-	pPendingCounter, _ := c.pendingRequests.LoadOrStore(modelName, &newPendingCounter)
-	atomic.AddInt32(pPendingCounter.(*int32), 1)
+	meta, ok := c.metaModels.Load(modelName)
+	if ok {
+		atomic.AddInt32(&meta.pendingRequests, 1)
+	}
 	return
 }
 
 // DoneRequestCount completes request tracking
 // Parameters:
 //
-//	requestID: Unique request identifier
-//	modelName: Model handling the request
-//	traceTerm: Trace term identifier
-func (c *Store) DoneRequestCount(requestID string, modelName string, traceTerm int64) {
-	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+//	 ctx: Routing context
+//		requestID: Unique request identifier
+//		modelName: Model handling the request
+//		traceTerm: Trace term identifier
+func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	meta, ok := c.metaModels.Load(modelName)
 	if ok {
-		atomic.AddInt32(pPendingCounter.(*int32), -1)
+		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
 	// DoneRequest only works for current term, no need to retry.
-	c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
-}
-
-// AddRequestTrace records request tracing information
-// Parameters:
-//
-//	requestID: Unique request identifier
-//	modelName: Model handling the request
-//	inputTokens: Number of input tokens
-//	outputTokens: Number of output tokens
-func (c *Store) AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64) {
-	traceKey := c.getTraceKey(inputTokens, outputTokens)
-	for {
-		trace := c.getRequestTrace(modelName)
-		if trace.AddRequestTrace(requestID, traceKey) {
-			break
-		}
-		// In case DoneRequest return false, it has been recycled and we want to retry.
+	if enableGPUOptimizerTracing {
+		c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 	}
 }
 
 // DoneRequestTrace completes request tracing
 // Parameters:
 //
+//	ctx: Routing context
 //	requestID: Unique request identifier
 //	modelName: Model handling the request
 //	inputTokens: Input tokens count
 //	outputTokens: Output tokens count
 //	traceTerm: Trace term identifier
-func (c *Store) DoneRequestTrace(requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
-	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	meta, ok := c.metaModels.Load(modelName)
 	if ok {
-		atomic.AddInt32(pPendingCounter.(*int32), -1)
+		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
-	traceKey := c.getTraceKey(inputTokens, outputTokens)
-	for {
-		trace := c.getRequestTrace(modelName)
-		if trace.DoneRequestTrace(requestID, traceKey, traceTerm) {
-			break
+	if enableGPUOptimizerTracing {
+		var traceKey string
+		for {
+			trace := c.getRequestTrace(modelName)
+			if traceKey, ok = trace.DoneRequestTrace(requestID, inputTokens, outputTokens, traceKey, traceTerm); ok {
+				break
+			}
+			// In case DoneRequest return false, it has been recycled and we want to retry.
 		}
-		// In case DoneRequest return false, it has been recycled and we want to retry.
+		klog.V(5).Infof("inputTokens: %v, outputTokens: %v, trace key: %s", inputTokens, outputTokens, traceKey)
 	}
 }
 

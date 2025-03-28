@@ -140,11 +140,28 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 	return int64(readyPodCount), nil
 }
 
-// FilterReadyPods filters and returns a list of pods that have a valid PodIP.
-func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
-	var readyPods []*v1.Pod
+func FilterReadyPod(pod *v1.Pod) bool {
+	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && IsPodReady(pod)
+}
+
+// CountRoutablePods filters and returns the number of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
+func CountRoutablePods(pods []*v1.Pod) (cnt int) {
 	for _, pod := range pods {
-		if pod.Status.PodIP == "" || IsPodTerminating(pod) || !IsPodReady(pod) {
+		if !FilterReadyPod(pod) {
+			continue
+		}
+		cnt++
+	}
+	return
+}
+
+// FilterRoutablePods filters and returns a list of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
+func FilterRoutablePods(pods []*v1.Pod) []*v1.Pod {
+	readyPods := make([]*v1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if !FilterReadyPod(pod) {
 			continue
 		}
 		readyPods = append(readyPods, pod)
@@ -152,21 +169,33 @@ func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
 	return readyPods
 }
 
-// FilterActivePods returns active pods.
-func FilterActivePods(pods []v1.Pod) []v1.Pod {
-	activeFilter := func(p v1.Pod) bool {
-		return p.Status.PodIP != "" && !IsPodTerminating(&p) && IsPodReady(&p)
+// FilterRoutablePodsInPlace filters a list of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
+func FilterRoutablePodsInPlace(pods []*v1.Pod) []*v1.Pod {
+	readyCnt := 0
+	for i, pod := range pods {
+		if !FilterReadyPod(pod) {
+			continue
+		} else if readyCnt != i {
+			pods[readyCnt] = pod
+		}
+		readyCnt++
 	}
-	return FilterPods(pods, activeFilter)
+	return pods[:readyCnt]
 }
 
-type filterPod func(p v1.Pod) bool
+// FilterActivePods returns active pods.
+func FilterActivePods(pods []v1.Pod) []v1.Pod {
+	return FilterPods(pods, FilterReadyPod)
+}
+
+type filterPod func(p *v1.Pod) bool
 
 // FilterPods returns replica sets that are filtered by filterFn (all returned ones should match filterFn).
 func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	var filtered []v1.Pod
 	for i := range pods {
-		if filterFn(pods[i]) {
+		if filterFn(&pods[i]) {
 			filtered = append(filtered, pods[i])
 		}
 	}

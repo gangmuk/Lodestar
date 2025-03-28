@@ -17,20 +17,20 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 var (
-	RouterThroughput Algorithms = "throughput"
+	RouterThroughput types.RoutingAlgorithm = "throughput"
 )
 
 func init() {
@@ -41,7 +41,7 @@ type throughputRouter struct {
 	cache cache.Cache
 }
 
-func NewThroughputRouter() (Router, error) {
+func NewThroughputRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
 		return nil, err
@@ -52,26 +52,26 @@ func NewThroughputRouter() (Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
-	var targetPodIP string
+func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
-	if len(pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	readyPods := utils.FilterReadyPods(pods)
+	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available for fallback")
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -84,25 +84,26 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, ro
 
 		if totalThroughput <= minCount {
 			minCount = totalThroughput
-			targetPodIP = pod.Status.PodIP
+			targetPod = pod
 		}
 	}
 
 	// Use fallback if no valid metrics
-	if targetPodIP == "" {
+	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podMetricPort, nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
 
 func (r *throughputRouter) SubscribedMetrics() []string {

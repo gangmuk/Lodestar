@@ -26,10 +26,11 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, types.RoutingAlgorithm) {
 	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
@@ -45,13 +46,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}
 
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
-	if routingStrategyEnabled && !routing.Validate(routing.Algorithms(routingStrategy)) {
+	routingAlgorithm, ok := routing.Validate(routingStrategy)
+	if routingStrategyEnabled && !ok {
 		klog.ErrorS(nil, "incorrect routing strategy", "routing-strategy", routingStrategy)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingStrategy
+			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingAlgorithm
 	}
 
 	if username != "" {
@@ -63,13 +65,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
-				err.Error()), utils.User{}, rpm, routingStrategy
+				err.Error()), utils.User{}, rpm, routingAlgorithm
 		}
 
 		rpm, errRes, err = s.checkLimits(ctx, user)
 		if errRes != nil {
 			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingStrategy
+			return errRes, utils.User{}, rpm, routingAlgorithm
 		}
 	}
 
@@ -91,5 +93,5 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				},
 			},
 		},
-	}, user, rpm, routingStrategy
+	}, user, rpm, routingAlgorithm
 }

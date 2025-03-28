@@ -29,6 +29,7 @@ import (
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 var (
@@ -44,20 +45,20 @@ type Store struct {
 	prometheusApi prometheusv1.API // Prometheus API client
 
 	// Metrics related fields
-	subscribers       []metrics.MetricSubscriber // List of metric subscribers
-	metrics           map[string]any             // Generic metric storage
-	requestTrace      *sync.Map                  // Request trace data (model_name: RequestTrace)
-	pendingRequests   *sync.Map                  // In-progress request records
-	numRequestsTraces int32                      // Request trace counter
+	subscribers       []metrics.MetricSubscriber            // List of metric subscribers
+	metrics           map[string]any                        // Generic metric storage
+	requestTrace      *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
+	numRequestsTraces int32                                 // Request trace counter
 
 	// Pod related storage
-	Pods            map[string]*v1.Pod                                   // Pod name to Pod object mapping
-	PodMetrics      map[string]map[string]metrics.MetricValue            // Pod metrics (pod_name -> metric_name -> value)
-	PodModelMetrics map[string]map[string]map[string]metrics.MetricValue // Pod-model metrics (pod_name -> model_name -> metric_name -> value)
+	metaPods utils.SyncMap[string, *Pod] // pod_name -> *Pod
 
 	// Mapping relationships
-	PodToModelMapping map[string]map[string]struct{} // Pod to model mapping (pod_name -> model set)
-	ModelToPodMapping map[string]map[string]*v1.Pod  // Model to pod mapping (model_name -> pod set)
+	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+
+	// buffer for sync map operations
+	bufferPod   *Pod
+	bufferModel *Model
 }
 
 // Get retrieves the cache instance
@@ -83,25 +84,40 @@ func Get() (Cache, error) {
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 	return &Store{
-		initialized:     true,
-		redisClient:     redisClient,
-		prometheusApi:   prometheusApi,
-		requestTrace:    &sync.Map{},
-		pendingRequests: &sync.Map{},
-
-		// Initialize storage maps
-		Pods:              make(map[string]*v1.Pod),
-		PodMetrics:        make(map[string]map[string]metrics.MetricValue),
-		PodModelMetrics:   make(map[string]map[string]map[string]metrics.MetricValue),
-		PodToModelMapping: make(map[string]map[string]struct{}),
-		ModelToPodMapping: make(map[string]map[string]*v1.Pod),
+		initialized:   true,
+		redisClient:   redisClient,
+		prometheusApi: prometheusApi,
+		requestTrace:  &utils.SyncMap[string, *RequestTrace]{},
 	}
+}
+
+func NewTestCacheWithPods(pods []*v1.Pod) *Store {
+	c := &Store{}
+	for _, pod := range pods {
+		pod.Labels = make(map[string]string)
+		pod.Labels[modelIdentifier] = "modelName"
+		c.addPod(pod)
+	}
+	return c
+}
+
+func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	c := NewTestCacheWithPods(pods)
+	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
+		if metrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range metrics {
+				metaPod.Metrics.Store(metricName, metric)
+			}
+		}
+		return true
+	})
+	return c
 }
 
 // InitForTest initializes the cache store for testing purposes
 func InitForTest() *Store {
 	once.Do(func() {
-		store = New(nil, nil)
+		store = &Store{initialized: true}
 	})
 	return store
 }
@@ -116,7 +132,19 @@ func InitForTest() *Store {
 // Returns:
 //
 //	*Store: Pointer to initialized store instance
-func Init(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
+func Init(config *rest.Config, stopCh <-chan struct{}) *Store {
+	// Configure cache components
+	enableGPUOptimizerTracing = false
+	return InitForGateway(config, stopCh, nil)
+}
+
+func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
+	// Configure cache components
+	enableGPUOptimizerTracing = false
+	return InitForGateway(config, stopCh, redisClient)
+}
+
+func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
 	once.Do(func() {
 		store = New(redisClient, initPrometheusAPI())
 
@@ -125,7 +153,9 @@ func Init(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client
 			panic(err)
 		}
 		initMetricsCache(store, stopCh)
-		initTraceCache(redisClient, stopCh)
+		if enableGPUOptimizerTracing {
+			initTraceCache(redisClient, stopCh)
+		}
 	})
 
 	return store
@@ -145,7 +175,9 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 				// Periodically update metrics
 				store.updatePodMetrics()
 				store.updateModelMetrics()
-				store.updateDebugInfo()
+				if klog.V(5).Enabled() {
+					store.debugInfo()
+				}
 			case <-stopCh:
 				ticker.Stop()
 				return

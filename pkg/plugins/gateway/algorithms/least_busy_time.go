@@ -17,18 +17,18 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 var (
-	RouterLeastBusyTime Algorithms = "least-busy-time"
+	RouterLeastBusyTime types.RoutingAlgorithm = "least-busy-time"
 )
 
 func init() {
@@ -39,7 +39,7 @@ type leastBusyTimeRouter struct {
 	cache cache.Cache
 }
 
-func NewLeastBusyTimeRouter() (Router, error) {
+func NewLeastBusyTimeRouter() (types.Router, error) {
 	c, err := cache.Get()
 	if err != nil {
 		return nil, err
@@ -50,15 +50,15 @@ func NewLeastBusyTimeRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
-	var targetPodIP string
+func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	var targetPod *v1.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
-	if len(pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no available pods for request routing")
 	}
 
-	for _, pod := range pods {
+	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			continue
 		}
@@ -73,23 +73,24 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod,
 
 		if busyTimeRatioValue < minBusyTimeRatio {
 			minBusyTimeRatio = busyTimeRatioValue
-			targetPodIP = pod.Status.PodIP
+			targetPod = pod
 		}
 	}
 
 	// Use fallback if no valid metrics
-	if targetPodIP == "" {
+	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no available pods for request routing")
 	}
 
-	return targetPodIP + ":" + podMetricPort, nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
