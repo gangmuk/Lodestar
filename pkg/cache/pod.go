@@ -26,4 +26,6 @@ type Pod struct {
 	Models       *utils.Registry[string]                    // Model/adapter names that the pod is running
 	Metrics      utils.SyncMap[string, metrics.MetricValue] // Pod metrics (metric_name -> value)
 	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Pod-model metrics (model_name/metric_name -> value)
+
+	runningRequests int32 // Realtime running requests counter.
 }

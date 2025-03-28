@@ -182,6 +182,10 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, 1)
 	}
+
+	if ctx != nil {
+		c.addPodStats(ctx, requestID)
+	}
 	return
 }
 
@@ -193,6 +197,10 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 //		modelName: Model handling the request
 //		traceTerm: Trace term identifier
 func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	if ctx != nil {
+		c.donePodStats(ctx, requestID)
+	}
+
 	meta, ok := c.metaModels.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
@@ -214,6 +222,10 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 //	outputTokens: Output tokens count
 //	traceTerm: Trace term identifier
 func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	if ctx != nil {
+		c.donePodStats(ctx, requestID)
+	}
+
 	meta, ok := c.metaModels.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
