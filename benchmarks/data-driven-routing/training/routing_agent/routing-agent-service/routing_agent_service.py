@@ -18,9 +18,10 @@ import encoding
 # import sac
 import ppo
 import contextual_bandit
+import simpler_contextual_bandit
 from flask import Flask, request, jsonify
-# from apscheduler.schedulers.background import BackgroundScheduler
-# import atexit
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
 from logger import logger
 import preprocess
 import pickle
@@ -33,6 +34,9 @@ ENCODED_DATA_DIR = "encoded_data"
 STATS_FILE = "request_feature_stats.pkl"  # Add this near the top with your other constants
 NUM_TRAINS = 0
 MODEL_UPDATED = False
+EXPLORE_ENABLED = False
+EXPLORATION_RATE = None
+TRAINING_DATA_UPDATED = False
 
 # read it from env variable
 # AVG_TPOT_SLO = 30
@@ -161,8 +165,8 @@ request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED
-    ts_func_start = time.time()
+    global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
+    flush_start_time = time.time()
     log_data = request.json
     try:
         logger.info(f"Received log data with {len(log_data) if log_data else 0} entries")
@@ -199,16 +203,8 @@ def handle_flush():
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{BATCH_ID}"
         encoding.encode_for_train(all_pods, df, encoded_data_subdir, stats, request_features_train, request_features_reward)
         logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
-
-        # sac.train(ENCODED_DATA_DIR)
-        # ppo.train(ENCODED_DATA_DIR)
-        ts_train = time.time()
-        contextual_bandit.train(ENCODED_DATA_DIR)
-        MODEL_UPDATED = True
-        logger.info(f"Successfully trained routing agent, took {time.time() - ts_train} seconds")
-
-        NUM_TRAINS += 1
-        logger.info(f"Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - ts_func_start} seconds")
+        logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
+        TRAINING_DATA_UPDATED = True
             
         return jsonify({"status": "success", "message": f"Successfully processed {len(log_data)} log messages"}), 200
         
@@ -218,6 +214,18 @@ def handle_flush():
         logger.error(f"Unhandled exception: {str(e)}")
         logger.error(f"Traceback: {error_traceback}")
         return jsonify({"status": "error", "message": str(e), "traceback": error_traceback}), 500
+
+def train_routine():
+    training_start_time = time.time()
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
+    # sac.train(ENCODED_DATA_DIR)
+    # ppo.train(ENCODED_DATA_DIR)
+    # contextual_bandit.train(ENCODED_DATA_DIR)
+    simpler_contextual_bandit.train(ENCODED_DATA_DIR)
+    MODEL_UPDATED = True
+    NUM_TRAINS += 1
+    TRAINING_DATA_UPDATED = False
+    logger.info(f"Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
 
 
 @app.route("/infer", methods=["POST"])
@@ -286,7 +294,9 @@ def handle_infer():
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
-        result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_dataset, MODEL_UPDATED)
+
+        # result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, exploration_enabled=EXPLORE_ENABLED, exploration_rate=EXPLORATION_RATE, model_updated=MODEL_UPDATED)
+        result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, exploration_enabled=EXPLORE_ENABLED, exploration_rate=EXPLORATION_RATE, model_updated=MODEL_UPDATED)
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
             MODEL_UPDATED = False
@@ -302,7 +312,7 @@ def handle_infer():
             selected_pod_index = 0
             
         selected_pod = all_pods[selected_pod_index]
-        confidence = result.get('confidence', 1.0)
+        confidence = result['confidence']
         handle_infer_total_wrapup_overhead = time.time() - handle_infer_total_wrapup_start_time
         handle_infer_total_overhead = time.time() - handle_infer_start_time
         # Return the result
@@ -340,9 +350,9 @@ def handle_infer():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     
-    # scheduler = BackgroundScheduler()
-    # scheduler.add_job(func=train, trigger="interval", seconds=60)
-    # scheduler.start()
-    # atexit.register(lambda: scheduler.shutdown())
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(func=train_routine, trigger="interval", seconds=60)
+    scheduler.start()
+    atexit.register(lambda: scheduler.shutdown())
 
     app.run(host="0.0.0.0", port=port, debug=False)

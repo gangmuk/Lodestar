@@ -498,25 +498,40 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		r.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Status.PodIP)
 	}
 
-	response_process_overhead := time.Since(response_process_start).Milliseconds()
 	end_to_end_overhead := time.Since(route_start_time).Milliseconds()
-	formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
+	//// long log with all overhead summary
+	// response_process_overhead := time.Since(response_process_start).Milliseconds()
+	// formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
+	// klog.Infof("RL router, selected podIP: %s, \n"+
+	// 	"requestID: %s, Route end_to_end_overhead %dms, \n"+
+	// 	// "requestID: %s, infer_http_request took %dms, \n"+
+	// 	// "requestID: %s, tokenizer_overhead: %dms, \n"+
+	// 	"requestID: %s, log_construction_overhead: %dms, \n"+
+	// 	"requestID: %s, request_prepare_overhead: %dms, \n"+
+	// 	"requestID: %s, response_process_overhead: %dms, \n"+
+	// 	"ResponseBody: \n%s",
+	// 	ctx.TargetAddressWithoutPort(),
+	// 	ctx.RequestID, end_to_end_overhead,
+	// 	// ctx.RequestID, infer_overhead,
+	// 	// ctx.RequestID, tokenizer_overhead,
+	// 	ctx.RequestID, log_construction_overhead,
+	// 	ctx.RequestID, request_prepare_overhead,
+	// 	ctx.RequestID, response_process_overhead, // 1ms
+	// 	formattedResponseBody)
+
+	//// short log
 	klog.Infof("RL router, selected podIP: %s, \n"+
 		"requestID: %s, Route end_to_end_overhead %dms, \n"+
-		// "requestID: %s, infer_http_request took %dms, \n"+
-		// "requestID: %s, tokenizer_overhead: %dms, \n"+
 		"requestID: %s, log_construction_overhead: %dms, \n"+
 		"requestID: %s, request_prepare_overhead: %dms, \n"+
 		"requestID: %s, response_process_overhead: %dms, \n"+
-		"ResponseBody: \n%s",
+		"routeResponse.SelectedPod: %s, \n"+
+		"routeResponse.Confidence: %f, \n"+
 		ctx.TargetAddressWithoutPort(),
 		ctx.RequestID, end_to_end_overhead,
-		// ctx.RequestID, infer_overhead,
-		// ctx.RequestID, tokenizer_overhead,
-		ctx.RequestID, log_construction_overhead,
-		ctx.RequestID, request_prepare_overhead,
-		ctx.RequestID, response_process_overhead, // 1ms
-		formattedResponseBody)
+		routeResponse.SelectedPod,
+		routeResponse.Confidence,
+	)
 	return ctx.TargetAddress(), nil
 }
 
