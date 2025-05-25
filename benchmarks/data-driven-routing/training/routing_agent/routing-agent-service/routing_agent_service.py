@@ -221,11 +221,14 @@ def train_routine():
     # sac.train(ENCODED_DATA_DIR)
     # ppo.train(ENCODED_DATA_DIR)
     # contextual_bandit.train(ENCODED_DATA_DIR)
-    simpler_contextual_bandit.train(ENCODED_DATA_DIR)
-    MODEL_UPDATED = True
-    NUM_TRAINS += 1
-    TRAINING_DATA_UPDATED = False
-    logger.info(f"Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
+    if TRAINING_DATA_UPDATED:
+        simpler_contextual_bandit.train(ENCODED_DATA_DIR)
+        MODEL_UPDATED = True
+        NUM_TRAINS += 1
+        TRAINING_DATA_UPDATED = False
+        logger.info(f"Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
+    else:
+        logger.info("No new training data available, skipping training")
 
 
 @app.route("/infer", methods=["POST"])
