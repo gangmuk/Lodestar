@@ -489,8 +489,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			}
 		}
 	} else {
-		klog.Errorf("Unknown sub-algorithm: %s, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		klog.Infof("Unknown sub-algorithm: %s, Use rl-agent!, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 	}
 	ctx.SetTargetPod(targetPod)
 
