@@ -302,6 +302,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Status.PodIP] = struct{}{}
+		// readyPodsMap[pod.Name] = struct{}{} // podName is used here. utils.FilterPodByName(targetPodName, readyPods)
 	}
 	// tokenizer_start_time := time.Now()
 	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
@@ -310,6 +311,16 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
 		return "", err
 	}
+
+	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+	if len(matchedPods) == 0 {
+		klog.Infof("No matched pods found. Filled all readypods with 0 kv cache hit ratio")
+		for _, pod := range readyPods {
+			matchedPods[pod.Status.PodIP] = 0
+			// matchedPods[pod.Name] = 0
+		}
+	}
+
 	var log string
 	log_construction_start_time := time.Now()
 	if utils.UseRealRequest == "true" {
@@ -318,13 +329,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		numOutputTokens := 128 // Placeholder for output tokens
 		numTotalTokens := numInputTokens + numOutputTokens
 
-		matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-		if len(matchedPods) == 0 {
-			klog.Infof("No matched pods found. Filled all readypods with 0 kv cache hit ratio")
-			for _, pod := range readyPods {
-				matchedPods[pod.Status.PodIP] = 0
-			}
-		}
 		klog.Infof("StoreKVCacheHitRatio, matchedPods: %v", matchedPods)
 		utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
 
@@ -469,20 +473,20 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
 		if !isLoadImbalanced {
 			if len(matchedPods) > 0 {
-				klog.Infof("still matchedPods: %v, request_id: %s", matchedPods, ctx.RequestID)
-				targetPod = getTargetPodFromMatchedPods(r.cache, readyPods, matchedPods)
+				targetPod = getTargetPodFromMatchedPodsByPodIP(r.cache, readyPods, matchedPods)
 				if targetPod == nil {
 					klog.Errorf("No suitable pod found for prefix routing, requestID: %s", ctx.RequestID)
+				} else {
+					klog.Infof("Successful prefix routing found matchedpod, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 				}
-				klog.Infof("prefix routing - prefix routing, request_id: %s", ctx.RequestID)
 			}
 		}
 		if len(matchedPods) == 0 || targetPod == nil {
+			klog.Infof("prefix routing - least request count routing, request_id: %s", ctx.RequestID)
 			targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 			if targetPod == nil {
 				klog.Errorf("No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 			}
-			klog.Infof("prefix routing - least request count routing, request_id: %s", ctx.RequestID)
 		}
 	} else {
 		klog.Errorf("Unknown sub-algorithm: %s, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
@@ -499,7 +503,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	end_to_end_overhead := time.Since(route_start_time).Milliseconds()
 	formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
 	klog.Infof("RL router, selected podIP: %s, \n"+
-		"requestID: %s, Route endtoend_overhead %dms, \n"+
+		"requestID: %s, Route end_to_end_overhead %dms, \n"+
 		// "requestID: %s, infer_http_request took %dms, \n"+
 		// "requestID: %s, tokenizer_overhead: %dms, \n"+
 		"requestID: %s, log_construction_overhead: %dms, \n"+

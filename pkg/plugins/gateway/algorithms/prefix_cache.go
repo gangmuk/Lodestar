@@ -182,9 +182,61 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 			break
 		}
 	}
-	klog.Infof("getTargetPodFromMatchedPods, matched_pods: %v, mean: %f, stddev: %f, target_pod: %s, targetPodName: %s, readyPods: %v",
-		matchedPods, meanRequestCount, stdDevRequestCount, targetPodName, podnames, readyPods)
+	// klog.Infof("getTargetPodFromMatchedPods, matched_pods: %v, mean: %f, stddev: %f, target_pod: %s, targetPodName: %s", matchedPods, meanRequestCount, stdDevRequestCount, targetPodName, podnames)
+	// for _, pod := range readyPods {
+	// 	klog.Infof("readyPods, pod: %s, request_count: %d", pod.Name, podRequestCount[pod.Name])
+	// }
 	targetPod, _ := utils.FilterPodByName(targetPodName, readyPods)
+	if targetPod == nil {
+		klog.Warningf("No target pod found for matched pods: %v", matchedPods)
+	}
+	return targetPod
+}
+
+func getTargetPodFromMatchedPodsByPodIP(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+	var targetPodIP string
+	requestCount := []float64{}
+
+	podRequestCount := getRequestCounts(cache, readyPods)
+	for _, cnt := range podRequestCount {
+		requestCount = append(requestCount, float64(cnt))
+	}
+	meanRequestCount := mean(requestCount)
+	stdDevRequestCount := standardDeviation(requestCount)
+
+	podIPs := []string{}
+	for podIP := range matchedPods {
+		podIPs = append(podIPs, podIP)
+	}
+	rand.Shuffle(len(podIPs), func(i, j int) {
+		podIPs[i], podIPs[j] = podIPs[j], podIPs[i]
+	})
+
+	// sort pods with decreasing %perfixmatch AND for same %prefixmatch sort by increasing request count
+	sort.SliceStable(podIPs, func(i, j int) bool {
+		if matchedPods[podIPs[i]] == matchedPods[podIPs[j]] {
+			return podRequestCount[podIPs[i]] < podRequestCount[podIPs[j]]
+		}
+		return matchedPods[podIPs[i]] > matchedPods[podIPs[j]]
+	})
+
+	// select targetpod with highest %prefixmatch and request_count within stddev
+	for _, podIP := range podIPs {
+		reqCnt := float64(podRequestCount[podIP])
+		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+			targetPodIP = podIP
+			break
+		}
+	}
+	klog.Infof("getTargetPodFromMatchedPodsByPodIP, matched_pods: %v, mean: %f, stddev: %f, target_pod: %s, targetPodIP: %s", matchedPods, meanRequestCount, stdDevRequestCount, targetPodIP, podIPs)
+	// iterate readyPods and log
+	for _, pod := range readyPods {
+		klog.Infof("readyPods, pod: %s, request_count: %d", pod.Name, podRequestCount[pod.Name])
+	}
+	targetPod, _ := utils.FilterPodByIP(targetPodIP, readyPods)
+	if targetPod == nil {
+		klog.Warningf("No target pod found for matched pods: %v", matchedPods)
+	}
 	return targetPod
 }
 

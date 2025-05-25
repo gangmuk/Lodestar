@@ -199,7 +199,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	ts := time.Now()
 	selectedPodAddress, err := router.Route(ctx, &utils.PodArray{Pods: readyPods})
 
-	klog.Infof("selectTargetPod. Routing took %s, selectedPodAddress: %s", time.Since(ts), selectedPodAddress)
+	klog.Infof("selectTargetPod, requestID: %s, Routing took %s, selectedPodAddress: %s", ctx.RequestID, time.Since(ts), selectedPodAddress)
 	if err != nil {
 		klog.ErrorS(err, "Routing failed", "requestID", ctx.RequestID)
 		return "", err
