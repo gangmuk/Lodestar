@@ -210,3 +210,12 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	}
 	return nil, false
 }
+
+func FilterPodByIP(podIP string, pods []*v1.Pod) (*v1.Pod, bool) {
+	for _, pod := range pods {
+		if pod.Status.PodIP == podIP {
+			return pod, true
+		}
+	}
+	return nil, false
+}
