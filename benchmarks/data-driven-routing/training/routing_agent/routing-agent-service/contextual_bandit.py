@@ -568,46 +568,15 @@ def load_previous_model():
         logger.info(f"Found previous model at {final_model_path}")
         return final_model_path
 
-# def load_previous_model(encoded_data_dir):
-#     global results_dir
-#     # Look for results directory
-#     results_dir = os.path.join(os.path.dirname(encoded_data_dir), "results")
-#     if not os.path.exists(results_dir):
-#         return None
-        
-#     # Find all model directories sorted by timestamp
-#     model_dirs = sorted(glob.glob(os.path.join(results_dir, "cb_*")), reverse=True)
-    
-#     if not model_dirs:
-#         return None
-        
-#     # Get the most recent model directory
-#     latest_model_dir = model_dirs[0]
-    
-#     # Check if it has a final_model subdirectory
-#     final_model_path = os.path.join(latest_model_dir, "final_model")
-#     if os.path.exists(final_model_path):
-#         logger.info(f"Found previous model at {final_model_path}")
-#         return final_model_path
-        
-#     # If no final_model, look for the latest checkpoint
-#     checkpoints = sorted(glob.glob(os.path.join(latest_model_dir, "checkpoint_epoch_*")), key=lambda x: int(x.split("_")[-1]), reverse=True)
-    
-#     if checkpoints:
-#         logger.info(f"Found previous checkpoint at {checkpoints[0]}")
-#         return checkpoints[0]
-        
-#     return None
-
-
 def train(encoded_data_dir):
     global training_results_dir
     # Hyperparameters
-    hidden_dim = 256
-    batch_size = 64
+    # hidden_dim = 256
+    hidden_dim = 64
+    batch_size = 32
     lr = 3e-4
     exploration_rate = 0.1
-    training_epochs = 2
+    training_epochs = 10
     max_updates_per_epoch = 1000
     eval_interval = 10
     seed = 42
