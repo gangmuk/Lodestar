@@ -4,7 +4,8 @@ from functools import wraps
 from werkzeug import serving
 import random
 import re
-import logging
+# import logging
+from logger import logger
 import sys
 import time
 from datetime import datetime
@@ -71,7 +72,7 @@ def auth_error(status):
     return jsonify({"error": "Unauthorized"}), 401
 
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 
 def read_configs(file_path):
@@ -676,8 +677,8 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",wai
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
+    # logging.basicConfig(level=logging.DEBUG)
+    # logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
 
     print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
 
