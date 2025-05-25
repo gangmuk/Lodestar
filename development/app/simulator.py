@@ -9,14 +9,16 @@ from typing import List
 from vidur.config import SimulationConfig
 from vidur.entities import Cluster, Request
 from vidur.events import BaseEvent, RequestArrivalEvent
-from vidur.logger import init_logger
+# from vidur.logger import init_logger
 from vidur.metrics import MetricsStore
 from vidur.request_generator import RequestGeneratorRegistry
 from vidur.scheduler import BaseGlobalScheduler, GlobalSchedulerRegistry
 from vidur.types import EventType
 from vidur.utils.random import set_seeds
 
-logger = init_logger(__name__)
+from logger import logger
+
+# logger = init_logger(__name__)
 
 
 class Simulator:
