@@ -791,7 +791,6 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
     final_model_path = "final_model"  # Adjust if different
     if os.path.exists(final_model_path):
         os.system(f"cp {fn} {final_model_path}/")
-        os.system(f"cp {fn_png} {final_model_path}/")
     
     plt.close()
     
@@ -895,13 +894,39 @@ def train(encoded_data_dir):
     global training_results_dir
     
     # Optimized hyperparameters for small datasets
-    hidden_dim = 32          # Much smaller: 256 → 32
-    batch_size = 16          # Smaller batches: 32 → 16
-    lr = 1e-3               # Higher learning rate: 3e-4 → 1e-3
-    exploration_rate = 0.3   # More exploration: 0.1 → 0.3
-    training_epochs = 50     # More epochs: 10 → 50
-    max_updates_per_epoch = 50  # Fewer updates per epoch
-    eval_interval = 10
+    def read_hyperparameters_from_file(file_path):
+        """Read hyperparameters from a file"""
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        params = {}
+        for line in lines:
+            if '=' in line:
+                key, value = line.split('=')
+                if value.strip().isdigit():
+                    params[key.strip()] = float(value.strip())
+                else:
+                    params[key.strip()] = value.strip()
+            logger.info(f"Read hyperparameter: {key.strip()} = {params[key.strip()]}")
+        return params
+    ''' example hyperparameters.txt content:
+    hidden_dim=32
+    batch_size=16
+    lr=0.001
+    exploration_rate=0.3
+    training_epochs=50
+    max_updates_per_epoch=50
+    eval_interval=10
+    '''
+    # hyperparams = read_hyperparameters_from_file('hyperparameters.txt')
+    hyperparams = {
+        'hidden_dim': 32,  # Reduced hidden dimension for small dataset
+        'batch_size': 16,  # Smaller batch size for small dataset
+        'lr': 0.001,  # Learning rate
+        'exploration_rate': 0.25,  # Exploration rate
+        'training_epochs': 10,  # Number of training epochs
+        'max_updates_per_epoch': 50,  # Maximum updates per epoch
+        'eval_interval': 10  # Evaluation interval
+    }
     seed = 42
     continue_training = False
     
@@ -928,13 +953,13 @@ def train(encoded_data_dir):
     
     # Create configuration
     config = {
-        'hidden_dim': hidden_dim,
-        'batch_size': batch_size,
-        'learning_rate': lr,
-        'exploration_rate': exploration_rate,
-        'num_training_epochs': training_epochs,
-        'max_updates_per_epoch': max_updates_per_epoch,
-        'eval_interval': eval_interval,
+        'hidden_dim': hyperparams['hidden_dim'],
+        'batch_size': hyperparams['batch_size'],
+        'learning_rate': hyperparams['lr'],
+        'exploration_rate': hyperparams['exploration_rate'],
+        'num_training_epochs': hyperparams['training_epochs'],
+        'max_updates_per_epoch': hyperparams['max_updates_per_epoch'],
+        'eval_interval': hyperparams['eval_interval'],
         'seed': seed,
         'model_type': 'simplified',
         'dataset_analysis': dataset_analysis

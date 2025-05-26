@@ -37,6 +37,7 @@ MODEL_UPDATED = False
 EXPLORE_ENABLED = False
 EXPLORATION_RATE = None
 TRAINING_DATA_UPDATED = False
+LOCK_TRAINING_DATA = threading.Lock()
 
 # read it from env variable
 # AVG_TPOT_SLO = 30
@@ -165,6 +166,7 @@ request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
 @app.route("/flush", methods=["POST"])
 def handle_flush():
+    # with LOCK_TRAINING_DATA:
     global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
     flush_start_time = time.time()
     log_data = request.json
@@ -216,19 +218,21 @@ def handle_flush():
         return jsonify({"status": "error", "message": str(e), "traceback": error_traceback}), 500
 
 def train_routine():
+    # with LOCK_TRAINING_DATA:
     training_start_time = time.time()
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
     # sac.train(ENCODED_DATA_DIR)
     # ppo.train(ENCODED_DATA_DIR)
     # contextual_bandit.train(ENCODED_DATA_DIR)
     if TRAINING_DATA_UPDATED:
+        logger.info(f"train_routine, Starting {NUM_TRAINS}th trained routing agent")
         simpler_contextual_bandit.train(ENCODED_DATA_DIR)
         MODEL_UPDATED = True
-        NUM_TRAINS += 1
         TRAINING_DATA_UPDATED = False
-        logger.info(f"Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
+        logger.info(f"train_routine, Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
+        NUM_TRAINS += 1
     else:
-        logger.info("No new training data available, skipping training")
+        logger.info("train_routine, No new training data available, skipping training")
 
 
 @app.route("/infer", methods=["POST"])
@@ -251,7 +255,7 @@ def handle_infer():
             
             first_key = list(log_data.keys())[0]
             log_message = log_data[first_key]
-        logger.info(f"Received inference request:\n{log_message}")
+        logger.debug(f"Received inference request:\n{log_message}")
 
         # Extract request ID for logging purposes
         parts = log_message.split("requestID@")
@@ -272,7 +276,7 @@ def handle_infer():
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
         processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO)
-        logger.info(f"Successfully parsed data for request_{request_id}")
+        logger.debug(f"Successfully parsed data for request_{request_id}")
         # os.remove(raw_data)
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
@@ -293,7 +297,7 @@ def handle_infer():
         ## new approach. in memory tensor dataset
         encode_start_time = time.time()
         tensor_dataset, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
-        logger.info(f"Successfully encoded data in memory for inference")
+        logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
@@ -340,7 +344,7 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             response[key] = value
         
-        logger.info(f"Selected pod {selected_pod} with confidence {confidence}")
+        logger.debug(f"Selected pod {selected_pod} with confidence {confidence}")
         return jsonify(response), 200
         
     except Exception as e:
@@ -354,7 +358,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     
     scheduler = BackgroundScheduler()
-    scheduler.add_job(func=train_routine, trigger="interval", seconds=60)
+    scheduler.add_job(func=train_routine, trigger="interval", seconds=10)
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
 

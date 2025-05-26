@@ -573,8 +573,8 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
     all_pods = list(all_pods_set)
     logger.info(f"Identified {len(all_pods)} pods: {all_pods}")
 
-    logger.info(f"Original dataset shape: {df.shape}")
-    logger.info(f"Columns: {df.columns.tolist()}")
+    logger.debug(f"Original dataset shape: {df.shape}")
+    logger.debug(f"Columns: {df.columns.tolist()}")
     
     expected_columns = [
         'requestID', 
@@ -652,9 +652,9 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
         first_row = df.iloc[0]
         logger.warning(f"WARNING: We are using the first row only to check podMetricsLastSecond structure")
         pod_metrics = first_row['podMetricsLastSecond']  # Already parsed
-        logger.info(f"features in pod_metrics: {pod_metrics.keys()}")
+        logger.debug(f"features in pod_metrics: {pod_metrics.keys()}")
         try:
-            logger.info(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
+            logger.debug(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
         except Exception as e:
             logger.error(f"Error: {e}")
             logger.error(f"first_row['podMetricsLastSecond']: {first_row['podMetricsLastSecond']}")
@@ -1141,7 +1141,7 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
         if len(df) == 0:
             logger.error("No data found in the log message.")
     
-    logger.info(f"df.columns: {list(df.columns)}, json_columns: {json_columns}")
+    logger.debug(f"df.columns: {list(df.columns)}, json_columns: {json_columns}")
     
     if len(df) == 0:
         logger.error("No data found after parsing JSON columns.")
