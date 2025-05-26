@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 session_history = {}
-csv_file_name = ''
+output_csv_file_name = ''
 
 class HeaderCaptureTransport(httpx.AsyncHTTPTransport):
     """Custom transport to capture response headers"""
@@ -201,7 +201,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
                         f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # Write results
-        await write_result_to_files(result, output_file, csv_file_name, results_lock)
+        await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
         return result
     
     except Exception as e:
@@ -236,7 +236,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
                       f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # Write error results
-        await write_result_to_files(error_result, output_file, csv_file_name)
+        await write_result_to_files(error_result, output_file, output_csv_file_name)
         return error_result
         
 
@@ -485,7 +485,7 @@ def create_error_result(request_id, start_time, error_time, e, prompt, selected_
 
 async def write_result_to_files(result_data, output_file, csv_file, results_lock):
     """Write results to output and CSV files with async locking"""
-    if csv_file is None and csv_file_name == "":
+    if csv_file is None and output_csv_file_name == "":
         raise ValueError("CSV file path not specified")
     
     # Use async lock to ensure thread safety
@@ -500,7 +500,7 @@ async def write_result_to_files(result_data, output_file, csv_file, results_lock
                 await asyncio.to_thread(output_file.flush)  # Flush using a thread to avoid blocking
         
         # Write to CSV file
-        csv_path = csv_file if csv_file else csv_file_name
+        csv_path = csv_file if csv_file else output_csv_file_name
         if csv_path:
             try:
                 # Check if file exists and has content
@@ -675,7 +675,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                           f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
             
             # Write results to files
-            await write_result_to_files(result, output_file, csv_file_name)
+            await write_result_to_files(result, output_file, output_csv_file_name)
             return result
             
         except openai.BadRequestError as e:
@@ -755,7 +755,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                                   f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
                     
                     # Write results to files
-                    await write_result_to_files(result, output_file, csv_file_name)
+                    await write_result_to_files(result, output_file, output_csv_file_name)
                     return result
                     
                 except Exception as retry_e:
@@ -798,7 +798,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                       f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # Write error results
-        await write_result_to_files(error_result, output_file, csv_file_name)
+        await write_result_to_files(error_result, output_file, output_csv_file_name)
         return error_result
 
 
@@ -895,80 +895,110 @@ async def schedule_task(delay, target_time, request_id, send_func, client, model
 
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
-                       temperature, is_streaming, results_lock, history_lock):
-    """Main benchmark function that runs all requests asynchronously"""
+                       temperature, is_streaming, results_lock, history_lock, iterations=1):
+    """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Create a client
     client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
     
-    # Base time for scheduling
-    base_time = time.time()
-    
-    # Prepare all tasks
-    all_tasks = []
+    # Track total statistics
+    total_requests = 0
+    total_success = 0
+    total_failures = 0
     request_id = 0
+    overall_start_time = time.time()
     
-    # Process the load structure and create tasks
-    for requests_dict in load_struct:
-        ts = int(requests_dict["timestamp"])
-        requests = requests_dict["requests"]
-        target_time = base_time + ts / 1000.0  # Convert milliseconds to seconds
+    # For each iteration
+    for iteration in range(iterations):
+        logger.info(f"Starting iteration {iteration+1}/{iterations}")
         
-        for request in requests:
-            session_id = request.get("session_id", None)
-            prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id)
+        # Calculate base time for this iteration
+        # For first iteration, use current time
+        # For subsequent iterations, wait until previous iteration is completely done
+        iteration_base_time = time.time()
+        
+        # Prepare tasks for this iteration only
+        iteration_tasks = []
+        
+        # Process the load structure and create tasks for this iteration only
+        for requests_dict in load_struct:
+            ts = int(requests_dict["timestamp"])
+            requests = requests_dict["requests"]
+            # Use iteration_base_time instead of global base_time
+            target_time = iteration_base_time + ts / 1000.0  # Convert milliseconds to seconds
             
-            task = {
-                "prompt": prompt,
-                "request_id": request_id,
-                "session_id": session_id,
-                "target_time": target_time
-            }
-            all_tasks.append(task)
-            request_id += 1
+            for request in requests:
+                session_id = request.get("session_id", None)
+                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id)
+                max_tokens_value = request.get("Output Length", max_tokens)
+                task = {
+                    "prompt": prompt,
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "target_time": target_time,
+                    "max_tokens": max_tokens_value,
+                    "iteration": iteration
+                }
+                iteration_tasks.append(task)
+                request_id += 1
+        
+        logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        
+        # Execute only this iteration's tasks
+        start_time = time.time()
+        results = await schedule_and_execute_tasks(
+            tasks=iteration_tasks,
+            client=client,
+            model=model,
+            is_streaming=is_streaming,
+            output_file=output_file,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            routing_strategy=routing_strategy,
+            results_lock=results_lock,
+            history_lock=history_lock,
+        )
+        end_time = time.time()
+        
+        # Count successes and failures for this iteration
+        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        error_count = len(iteration_tasks) - success_count
+        
+        logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
+        
+        # Update totals
+        total_requests += len(iteration_tasks)
+        total_success += success_count
+        total_failures += error_count
+        
+        # Free up memory
+        iteration_tasks = None
+        results = None
+        
+        # Add a small buffer before next iteration if not the last iteration
+        if iteration < iterations - 1:
+            logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
+            await asyncio.sleep(2.0)
     
-    logger.info(f"Scheduling {len(all_tasks)} tasks for execution")
+    # Log overall benchmark completion
+    overall_end_time = time.time()
+    logger.info(f"All {iterations} iterations completed in {overall_end_time - overall_start_time:.2f} seconds")
+    logger.info(f"Total requests: {total_requests}")
+    logger.info(f"Successful requests: {total_success}")
+    logger.info(f"Failed requests: {total_failures}")
     
-    # Execute all tasks with true concurrency
-    start_time = time.time()
-    results = await schedule_and_execute_tasks(
-        tasks=all_tasks,
-        client=client,
-        model=model,
-        is_streaming=is_streaming,
-        output_file=output_file,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        routing_strategy=routing_strategy,
-        results_lock=results_lock,
-        history_lock=history_lock,
-    )
-    end_time = time.time()
-    
-    # Log benchmark completion
-    logger.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
-    logger.info(f"Total requests: {len(all_tasks)}")
-    
-    # Count successes and failures
-    success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-    error_count = len(all_tasks) - success_count
-    
-    logger.info(f"Successful requests: {success_count}")
-    logger.info(f"Failed requests: {error_count}")
-    
-    return results
-
+    return {"total_requests": total_requests, "successful": total_success, "failed": total_failures}
 
 
 async def main(args):
-    global csv_file_name
+    global output_csv_file_name
     if '.jsonl' not in args.workload_path:
         raise ValueError("Workload path must be a .jsonl file")
-    csv_file_name = f"{args.workload_path.replace('.jsonl', '')}"
-    csv_file_name += f"-maxtoken{args.max_tokens}"
-    csv_file_name += ".output.csv"
-    
+
+    output_csv_file_name = f"{args.output_dir}/output.csv"
+
     # Initialize CSV file
-    with open(csv_file_name, 'w', encoding='utf-8') as f:
+    with open(output_csv_file_name, 'w', encoding='utf-8') as f:
         f.write("")  # Create empty file
     
     # Load workload
@@ -995,11 +1025,12 @@ async def main(args):
             is_streaming=args.streaming,
             results_lock=results_lock,
             history_lock=history_lock,
+            iterations=args.iterations,
         )
         end_time = time.time()
         
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
-        print(f"** csv_file_name: {csv_file_name}")
+        print(f"** output_csv_file_name: {output_csv_file_name}")
 
 def write_experiment_config_to_file(output_dir, args):
         config_file = f'{output_dir}/experiment_config.txt'
@@ -1025,21 +1056,27 @@ if __name__ == "__main__":
     parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout in seconds.")
     parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
     parser.add_argument("--output_dir", type=str, default="./", help="output dir")
+    parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
+
     args = parser.parse_args()
 
-    utils.restart_deploy('aibrix-gateway-plugins', 'aibrix-system')
-    # utils.restart_deploy('llama-3-8b-instruct', 'default')
-    time.sleep(3)
-    utils.check_deployment_ready_kubernetes('aibrix-gateway-plugins', 'aibrix-system')
-    utils.check_deployment_ready_kubernetes('llama-3-8b-instruct', 'default')
-    time.sleep(2)
     asyncio.run(main(args))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     config_file = write_experiment_config_to_file(args.output_dir, args)
-    success = utils.collect_k8s_logs(
-        namespace='aibrix-system',
-        deployment_name='aibrix-gateway-plugins',
-        output_dir=args.output_dir,
-        keyword='**@latency_metrics'
-    )
+
+    # success = utils.save_k8s_logs(
+    #     namespace='aibrix-system',
+    #     deployment_name='aibrix-gateway-plugins',
+    #     label='gateway-plugins',
+    #     output_dir=args.output_dir,
+    #     keyword='**@latency_metrics',
+    # )
+
+    # success = utils.save_k8s_logs(
+    #     namespace='default',
+    #     deployment_name='latency-predictor-service',
+    #     label='latency-predictor-service',
+    #     output_dir=args.output_dir,
+    #     keyword=None,
+    # )

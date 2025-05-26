@@ -107,7 +107,7 @@ def process_log_file(file_path):
         print(f"Error processing {file_path}: {e}")
         return {'strategy': parse_strategy_name(file_path), 'error': str(e)}
 
-def plot_routing_comparison(metrics_list):
+def plot_routing_comparison(metrics_list, base_dir):
     """Create bar charts comparing performance metrics across routing strategies."""
     if not metrics_list:
         print("No metrics to plot.")
@@ -169,13 +169,14 @@ def plot_routing_comparison(metrics_list):
     # Create a single shared legend for all plots
     # Only create a shared legend if not already created in the subplots
     handles = [plt.Rectangle((0,0), 1, 1, color=color_dict[s]) for s in strategy_order]
-    legend_labels = [s if len(s) < 20 else s[:17]+'...' for s in strategy_order]
+    legend_labels = [s for s in strategy_order]
     
     # Place the legend below the entire figure in a horizontal layout
     fig.legend(handles, legend_labels, 
               loc='lower center', 
               bbox_to_anchor=(0.5, 0.02),
-              fontsize=8, ncol=min(3, len(strategy_order)), 
+            #   fontsize=8, ncol=min(3, len(strategy_order)), 
+              fontsize=8, ncol=1, 
               title="Routing Strategies")
     
     # Adjust layout parameters to accommodate the legend
@@ -183,9 +184,10 @@ def plot_routing_comparison(metrics_list):
     plt.subplots_adjust(top=0.92, bottom=0.20, hspace=0.3, wspace=0.2)
     
     # Save the figure
-    output_file = "routing_strategy_comparison.png"
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"Saved comparison plot to {output_file}")
+    # output_file = f"routing_strategy_comparison-{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    output_file = f"{base_dir}/routing_strategy_comparison.pdf"
+    plt.savefig(output_file, bbox_inches='tight')
+    print(f"** Saved comparison plot to {output_file}")
     
     plt.show()
 
@@ -257,16 +259,16 @@ def main():
             all_metrics.append(metrics)
     
     # Plot the comparison
-    plot_routing_comparison(all_metrics)
+    plot_routing_comparison(all_metrics, base_dir)
     
-    # Print summary statistics
-    print("\nSummary Statistics:")
-    for metrics in all_metrics:
-        strategy = metrics.get('strategy', 'Unknown')
-        print(f"\nStrategy: {strategy}")
-        for key, value in metrics.items():
-            if key not in ['strategy', 'file_path']:
-                print(f"  {key}: {value}")
+    # # Print summary statistics
+    # print("\nSummary Statistics:")
+    # for metrics in all_metrics:
+    #     strategy = metrics.get('strategy', 'Unknown')
+    #     print(f"\nStrategy: {strategy}")
+    #     for key, value in metrics.items():
+    #         if key not in ['strategy', 'file_path']:
+    #             print(f"  {key}: {value}")
 
 if __name__ == "__main__":
     main()
