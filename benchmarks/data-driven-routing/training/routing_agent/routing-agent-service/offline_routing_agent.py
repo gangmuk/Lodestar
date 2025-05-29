@@ -328,9 +328,9 @@ def process_training_data(args, log_data):
         logger.info(f"Processing training data with {len(log_data)} entries")
         
         # Create raw data file (simplified - just one batch)
-        if not os.path.exists("raw_training_data"):
-            os.mkdir("raw_training_data")
-        raw_data = "raw_training_data/offline_batch.csv"
+        if not os.path.exists("temp_training_data"):
+            os.mkdir("temp_training_data")
+        raw_data = "temp_training_data/offline_batch.csv"
         
         # Write raw data to file
         ts_write_raw_data = time.time()
