@@ -402,11 +402,13 @@ class LLMRoutingDataProcessor:
         
         # Filter the feature array
         filtered_features = pod_features_array[:, :, keep_indices]
-        
-        logger.info(f"Feature masking applied:")
-        logger.info(f"  Original features: {len(feature_names)} -> Kept features: {len(kept_features)}")
-        logger.info(f"  Kept features: {kept_features}")
-        logger.info(f"  Original shape: {pod_features_array.shape} -> New shape: {filtered_features.shape}")
+        if len(kept_features) != len(feature_names):
+            logger.info(f"Feature masking applied:")
+            logger.info(f"  Original features: {len(feature_names)} -> Kept features: {len(kept_features)}")
+            logger.info(f"  Kept features: {kept_features}")
+            logger.info(f"  Original shape: {pod_features_array.shape} -> New shape: {filtered_features.shape}")
+        else:
+            logger.debug("No feature masking applied, all features kept")
         
         return filtered_features, kept_features
 
