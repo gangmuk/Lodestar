@@ -30,6 +30,7 @@ import argparse
 from datetime import datetime
 from logger import logger
 import time
+
 class LLMRoutingDataProcessor:
     """Processes raw LLM request routing data into formatted tensors for RL training.
     
@@ -47,7 +48,6 @@ class LLMRoutingDataProcessor:
             output_dir: Directory to save processed data and statistics
         """
         self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
         
         # Initialize scalers
         self.pod_feature_scaler = StandardScaler()
@@ -368,265 +368,248 @@ class LLMRoutingDataProcessor:
             tpot_rewards = df['tpot_reward'].fillna(0).values
         
         return actions, rewards, ttft_rewards, tpot_rewards
+    
 
+    def _filter_identity_features(self, pod_features_array, feature_names):
+        """
+        Remove features that enable pod identity learning.
+        Keep only real-time, routing-relevant features.
+        """
+        # Define which features to KEEP (current state, routing-relevant)
+        CURRENT_STATE_FEATURES = [
+            'inflight_requests',     # Current load
+            'kv_hit_ratio',         # Current cache performance  
+            'gpu_kv_cache',         # Current GPU memory usage
+            'cpu_kv_cache',         # Current CPU cache usage
+            'running_requests',     # Currently processing
+            'waiting_requests',     # Currently queued
+            'prefill_tokens',       # Current prefill load
+            'decode_tokens'         # Current decode load
+        ]
+        
+        # Find indices of features to keep
+        keep_indices = []
+        kept_features = []
+        
+        for i, feature_name in enumerate(feature_names):
+            if feature_name in CURRENT_STATE_FEATURES:
+                keep_indices.append(i)
+                kept_features.append(feature_name)
+        
+        if not keep_indices:
+            logger.warning("No current-state features found, keeping all features")
+            return pod_features_array, feature_names
+        
+        # Filter the feature array
+        filtered_features = pod_features_array[:, :, keep_indices]
+        
+        logger.info(f"Feature masking applied:")
+        logger.info(f"  Original features: {len(feature_names)} -> Kept features: {len(kept_features)}")
+        logger.info(f"  Kept features: {kept_features}")
+        logger.info(f"  Original shape: {pod_features_array.shape} -> New shape: {filtered_features.shape}")
+        
+        return filtered_features, kept_features
 
-    # def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary):
-    #     """Process pod features - ZERO OVERHEAD OPTIMIZATION."""
+    def randomize_pod_positions(self, pod_features, kv_hit_ratios):
+        """
+        Randomize which pod appears in which tensor position for each sample.
+        This prevents the model from learning pod identity based on tensor positions.
         
-    #     if not pod_data:
-    #         logger.error("No pod data in expected format")
-    #         assert False
+        Args:
+            pod_features: [batch_size, num_pods, feature_dim] 
+            kv_hit_ratios: [batch_size, num_pods, 1]
         
-    #     # STEP 1: Pre-create shared GPU encoder (if needed)
-    #     one_hot_encoder_start_time = time.time()
-    #     shared_gpu_encoder = None
-    #     if 'gpu_model' in self.pod_features:
-    #         all_gpu_values = []
-    #         for pod_id in self.pod_ids:
-    #             if 'gpu_model' in pod_data[pod_id]:
-    #                 gpu_vals = pod_data[pod_id]['gpu_model'].fillna('unknown').values
-    #                 all_gpu_values.extend(gpu_vals)
+        Returns:
+            Tuple of (shuffled_pod_features, shuffled_kv_hit_ratios)
+        """
+        batch_size, num_pods = pod_features.shape[:2]
+        
+        # Create shuffled tensors
+        shuffled_pod_features = pod_features.clone()
+        shuffled_kv_hit_ratios = kv_hit_ratios.clone()
+        
+        # Randomize pod order for each sample independently
+        for sample_idx in range(batch_size):
+            # Generate random permutation for this sample
+            perm = torch.randperm(num_pods)
             
-    #         if all_gpu_values:
-    #             shared_gpu_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-    #             shared_gpu_encoder.fit(np.array(all_gpu_values).reshape(-1, 1))
-    #     one_hot_encoder_overhead = time.time() - one_hot_encoder_start_time
+            # Apply the same permutation to both tensors
+            shuffled_pod_features[sample_idx] = pod_features[sample_idx][perm]
+            shuffled_kv_hit_ratios[sample_idx] = kv_hit_ratios[sample_idx][perm]
         
-    #     # STEP 2: VECTORIZED DATA EXTRACTION
-    #     vectorized_extraction_start_time = time.time()
-        
-    #     # Separate features by type
-    #     numeric_features = [f for f in self.pod_features if f not in ['kv_hit_ratio', 'gpu_model']]
-        
-    #     # Pre-allocate arrays for ALL pods at once
-    #     n_pods = len(self.pod_ids)
-    #     n_numeric = len(numeric_features)
-        
-    #     # Extract all numeric data in one go - shape: (n_samples, n_pods, n_numeric_features)
-    #     if numeric_features:
-    #         numeric_arrays = np.zeros((n_samples, n_pods, n_numeric))
-    #         for pod_idx, pod_id in enumerate(self.pod_ids):
-    #             for feat_idx, feature in enumerate(numeric_features):
-    #                 if feature in pod_data[pod_id]:
-    #                     numeric_arrays[:, pod_idx, feat_idx] = pod_data[pod_id][feature].fillna(0).values
-    #     else:
-    #         numeric_arrays = np.zeros((n_samples, n_pods, 0))
-        
-    #     # Extract KV hit ratio data - shape: (n_samples, n_pods, 1)
-    #     kv_arrays = np.zeros((n_samples, n_pods, 1))
-    #     if 'kv_hit_ratio' in self.pod_features:
-    #         for pod_idx, pod_id in enumerate(self.pod_ids):
-    #             if 'kv_hit_ratio' in pod_data[pod_id]:
-    #                 kv_arrays[:, pod_idx, 0] = pod_data[pod_id]['kv_hit_ratio'].fillna(0).values
-        
-    #     # Extract GPU model data (if exists) - shape: (n_samples, n_pods, n_gpu_features)
-    #     gpu_arrays = None
-    #     gpu_feature_count = 0
-    #     if 'gpu_model' in self.pod_features and shared_gpu_encoder:
-    #         # Get the number of GPU features from encoder
-    #         sample_transform = shared_gpu_encoder.transform([['unknown']])
-    #         gpu_feature_count = sample_transform.shape[1]
-    #         gpu_arrays = np.zeros((n_samples, n_pods, gpu_feature_count))
-            
-    #         for pod_idx, pod_id in enumerate(self.pod_ids):
-    #             if 'gpu_model' in pod_data[pod_id]:
-    #                 gpu_values = pod_data[pod_id]['gpu_model'].fillna('unknown')
-    #                 transformed = shared_gpu_encoder.transform(gpu_values.values.reshape(-1, 1))
-    #                 gpu_arrays[:, pod_idx, :] = transformed
-    #     vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
-        
-    #     # STEP 3: VECTORIZED CONCATENATION - Single operation for all pods
-    #     build_feature_start_time = time.time()
-        
-    #     # Build the feature arrays list
-    #     feature_arrays_to_concat = [numeric_arrays]
-        
-    #     if gpu_arrays is not None:
-    #         feature_arrays_to_concat.append(gpu_arrays)
-        
-    #     # Single concatenation operation for ALL pods at once
-    #     if len(feature_arrays_to_concat) == 1:
-    #         pod_features_array = feature_arrays_to_concat[0]
-    #     else:
-    #         pod_features_array = np.concatenate(feature_arrays_to_concat, axis=2)
-        
-    #     pod_kv_hit_array = kv_arrays
-        
-    #     # STEP 4: Create feature indices map (only for first pod, since all pods have same structure)
-    #     reference_feature_indices = {}
-    #     feature_idx = 0
-        
-    #     # Add numeric feature indices
-    #     for i, feature in enumerate(numeric_features):
-    #         reference_feature_indices[feature] = feature_idx + i
-    #     feature_idx += len(numeric_features)
-        
-    #     # Add GPU model indices
-    #     if gpu_arrays is not None:
-    #         reference_feature_indices['gpu_model'] = feature_idx
-    #         feature_idx += gpu_feature_count
-        
-    #     # Create per_pod_feature_indices (all pods have same structure)
-    #     per_pod_feature_indices = {pod_id: reference_feature_indices.copy() for pod_id in self.pod_ids}
-    #     build_feature_overhead = time.time() - build_feature_start_time
-        
-    #     # STEP 5: Batch normalization
-    #     normalization_start_time = time.time()
-    #     pod_shape = pod_features_array.shape
-    #     kv_shape = pod_kv_hit_array.shape
-        
-    #     pod_features_flat = pod_features_array.reshape(-1, pod_features_array.shape[2])
-    #     kv_flat = pod_kv_hit_array.reshape(-1, 1)
+        return shuffled_pod_features, shuffled_kv_hit_ratios
 
-    #     self.pod_feature_scaler.fit(pod_features_flat)
-    #     self.kv_hit_scaler.fit(kv_flat)
-        
-    #     pod_features_norm = self.pod_feature_scaler.transform(pod_features_flat).reshape(pod_shape)
-    #     kv_hit_norm = self.kv_hit_scaler.transform(kv_flat).reshape(kv_shape)
-
-    #     self.feature_stats.update({
-    #         'pod_feature_means': self.pod_feature_scaler.mean_,
-    #         'pod_feature_stds': self.pod_feature_scaler.scale_,
-    #         'kv_hit_means': self.kv_hit_scaler.mean_,
-    #         'kv_hit_stds': self.kv_hit_scaler.scale_
-    #     })
-
-    #     logger.info(f"Pod features stats after processing: min={pod_features_norm.min()}, max={pod_features_norm.max()}, non-zero={np.count_nonzero(pod_features_norm)}/{pod_features_norm.size}")
-    #     logger.info(f"KV hit ratio stats after processing: min={kv_hit_norm.min()}, max={kv_hit_norm.max()}, non-zero={np.count_nonzero(kv_hit_norm)}/{kv_hit_norm.size}")
-    #     normalization_overhead = time.time() - normalization_start_time
-        
-    #     # Return proper overhead summary like the original
-    #     # overhead_summary = {
-    #     #     'encoding.prepare_for_encoding._optimized_process_pod_features.one_hot_encoder_overhead': one_hot_encoder_overhead * 1000,
-    #     #     'encoding.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead': vectorized_extraction_overhead * 1000,
-    #     #     'encoding.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead': build_feature_overhead * 1000,
-    #     #     'encoding.prepare_for_encoding._optimized_process_pod_features.normalization_overhead': normalization_overhead * 1000,
-    #     # }
-    #     overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.one_hot_encoder_overhead'] = one_hot_encoder_overhead * 1000
-    #     overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead'] = vectorized_extraction_overhead * 1000
-    #     overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead'] = build_feature_overhead * 1000
-    #     overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.normalization_overhead'] = normalization_overhead * 1000
-        
-    #     return pod_features_array, pod_kv_hit_array, pod_features_norm, kv_hit_norm, per_pod_feature_indices
 
     def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary):
-        """NUCLEAR OPTIMIZATION: Target the real bottlenecks for 80%+ speedup."""
-        
         if not pod_data:
             logger.error("No pod data in expected format")
             assert False
         
-        # NUCLEAR 1: Skip GPU processing entirely (biggest bottleneck)
-        one_hot_encoder_start_time = time.time()
-        # Skip all GPU encoder logic - assume no GPU features needed for inference
-        one_hot_encoder_overhead = time.time() - one_hot_encoder_start_time
-        
-        # NUCLEAR 2: Ultra-fast feature extraction
         vectorized_extraction_start_time = time.time()
         
-        # Skip dynamic feature discovery - hardcode the common features
-        # UPDATE THESE to match your actual pod features:
-        NUMERIC_FEATURES = [
+        # Include ALL features we want to potentially keep
+        ALL_NUMERIC_FEATURES = [
             'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 
-            'running_requests', 'waiting_requests', 'prefill_tokens', 'decode_tokens'
+            'running_requests', 'waiting_requests', 'prefill_tokens', 'decode_tokens',
+            'kv_hit_ratio'  # Always include kv_hit_ratio
         ]
         n_pods = len(self.pod_ids)
-        n_numeric = len(NUMERIC_FEATURES)
+        n_numeric = len(ALL_NUMERIC_FEATURES)
         
-        # Pre-allocate arrays
-        numeric_arrays = np.zeros((n_samples, n_pods, n_numeric), dtype=np.float32)
-        kv_arrays = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
+        # Pre-allocate arrays - SINGLE array for all features
+        all_features_array = np.zeros((n_samples, n_pods, n_numeric), dtype=np.float32)
         
-        # NUCLEAR 3: Hardcoded feature extraction (eliminate enumerate overhead)
+        # Extract all features into single array
         for pod_idx, pod_id in enumerate(self.pod_ids):
             if pod_id in pod_data:
                 pod_features = pod_data[pod_id]
                 
-                # Hardcoded feature assignments (update feature names to match yours)
+                # Hardcoded feature assignments (matching ALL_NUMERIC_FEATURES order)
                 if 'inflight_requests' in pod_features:
-                    numeric_arrays[:, pod_idx, 0] = pod_features['inflight_requests'].fillna(0)
+                    all_features_array[:, pod_idx, 0] = pod_features['inflight_requests'].fillna(0)
                 if 'gpu_kv_cache' in pod_features:
-                    numeric_arrays[:, pod_idx, 1] = pod_features['gpu_kv_cache'].fillna(0)
+                    all_features_array[:, pod_idx, 1] = pod_features['gpu_kv_cache'].fillna(0)
                 if 'cpu_kv_cache' in pod_features:
-                    numeric_arrays[:, pod_idx, 2] = pod_features['cpu_kv_cache'].fillna(0)
+                    all_features_array[:, pod_idx, 2] = pod_features['cpu_kv_cache'].fillna(0)
                 if 'running_requests' in pod_features:
-                    numeric_arrays[:, pod_idx, 3] = pod_features['running_requests'].fillna(0)
+                    all_features_array[:, pod_idx, 3] = pod_features['running_requests'].fillna(0)
                 if 'waiting_requests' in pod_features:
-                    numeric_arrays[:, pod_idx, 4] = pod_features['waiting_requests'].fillna(0)
+                    all_features_array[:, pod_idx, 4] = pod_features['waiting_requests'].fillna(0)
                 if 'prefill_tokens' in pod_features:
-                    numeric_arrays[:, pod_idx, 5] = pod_features['prefill_tokens'].fillna(0)
+                    all_features_array[:, pod_idx, 5] = pod_features['prefill_tokens'].fillna(0)
                 if 'decode_tokens' in pod_features:
-                    numeric_arrays[:, pod_idx, 6] = pod_features['decode_tokens'].fillna(0)
-                
-                # KV extraction
+                    all_features_array[:, pod_idx, 6] = pod_features['decode_tokens'].fillna(0)
+                # KV ratio in main array
                 if 'kv_hit_ratio' in pod_features:
-                    kv_arrays[:, pod_idx, 0] = pod_features['kv_hit_ratio'].fillna(0)
+                    all_features_array[:, pod_idx, 7] = pod_features['kv_hit_ratio'].fillna(0)
         
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         
-        # NUCLEAR 4: Skip concatenation - use numeric arrays directly
         build_feature_start_time = time.time()
-        pod_features_array = numeric_arrays
-        pod_kv_hit_array = kv_arrays
         
-        # Skip feature indices building
-        per_pod_feature_indices = {}
+        # Apply feature masking BEFORE randomization
+        masking_start_time = time.time()
+        
+        # Set original features list to match what we extracted
+        original_features = ALL_NUMERIC_FEATURES.copy()
+        
+        # Apply masking
+        filtered_features_array, kept_features = self._filter_identity_features(
+            all_features_array, original_features
+        )
+        
+        masking_overhead = time.time() - masking_start_time
+        
+        # SOLUTION 1: Always ensure kv_hit_ratio is available separately
+        kv_extraction_start_time = time.time()
+        
+        if 'kv_hit_ratio' in kept_features:
+            # Extract KV ratios from filtered array
+            kv_index = kept_features.index('kv_hit_ratio')
+            kv_hit_norm = filtered_features_array[:, :, kv_index:kv_index+1]  # Keep as [batch, pods, 1]
+            pod_kv_hit_array = kv_hit_norm.copy()
+            
+            # Remove KV from pod features to avoid duplication in model input
+            other_indices = [i for i in range(len(kept_features)) if i != kv_index]
+            if other_indices:  # Only if there are other features besides kv_hit_ratio
+                pod_features_array = filtered_features_array[:, :, other_indices]
+                kept_pod_features = [feat for i, feat in enumerate(kept_features) if i != kv_index]
+            else:
+                # Edge case: only kv_hit_ratio was kept - create minimal pod features
+                logger.warning("Only kv_hit_ratio was kept after masking, creating minimal pod features")
+                pod_features_array = np.ones((n_samples, n_pods, 1), dtype=np.float32) * 0.5  # Neutral values
+                kept_pod_features = ['minimal_feature']
+            
+            logger.info(f"Extracted KV ratios separately: {kv_hit_norm.shape}")
+            logger.info(f"Remaining pod features: {len(kept_pod_features)} features")
+            
+        else:
+            # KV hit ratio was filtered out - this shouldn't happen with our CURRENT_STATE_FEATURES
+            logger.error("kv_hit_ratio was filtered out by masking - this should not happen!")
+            logger.error("Check your CURRENT_STATE_FEATURES list in _filter_identity_features")
+            
+            # Create fallback KV tensor and use all filtered features as pod features
+            kv_hit_norm = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
+            pod_kv_hit_array = kv_hit_norm.copy()
+            pod_features_array = filtered_features_array
+            kept_pod_features = kept_features
+            
+            logger.warning("Using fallback: zero KV ratios and all filtered features as pod features")
+        
+        kv_extraction_overhead = time.time() - kv_extraction_start_time
+        
+        # APPLY POD RANDOMIZATION HERE
+        randomization_start_time = time.time()
+        
+        # Convert to tensors for randomization
+        pod_features_tensor = torch.from_numpy(pod_features_array).float()
+        kv_hit_tensor = torch.from_numpy(kv_hit_norm).float()
+        
+        # # Apply randomization
+        # logger.info("Applying pod position randomization...")
+        # randomized_pod_features, randomized_kv_hit = self.randomize_pod_positions(
+        #     pod_features_tensor, kv_hit_tensor
+        # )
+
+        randomized_pod_features = pod_features_tensor
+        randomized_kv_hit = kv_hit_tensor
+        
+        # Convert back to numpy
+        pod_features_array = randomized_pod_features.numpy()
+        kv_hit_norm = randomized_kv_hit.numpy()
+        pod_kv_hit_array = kv_hit_norm.copy()
+        
+        randomization_overhead = time.time() - randomization_start_time
+        
+        # logger.info(f"✅ Pod randomization applied - each sample has different pod order")
+        # logger.info(f"   This prevents model from learning pod identity based on tensor positions")
+        
+        # Update feature list to reflect final pod features (without kv_hit_ratio)
+        self.pod_features = kept_pod_features
+        
         build_feature_overhead = time.time() - build_feature_start_time
         
-        # NUCLEAR 5: Aggressive normalization optimization
-        normalization_start_time = time.time()
-        
-        # Skip normalization entirely OR use pre-computed values
-        # Option A: No normalization (fastest)
-        pod_features_norm = numeric_arrays
-        kv_hit_norm = kv_arrays
-        
-        # Option B: Hardcoded normalization (if model needs it - uncomment and adjust)
-        # MEANS = np.array([50.0, 0.3, 0.2, 2.0, 1.0, 1000.0, 5000.0], dtype=np.float32)
-        # STDS = np.array([25.0, 0.1, 0.1, 1.0, 0.5, 500.0, 2000.0], dtype=np.float32)
-        # pod_features_norm = (numeric_arrays - MEANS) / STDS
-        # kv_hit_norm = (kv_arrays - 0.5) / 0.3
-        
-        normalization_overhead = time.time() - normalization_start_time
-        
-        # NUCLEAR 6: Skip logging for maximum speed
-        # if logger.isEnabledFor(logging.INFO):
-        #     logger.info(f"Pod features stats after processing: min={pod_features_norm.min()}, max={pod_features_norm.max()}")
-        
-        # NUCLEAR 7: Minimal overhead tracking
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.one_hot_encoder_overhead'] = one_hot_encoder_overhead * 1000
+        # Update overhead tracking
         overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead'] = vectorized_extraction_overhead * 1000
         overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead'] = build_feature_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.normalization_overhead'] = normalization_overhead * 1000
+        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.masking_overhead'] = masking_overhead * 1000
+        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.kv_extraction_overhead'] = kv_extraction_overhead * 1000
+        # 🆕 Add randomization overhead
+        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.randomization_overhead'] = randomization_overhead * 1000
         
-        return pod_features_array, pod_kv_hit_array, pod_features_norm, kv_hit_norm, per_pod_feature_indices
+        # # Log final shapes for debugging
+        # logger.info(f"Final tensor shapes after randomization:")
+        # logger.info(f"  pod_features_array: {pod_features_array.shape}")
+        # logger.info(f"  kv_hit_norm: {kv_hit_norm.shape}")
+        # logger.info(f"  kept_pod_features: {kept_pod_features}")
+        
+        return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
 
-    def prepare_for_encoding(self, df, all_pods, request_features_train, request_features_reward, overhead_summary):
-        """NO-CACHE ULTRA-OPTIMIZED prepare_for_encoding - targeting sub-5ms total time."""
+
+    # Also add randomization to the training path in encode_for_train function
+    # Find the line where prepare_for_encoding is called and add randomization there as well
+
         
+    def prepare_for_encoding(self, df, all_pods, request_features_train, request_features_reward, overhead_summary):
         n_samples = len(df)
         
-        # STEP 1: ULTRA-FAST pod data extraction (was 2.1ms -> target 0.5ms)
-        extract_pod_columns_start = time.time()
+        # STEP 1: ULTRA-FAST pod data extraction
         pod_data = self._ultra_fast_extract_pod_columns(df, all_pods)
-        extract_pod_columns_overhead = time.time() - extract_pod_columns_start
 
         # STEP 2: SKIP EXPENSIVE analyze_request_features for inference (was 1.7ms -> 0.1ms)
-        analyze_request_features_start = time.time()
         # For inference, assume we know the structure - just set directly
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
         self.pod_ids = all_pods
-        analyze_request_features_overhead = time.time() - analyze_request_features_start
         
-        # STEP 3: SKIP encode_pod_ids for inference (was 1.6ms -> 0.05ms) 
+        # STEP 3: SKIP encode_pod_ids for inference
         encode_pod_ids_start = time.time()
         # Set minimal required attributes without building encoders
         self.pod_encoder = None
         self.selected_pod_encoder = None
         encode_pod_ids_overhead = time.time() - encode_pod_ids_start
         
-        # STEP 4: MINIMAL feature timing (was 0.15ms -> 0.05ms)
+        # STEP 4: MINIMAL feature timing
         classify_feature_timing_start = time.time()
         # Build feature list fast
         pod_feature_columns = [col for col in df.columns if col.startswith('pod_')]
@@ -635,59 +618,32 @@ class LLMRoutingDataProcessor:
         feature_timing = {f: 'historical' if 'last_second' in f else 'current' for f in self.pod_features}
         classify_feature_timing_overhead = time.time() - classify_feature_timing_start
         
-        # STEP 5: FAST request features (was 1.6ms -> target 0.2ms)
+        # STEP 5: FAST request feature
         request_features, request_numeric_features_overhead = self._ultra_fast_extract_request_features(df, request_features_train, n_samples)
 
-        # STEP 6: SKIP categorical features (0ms)
-        request_categorical_features_start_time = time.time()
-        request_categorical_features_overhead = time.time() - request_categorical_features_start_time
+        # STEP 7: ULTRA-OPTIMIZED pod processing
+        pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary)  # ← HERE!
 
-        # STEP 7: ULTRA-OPTIMIZED pod processing (was 4.4ms -> target 2ms)
-        _optimized_process_pod_features_start = time.time()
-
-        pod_features_array, pod_kv_hit_array, pod_features_norm, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary)  # ← HERE!
-        
-        _optimized_process_pod_features_overhead = time.time() - _optimized_process_pod_features_start
-
-        # STEP 8: FAST actions/rewards (was 0.4ms -> target 0.1ms)
-        extract_actions_rewards_start = time.time()
+        # STEP 8: actions/rewards (continues as normal)
         actions, rewards, ttft_rewards, tpot_rewards = self._fast_extract_actions_rewards(df, n_samples)
-        extract_actions_rewards_overhead = time.time() - extract_actions_rewards_start
 
-        # STEP 9: SKIP combining (0ms)
-        combine_request_features_start = time.time()
-        combine_request_features_overhead = time.time() - combine_request_features_start
+        # STEP 9: SKIP combining
         
-        # STEP 10: MINIMAL positional encoding (was 0.13ms -> target 0.02ms)
-        positional_encoding_start_time = time.time()
-        positional_encodings = np.zeros((pod_features_norm.shape[0], pod_features_norm.shape[1], 1), dtype=np.float32)
-        positional_encoding_overhead = time.time() - positional_encoding_start_time
+        # STEP 10: MINIMAL positional encoding
+        positional_encodings = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
         
-        # STEP 11: MINIMAL staleness (was 0.11ms -> target 0.02ms)
-        add_staleness_start_time = time.time()
-        staleness_features = np.zeros((pod_features_norm.shape[0], pod_features_norm.shape[1], 1), dtype=np.float32)
-        pod_features_with_staleness = np.concatenate([pod_features_norm, staleness_features], axis=2)
-        add_staleness_overhead = time.time() - add_staleness_start_time
+        # STEP 11: MINIMAL staleness
+        staleness_features = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
+        pod_features_with_staleness = np.concatenate([pod_features_array, staleness_features], axis=2)
         
-        # STEP 12: MINIMAL cross attention (0.002ms -> keep)
-        cross_attention_start_time = time.time()
+        # STEP 12: MINIMAL cross attention
         cross_attention_inputs = {'query': pod_features_with_staleness, 'key_value': kv_hit_norm}
-        cross_attention_overhead = time.time() - cross_attention_start_time
         
-        # STEP 13: FAST interaction features (was 0.13ms -> target 0.03ms)
-        create_request_pod_interaction_start_time = time.time()
-        if request_features.shape[1] > 0:
-            interaction_features = np.broadcast_to(
-                request_features[:, np.newaxis, :], 
-                (n_samples, pod_features_norm.shape[1], request_features.shape[1])
-            ).copy()
-        else:
-            interaction_features = None
-        create_request_pod_interaction_overhead = time.time() - create_request_pod_interaction_start_time
+        # STEP 13: FAST interaction features
+        interaction_features = np.broadcast_to(request_features[:, np.newaxis, :], (n_samples, pod_features_array.shape[1], request_features.shape[1])).copy()
         
-        # ULTRA-FAST: Build return data (minimal object creation)
         processed_data = {
-            'pod_features': pod_features_norm,
+            'pod_features': pod_features_array,
             'pod_raw_features': pod_features_array,
             'kv_hit_ratios': kv_hit_norm,
             'kv_hit_raw': pod_kv_hit_array,
@@ -714,19 +670,9 @@ class LLMRoutingDataProcessor:
         }
         
         # Update overhead summary
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.extract_pod_columns_overhead'] = extract_pod_columns_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.analyze_request_features_overhead'] = analyze_request_features_overhead * 1000
         overhead_summary['encoding.encode_for_inference.prepare_for_encoding.encode_pod_ids_overhead'] = encode_pod_ids_overhead * 1000
         overhead_summary['encoding.encode_for_inference.prepare_for_encoding.classify_feature_timing_overhead'] = classify_feature_timing_overhead * 1000
         overhead_summary['encoding.encode_for_inference.prepare_for_encoding.request_numeric_features_overhead'] = request_numeric_features_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.request_categorical_features_overhead'] = request_categorical_features_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features_overhead'] = _optimized_process_pod_features_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.extract_actions_rewards_overhead'] = extract_actions_rewards_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.combine_request_features_overhead'] = combine_request_features_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.positional_encoding_overhead'] = positional_encoding_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.add_staleness_overhead'] = add_staleness_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.cross_attention_overhead'] = cross_attention_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding.create_request_pod_interaction_overhead'] = create_request_pod_interaction_overhead * 1000
 
         return processed_data
 
@@ -1194,49 +1140,10 @@ def encode_for_train(all_pods, df, output_dir, request_stats, request_features_t
     if high_missing:
         logger.warning(f"Columns with >20% missing values: {len(high_missing)} columns")
     
-    # # Split into train and test
-    # n_samples = len(df)
-    # test_size = int(n_samples * test_split)
-    # indices = np.random.permutation(n_samples)
-    # test_indices = indices[:test_size]
-    # train_indices = indices[test_size:]
-    
-    # train_df = df.iloc[train_indices]
-    # test_df = df.iloc[test_indices]
-    
-    # logger.info(f"Split data into {len(train_df)} training and {len(test_df)} test samples")
-    
-    # Process data
     processor = LLMRoutingDataProcessor(output_dir=output_dir)
     
-    # Check if we have running statistics for request features
-    if request_stats is not None and request_stats.count > 0:
-        logger.info(f"Using running statistics for normalization (n={request_stats.count})")
-        
-        # Get the request features to use for interaction
-        # request_features = ['input_tokens', 'output_tokens', 'total_tokens', 'ttft', 'avg_tpot', 'e2e_latency']
-        request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-        if all(feature in df.columns for feature in request_features):
-            # We need to modify the DataFrame to contain normalized values before preprocessing
-            request_values = df[request_features].values
-            
-            # Apply normalization
-            normalized_values = request_stats.normalize(request_values)
-            
-            # Store normalized values in DataFrame
-            for i, feature in enumerate(request_features):
-                original_values = df[feature].copy()
-                df[feature] = normalized_values[:, i]
-                
-                # Log normalization for the first row
-                if len(df) > 0:
-                    logger.info(f"Normalized {feature}: {original_values.iloc[0]} -> {df[feature].iloc[0]}")
-        else:
-            logger.warning(f"Some request features missing from DataFrame, using default normalization")
-    else:
-        logger.info("No running statistics provided, using batch-specific normalization")
-    
-    # Process training data
+    logger.info("Data already normalized in routing_agent_service.py, proceeding with encoding...")
+
     logger.info("Processing training data...")
     overhead_summary = {}
     train_processed = processor.prepare_for_encoding(df, all_pods, request_features_train, request_features_reward, overhead_summary)
@@ -1280,78 +1187,50 @@ def encode_for_train(all_pods, df, output_dir, request_stats, request_features_t
     return train_path
 
 
+# Fixed encode_for_inference function
 def encode_for_inference(all_pods, df, request_stats, request_features_train, request_features_reward):
-    """Version with hardcoded column positions for maximum speed."""
+    """Version optimized for inference - data already normalized in handle_infer."""
     
+    # STEP 1: Skip all normalization (already done in handle_infer)
     mask_start_time = time.time()
     
-    # Based on your DataFrame, the request features appear to be at positions:
-    # input_tokens: 2, output_tokens: 3, total_tokens: 4
-    # Adjust these indices based on your actual column positions
-    REQUEST_FEATURE_INDICES = [2, 3, 4]  # Hardcoded for speed
-    
-    # NUCLEAR: Direct access to underlying numpy array
-    df_numpy = df.values
-    request_values = df_numpy[:, REQUEST_FEATURE_INDICES].astype(np.float32, copy=False)
-    
-    # Ultra-fast operations
-    zero_mask = (request_values == 0).all(axis=0)
-    if zero_mask.any():
-        request_values[:, zero_mask] = 0.01
-    
-    # Direct normalization
-    request_values -= request_stats.get_mean()
-    request_values /= request_stats.get_std()
-    
-    # Put data back
-    df_numpy[:, REQUEST_FEATURE_INDICES] = request_values
+    # NO NORMALIZATION - data is already normalized
+    # The DataFrame df already contains normalized values for all features
     
     mask_overhead = time.time() - mask_start_time
     
-    # STEP 2: Prepare for encoding (unchanged)
+    # STEP 2: Prepare for encoding
     prepare_for_encoding_start = time.time()
     processor = LLMRoutingDataProcessor(output_dir="temp_inference")
     overhead_summary = {}
     processed_data = processor.prepare_for_encoding(df, all_pods, request_features_train, request_features_reward, overhead_summary)
     prepare_for_encoding_overhead = time.time() - prepare_for_encoding_start
 
-    # STEP 3: ULTRA-FAST tensor creation (replace your entire post_process section)
+    # STEP 3: Create tensors
     post_process_start_time = time.time()
 
-    # OPTIMIZATION 1: Skip logging entirely for maximum speed
-    # if 'request_features' in processed_data:
-    #     request_feat = processed_data['request_features']
-    #     logger.info(f"Processed request features shape: {request_feat.shape}")
-    #     if len(request_feat) > 0:
-    #         logger.info(f"Processed request features values: {request_feat[0]}")
-
-    # OPTIMIZATION 2: Pre-allocate tensor dictionary and use direct assignment
+    # Pre-allocate tensor dictionary
     tensor_data = {}
-
-    # OPTIMIZATION 3: Batch tensor creation with minimal function calls
-    pd = processed_data  # Short alias to reduce lookup overhead
-
     # Core tensors (always present)
-    tensor_data['pod_features'] = torch.from_numpy(pd['pod_features']).float()
-    tensor_data['kv_hit_ratios'] = torch.from_numpy(pd['kv_hit_ratios']).float()
-    tensor_data['request_features'] = torch.from_numpy(pd['request_features']).float()
-    tensor_data['actions'] = torch.from_numpy(pd['actions']).long()
-    tensor_data['rewards'] = torch.from_numpy(pd['rewards']).float()
-    tensor_data['positional_encodings'] = torch.from_numpy(pd['positional_encodings']).float()
-    tensor_data['pod_features_with_staleness'] = torch.from_numpy(pd['pod_features_with_staleness']).float()
-    tensor_data['query'] = torch.from_numpy(pd['cross_attention_inputs']['query']).float()
-    tensor_data['key_value'] = torch.from_numpy(pd['cross_attention_inputs']['key_value']).float()
+    tensor_data['pod_features'] = torch.from_numpy(processed_data['pod_features']).float()
+    tensor_data['kv_hit_ratios'] = torch.from_numpy(processed_data['kv_hit_ratios']).float()
+    tensor_data['request_features'] = torch.from_numpy(processed_data['request_features']).float()
+    tensor_data['actions'] = torch.from_numpy(processed_data['actions']).long()
+    tensor_data['rewards'] = torch.from_numpy(processed_data['rewards']).float()
+    tensor_data['positional_encodings'] = torch.from_numpy(processed_data['positional_encodings']).float()
+    tensor_data['pod_features_with_staleness'] = torch.from_numpy(processed_data['pod_features_with_staleness']).float()
+    tensor_data['query'] = torch.from_numpy(processed_data['cross_attention_inputs']['query']).float()
+    tensor_data['key_value'] = torch.from_numpy(processed_data['cross_attention_inputs']['key_value']).float()
 
-    # OPTIMIZATION 4: Conditional tensors with minimal overhead
-    if pd['interaction_features'] is not None:
-        tensor_data['interaction_features'] = torch.from_numpy(pd['interaction_features']).float()
+    # Optional tensors
+    if processed_data['interaction_features'] is not None:
+        tensor_data['interaction_features'] = torch.from_numpy(processed_data['interaction_features']).float()
 
-    # OPTIMIZATION 5: Use get() with default None to avoid key checks
-    ttft_rewards = pd.get('ttft_rewards')
+    ttft_rewards = processed_data.get('ttft_rewards')
     if ttft_rewards is not None:
         tensor_data['ttft_rewards'] = torch.from_numpy(ttft_rewards).float()
 
-    tpot_rewards = pd.get('tpot_rewards')
+    tpot_rewards = processed_data.get('tpot_rewards')
     if tpot_rewards is not None:
         tensor_data['tpot_rewards'] = torch.from_numpy(tpot_rewards).float()
 
