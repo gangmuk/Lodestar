@@ -449,8 +449,9 @@ def train_model(args):
         logger.info(f"Not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
         return False
 
+
 def test_inference(args, log_message):
-    """Test inference on a single log message"""
+    """Test inference on a single log message with original vs predicted comparison"""
     global NUM_TRAINS, MODEL_UPDATED
     
     if NUM_TRAINS == 0:
@@ -471,6 +472,24 @@ def test_inference(args, log_message):
         processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo)
         logger.debug(f"Successfully parsed data for inference")
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
+
+        # EXTRACT ORIGINAL POD CHOICE FROM PREPROCESSED DATA
+        # The preprocess.main should have extracted this information
+        original_pod_choice = None
+        if 'selected_pod' in processed_df.columns:
+            original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
+        elif hasattr(processed_df, 'original_pod') or 'original_pod' in processed_df.columns:
+            original_pod_choice = processed_df['original_pod'].iloc[0] if len(processed_df) > 0 else None
+        
+        # If not found in DataFrame, try to extract from the raw log message
+        if original_pod_choice is None:
+            import re
+            pattern = r'@selectedpod@([^@]+)@'
+            match = re.search(pattern, log_message)
+            if match:
+                original_pod_choice = match.group(1)
+        
+        logger.debug(f"Original pod choice: {original_pod_choice}")
 
         # Apply SAME individual feature normalization as training
         request_features = ['input_tokens', 'output_tokens', 'total_tokens']
@@ -511,8 +530,6 @@ def test_inference(args, log_message):
         elif args.model == "simpler_contextual_bandit":
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(
                 tensor_data=tensor_dataset, 
-                # exploration_enabled=EXPLORE_ENABLED, 
-                # exploration_rate=EXPLORATION_RATE, 
                 model_updated=MODEL_UPDATED
             )
         if MODEL_UPDATED:
@@ -530,9 +547,14 @@ def test_inference(args, log_message):
         confidence = result['confidence']
         handle_infer_total_overhead = time.time() - handle_infer_start_time
         
-        # Return the result
+        # Compare with original choice
+        prediction_matches = (selected_pod == original_pod_choice) if original_pod_choice else None
+        
+        # Return enhanced result with comparison
         result_summary = {
             "selected_pod": selected_pod,
+            "original_pod_choice": original_pod_choice,
+            "prediction_matches": prediction_matches,
             "confidence": confidence,
             "total_inference_time_ms": handle_infer_total_overhead * 1000,
             "preprocess_time_ms": handle_infer_total_total_preprocess_overhead * 1000,
@@ -540,7 +562,13 @@ def test_inference(args, log_message):
             "inference_time_ms": handle_infer_total_total_infer_from_tensor_overhead * 1000,
         }
         
-        logger.debug(f"Inference result: selected_pod={selected_pod}, confidence={confidence:.4f}")
+        # Enhanced logging with match/mismatch status
+        if original_pod_choice:
+            match_status = "✅ MATCH" if prediction_matches else "❌ MISMATCH"
+            logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={confidence:.4f}")
+        else:
+            logger.info(f"Inference result: predicted={selected_pod}, original=UNKNOWN, confidence={confidence:.4f}")
+        
         return result_summary
         
     except AssertionError as e:
@@ -644,9 +672,12 @@ def main():
     if test_data and len(test_data) > 0:
         logger.info("=== STARTING TESTING PHASE ===")
         
-        # Test on multiple examples
+        # Test on multiple examples with match tracking
         success_count = 0
-        total_count = min(len(test_data), 50)  # Limit to 10 tests for faster iteration
+        match_count = 0
+        mismatch_count = 0
+        unknown_original_count = 0
+        total_count = min(len(test_data), 100)  # Limit to 100 tests for faster iteration
         
         logger.info(f"Testing on {total_count} samples (out of {len(test_data)} available)")
         
@@ -656,25 +687,40 @@ def main():
             result = test_inference(args, log_message)
             if result:
                 success_count += 1
-                logger.info(f"✓ Success: selected_pod={result['selected_pod']}, confidence={result['confidence']:.3f}")
+                
+                # Track prediction accuracy
+                if result['prediction_matches'] is True:
+                    match_count += 1
+                elif result['prediction_matches'] is False:
+                    mismatch_count += 1
+                else:
+                    unknown_original_count += 1
+                
+                # Show detailed result with comparison
+                if result['original_pod_choice']:
+                    match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
+                    logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}")
+                else:
+                    logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}")
             else:
                 logger.error(f"✗ Failed inference for {request_id}")
         
-        logger.info(f"=== TESTING COMPLETED: {success_count}/{total_count} successful ===")
-    
-    elif args.test_single:
-        logger.info("=== TESTING SINGLE INFERENCE ===")
-        result = test_inference(args, args.test_single)
-        if result:
-            logger.info(f"✓ Single inference result: {result}")
-        else:
-            logger.error("✗ Single inference failed")
-    
-    elif not args.skip_training:
-        logger.info("=== NO TESTING DATA PROVIDED ===")
-        logger.info("Use --test-file, --test-single, or --auto-split to enable testing")
-    
-    logger.info("=== OFFLINE TESTING COMPLETED ===")
+        # Print enhanced summary with accuracy metrics
+        logger.info("=" * 60)
+        logger.info("=== TESTING SUMMARY ===")
+        logger.info(f"Total tests: {total_count}")
+        logger.info(f"Successful inferences: {success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
+        
+        if match_count + mismatch_count > 0:
+            accuracy = match_count / (match_count + mismatch_count) * 100
+            logger.info(f"Prediction accuracy: {match_count}/{match_count + mismatch_count} ({accuracy:.1f}%)")
+            logger.info(f"  - Matches: {match_count}")
+            logger.info(f"  - Mismatches: {mismatch_count}")
+        
+        if unknown_original_count > 0:
+            logger.info(f"  - Unknown original: {unknown_original_count}")
+        
+        logger.info("=" * 60)
 
 if __name__ == "__main__":
     main()
