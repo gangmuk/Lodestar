@@ -572,13 +572,13 @@ def train(encoded_data_dir):
     global training_results_dir
     # Hyperparameters
     # hidden_dim = 256
-    hidden_dim = 64
+    hidden_dim = 32
     batch_size = 32
     lr = 3e-4
     exploration_rate = 0.1
-    training_epochs = 10
-    max_updates_per_epoch = 1000
-    eval_interval = 10
+    training_epochs = 5
+    max_updates_per_epoch = 100
+    eval_interval = 20
     seed = 42
     continue_training = False
     

@@ -608,6 +608,8 @@ func NewPodMetricsTracker(windowSize time.Duration) *PodMetricsTracker {
 	}
 }
 
+var NumTrains int
+
 var (
 	UseRealRequest = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
 
@@ -621,6 +623,9 @@ var (
 
 	RequestToLogMessageMutex sync.RWMutex
 	RequestToLogMessage      = make(map[string]string) // requestID -> log message
+
+	// RequestToNumTrainsMutex sync.RWMutex
+	// RequestToNumTrains      = make(map[string]int) // requestID -> num trains
 
 	podMetricsMutex     sync.RWMutex
 	requestToPodMetrics = make(map[string]map[string]PodDetailedMetrics)
@@ -676,39 +681,18 @@ var (
 
 )
 
-func CleanupRoutineForpodMetrics() {
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if MetricsEnabled.Load() {
-					klog.Info("Running periodic metrics cleanup")
-					MetricsTracker.CleanupAllMetrics()
-				}
-			}
-		}
-	}()
-}
-
-func CleanupAllRequestLogMessage() {
-	RequestToLogMessageMutex.Lock()
-	defer RequestToLogMessageMutex.Unlock()
-
-	for requestID := range RequestToLogMessage {
-		delete(RequestToLogMessage, requestID)
-	}
-	klog.Infof("Cleaned up all log messages in RequestToLogMessage")
-}
-
 func init() {
+	NumTrains = 0
+
 	// CleanupRoutineForpodMetrics()
 	RunningPodRegistry = make(map[string]string)
 
 	MetricsTracker = NewPodMetricsTracker(1 * time.Second)
 	MetricsEnabled.Store(true)
 	MetricsLogTicker = time.NewTicker(10 * time.Second)
+
+	// RequestToNumTrains = make(map[string]int) // requestID -> num trains
+	// RequestToNumTrainsMutex = sync.RWMutex{}
 
 	RequestToLogMessageMutex = sync.RWMutex{}
 	RequestToLogMessage = make(map[string]string)
@@ -764,6 +748,64 @@ func init() {
 	vllmNumRequestsWaiting = make(map[string]map[string]float64)
 	vllmNumRequestsWaitingMutex = sync.RWMutex{}
 }
+
+func SetNumTrains(numTrains int) {
+	NumTrains = numTrains
+}
+
+func GetNumTrains() int {
+	return NumTrains
+}
+
+func CleanupRoutineForpodMetrics() {
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if MetricsEnabled.Load() {
+					klog.Info("Running periodic metrics cleanup")
+					MetricsTracker.CleanupAllMetrics()
+				}
+			}
+		}
+	}()
+}
+
+func CleanupAllRequestLogMessage() {
+	RequestToLogMessageMutex.Lock()
+	defer RequestToLogMessageMutex.Unlock()
+
+	for requestID := range RequestToLogMessage {
+		delete(RequestToLogMessage, requestID)
+	}
+	klog.Infof("Cleaned up all log messages in RequestToLogMessage")
+}
+
+// func SetRequestToNumTrains(requestID string, numTrains int) {
+// 	RequestToNumTrainsMutex.Lock()
+// 	defer RequestToNumTrainsMutex.Unlock()
+// 	if _, exists := RequestToNumTrains[requestID]; !exists {
+// 		RequestToNumTrains[requestID] = numTrains
+// 		klog.V(5).Infof("SetRequestToNumTrains for requestID %s to %d", requestID, numTrains)
+// 	} else {
+// 		klog.Errorf("Request ID %s already exists in RequestToNumTrains", requestID)
+// 	}
+// }
+
+// func GetRequestToNumTrains(requestID string) int {
+// 	RequestToNumTrainsMutex.RLock()
+// 	defer RequestToNumTrainsMutex.RUnlock()
+
+// 	numTrains, exists := RequestToNumTrains[requestID]
+// 	if !exists {
+// 		klog.Errorf("Failed GetRequestToNumTrains for request ID: %s, not found", requestID)
+// 		return -1
+// 	}
+// 	klog.V(5).Infof("GetRequestToNumTrains for requestID %s: %d", requestID, numTrains)
+// 	return numTrains
+// }
 
 func AddPodToRegistry(podIP string, podName string) {
 	RunningPodRegistryMutex.Lock()

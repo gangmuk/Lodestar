@@ -34,16 +34,21 @@ ENCODED_DATA_DIR = "encoded_data"
 STATS_FILE = "request_feature_stats.pkl"  # Add this near the top with your other constants
 NUM_TRAINS = 0
 MODEL_UPDATED = False
-EXPLORE_ENABLED = False
-EXPLORATION_RATE = None
 TRAINING_DATA_UPDATED = False
+TOTAL_NUM_DATA = 0
+NUM_NEW_DATA = 0
+MIN_NUM_TRAINING_DATA = 1000  # Minimum number of training data required to trigger training
 LOCK_TRAINING_DATA = threading.Lock()
+LOAD_PRETRAINED_MODEL = os.getenv("LOAD_PRETRAINED_MODEL", "true").lower() == "true"
+PRETRAINED_MODEL_PATH = os.getenv("PRETRAINED_MODEL_PATH", "final_model")
+ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
+MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
+final_model_path = "final_model"
+continue_from_pretrained = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower() == "true"
+TTFT_SLO = int(os.getenv("TTFT_SLO", 500))
+AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 40))
+first_request_starting_time = None
 
-# read it from env variable
-# AVG_TPOT_SLO = 30
-# TTFT_SLO = 200
-TTFT_SLO = int(os.getenv("TTFT_SLO", 200))
-AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 30))
 logger.info(f"TTFT_SLO: {TTFT_SLO}")
 logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
 
@@ -69,7 +74,7 @@ class RunningStats:
             self.mean = np.mean(new_data, axis=0)
             self.var = np.var(new_data, axis=0) * new_count
             self.count = new_count
-            logger.info(f"Initialized running stats with {new_count} samples")
+            logger.debug(f"Initialized running stats with {new_count} samples")
             return
         
         # Compute batch statistics
@@ -90,7 +95,7 @@ class RunningStats:
         # Update count
         self.count = new_total
         
-        logger.info(f"Updated running stats, now have {self.count} samples")
+        logger.debug(f"Updated running stats, now have {self.count} samples")
         
     def get_mean(self):
         """Get current mean"""
@@ -146,13 +151,116 @@ class RunningStats:
         logger.info(f"Loaded running statistics from {filename} with {stats.count} samples")
         return stats
 
+class PerFeatureRunningStats:
+    """Maintains separate running statistics for each feature"""
+    def __init__(self):
+        self.feature_stats = {}  # Dict[feature_name, RunningStats]
+        
+    def update(self, data, feature_names):
+        """Update statistics for each feature separately"""
+        if data is None or len(data) == 0:
+            return
+            
+        data = np.array(data, dtype=np.float64)
+        
+        for i, feature_name in enumerate(feature_names):
+            if feature_name not in self.feature_stats:
+                self.feature_stats[feature_name] = RunningStats()
+            
+            # Extract single feature column
+            feature_data = data[:, i:i+1]  # Keep 2D shape
+            self.feature_stats[feature_name].update(feature_data)
+    
+    def normalize(self, data, feature_names):
+        """Normalize each feature separately using its own statistics"""
+        if data is None or len(data) == 0:
+            return data
+            
+        data = np.array(data, dtype=np.float64)
+        normalized_data = np.zeros_like(data)
+        
+        for i, feature_name in enumerate(feature_names):
+            if feature_name in self.feature_stats and self.feature_stats[feature_name].count > 0:
+                # Normalize using feature-specific stats
+                feature_column = data[:, i:i+1]  # Keep 2D shape
+                normalized_column = self.feature_stats[feature_name].normalize(feature_column)
+                normalized_data[:, i] = normalized_column.flatten()
+            else:
+                # No normalization if no stats available
+                normalized_data[:, i] = data[:, i]
+                logger.warning(f"No statistics available for feature '{feature_name}', using original values")
+        
+        return normalized_data
+    
+    def save(self, filename):
+        """Save all feature statistics to file"""
+        save_data = {}
+        for feature_name, stats in self.feature_stats.items():
+            save_data[feature_name] = {
+                'count': stats.count,
+                'mean': stats.mean,
+                'var': stats.var,
+                'feature_names': stats.feature_names
+            }
+        
+        with open(filename, 'wb') as f:
+            pickle.dump(save_data, f)
+        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {filename}")
+    
+    @classmethod
+    def load(cls, filename):
+        """Load feature statistics from file"""
+        if not os.path.exists(filename):
+            logger.info(f"Statistics file {filename} not found, initializing new per-feature stats")
+            return cls()
+        
+        instance = cls()
+        
+        try:
+            with open(filename, 'rb') as f:
+                save_data = pickle.load(f)
+            
+            # Handle both old format (single RunningStats) and new format (per-feature)
+            if isinstance(save_data, dict) and 'count' in save_data:
+                # Old format - single RunningStats for all features
+                logger.info("Found old format statistics file, initializing new per-feature stats")
+                return cls()
+            
+            # New format - per-feature statistics
+            for feature_name, stats_data in save_data.items():
+                stats = RunningStats(feature_names=stats_data.get('feature_names'))
+                stats.count = stats_data.get('count', 0)
+                stats.mean = stats_data.get('mean')
+                stats.var = stats_data.get('var')
+                instance.feature_stats[feature_name] = stats
+            
+            logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {filename}")
+            
+        except Exception as e:
+            logger.warning(f"Error loading statistics file {filename}: {e}, initializing new stats")
+            return cls()
+        
+        return instance
+    
+    @property
+    def count(self):
+        """Return total count across all features (for compatibility)"""
+        if not self.feature_stats:
+            return 0
+        return max(stats.count for stats in self.feature_stats.values())
+    
+    def get_feature_names(self):
+        """Get list of all feature names with statistics"""
+        return list(self.feature_stats.keys())
+
 request_stats = None
 
 def get_request_stats():
     """Get or initialize request feature statistics"""
     global request_stats
     if request_stats is None:
-        request_stats = RunningStats.load(STATS_FILE)
+        # request_stats = RunningStats.load(STATS_FILE)
+        request_stats = PerFeatureRunningStats.load(STATS_FILE)
     return request_stats
 
 def write_to_file(log_data, raw_data):
@@ -164,10 +272,11 @@ def write_to_file(log_data, raw_data):
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
+
+# Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    # with LOCK_TRAINING_DATA:
-    global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
+    global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA
     flush_start_time = time.time()
     log_data = request.json
     try:
@@ -187,26 +296,30 @@ def handle_flush():
         df, _, all_pods, _ = preprocess.main(raw_data, "", TTFT_SLO, AVG_TPOT_SLO)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
-        # Update running statistics
-        # request_features = ['input_tokens', 'output_tokens', 'total_tokens', 'ttft', 'avg_tpot', 'e2e_latency']
         request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+        pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
+        all_features = request_features + pod_features_cols
+        
+        # Update running stats for each feature separately
         stats = get_request_stats()
-        stats.update(df[request_features].values)
+        stats.update(df[all_features].values, all_features)  # Pass feature names
         stats.save(STATS_FILE)
         
-        # Apply normalization using the updated running statistics
-        # normalized_values = stats.normalize(df[request_features].values)
-        normalized_values = stats.normalize(df[request_features_train].values)
-        for i, feature in enumerate(request_features):
+        # Apply per-feature normalization
+        normalized_values = stats.normalize(df[all_features].values, all_features)  # Pass feature names
+        for i, feature in enumerate(all_features):
             df[feature] = normalized_values[:, i]
-
+        
         # Encode preprocessed data
         ts_encode = time.time()
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{BATCH_ID}"
-        encoding.encode_for_train(all_pods, df, encoded_data_subdir, stats, request_features_train, request_features_reward)
+        # encoding.encode_for_train(all_pods, df, encoded_data_subdir, stats, request_features_train, request_features_reward)
+        encoding.encode_for_train(all_pods, df, encoded_data_subdir, None, request_features_train, request_features_reward)
         logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TRAINING_DATA_UPDATED = True
+        TOTAL_NUM_DATA += len(log_data)
+        NUM_NEW_DATA += len(log_data)
             
         return jsonify({"status": "success", "message": f"Successfully processed {len(log_data)} log messages"}), 200
         
@@ -217,28 +330,18 @@ def handle_flush():
         logger.error(f"Traceback: {error_traceback}")
         return jsonify({"status": "error", "message": str(e), "traceback": error_traceback}), 500
 
-def train_routine():
-    # with LOCK_TRAINING_DATA:
-    training_start_time = time.time()
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED
-    # sac.train(ENCODED_DATA_DIR)
-    # ppo.train(ENCODED_DATA_DIR)
-    # contextual_bandit.train(ENCODED_DATA_DIR)
-    if TRAINING_DATA_UPDATED:
-        logger.info(f"train_routine, Starting {NUM_TRAINS}th trained routing agent")
-        simpler_contextual_bandit.train(ENCODED_DATA_DIR)
-        MODEL_UPDATED = True
-        TRAINING_DATA_UPDATED = False
-        logger.info(f"train_routine, Successfully {NUM_TRAINS}th trained routing agent, total took {time.time() - training_start_time} seconds")
-        NUM_TRAINS += 1
-    else:
-        logger.info("train_routine, No new training data available, skipping training")
 
-
+# Fixed handle_infer function
 @app.route("/infer", methods=["POST"])
 def handle_infer():
+    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time
+    if first_request_starting_time == None:
+        first_request_starting_time = time.time()
+        logger.info(f"First request starting time set to {first_request_starting_time}")
+    if NUM_TRAINS == 0:
+        logger.warning("No trained model available, please call /flush to train first")
+        return jsonify({"error": "No trained model available, please call /flush to train first"}), 503
     handle_infer_start_time = time.time()
-    global NUM_TRAINS, MODEL_UPDATED
     try:
         # Get the log message as a string from the request body
         prep_start_time = time.time()
@@ -265,50 +368,67 @@ def handle_infer():
                 request_id = request_id_parts[0]
         handle_infer_total_prep_overhead = time.time() - prep_start_time
 
-        # # Create a temporary file with the single log message
-        # if not os.path.exists("infer_request"):
-        #     os.mkdir("infer_request")
-        # raw_data = f"infer_request/{request_id}.csv"
-        # with open(raw_data, "w") as log_file:
-        #     log_file.write(f"{log_message}\n")
-        # raw_data_write_overhead = time.time() - raw_data_write_start_time
-
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
         processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO)
         logger.debug(f"Successfully parsed data for request_{request_id}")
-        # os.remove(raw_data)
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
-        # # Print essential request features immediately after preprocessing
-        # logger.info("Important request features after preprocessing:")
-        # for feature in ['input_tokens', 'output_tokens', 'total_tokens', 'ttft', 'avg_tpot']:
-        #     if feature in processed_df.columns:
-        #         value = processed_df[feature].iloc[0] if len(processed_df) > 0 else "N/A"
-        #         logger.info(f"  {feature}: {value}")
-
-        # Get running statistics
+        # Get running statistics and apply normalization (SAME AS TRAINING)
         get_stat_start_time = time.time()
         stats = get_request_stats()
         if stats is None or stats.count == 0:
-            logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}, stats.mean: {stats.mean}, stats.var: {stats.var}")
-        handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
+            # logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}, stats.mean: {stats.mean}, stats.var: {stats.var}")
+            logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}")
+
+            
+        # Apply SAME normalization as training
+        request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+        pod_features_cols = [col for col in processed_df.columns if col.startswith('pod_') and 
+                            processed_df[col].dtype in ['float64', 'int64']]
         
-        ## new approach. in memory tensor dataset
+        all_features = request_features + pod_features_cols
+        
+        # # Apply normalization to ALL features (same as training)
+        # if all(feature in processed_df.columns for feature in all_features) and stats.count > 0:
+        #     normalized_values = stats.normalize(processed_df[all_features].values)
+        #     for i, feature in enumerate(all_features):
+        #         processed_df[feature] = normalized_values[:, i]
+        #     logger.debug(f"Applied normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
+        # else:
+        #     logger.warning(f"Could not apply normalization - missing features or no stats available")
+        if all(feature in processed_df.columns for feature in all_features) and stats.count > 0:
+            normalized_values = stats.normalize(processed_df[all_features].values, all_features)  # Pass feature names
+            for i, feature in enumerate(all_features):
+                processed_df[feature] = normalized_values[:, i]
+            logger.debug(f"Applied per-feature normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
+        else:
+            logger.warning(f"Could not apply normalization - missing features or no stats available")
+        
+        handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
+
+        
+        # Encode data (normalization already done)
         encode_start_time = time.time()
         tensor_dataset, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
-
-        # result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, exploration_enabled=EXPLORE_ENABLED, exploration_rate=EXPLORATION_RATE, model_updated=MODEL_UPDATED)
-        result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, exploration_enabled=EXPLORE_ENABLED, exploration_rate=EXPLORATION_RATE, model_updated=MODEL_UPDATED)
+        if MODEL == "simpler_contextual_bandit":
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, model_updated=MODEL_UPDATED)
+        elif MODEL == "contextual_bandit":
+            result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, model_updated=MODEL_UPDATED)
+        else:
+            logger.error(f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'")
+            return jsonify({"error": f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'"}), 500
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
             MODEL_UPDATED = False
         handle_infer_total_total_infer_from_tensor_overhead = time.time() - infer_from_tensor_start_time
-
+        result["requestID"] = request_id
+        result["num_trains"] = NUM_TRAINS
+        result["request_timestamp"] = time.time() - first_request_starting_time
         logger.info(f"Inference result: {result}")
         
         handle_infer_total_wrapup_start_time = time.time()
@@ -319,18 +439,18 @@ def handle_infer():
             selected_pod_index = 0
             
         selected_pod = all_pods[selected_pod_index]
-        confidence = result['confidence']
         handle_infer_total_wrapup_overhead = time.time() - handle_infer_total_wrapup_start_time
         handle_infer_total_overhead = time.time() - handle_infer_start_time
+        
         # Return the result
         response = {
+            "num_trains": NUM_TRAINS,
             "selected_pod": selected_pod,
-            "confidence": confidence,
+            "confidence": result['confidence'],
             "request_id": request_id,
-            # "raw_data_write_overhead": raw_data_write_overhead*1000,
             "* handle_infer_total_prep_overhead": handle_infer_total_prep_overhead*1000,
             "* handle_infer_total_total_preprocess_overhead": handle_infer_total_total_preprocess_overhead*1000,
-            "* handle_infer_total_get_stat_overhead": handle_infer_total_get_stat_overhead*1000,
+            # "* handle_infer_total_get_stat_overhead": handle_infer_total_get_stat_overhead*1000,
             "* handle_infer_total_total_encoding_overhead": handle_infer_total_total_encoding_overhead*1000,
             "* handle_infer_total_wrapup_overhead": handle_infer_total_wrapup_overhead*1000,
             "* handle_infer_total_total_infer_from_tensor_overhead": handle_infer_total_total_infer_from_tensor_overhead*1000,
@@ -344,7 +464,7 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             response[key] = value
         
-        logger.debug(f"Selected pod {selected_pod} with confidence {confidence}")
+        logger.debug(f"Selected pod {selected_pod} with confidence {result['confidence']}")
         return jsonify(response), 200
         
     except Exception as e:
@@ -353,6 +473,62 @@ def handle_infer():
         logger.error(f"Error in handle_infer: {str(e)}")
         logger.error(f"Traceback: {error_traceback}")
         return jsonify({"error": str(e), "traceback": error_traceback}), 500
+
+
+def train_routine():
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, continue_from_pretrained, NUM_NEW_DATA
+    # Load pretrained model on first training if available
+    if NUM_TRAINS == 0 and LOAD_PRETRAINED_MODEL:
+        if not os.path.exists(PRETRAINED_MODEL_PATH):
+            logger.error(f"Pretrained model path {PRETRAINED_MODEL_PATH} does not exist, cannot load pretrained model")
+            assert False
+        else:
+            logger.info(f"Loading pretrained model from {PRETRAINED_MODEL_PATH} for online learning")
+            try:
+                # Copy pretrained model to final_model_path for inference
+                os.makedirs(final_model_path, exist_ok=True)
+                os.system(f"cp {PRETRAINED_MODEL_PATH}/* {final_model_path}/")
+                
+                # Mark model as updated so inference will load it
+                MODEL_UPDATED = True
+                NUM_TRAINS = 1  # Set to 1 to indicate we have a model
+                logger.info("Successfully loaded pretrained model for online learning")
+                
+                # If online learning is disabled, just use the pretrained model
+                if not ENABLE_ONLINE_LEARNING:
+                    logger.info("Online learning disabled - using pretrained model only")
+                    return
+                    
+            except Exception as e:
+                logger.error(f"Failed to load pretrained model: {e}")
+                NUM_TRAINS = 0  # Reset to train from scratch
+    
+    # Continue with existing training logic only if online learning is enabled
+    if ENABLE_ONLINE_LEARNING and TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
+        training_start_time = time.time()
+        logger.info(f"train_routine, Starting {NUM_TRAINS}th online training iteration")
+        
+        if MODEL == "simpler_contextual_bandit":
+            simpler_contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=continue_from_pretrained)
+        elif MODEL == "contextual_bandit":
+            contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=continue_from_pretrained)
+        else:
+            logger.error(f"Unknown model {MODEL}")
+            return
+            
+        MODEL_UPDATED = True
+        TRAINING_DATA_UPDATED = False
+        logger.info(f"train_routine, Successfully completed {NUM_TRAINS}th online training, took {time.time() - training_start_time} seconds")
+        NUM_TRAINS += 1
+        NUM_NEW_DATA = 0
+    else:
+        if not ENABLE_ONLINE_LEARNING:
+            logger.info("Online learning disabled - skipping training")
+        else:
+            logger.info(f"train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
+
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

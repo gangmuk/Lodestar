@@ -247,6 +247,7 @@ type RouteResponse struct {
 	RequestID   string  `json:"request_id"`
 	SelectedPod string  `json:"selected_pod"`
 	Confidence  float64 `json:"confidence"`
+	NumTrains   int     `json:"num_trains"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -498,40 +499,38 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		r.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Status.PodIP)
 	}
 
-	end_to_end_overhead := time.Since(route_start_time).Milliseconds()
-	//// long log with all overhead summary
-	// response_process_overhead := time.Since(response_process_start).Milliseconds()
-	// formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
-	// klog.Infof("RL router, selected podIP: %s, \n"+
-	// 	"requestID: %s, Route end_to_end_overhead %dms, \n"+
-	// 	// "requestID: %s, infer_http_request took %dms, \n"+
-	// 	// "requestID: %s, tokenizer_overhead: %dms, \n"+
-	// 	"requestID: %s, log_construction_overhead: %dms, \n"+
-	// 	"requestID: %s, request_prepare_overhead: %dms, \n"+
-	// 	"requestID: %s, response_process_overhead: %dms, \n"+
-	// 	"ResponseBody: \n%s",
-	// 	ctx.TargetAddressWithoutPort(),
-	// 	ctx.RequestID, end_to_end_overhead,
-	// 	// ctx.RequestID, infer_overhead,
-	// 	// ctx.RequestID, tokenizer_overhead,
-	// 	ctx.RequestID, log_construction_overhead,
-	// 	ctx.RequestID, request_prepare_overhead,
-	// 	ctx.RequestID, response_process_overhead, // 1ms
-	// 	formattedResponseBody)
+	// utils.SetRequestToNumTrains(ctx.RequestID, routeResponse.NumTrains)
+	if routeResponse.NumTrains > utils.GetNumTrains() {
+		utils.SetNumTrains(routeResponse.NumTrains)
+	}
 
-	//// short log
-	klog.Infof("RL router, selected podIP: %s, \n"+
-		"requestID: %s, Route end_to_end_overhead %dms, \n"+
-		"requestID: %s, log_construction_overhead: %dms, \n"+
-		"requestID: %s, request_prepare_overhead: %dms, \n"+
-		"requestID: %s, response_process_overhead: %dms, \n"+
-		"routeResponse.SelectedPod: %s, \n"+
-		"routeResponse.Confidence: %f, \n"+
-		ctx.TargetAddressWithoutPort(),
-		ctx.RequestID, end_to_end_overhead,
-		routeResponse.SelectedPod,
-		routeResponse.Confidence,
-	)
+	end_to_end_overhead := time.Since(route_start_time).Milliseconds()
+	longlog := false
+	if longlog {
+		// long log with all overhead summary
+		response_process_overhead := time.Since(response_process_start).Milliseconds()
+		formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
+		klog.Infof("RL router, selected podIP: %s, \n"+
+			"requestID: %s, Route end_to_end_overhead %dms, \n"+
+			// "requestID: %s, infer_http_request took %dms, \n"+
+			// "requestID: %s, tokenizer_overhead: %dms, \n"+
+			"requestID: %s, log_construction_overhead: %dms, \n"+
+			"requestID: %s, request_prepare_overhead: %dms, \n"+
+			"requestID: %s, response_process_overhead: %dms, \n"+
+			"ResponseBody: \n%s",
+			ctx.TargetAddressWithoutPort(),
+			ctx.RequestID, end_to_end_overhead,
+			// ctx.RequestID, infer_overhead,
+			// ctx.RequestID, tokenizer_overhead,
+			ctx.RequestID, log_construction_overhead,
+			ctx.RequestID, request_prepare_overhead,
+			ctx.RequestID, response_process_overhead, // 1ms
+			formattedResponseBody)
+	} else {
+		//// short log
+		klog.Infof("RL router, selected podIP: %s, requestID: %s, Route end_to_end_overhead %dms, selectedPod: %s", ctx.TargetAddressWithoutPort(), ctx.RequestID, end_to_end_overhead, ctx.TargetAddressWithoutPort())
+	}
+
 	return ctx.TargetAddress(), nil
 }
 
