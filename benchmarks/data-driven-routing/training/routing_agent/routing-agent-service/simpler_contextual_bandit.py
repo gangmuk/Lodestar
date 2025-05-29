@@ -308,9 +308,9 @@ class SimplifiedContextualBandit:
             batch_rewards = normalized_rewards[batch_indices]
             
             # ADD THESE PRINTS HERE:
-            logger.info(f"Batch {batch_idx}: rewards range [{batch_rewards.min():.3f}, {batch_rewards.max():.3f}]")
-            logger.info(f"Batch {batch_idx}: actions {batch_actions.cpu().numpy()}")
-            logger.info(f"Batch {batch_idx}: rewards {batch_rewards.squeeze().cpu().numpy()}")
+            logger.debug(f"Batch {batch_idx}: rewards range [{batch_rewards.min():.3f}, {batch_rewards.max():.3f}]")
+            logger.debug(f"Batch {batch_idx}: actions {batch_actions.cpu().numpy()}")
+            logger.debug(f"Batch {batch_idx}: rewards {batch_rewards.squeeze().cpu().numpy()}")
             
 
             # Get current policy distributions

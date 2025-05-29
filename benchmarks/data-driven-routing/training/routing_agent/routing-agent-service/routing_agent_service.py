@@ -48,6 +48,9 @@ continue_from_pretrained = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower()
 TTFT_SLO = int(os.getenv("TTFT_SLO", 500))
 AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 40))
 first_request_starting_time = None
+signal_amplification_degree = 1.0 # 1.5
+reward_amplification_degree = 2.0
+reward_amplification_threshold = 0.5
 
 logger.info(f"TTFT_SLO: {TTFT_SLO}")
 logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
@@ -296,19 +299,93 @@ def handle_flush():
         df, _, all_pods, _ = preprocess.main(raw_data, "", TTFT_SLO, AVG_TPOT_SLO)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
+        
+        ## old
+        # request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+        # pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
+        # all_features = request_features + pod_features_cols
+        
+        # # Update running stats for each feature separately
+        # stats = get_request_stats()
+        # stats.update(df[all_features].values, all_features)  # Pass feature names
+        # stats.save(STATS_FILE)
+        
+        # # Apply per-feature normalization
+        # normalized_values = stats.normalize(df[all_features].values, all_features)  # Pass feature names
+        # for i, feature in enumerate(all_features):
+        #     df[feature] = normalized_values[:, i]
+
+        # ===== POD-CENTRIC FEATURE ENGINEERING =====
         request_features = ['input_tokens', 'output_tokens', 'total_tokens']
         pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
-        all_features = request_features + pod_features_cols
-        
-        # Update running stats for each feature separately
+        logger.debug(f"Found features. Request: {request_features}, Pod: {len(pod_features_cols)} features")
+
+        # ===== SELECTIVE NORMALIZATION STRATEGY =====
         stats = get_request_stats()
-        stats.update(df[all_features].values, all_features)  # Pass feature names
+
+        # 1. Handle request features - only normalize if they have reasonable variance
+        request_normalized_count = 0
+        for feature in request_features:
+            if feature in df.columns:
+                values = df[feature].values
+                if values.std() > 10:  # Only normalize if reasonable variance
+                    feature_data = values.reshape(-1, 1)
+                    if feature not in stats.feature_stats:
+                        stats.feature_stats[feature] = RunningStats()
+                    stats.feature_stats[feature].update(feature_data)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    request_normalized_count += 1
+                    logger.debug(f"Normalized request feature: {feature}")
+                else:
+                    logger.debug(f"Kept raw values for: {feature}")
+
+        # 2. Handle pod features - normalize high-variance features only
+        pod_normalized_count = 0
+        for feature in pod_features_cols:
+            if feature in df.columns:
+                if 'kv_hit_ratio' in feature:
+                    logger.debug(f"Skipping normalization for {feature} (already 0-100 scale)")
+                    continue
+                
+                values = df[feature].values
+                if values.std() > 0.1:  # Only normalize features with meaningful variance
+                    feature_data = values.reshape(-1, 1)
+                    
+                    if feature not in stats.feature_stats:
+                        stats.feature_stats[feature] = RunningStats()
+                    
+                    stats.feature_stats[feature].update(feature_data)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    pod_normalized_count += 1
+                    logger.debug(f"Normalized pod feature: {feature}")
+
+        # 3. FEATURE IMPORTANCE AMPLIFICATION
+        critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
+        amplified_count = 0
+        for feature in pod_features_cols:
+            if any(critical in feature for critical in critical_features):
+                if feature in df.columns:
+                    df[feature] = df[feature] * signal_amplification_degree
+                    amplified_count += 1
+                    logger.debug(f"Amplified critical feature: {feature}")
+
+        # Save updated stats
         stats.save(STATS_FILE)
-        
-        # Apply per-feature normalization
-        normalized_values = stats.normalize(df[all_features].values, all_features)  # Pass feature names
-        for i, feature in enumerate(all_features):
-            df[feature] = normalized_values[:, i]
+
+        logger.debug(f"Feature processing: {request_normalized_count} request features normalized, "
+                f"{pod_normalized_count} pod features normalized, {amplified_count} features amplified")
+
+        # ===== REWARD ENGINEERING =====
+        if 'reward' in df.columns:
+            rewards = df['reward'].values
+            reward_gap = rewards.max() - rewards.min()
+            if reward_gap < reward_amplification_threshold:
+                logger.debug("Applying reward amplification")
+                reward_mean = rewards.mean()
+                df['reward'] = reward_mean + (rewards - reward_mean) * reward_amplification_degree
+                logger.debug(f"Amplified rewards: gap {reward_gap:.3f} -> {df['reward'].max() - df['reward'].min():.3f}")
         
         # Encode preprocessed data
         ts_encode = time.time()
@@ -389,21 +466,55 @@ def handle_infer():
         
         all_features = request_features + pod_features_cols
         
-        # # Apply normalization to ALL features (same as training)
+
         # if all(feature in processed_df.columns for feature in all_features) and stats.count > 0:
-        #     normalized_values = stats.normalize(processed_df[all_features].values)
+        #     normalized_values = stats.normalize(processed_df[all_features].values, all_features)  # Pass feature names
         #     for i, feature in enumerate(all_features):
         #         processed_df[feature] = normalized_values[:, i]
-        #     logger.debug(f"Applied normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
+        #     logger.debug(f"Applied per-feature normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
         # else:
         #     logger.warning(f"Could not apply normalization - missing features or no stats available")
-        if all(feature in processed_df.columns for feature in all_features) and stats.count > 0:
-            normalized_values = stats.normalize(processed_df[all_features].values, all_features)  # Pass feature names
-            for i, feature in enumerate(all_features):
-                processed_df[feature] = normalized_values[:, i]
-            logger.debug(f"Applied per-feature normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
+
+        # Apply SAME pod-centric normalization as training
+        if stats.count > 0:
+            logger.debug("Applying pod-centric normalization for inference")
+            
+            # 1. Request features - only normalize if they were normalized in training
+            for feature in request_features:
+                if feature in processed_df.columns and feature in stats.feature_stats:
+                    feature_data = processed_df[feature].values.reshape(-1, 1)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    processed_df[feature] = normalized_feature.flatten()
+                    logger.debug(f"Normalized request feature {feature} for inference")
+                else:
+                    logger.debug(f"Kept raw values for request feature {feature}")
+            
+            # 2. Pod features - normalize those that were normalized in training
+            pod_normalized_count = 0
+            for feature in pod_features_cols:
+                if 'kv_hit_ratio' in feature:
+                    continue  # Skip normalization
+                if feature in processed_df.columns and feature in stats.feature_stats:
+                    feature_data = processed_df[feature].values.reshape(-1, 1)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    processed_df[feature] = normalized_feature.flatten()
+                    pod_normalized_count += 1
+                    logger.debug(f"Normalized pod feature {feature} for inference")
+            
+            # 3. Apply same critical feature amplification as training
+            critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
+            amplified_count = 0
+            for feature in pod_features_cols:
+                if any(critical in feature for critical in critical_features):
+                    if feature in processed_df.columns:
+                        processed_df[feature] = processed_df[feature] * signal_amplification_degree
+                        amplified_count += 1
+                        logger.debug(f"Amplified critical feature {feature} for inference")
+            
+            logger.debug(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
+            
         else:
-            logger.warning(f"Could not apply normalization - missing features or no stats available")
+            logger.warning(f"No normalization stats available for inference")
         
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
