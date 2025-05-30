@@ -117,31 +117,25 @@ func FlushLogMessageToRLAgent() {
 						}
 						req.Header.Set("Content-Type", "application/json")
 						resp, sendErr := httpClientForRLAgent.Do(req) // flush request
-						klog.Info("flush 1")
 						if sendErr != nil {
 							klog.Errorf("Failed flush. failed to send request: %v", sendErr)
 							utils.CleanupAllRequestLogMessage()
 							continue
 						}
-						klog.Info("flush 2")
 						if resp.StatusCode != http.StatusOK {
 							klog.Errorf("Received non-200 response: %s", resp.Status)
 							utils.CleanupAllRequestLogMessage()
 							klog.Errorf("Failed flush. Received non-200 response: %s", resp.Status)
 							continue
 						}
-						klog.Info("flush 3")
 						body, readErr := ioutil.ReadAll(resp.Body)
-						klog.Info("flush 4")
 						if readErr != nil {
 							klog.Errorf("Failed to read response body: %v", readErr)
 							utils.CleanupAllRequestLogMessage()
 							klog.Errorf("Failed flush. Failed to read response body: %v", readErr)
 							continue
 						}
-						klog.Info("flush 5")
 						resp.Body.Close()
-						klog.Info("flush 7")
 						utils.CleanupAllRequestLogMessage()
 						klog.Infof("Successfully flushed, response: %s", string(body))
 						flushed = true
@@ -284,12 +278,37 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		ctx.SetTargetPod(targetPod)
 		return ctx.TargetAddress(), nil
 	}
-	if !flushed {
-		klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
-		ctx.SetTargetPod(targetPod)
-		return ctx.TargetAddress(), nil
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range readyPods {
+		readyPodsMap[pod.Status.PodIP] = struct{}{}
 	}
+	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
+	if err != nil {
+		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
+		return "", err
+	}
+
+	var prefixHashes []uint64
+	var matchedPods map[string]int
+	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+	if len(matchedPods) == 0 {
+		klog.Infof("requestID: %s, No matched pods found. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
+		for _, pod := range readyPods {
+			matchedPods[pod.Status.PodIP] = 0
+			// matchedPods[pod.Name] = 0
+		}
+	}
+	klog.Infof("requestID: %s, StoreKVCacheHitRatio, matchedPods: %v", ctx.RequestID, matchedPods)
+	utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
+
+	// if !flushed {
+	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
+	// 	targetPod, _ = r.fallbackRouting(ctx, readyPods)
+	// 	ctx.SetTargetPod(targetPod)
+	// 	return ctx.TargetAddress(), nil
+	// }
+
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available")
 	}
@@ -298,40 +317,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		ctx.SetTargetPod(readyPods[0])
 		return ctx.TargetAddress(), nil
 	}
-	var prefixHashes []uint64
-	var matchedPods map[string]int
-	readyPodsMap := map[string]struct{}{}
-	for _, pod := range readyPods {
-		readyPodsMap[pod.Status.PodIP] = struct{}{}
-		// readyPodsMap[pod.Name] = struct{}{} // podName is used here. utils.FilterPodByName(targetPodName, readyPods)
-	}
-	// tokenizer_start_time := time.Now()
-	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
-	// tokenizer_overhead := time.Since(tokenizer_start_time).Milliseconds()
-	if err != nil {
-		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
-		return "", err
-	}
-
-	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	if len(matchedPods) == 0 {
-		klog.Infof("No matched pods found. Filled all readypods with 0 kv cache hit ratio")
-		for _, pod := range readyPods {
-			matchedPods[pod.Status.PodIP] = 0
-			// matchedPods[pod.Name] = 0
-		}
-	}
 
 	var log string
 	log_construction_start_time := time.Now()
 	if utils.UseRealRequest == "true" {
-		klog.Infof("utils.UseRealRequest:%s, requestID: %s", utils.UseRealRequest, ctx.RequestID)
+		klog.Infof("utils.UseRealRequest: %s, requestID: %s", utils.UseRealRequest, ctx.RequestID)
 		numInputTokens := len(tokens)
 		numOutputTokens := 128 // Placeholder for output tokens
 		numTotalTokens := numInputTokens + numOutputTokens
-
-		klog.Infof("StoreKVCacheHitRatio, matchedPods: %v", matchedPods)
-		utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
 
 		// Prepare for JSON strings to use in logging
 		var jsonStrings = make(map[string]string)

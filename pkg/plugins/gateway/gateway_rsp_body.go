@@ -175,7 +175,7 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 	return existingUsage, false, nil
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -184,7 +184,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	complete := hasCompleted
 	routerCtx, _ := ctx.(*types.RoutingContext)
 
-	timingObj, exists := utils.RequestTimings.Load(requestID)
+	timingObj, exists := utils.RequestTimings.Load(routerCtx.RequestID)
 	var timing *RequestTiming
 	if exists {
 		timing = timingObj.(*RequestTiming)
@@ -192,13 +192,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	currentTime := time.Now()
 	if timing != nil {
 		if stream {
-			usage_, complete, errorResponse := s.handleStreamingResponse(requestID, b.ResponseBody.GetBody())
+			usage_, complete, errorResponse := s.handleStreamingResponse(routerCtx.RequestID, b.ResponseBody.GetBody())
 			usage = usage_
 			if errorResponse != nil {
 				return errorResponse, complete
 			}
 		} else {
-			buf, _ := s.requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+			buf, _ := s.requestBuffers.LoadOrStore(routerCtx.RequestID, &bytes.Buffer{})
 			buffer := buf.(*bytes.Buffer)
 			buffer.Write(b.ResponseBody.Body)
 			if timing.firstTokenTime.IsZero() && b.ResponseBody.EndOfStream {
@@ -214,9 +214,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}, complete
 			}
 			finalBody := buffer.Bytes()
-			s.requestBuffers.Delete(requestID)
+			s.requestBuffers.Delete(routerCtx.RequestID)
 			if err := json.Unmarshal(finalBody, &res); err != nil {
-				klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
+				klog.ErrorS(err, "error to unmarshal response", "requestID", routerCtx.RequestID)
 				complete = true
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
@@ -230,7 +230,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				if len(responseBodyContent) != 0 {
 					msg = responseBodyContent
 				}
-				klog.ErrorS(nil, "unexpected response", "requestID", requestID)
+				klog.ErrorS(nil, "unexpected response", "requestID", routerCtx.RequestID)
 				complete = true
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
@@ -246,28 +246,28 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			ret := utils.DecrementNumDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
 			klog.V(5).Infof("DecrementNumDecodeTokensForPod(%s) by %d, %d", routerCtx.TargetAddressWithoutPort(), timing.totalTokenCount, ret)
 
-			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, requestID, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 			if utils.UseRealRequest == "true" {
-				utils.AddRequestLogMessage(requestID, logMessage)
+				utils.AddRequestLogMessage(routerCtx.RequestID, logMessage)
 			}
 			// for i := 0; i < 100; i++ {
 			// 	temp_id := fmt.Sprint(i)
 			// 	utils.AddRequestLogMessage(temp_id, example_log_message_1)
 			// }
-			utils.CleanupKVCacheHitRatio(requestID)
-			utils.CleanupInflightRequests(requestID)
-			utils.CleanupvLLMGPUKVCacheUsage(requestID)
-			utils.CleanupvLLMCPUKVCacheUsage(requestID)
-			utils.CleanupvLLMNumRequestsRunning(requestID)
-			utils.CleanupvLLMNumRequestsWaiting(requestID)
-			utils.CleanupNumPrefillTokensForRequest(requestID)
-			utils.CleanupNumDecodeTokensForRequest(requestID)
-			utils.CleanupRequestPodMetrics(requestID)
+			utils.CleanupKVCacheHitRatio(routerCtx.RequestID)
+			utils.CleanupInflightRequests(routerCtx.RequestID)
+			utils.CleanupvLLMGPUKVCacheUsage(routerCtx.RequestID)
+			utils.CleanupvLLMCPUKVCacheUsage(routerCtx.RequestID)
+			utils.CleanupvLLMNumRequestsRunning(routerCtx.RequestID)
+			utils.CleanupvLLMNumRequestsWaiting(routerCtx.RequestID)
+			utils.CleanupNumPrefillTokensForRequest(routerCtx.RequestID)
+			utils.CleanupNumDecodeTokensForRequest(routerCtx.RequestID)
+			utils.CleanupRequestPodMetrics(routerCtx.RequestID)
 
 			headers = append(headers, timingHeaders...)
 			// }
-			utils.RequestTimings.Delete(requestID)
-			s.routingContexts.Delete(requestID)
+			utils.RequestTimings.Delete(routerCtx.RequestID)
+			s.routingContexts.Delete(routerCtx.RequestID)
 		}
 	}
 	if usage.TotalTokens > 0 {
@@ -310,7 +310,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{
 						Key:      HeaderRequestID,
-						RawValue: []byte(requestID),
+						RawValue: []byte(routerCtx.RequestID),
 					},
 				},
 			)
@@ -319,7 +319,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	defer func() {
 		if !hasCompleted && complete {
-			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+			s.cache.DoneRequestTrace(routerCtx, routerCtx.RequestID, model, promptTokens, completionTokens, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
@@ -342,7 +342,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 		}
 		if err := streaming.Err(); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			klog.ErrorS(err, "error to unmarshal response", "requestID", routerCtx.RequestID, "responseBody", string(b.ResponseBody.GetBody()))
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
@@ -352,7 +352,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				err.Error()), complete
 		}
 	} else {
-		buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+		buf, _ := requestBuffers.LoadOrStore(routerCtx.RequestID, &bytes.Buffer{})
 		buffer := buf.(*bytes.Buffer)
 		buffer.Write(b.ResponseBody.Body)
 		if !b.ResponseBody.EndOfStream {
@@ -365,9 +365,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}, complete
 		}
 		finalBody := buffer.Bytes()
-		requestBuffers.Delete(requestID)
+		requestBuffers.Delete(routerCtx.RequestID)
 		if err := json.Unmarshal(finalBody, &res); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			klog.ErrorS(err, "error to unmarshal response", "requestID", routerCtx.RequestID, "responseBody", string(b.ResponseBody.GetBody()))
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
@@ -381,7 +381,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			if len(responseBodyContent) != 0 {
 				msg = responseBodyContent
 			}
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
+			klog.ErrorS(err, "unexpected response", "requestID", routerCtx.RequestID, "responseBody", responseBodyContent)
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
@@ -441,7 +441,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{
 						Key:      HeaderRequestID,
-						RawValue: []byte(requestID),
+						RawValue: []byte(routerCtx.RequestID),
 					},
 				},
 				&configPb.HeaderValueOption{
@@ -454,7 +454,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
-		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
+		klog.Infof("request end, requestID: %s - %s", routerCtx.RequestID, requestEnd)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
 	}
@@ -510,8 +510,8 @@ func addMetricToHeaders(headers []*configPb.HeaderValueOption, key string, data 
 	return headers, jsonStr
 }
 
-func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.Time, requestID string, routingCtx *types.RoutingContext, stream bool, numInputTokens int64, numOutputTokens int64, numTotalTokens int64) ([]*configPb.HeaderValueOption, string) {
-	klog.V(5).Infof("requestID: %s, timing.decodeTokenCount: %d, timing.prefillTokenCount: %d", requestID, timing.decodeTokenCount, timing.prefillTokenCount)
+func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.Time, routerCtx *types.RoutingContext, stream bool, numInputTokens int64, numOutputTokens int64, numTotalTokens int64) ([]*configPb.HeaderValueOption, string) {
+	klog.V(5).Infof("requestID: %s, timing.decodeTokenCount: %d, timing.prefillTokenCount: %d", routerCtx.RequestID, timing.decodeTokenCount, timing.prefillTokenCount)
 
 	ttftMs := int64(0)
 	if !timing.firstTokenTime.IsZero() {
@@ -561,16 +561,16 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	var jsonStrings = make(map[string]string)
 
 	// 1. KV cache hit ratios
-	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(requestID)
+	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(routerCtx.RequestID)
 	headers, jsonStrings["allPodsKvCacheHitRatios"] = addMetricToHeaders(headers, HeaderKVCacheHitRatioAllPods, allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
 
 	// 2. Inflight requests
-	numInflightRequestsAllPods := utils.GetInflightRequestsForAllPods(requestID)
+	numInflightRequestsAllPods := utils.GetInflightRequestsForAllPods(routerCtx.RequestID)
 	headers, jsonStrings["numInflightRequestsAllPods"] = addMetricToHeaders(headers, HeaderNumInflightRequestsAllPods, numInflightRequestsAllPods, utils.GetrequestInflightMutex())
-	utils.DecrementNumInflightForPod(requestID, routingCtx.TargetAddressWithoutPort())
+	utils.DecrementNumInflightForPod(routerCtx.RequestID, routerCtx.TargetAddressWithoutPort())
 
 	// 3. GPU KV cache usage
-	vllmGPUKVCacheUsage, err := utils.GetvLLMGPUKVCacheUsageForAllPods(requestID)
+	vllmGPUKVCacheUsage, err := utils.GetvLLMGPUKVCacheUsageForAllPods(routerCtx.RequestID)
 	if err == nil {
 		headers, jsonStrings["vllmGPUKVCacheUsage"] = addMetricToHeaders(headers, HeadervLLMGPUKVCacheUsage, vllmGPUKVCacheUsage, utils.GetvllmGPUKVCacheUsageMutex())
 	} else {
@@ -578,7 +578,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	}
 
 	// 4. CPU KV cache usage
-	vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(requestID)
+	vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(routerCtx.RequestID)
 	if err == nil {
 		headers, jsonStrings["vllmCPUKVCacheUsage"] = addMetricToHeaders(headers, HeadervLLMCPUKVCacheUsage, vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
 	} else {
@@ -586,7 +586,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	}
 
 	// 5. Number of running requests
-	vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(requestID)
+	vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(routerCtx.RequestID)
 	if err == nil {
 		headers, jsonStrings["vllmNumRequestsRunning"] = addMetricToHeaders(headers, HeadervLLMNumRunningRequests, vllmNumRequestsRunning, utils.GetvllmNumRequestsRunningMutex())
 	} else {
@@ -594,7 +594,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	}
 
 	// 6. Number of waiting requests
-	vllmNumRequestWaiting, err := utils.GetvLLMNumRequestsWaitingForAllPods(requestID)
+	vllmNumRequestWaiting, err := utils.GetvLLMNumRequestsWaitingForAllPods(routerCtx.RequestID)
 	if err == nil {
 		headers, jsonStrings["vllmNumRequestWaiting"] = addMetricToHeaders(headers, HeadervLLMNumwWaitingRequests, vllmNumRequestWaiting, utils.GetvllmNumRequestsWaitingMutex())
 	} else {
@@ -609,20 +609,20 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 
 	// Get selected pod
 	selectedPodIP := "unknown"
-	if routingCtx != nil {
-		selectedPodIP = routingCtx.TargetAddressWithoutPort()
+	if routerCtx != nil {
+		selectedPodIP = routerCtx.TargetAddressWithoutPort()
 	}
 
 	ts := time.Now()
-	podDetailedMetrics := utils.GetRequestPodMetrics(requestID)
-	klog.V(5).Infof("GetAndCleanupRequestPodMetrics took %d, %s, %s", time.Since(ts).Milliseconds(), requestID, selectedPodIP)
+	podDetailedMetrics := utils.GetRequestPodMetrics(routerCtx.RequestID)
+	klog.V(5).Infof("GetAndCleanupRequestPodMetrics took %d, %s, %s", time.Since(ts).Milliseconds(), routerCtx.RequestID, selectedPodIP)
 	headers, jsonStrings["podMetricsLastSecond"] = addMetricToHeaders(headers, HeaderPodDetailedMetrics, podDetailedMetrics, utils.MetricsTracker.GetMutex())
 
 	// log_window_end_time := time.Now()
 	// log_window_start_time := time.Now().Add(utils.MetricsTracker.WindowSize * -1)
 
 	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d",
-		requestID,
+		routerCtx.RequestID,
 		timing.startTime.UnixMicro(),
 		currentTime.UnixMicro(),
 		selectedPodIP,

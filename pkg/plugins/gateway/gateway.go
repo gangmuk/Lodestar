@@ -125,36 +125,36 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			if routerCtx != nil {
 				if routerCtx.Err() != nil {
 					klog.ErrorS(routerCtx.Err(), "Routing context already canceled, using original",
-						"requestID", requestID)
+						"requestID", routerCtx.RequestID)
 				}
 				ctx = routerCtx
 			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			klog.V(5).Infof("Before HandleResponseHeaders, requestID: %s, ctx.Err(): %v", requestID, ctx.Err())
-			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
+			klog.V(5).Infof("Before HandleResponseHeaders, requestID: %s, ctx.Err(): %v", routerCtx.RequestID, ctx.Err())
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, routerCtx.RequestID, model, req)
 			if isRespError {
-				klog.Errorf("Response headers processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, requestID, routerCtx.TargetAddress(), model)
+				klog.Errorf("Response headers processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, routerCtx.RequestID, routerCtx.TargetAddress(), model)
 			}
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 			if isRespError {
-				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
-				klog.Errorf("Response body processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, requestID, routerCtx.TargetAddress(), model)
+				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", routerCtx.RequestID)
+				klog.Errorf("Response body processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, routerCtx.RequestID, routerCtx.TargetAddress(), model)
 				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
 			} else {
-				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
+				resp, completed = s.HandleResponseBody(ctx, req, user, rpm, model, stream, traceTerm, completed)
 			}
 		default:
 			klog.Errorf("Unknown Request type %+v\n", v)
 		}
 
 		if err := srv.Send(resp); err != nil && len(model) > 0 {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
+			s.cache.DoneRequestCount(routerCtx, routerCtx.RequestID, model, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
-			klog.ErrorS(err, "Error, requestID", requestID)
+			klog.ErrorS(err, "Error, requestID", routerCtx.RequestID)
 		}
 	}
 }

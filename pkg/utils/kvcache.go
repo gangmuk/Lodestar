@@ -975,8 +975,13 @@ func CleanuprequestToPodIP(requestID string) {
 func StoreKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
 	requestAllPodsKVCacheMutex.Lock()
 	defer requestAllPodsKVCacheMutex.Unlock()
-	requestAllPodsKVCache[requestID] = allPodsRatios
-	klog.Infof("StoreKVCacheHitRatio, Stored KV cache hit ratios for request %s: %v", requestID, allPodsRatios)
+
+	if _, exists := requestAllPodsKVCache[requestID]; !exists {
+		requestAllPodsKVCache[requestID] = allPodsRatios
+	} else {
+		klog.Errorf("requestID: %s, already exists in requestAllPodsKVCache", requestID)
+	}
+	klog.Infof("StoreKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
 }
 
 func GetAllPodsKVCacheHitRatios(requestID string) map[string]int {
@@ -990,7 +995,7 @@ func GetAllPodsKVCacheHitRatios(requestID string) map[string]int {
 		}
 		return result
 	}
-	klog.Errorf("requestID not found in requestAllPodsKVCache: %s", requestID)
+	klog.Errorf("requestID: %s, not found in requestAllPodsKVCache", requestID)
 	return make(map[string]int)
 }
 
