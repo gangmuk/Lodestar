@@ -35,7 +35,7 @@ import (
 )
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	klog.V(5).Infof("HandleRequestBody context state, requestID: %s, ctx.Err(): %v", requestID, ctx.Err())
+	klog.Infof("HandleRequestBody context state, requestID: %s", requestID)
 
 	var model string
 	var subAlgorithm string
@@ -124,6 +124,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		prefill_tokens, err := utils.TokenizeInputText(routingCtx.Message)
+
 		if err != nil {
 			klog.Errorf("requestID: %s, Tokenization failed: %v", routingCtx.RequestID, err)
 		}
