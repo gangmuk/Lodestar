@@ -435,7 +435,7 @@ def handle_infer():
             
             first_key = list(log_data.keys())[0]
             log_message = log_data[first_key]
-        logger.debug(f"Received inference request:\n{log_message}")
+        logger.info(f"Received inference request:\n{log_message}")
 
         # Extract request ID for logging purposes
         parts = log_message.split("requestID@")
@@ -645,7 +645,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     
     scheduler = BackgroundScheduler()
-    scheduler.add_job(func=train_routine, trigger="interval", seconds=10)
+    scheduler.add_job(func=train_routine, trigger="interval", seconds=1)
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
 
