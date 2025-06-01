@@ -544,7 +544,7 @@ func (t *PodMetricsTracker) GetDetailedMetrics(log_window_start_time time.Time) 
 				validMetrics = append(validMetrics, m)
 			}
 		}
-		klog.Infof("Number of valid metrics for pod %s: %d", podIP, len(validMetrics))
+		klog.V(5).Infof("Number of valid metrics for pod %s: %d", podIP, len(validMetrics))
 		var ttftValues []int64
 		var tpotValues []int64
 		var ttftSum, tpotSum int64
@@ -596,7 +596,7 @@ func (t *PodMetricsTracker) GetDetailedMetrics(log_window_start_time time.Time) 
 		}
 		result[podIP] = detailedMetrics
 		// Print all metrics for debugging
-		klog.Infof("Pod %s metrics: %+v", podIP, detailedMetrics)
+		klog.V(5).Infof("Pod %s metrics: %+v", podIP, detailedMetrics)
 	}
 	return result
 }

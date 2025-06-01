@@ -799,7 +799,7 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
                 
                 # Test different modification levels
                 feature_changes = 0
-                modification_levels = [-20.0, -10.0, +10.0, +20.0]  # Different intensity levels
+                modification_levels = [0, +10.0, +20.0, +40, +60, +80, +100]  # Different intensity levels
                 
                 for mod_level in modification_levels:
                     # Create modified tensor
@@ -1369,8 +1369,8 @@ def main():
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio (default: 0.8 for 80%% train, 20%% test)')
     parser.add_argument('--auto_split', action='store_true', help='Automatically split data_file into train/test')
     parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='random_forest', help='Model type to use for training (default: random_forest)')
-    parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=500)
-    parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=40)
+    parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
+    parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
 
     args = parser.parse_args()
@@ -1450,7 +1450,7 @@ def main():
     # NEW: Behavior Analysis (before regular testing)
     if args.analyze_behavior and test_data and len(test_data) > 0:
         logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
-        analyze_model_behavior(args, test_data)
+        # analyze_model_behavior(args, test_data)
         analyze_detailed_feature_sensitivity(args, test_data)
         logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
     
