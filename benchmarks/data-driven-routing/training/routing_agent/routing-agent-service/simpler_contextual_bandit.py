@@ -25,6 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 training_results_dir = "training_results"
 final_model_path = "final_model"
+secondary_final_model_path = None
 
 hyperparameters = {
         'hidden_dim': 32,  # Reduced hidden dimension for small dataset
@@ -134,65 +135,65 @@ class FixedPolicyNetwork(nn.Module):
         return actions, log_probs
 
 
-# ALTERNATIVE APPROACH 2: Attention-based
-class AttentionPolicyNetwork(nn.Module):
-    """
-    Alternative: Use attention to focus on relevant pods
-    """
-    def __init__(self, state_dim, action_dim, hidden_dim):
-        super().__init__()
+# # ALTERNATIVE APPROACH 2: Attention-based
+# class AttentionPolicyNetwork(nn.Module):
+#     """
+#     Alternative: Use attention to focus on relevant pods
+#     """
+#     def __init__(self, state_dim, action_dim, hidden_dim):
+#         super().__init__()
         
-        self.state_dim = state_dim
-        pod_feature_size = state_dim['pod_features'] + state_dim['kv_hit_ratios']
-        request_feature_size = state_dim['request_features']
+#         self.state_dim = state_dim
+#         pod_feature_size = state_dim['pod_features'] + state_dim['kv_hit_ratios']
+#         request_feature_size = state_dim['request_features']
         
-        # Encode pod features
-        self.pod_encoder = nn.Sequential(
-            nn.Linear(pod_feature_size, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
+#         # Encode pod features
+#         self.pod_encoder = nn.Sequential(
+#             nn.Linear(pod_feature_size, hidden_dim),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim, hidden_dim)
+#         )
         
-        # Encode request features  
-        self.request_encoder = nn.Sequential(
-            nn.Linear(request_feature_size, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
+#         # Encode request features  
+#         self.request_encoder = nn.Sequential(
+#             nn.Linear(request_feature_size, hidden_dim),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim, hidden_dim)
+#         )
         
-        # Attention mechanism
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, batch_first=True)
+#         # Attention mechanism
+#         self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, batch_first=True)
         
-        # Final scoring
-        self.scorer = nn.Linear(hidden_dim, 1)
+#         # Final scoring
+#         self.scorer = nn.Linear(hidden_dim, 1)
         
-    def forward(self, pod_features, kv_hit_ratios, request_features, return_attention=False):
-        batch_size = pod_features.shape[0]
-        num_pods = pod_features.shape[1]
+#     def forward(self, pod_features, kv_hit_ratios, request_features, return_attention=False):
+#         batch_size = pod_features.shape[0]
+#         num_pods = pod_features.shape[1]
         
-        # Combine and encode pod features
-        combined_pod_features = torch.cat([pod_features, kv_hit_ratios], dim=2)
-        pod_encoded = self.pod_encoder(combined_pod_features)  # [batch, num_pods, hidden_dim]
+#         # Combine and encode pod features
+#         combined_pod_features = torch.cat([pod_features, kv_hit_ratios], dim=2)
+#         pod_encoded = self.pod_encoder(combined_pod_features)  # [batch, num_pods, hidden_dim]
         
-        # Encode request as query
-        request_encoded = self.request_encoder(request_features)  # [batch, hidden_dim]
-        query = request_encoded.unsqueeze(1)  # [batch, 1, hidden_dim]
+#         # Encode request as query
+#         request_encoded = self.request_encoder(request_features)  # [batch, hidden_dim]
+#         query = request_encoded.unsqueeze(1)  # [batch, 1, hidden_dim]
         
-        # Attention: request attends to pods
-        attended_features, attention_weights = self.attention(
-            query.expand(-1, num_pods, -1),  # Query for each pod
-            pod_encoded,  # Keys: pod features
-            pod_encoded   # Values: pod features
-        )
+#         # Attention: request attends to pods
+#         attended_features, attention_weights = self.attention(
+#             query.expand(-1, num_pods, -1),  # Query for each pod
+#             pod_encoded,  # Keys: pod features
+#             pod_encoded   # Values: pod features
+#         )
         
-        # Score each pod
-        pod_scores = self.scorer(attended_features).squeeze(-1)  # [batch, num_pods]
-        action_probs = F.softmax(pod_scores, dim=1)
+#         # Score each pod
+#         pod_scores = self.scorer(attended_features).squeeze(-1)  # [batch, num_pods]
+#         action_probs = F.softmax(pod_scores, dim=1)
         
-        if return_attention:
-            return action_probs, attention_weights
+#         if return_attention:
+#             return action_probs, attention_weights
         
-        return action_probs
+#         return action_probs
 
 
 class SimplifiedContextualBandit:
@@ -1686,9 +1687,10 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
 
 
 # Modify the train function signature
-def train(encoded_data_dir, continue_from_pretrained=False):
+def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pretrained=False):
     """Main training function with optimized hyperparameters for small datasets"""
-    global training_results_dir, final_model_path
+    global training_results_dir, final_model_path, secondary_final_model_path
+    secondary_final_model_path = secondary_final_model_path_
     
     # Get pretrained model path from environment
     pretrained_model_path = os.getenv("PRETRAINED_MODEL_PATH", None)
@@ -1917,6 +1919,10 @@ def train(encoded_data_dir, continue_from_pretrained=False):
     os.makedirs(final_model_path, exist_ok=True)
     os.system(f"cp {output_dir}/* {final_model_path}/")
     logger.info(f"Copied model to {final_model_path} for inference")
+    if secondary_final_model_path is not None:
+        os.makedirs(secondary_final_model_path, exist_ok=True)
+        os.system(f"cp -r {output_dir} {secondary_final_model_path}/final_model")
+        logger.info(f"Copied model to {secondary_final_model_path}")
     
     # Rest of the function (plotting, analysis) remains the same...
     try:

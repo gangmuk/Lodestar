@@ -335,7 +335,7 @@ def train_model(args):
             if args.model == "random_forest":
                 random_forest.train(ENCODED_DATA_DIR)
             elif args.model == "simpler_contextual_bandit":
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.data_dir)
             else:
                 logger.error(f"Unknown model type: {args.model}")
                 return False
@@ -703,10 +703,241 @@ def process_training_data(args, log_data):
         logger.error(f"Traceback: {error_traceback}")
         return False
 
+# def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
+#     """
+#     Detailed feature-specific sensitivity analysis.
+#     Tests each type of pod feature individually to understand model behavior.
+#     """
+#     global NUM_TRAINS
+    
+#     if NUM_TRAINS == 0:
+#         logger.warning("No trained model available for detailed feature analysis")
+#         return None
+    
+#     print("🔬 DETAILED FEATURE-SPECIFIC SENSITIVITY ANALYSIS")
+#     print("=" * 70)
+    
+#     if test_data_subset is None:
+#         return None
+    
+#     # Define specific pod feature types to test
+#     feature_types = {
+#         'kv_hit_ratio': 'KV Cache Hit Ratio',
+#         'running_requests': 'Running Requests',
+#         'waiting_requests': 'Waiting Requests', 
+#         'decode_tokens': 'Decode Tokens',
+#         'prefill_tokens': 'Prefill Tokens',
+#         'inflight_requests': 'Inflight Requests',
+#         'last_second_avg_ttft_ms': 'Average TTFT',
+#         'last_second_avg_tpot_ms': 'Average TPOT',
+#         'last_second_p99_ttft_ms': 'P99 TTFT',
+#         'last_second_total_requests': 'Total Requests/sec'
+#     }
+    
+#     feature_sensitivity_results = {}
+    
+#     # Test first 3 samples for detailed analysis
+#     test_items = list(test_data_subset.items())[:3]
+    
+#     for sample_idx, (request_id, log_message) in enumerate(test_items):
+#         print(f"\n--- ANALYZING SAMPLE {sample_idx + 1}/3 ({request_id}) ---")
+        
+#         try:
+#             # Preprocess to get baseline data
+#             processed_df, _, all_pods, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo)
+            
+#             # Apply same normalization as training
+#             request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+#             pod_features_cols = [col for col in processed_df.columns if col.startswith('pod_') and 
+#                                processed_df[col].dtype in ['float64', 'int64']]
+            
+#             stats = get_request_stats()
+#             if stats.count > 0:
+#                 # Apply same normalization as training
+#                 for feature in pod_features_cols:
+#                     if feature in processed_df.columns and feature in stats.feature_stats:
+#                         feature_data = processed_df[feature].values.reshape(-1, 1)
+#                         normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+#                         processed_df[feature] = normalized_feature.flatten()
+                
+#                 # Apply same amplification as training
+#                 critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
+#                 for feature in pod_features_cols:
+#                     if any(critical in feature for critical in critical_features):
+#                         if feature in processed_df.columns:
+#                             processed_df[feature] = processed_df[feature] * signal_amplification_degree
+            
+#             # Encode baseline data
+#             tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, 
+#                                                             request_features_train, request_features_reward)
+            
+#             # Get baseline prediction
+#             if args.model == "simpler_contextual_bandit":
+#                 baseline_result, _ = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, model_updated=False)
+#             else:
+#                 baseline_result, _ = random_forest.infer_from_tensor(tensor_data=tensor_dataset, model_updated=False)
+            
+#             baseline_pod = baseline_result['selected_pod_index']
+#             baseline_confidence = baseline_result['confidence']
+#             baseline_probs = baseline_result.get('pod_probabilities', [])
+            
+#             print(f"Baseline prediction: Pod {baseline_pod} (confidence: {baseline_confidence:.3f})")
+            
+#             # Test each feature type individually
+#             for feature_key, feature_name in feature_types.items():
+#                 print(f"\n🧪 TESTING {feature_name.upper()} SENSITIVITY")
+#                 print("-" * 50)
+                
+#                 # Find columns for this feature type across all pods
+#                 feature_cols = [col for col in processed_df.columns if feature_key in col and col.startswith('pod_')]
+                
+#                 if not feature_cols:
+#                     print(f"  No {feature_name} features found")
+#                     continue
+                
+#                 print(f"  Found {len(feature_cols)} {feature_name} features across pods")
+                
+#                 # Test different modification levels
+#                 feature_changes = 0
+#                 modification_levels = [0, +10.0, +20.0, +40, +60, +80, +100]  # Different intensity levels
+                
+#                 for mod_level in modification_levels:
+#                     # Create modified tensor
+#                     modified_tensor = {k: v.clone() if hasattr(v, 'clone') else v for k, v in tensor_dataset.items()}
+                    
+#                     # Find the feature in the tensor structure
+#                     # We need to modify the pod_features_with_staleness tensor
+                    
+#                     # Get pod feature names to find the right index
+#                     pod_feature_names = ['inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 
+#                                        'waiting_requests', 'prefill_tokens', 'decode_tokens', 'kv_hit_ratio']
+                    
+#                     if feature_key == 'kv_hit_ratio':
+#                         # KV hit ratio is in kv_hit_ratios tensor
+#                         preferred_pod_idx = baseline_pod
+#                         if preferred_pod_idx < modified_tensor['kv_hit_ratios'].shape[1]:
+#                             original_value = modified_tensor['kv_hit_ratios'][0, preferred_pod_idx, 0].item()
+#                             modified_tensor['kv_hit_ratios'][0, preferred_pod_idx, 0] = original_value + mod_level * 0.3
+                            
+#                     else:
+#                         # Other features are in pod_features_with_staleness
+#                         feature_idx = None
+#                         for i, name in enumerate(pod_feature_names):
+#                             if feature_key in name:
+#                                 feature_idx = i
+#                                 break
+                        
+#                         if feature_idx is not None:
+#                             preferred_pod_idx = baseline_pod
+#                             if (preferred_pod_idx < modified_tensor['pod_features_with_staleness'].shape[1] and 
+#                                 feature_idx < modified_tensor['pod_features_with_staleness'].shape[2]):
+                                
+#                                 original_value = modified_tensor['pod_features_with_staleness'][0, preferred_pod_idx, feature_idx].item()
+#                                 modified_tensor['pod_features_with_staleness'][0, preferred_pod_idx, feature_idx] = original_value + mod_level
+                    
+#                     # Get modified prediction
+#                     if args.model == "simpler_contextual_bandit":
+#                         modified_result, _ = simpler_contextual_bandit.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
+#                     else:
+#                         modified_result, _ = random_forest.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
+                    
+#                     modified_pod = modified_result['selected_pod_index']
+#                     modified_confidence = modified_result['confidence']
+                    
+#                     if modified_pod != baseline_pod:
+#                         feature_changes += 1
+#                         print(f"    {feature_name} Δ{mod_level:+.1f}: Pod {baseline_pod}→{modified_pod} "
+#                                    f"(conf: {baseline_confidence:.3f}→{modified_confidence:.3f}) ✓")
+#                     else:
+#                         prob_change = abs(modified_confidence - baseline_confidence)
+#                         print(f"    {feature_name} Δ{mod_level:+.1f}: Pod {baseline_pod} (no change) "
+#                                    f"(conf: {modified_confidence:.3f}, Δ{prob_change:.3f})")
+                
+#                 # Calculate sensitivity for this feature type
+#                 feature_sensitivity = feature_changes / len(modification_levels)
+                
+#                 if feature_key not in feature_sensitivity_results:
+#                     feature_sensitivity_results[feature_key] = []
+#                 feature_sensitivity_results[feature_key].append(feature_sensitivity)
+                
+#                 print(f"  {feature_name} sensitivity: {feature_sensitivity:.1%} ({feature_changes}/{len(modification_levels)} tests changed prediction)")
+        
+#         except Exception as e:
+#             logger.error(f"Error analyzing sample {sample_idx + 1}: {str(e)}")
+#             continue
+    
+#     # --- DETAILED SENSITIVITY SUMMARY ---
+#     print(f"\n" + "=" * 70)
+#     print("🎯 DETAILED FEATURE SENSITIVITY SUMMARY")
+#     print("=" * 70)
+    
+#     # Calculate average sensitivity for each feature type
+#     feature_avg_sensitivity = {}
+#     for feature_key, sensitivities in feature_sensitivity_results.items():
+#         avg_sens = sum(sensitivities) / len(sensitivities) if sensitivities else 0
+#         feature_avg_sensitivity[feature_key] = avg_sens
+    
+#     # Sort by sensitivity level
+#     sorted_features = sorted(feature_avg_sensitivity.items(), key=lambda x: x[1], reverse=True)
+    
+#     print("\nFeature sensitivity ranking (highest to lowest):")
+#     print("-" * 50)
+    
+#     for i, (feature_key, avg_sensitivity) in enumerate(sorted_features, 1):
+#         feature_name = feature_types.get(feature_key, feature_key)
+        
+#         if avg_sensitivity > 0.5:
+#             status = "🔥 HIGH"
+#         elif avg_sensitivity > 0.25:
+#             status = "📊 MODERATE"
+#         elif avg_sensitivity > 0.1:
+#             status = "⚠️  LOW"
+#         else:
+#             status = "❌ MINIMAL"
+        
+#         print(f"{i:2d}. {feature_name:<20} {avg_sensitivity:6.1%} {status}")
+    
+#     # Insights and recommendations
+#     print(f"\n🔍 KEY INSIGHTS:")
+#     print("-" * 20)
+    
+#     high_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if v > 0.5]
+#     low_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if v < 0.1]
+    
+#     if high_sensitivity_features:
+#         feature_names = [feature_types.get(k, k) for k in high_sensitivity_features]
+#         print(f"✅ Model strongly responds to: {', '.join(feature_names)}")
+    
+#     if low_sensitivity_features:
+#         feature_names = [feature_types.get(k, k) for k in low_sensitivity_features]
+#         print(f"⚠️  Model largely ignores: {', '.join(feature_names)}")
+    
+#     # Overall assessment
+#     overall_pod_sensitivity = sum(feature_avg_sensitivity.values()) / len(feature_avg_sensitivity) if feature_avg_sensitivity else 0
+#     print(f"\n📊 Overall Pod Feature Sensitivity: {overall_pod_sensitivity:.1%}")
+    
+#     if overall_pod_sensitivity > 0.4:
+#         print("🎉 EXCELLENT: Model demonstrates strong pod-aware routing!")
+#     elif overall_pod_sensitivity > 0.25:
+#         print("✅ GOOD: Model shows meaningful pod state awareness")
+#     elif overall_pod_sensitivity > 0.15:
+#         print("📊 MODERATE: Some pod feature learning evident")
+#     else:
+#         print("⚠️  LIMITED: Model shows weak pod feature utilization")
+    
+#     print("=" * 70)
+    
+#     return {
+#         'feature_sensitivity_results': feature_sensitivity_results,
+#         'feature_avg_sensitivity': feature_avg_sensitivity,
+#         'sorted_features': sorted_features,
+#         'overall_pod_sensitivity': overall_pod_sensitivity
+#     }
+
+
 def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
     """
-    Detailed feature-specific sensitivity analysis.
-    Tests each type of pod feature individually to understand model behavior.
+    Improved feature-specific sensitivity analysis that uses statistically meaningful perturbations
     """
     global NUM_TRAINS
     
@@ -714,33 +945,86 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
         logger.warning("No trained model available for detailed feature analysis")
         return None
     
-    logger.info("🔬 DETAILED FEATURE-SPECIFIC SENSITIVITY ANALYSIS")
-    logger.info("=" * 70)
+    print("🔬 IMPROVED FEATURE-SPECIFIC SENSITIVITY ANALYSIS")
+    print("=" * 70)
     
     if test_data_subset is None:
         return None
     
-    # Define specific pod feature types to test
+    # Define feature types and their expected characteristics
     feature_types = {
-        'kv_hit_ratio': 'KV Cache Hit Ratio',
-        'running_requests': 'Running Requests',
-        'waiting_requests': 'Waiting Requests', 
-        'decode_tokens': 'Decode Tokens',
-        'prefill_tokens': 'Prefill Tokens',
-        'inflight_requests': 'Inflight Requests',
-        'last_second_avg_ttft_ms': 'Average TTFT',
-        'last_second_avg_tpot_ms': 'Average TPOT',
-        'last_second_p99_ttft_ms': 'P99 TTFT',
-        'last_second_total_requests': 'Total Requests/sec'
+        'kv_hit_ratio': {
+            'name': 'KV Cache Hit Ratio',
+            'range': (0.0, 1.0),  # Natural range
+            'perturbation_type': 'relative',  # Use relative changes
+            'direction': 'both'  # Test both increases and decreases
+        },
+        'running_requests': {
+            'name': 'Running Requests',
+            'range': (0, 100),  # Typical range for request counts
+            'perturbation_type': 'absolute',
+            'direction': 'both'
+        },
+        'waiting_requests': {
+            'name': 'Waiting Requests', 
+            'range': (0, 100),
+            'perturbation_type': 'absolute',
+            'direction': 'both'
+        },
+        'decode_tokens': {
+            'name': 'Decode Tokens',
+            'range': (0, 10000),  # Typical token ranges
+            'perturbation_type': 'relative',
+            'direction': 'both'
+        },
+        'prefill_tokens': {
+            'name': 'Prefill Tokens',
+            'range': (0, 10000),
+            'perturbation_type': 'relative', 
+            'direction': 'both'
+        },
+        'inflight_requests': {
+            'name': 'Inflight Requests',
+            'range': (0, 100),
+            'perturbation_type': 'absolute',
+            'direction': 'both'
+        },
+        'last_second_avg_ttft_ms': {
+            'name': 'Average TTFT',
+            'range': (0, 5000),  # Milliseconds
+            'perturbation_type': 'relative',
+            'direction': 'increase_only'  # Higher latency = worse
+        },
+        'last_second_avg_tpot_ms': {
+            'name': 'Average TPOT',
+            'range': (0, 1000),
+            'perturbation_type': 'relative',
+            'direction': 'increase_only'
+        },
+        'last_second_p99_ttft_ms': {
+            'name': 'P99 TTFT',
+            'range': (0, 10000),
+            'perturbation_type': 'relative',
+            'direction': 'increase_only'
+        },
+        'last_second_total_requests': {
+            'name': 'Total Requests/sec',
+            'range': (0, 1000),
+            'perturbation_type': 'relative',
+            'direction': 'both'
+        }
     }
     
     feature_sensitivity_results = {}
     
     # Test first 3 samples for detailed analysis
     test_items = list(test_data_subset.items())[:3]
-    
+    all_pods = None
+    baseline_confidence = 0
+    conf_mean = conf_std = conf_min = conf_max = 0
+    prediction_diversity = 0
     for sample_idx, (request_id, log_message) in enumerate(test_items):
-        logger.info(f"\n--- ANALYZING SAMPLE {sample_idx + 1}/3 ({request_id}) ---")
+        print(f"\n--- ANALYZING SAMPLE {sample_idx + 1}/3 ({request_id}) ---")
         
         try:
             # Preprocess to get baseline data
@@ -753,7 +1037,7 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
             
             stats = get_request_stats()
             if stats.count > 0:
-                # Apply same normalization as training
+                # Apply normalization and amplification as in training
                 for feature in pod_features_cols:
                     if feature in processed_df.columns and feature in stats.feature_stats:
                         feature_data = processed_df[feature].values.reshape(-1, 1)
@@ -781,110 +1065,235 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
             baseline_confidence = baseline_result['confidence']
             baseline_probs = baseline_result.get('pod_probabilities', [])
             
-            logger.info(f"Baseline prediction: Pod {baseline_pod} (confidence: {baseline_confidence:.3f})")
+            print(f"Baseline prediction: Pod {baseline_pod} (confidence: {baseline_confidence:.3f})")
+            print(f"Baseline probabilities: {[f'{p:.3f}' for p in baseline_probs[:7]]}")
             
-            # Test each feature type individually
-            for feature_key, feature_name in feature_types.items():
-                logger.info(f"\n🧪 TESTING {feature_name.upper()} SENSITIVITY")
-                logger.info("-" * 50)
+            # Test each feature type individually with improved methodology
+            for feature_key, feature_config in feature_types.items():
+                print(f"\n🧪 TESTING {feature_config['name'].upper()} SENSITIVITY")
+                print("-" * 50)
                 
                 # Find columns for this feature type across all pods
                 feature_cols = [col for col in processed_df.columns if feature_key in col and col.startswith('pod_')]
                 
                 if not feature_cols:
-                    logger.info(f"  No {feature_name} features found")
+                    print(f"  No {feature_config['name']} features found")
                     continue
                 
-                logger.info(f"  Found {len(feature_cols)} {feature_name} features across pods")
+                print(f"  Found {len(feature_cols)} {feature_config['name']} features across pods")
                 
-                # Test different modification levels
+                # Calculate meaningful perturbations based on current data
+                current_values = []
+                for col in feature_cols:
+                    if col in processed_df.columns:
+                        current_values.extend(processed_df[col].values.tolist())
+                
+                if not current_values:
+                    continue
+                
+                # Calculate data-driven perturbation magnitudes
+                current_mean = np.mean(current_values)
+                current_std = np.std(current_values)
+                current_range = max(current_values) - min(current_values)
+                
+                print(f"  Current values: μ={current_mean:.3f}, σ={current_std:.3f}, range={current_range:.3f}")
+                
+                # Define perturbation levels based on feature characteristics
+                if feature_config['perturbation_type'] == 'relative':
+                    # Use percentage changes: ±10%, ±25%, ±50%, ±100%
+                    if feature_config['direction'] == 'both':
+                        perturbation_factors = [-0.5, -0.25, -0.1, 0, 0.1, 0.25, 0.5, 1.0]
+                    else:  # increase_only for latency metrics
+                        perturbation_factors = [0, 0.1, 0.25, 0.5, 1.0, 2.0]
+                else:  # absolute changes
+                    # Use multiples of standard deviation: ±0.5σ, ±1σ, ±2σ
+                    if current_std > 0:
+                        if feature_config['direction'] == 'both':
+                            perturbation_deltas = [-2*current_std, -current_std, -0.5*current_std, 
+                                                 0, 0.5*current_std, current_std, 2*current_std]
+                        else:
+                            perturbation_deltas = [0, 0.5*current_std, current_std, 2*current_std]
+                    else:
+                        # Fallback if no variance
+                        perturbation_deltas = [0, 1, 5, 10]
+                
+                # Test systematic perturbations
                 feature_changes = 0
-                modification_levels = [0, +10.0, +20.0, +40, +60, +80, +100]  # Different intensity levels
+                total_tests = 0
+                sensitivity_details = []
                 
-                for mod_level in modification_levels:
-                    # Create modified tensor
-                    modified_tensor = {k: v.clone() if hasattr(v, 'clone') else v for k, v in tensor_dataset.items()}
+                # Test perturbations on all pods, not just the preferred one
+                for pod_idx in range(len(all_pods)):
+                    pod_name = all_pods[pod_idx]
+                    pod_feature_col = None
                     
-                    # Find the feature in the tensor structure
-                    # We need to modify the pod_features_with_staleness tensor
+                    # Find the feature column for this pod
+                    for col in feature_cols:
+                        if f"pod_{pod_name}" in col and feature_key in col:
+                            pod_feature_col = col
+                            break
                     
-                    # Get pod feature names to find the right index
-                    pod_feature_names = ['inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 
-                                       'waiting_requests', 'prefill_tokens', 'decode_tokens', 'kv_hit_ratio']
+                    if pod_feature_col is None or pod_feature_col not in processed_df.columns:
+                        continue
                     
-                    if feature_key == 'kv_hit_ratio':
-                        # KV hit ratio is in kv_hit_ratios tensor
-                        preferred_pod_idx = baseline_pod
-                        if preferred_pod_idx < modified_tensor['kv_hit_ratios'].shape[1]:
-                            original_value = modified_tensor['kv_hit_ratios'][0, preferred_pod_idx, 0].item()
-                            modified_tensor['kv_hit_ratios'][0, preferred_pod_idx, 0] = original_value + mod_level * 0.3
-                            
+                    original_value = processed_df[pod_feature_col].iloc[0]
+                    
+                    # Apply perturbations
+                    if feature_config['perturbation_type'] == 'relative':
+                        test_values = [original_value * (1 + factor) for factor in perturbation_factors]
                     else:
-                        # Other features are in pod_features_with_staleness
-                        feature_idx = None
-                        for i, name in enumerate(pod_feature_names):
-                            if feature_key in name:
-                                feature_idx = i
-                                break
+                        test_values = [original_value + delta for delta in perturbation_deltas]
+                    
+                    for test_idx, test_value in enumerate(test_values):
+                        if test_value < 0 and feature_key not in ['running_requests', 'waiting_requests']:
+                            continue  # Skip negative values for most features
                         
-                        if feature_idx is not None:
-                            preferred_pod_idx = baseline_pod
-                            if (preferred_pod_idx < modified_tensor['pod_features_with_staleness'].shape[1] and 
-                                feature_idx < modified_tensor['pod_features_with_staleness'].shape[2]):
-                                
-                                original_value = modified_tensor['pod_features_with_staleness'][0, preferred_pod_idx, feature_idx].item()
-                                modified_tensor['pod_features_with_staleness'][0, preferred_pod_idx, feature_idx] = original_value + mod_level
-                    
-                    # Get modified prediction
-                    if args.model == "simpler_contextual_bandit":
-                        modified_result, _ = simpler_contextual_bandit.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
-                    else:
-                        modified_result, _ = random_forest.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
-                    
-                    modified_pod = modified_result['selected_pod_index']
-                    modified_confidence = modified_result['confidence']
-                    
-                    if modified_pod != baseline_pod:
-                        feature_changes += 1
-                        logger.info(f"    {feature_name} Δ{mod_level:+.1f}: Pod {baseline_pod}→{modified_pod} "
-                                   f"(conf: {baseline_confidence:.3f}→{modified_confidence:.3f}) ✓")
-                    else:
-                        prob_change = abs(modified_confidence - baseline_confidence)
-                        logger.info(f"    {feature_name} Δ{mod_level:+.1f}: Pod {baseline_pod} (no change) "
-                                   f"(conf: {modified_confidence:.3f}, Δ{prob_change:.3f})")
+                        # Clamp values to reasonable ranges
+                        if feature_key == 'kv_hit_ratio':
+                            test_value = max(0.0, min(1.0, test_value))
+                        elif 'requests' in feature_key:
+                            test_value = max(0, test_value)
+                        
+                        # Create modified tensor
+                        modified_tensor = {k: v.clone() if hasattr(v, 'clone') else v for k, v in tensor_dataset.items()}
+                        
+                        # Apply modification based on tensor structure
+                        if feature_key == 'kv_hit_ratio':
+                            # KV hit ratio is in kv_hit_ratios tensor
+                            if pod_idx < modified_tensor['kv_hit_ratios'].shape[1]:
+                                modified_tensor['kv_hit_ratios'][0, pod_idx, 0] = test_value
+                        else:
+                            # Other features are in pod_features_with_staleness
+                            pod_feature_names = ['inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 
+                                               'waiting_requests', 'prefill_tokens', 'decode_tokens']
+                            
+                            feature_idx = None
+                            for i, name in enumerate(pod_feature_names):
+                                if feature_key in name:
+                                    feature_idx = i
+                                    break
+                            
+                            if (feature_idx is not None and pod_idx < modified_tensor['pod_features_with_staleness'].shape[1] 
+                                and feature_idx < modified_tensor['pod_features_with_staleness'].shape[2]):
+                                modified_tensor['pod_features_with_staleness'][0, pod_idx, feature_idx] = test_value
+                        
+                        # Get modified prediction
+                        try:
+                            if args.model == "simpler_contextual_bandit":
+                                modified_result, _ = simpler_contextual_bandit.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
+                            else:
+                                modified_result, _ = random_forest.infer_from_tensor(tensor_data=modified_tensor, model_updated=False)
+                            
+                            modified_pod = modified_result['selected_pod_index']
+                            modified_confidence = modified_result['confidence']
+                            
+                            total_tests += 1
+                            
+                            # Calculate change magnitude
+                            prediction_changed = modified_pod != baseline_pod
+                            confidence_change = abs(modified_confidence - baseline_confidence)
+                            relative_change = (test_value - original_value) / (abs(original_value) + 1e-8)
+                            
+                            if prediction_changed:
+                                feature_changes += 1
+                                print(f"    Pod {pod_idx} {feature_config['name']} "
+                                           f"Δ{relative_change:+.1%}: Pod {baseline_pod}→{modified_pod} "
+                                           f"(conf: {baseline_confidence:.3f}→{modified_confidence:.3f}) ✓")
+                            else:
+                                logger.debug(f"    Pod {pod_idx} {feature_config['name']} "
+                                            f"Δ{relative_change:+.1%}: Pod {baseline_pod} (no change) "
+                                            f"(conf: {modified_confidence:.3f}, Δ{confidence_change:.3f})")
+                            
+                            sensitivity_details.append({
+                                'pod_idx': pod_idx,
+                                'original_value': original_value,
+                                'test_value': test_value,
+                                'relative_change': relative_change,
+                                'prediction_changed': prediction_changed,
+                                'confidence_change': confidence_change,
+                                'baseline_pod': baseline_pod,
+                                'modified_pod': modified_pod,
+                                'modified_confidence': modified_confidence,
+                            })
+                            
+                        except Exception as e:
+                            logger.warning(f"Error testing pod {pod_idx} modification: {e}")
+                            continue
                 
-                # Calculate sensitivity for this feature type
-                feature_sensitivity = feature_changes / len(modification_levels)
-                
-                if feature_key not in feature_sensitivity_results:
-                    feature_sensitivity_results[feature_key] = []
-                feature_sensitivity_results[feature_key].append(feature_sensitivity)
-                
-                logger.info(f"  {feature_name} sensitivity: {feature_sensitivity:.1%} ({feature_changes}/{len(modification_levels)} tests changed prediction)")
+                # Calculate feature sensitivity metrics
+                if total_tests > 0:
+                    feature_sensitivity = feature_changes / total_tests
+                    
+                    # Additional metrics
+                    avg_confidence_change = np.mean([d['confidence_change'] for d in sensitivity_details])
+                    max_confidence_change = max([d['confidence_change'] for d in sensitivity_details])
+                    
+                    # Identify most sensitive pod
+                    pod_changes = {}
+                    for detail in sensitivity_details:
+                        pod_idx = detail['pod_idx']
+                        if pod_idx not in pod_changes:
+                            pod_changes[pod_idx] = 0
+                        if detail['prediction_changed']:
+                            pod_changes[pod_idx] += 1
+                    
+                    most_sensitive_pod = max(pod_changes.keys(), key=lambda k: pod_changes[k]) if pod_changes else None
+                    
+                    if feature_key not in feature_sensitivity_results:
+                        feature_sensitivity_results[feature_key] = []
+                    
+                    feature_sensitivity_results[feature_key].append({
+                        'sensitivity': feature_sensitivity,
+                        'total_tests': total_tests,
+                        'changes': feature_changes,
+                        'avg_confidence_change': avg_confidence_change,
+                        'max_confidence_change': max_confidence_change,
+                        'most_sensitive_pod': most_sensitive_pod,
+                        'details': sensitivity_details
+                    })
+                    
+                    print(f"  {feature_config['name']} sensitivity: {feature_sensitivity:.1%} "
+                               f"({feature_changes}/{total_tests} tests changed prediction)")
+                    print(f"  Average confidence change: {avg_confidence_change:.3f}")
+                    print(f"  Most sensitive pod: {most_sensitive_pod}")
+                else:
+                    logger.warning(f"  No valid tests for {feature_config['name']}")
         
         except Exception as e:
             logger.error(f"Error analyzing sample {sample_idx + 1}: {str(e)}")
             continue
     
-    # --- DETAILED SENSITIVITY SUMMARY ---
-    logger.info(f"\n" + "=" * 70)
-    logger.info("🎯 DETAILED FEATURE SENSITIVITY SUMMARY")
-    logger.info("=" * 70)
+    # --- ENHANCED SENSITIVITY SUMMARY ---
+    print(f"\n" + "=" * 70)
+    print("🎯 IMPROVED FEATURE SENSITIVITY SUMMARY")
+    print("=" * 70)
     
     # Calculate average sensitivity for each feature type
     feature_avg_sensitivity = {}
-    for feature_key, sensitivities in feature_sensitivity_results.items():
-        avg_sens = sum(sensitivities) / len(sensitivities) if sensitivities else 0
-        feature_avg_sensitivity[feature_key] = avg_sens
+    feature_stats = {}
+    
+    for feature_key, results_list in feature_sensitivity_results.items():
+        if results_list:
+            sensitivities = [r['sensitivity'] for r in results_list]
+            confidence_changes = [r['avg_confidence_change'] for r in results_list]
+            
+            feature_avg_sensitivity[feature_key] = np.mean(sensitivities)
+            feature_stats[feature_key] = {
+                'mean_sensitivity': np.mean(sensitivities),
+                'std_sensitivity': np.std(sensitivities),
+                'mean_confidence_change': np.mean(confidence_changes),
+                'total_samples': len(results_list)
+            }
     
     # Sort by sensitivity level
     sorted_features = sorted(feature_avg_sensitivity.items(), key=lambda x: x[1], reverse=True)
     
-    logger.info("\nFeature sensitivity ranking (highest to lowest):")
-    logger.info("-" * 50)
+    print("\nFeature sensitivity ranking (highest to lowest):")
+    print("-" * 50)
     
     for i, (feature_key, avg_sensitivity) in enumerate(sorted_features, 1):
-        feature_name = feature_types.get(feature_key, feature_key)
+        feature_name = feature_types.get(feature_key, {}).get('name', feature_key)
+        stats = feature_stats[feature_key]
         
         if avg_sensitivity > 0.5:
             status = "🔥 HIGH"
@@ -895,43 +1304,262 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset=None):
         else:
             status = "❌ MINIMAL"
         
-        logger.info(f"{i:2d}. {feature_name:<20} {avg_sensitivity:6.1%} {status}")
+        print(f"{i:2d}. {feature_name:<20} {avg_sensitivity:6.1%} {status}")
+        print(f"    Confidence change: {stats['mean_confidence_change']:.3f}±{stats['std_sensitivity']:.3f}")
     
-    # Insights and recommendations
-    logger.info(f"\n🔍 KEY INSIGHTS:")
-    logger.info("-" * 20)
+    # Enhanced insights and recommendations
+    print(f"\n🔍 ENHANCED INSIGHTS:")
+    print("-" * 20)
     
-    high_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if v > 0.5]
+    high_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if v > 0.3]
+    moderate_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if 0.1 <= v <= 0.3]
     low_sensitivity_features = [k for k, v in feature_avg_sensitivity.items() if v < 0.1]
     
     if high_sensitivity_features:
-        feature_names = [feature_types.get(k, k) for k in high_sensitivity_features]
-        logger.info(f"✅ Model strongly responds to: {', '.join(feature_names)}")
+        feature_names = [feature_types.get(k, {}).get('name', k) for k in high_sensitivity_features]
+        print(f"✅ Model strongly responds to: {', '.join(feature_names)}")
+    
+    if moderate_sensitivity_features:
+        feature_names = [feature_types.get(k, {}).get('name', k) for k in moderate_sensitivity_features]
+        print(f"📊 Model moderately responds to: {', '.join(feature_names)}")
     
     if low_sensitivity_features:
-        feature_names = [feature_types.get(k, k) for k in low_sensitivity_features]
-        logger.info(f"⚠️  Model largely ignores: {', '.join(feature_names)}")
+        feature_names = [feature_types.get(k, {}).get('name', k) for k in low_sensitivity_features]
+        print(f"⚠️  Model largely ignores: {', '.join(feature_names)}")
     
-    # Overall assessment
-    overall_pod_sensitivity = sum(feature_avg_sensitivity.values()) / len(feature_avg_sensitivity) if feature_avg_sensitivity else 0
-    logger.info(f"\n📊 Overall Pod Feature Sensitivity: {overall_pod_sensitivity:.1%}")
+    # Overall assessment with more nuanced scoring
+    overall_sensitivity_score = 0
+    total_weight = 0
     
-    if overall_pod_sensitivity > 0.4:
-        logger.info("🎉 EXCELLENT: Model demonstrates strong pod-aware routing!")
-    elif overall_pod_sensitivity > 0.25:
-        logger.info("✅ GOOD: Model shows meaningful pod state awareness")
-    elif overall_pod_sensitivity > 0.15:
-        logger.info("📊 MODERATE: Some pod feature learning evident")
+    for feature_key, sensitivity in feature_avg_sensitivity.items():
+        # Weight more important features higher
+        if feature_key in ['running_requests', 'waiting_requests', 'kv_hit_ratio']:
+            weight = 2.0  # High importance
+        elif feature_key in ['prefill_tokens', 'decode_tokens', 'inflight_requests']:
+            weight = 1.5  # Medium importance
+        else:
+            weight = 1.0  # Standard importance
+        
+        overall_sensitivity_score += sensitivity * weight
+        total_weight += weight
+    
+    if total_weight > 0:
+        overall_sensitivity_score /= total_weight
+        
+        print(f"\n📊 Overall Weighted Pod Feature Sensitivity: {overall_sensitivity_score:.1%}")
+        
+        if overall_sensitivity_score > 0.4:
+            print("🎉 EXCELLENT: Model demonstrates strong context-aware routing!")
+        elif overall_sensitivity_score > 0.25:
+            print("✅ GOOD: Model shows meaningful pod state awareness")
+        elif overall_sensitivity_score > 0.15:
+            print("📊 MODERATE: Some pod feature learning evident")
+        else:
+            print("⚠️  LIMITED: Model shows weak pod feature utilization")
+    
+    # Actionable recommendations
+    print(f"\n💡 ACTIONABLE RECOMMENDATIONS:")
+    print("-" * 25)
+    
+    if overall_sensitivity_score < 0.2:
+        print("🔧 IMPROVE MODEL SENSITIVITY:")
+        print("  - Increase feature amplification for critical features")
+        print("  - Check feature normalization - might be over-normalizing")
+        print("  - Verify reward signal differentiates based on pod performance")
+    elif low_sensitivity_features:
+        print("🔧 OPTIMIZE FEATURE UTILIZATION:")
+        print(f"  - Consider removing or re-engineering: {', '.join(low_sensitivity_features)}")
+        print("  - These features may be noise or poorly scaled")
+    
+    if high_sensitivity_features:
+        print("✅ LEVERAGE HIGH-IMPACT FEATURES:")
+        print(f"  - Focus monitoring on: {', '.join(high_sensitivity_features)}")
+        print("  - These drive routing decisions most effectively")
+    
+    print("=" * 70)
+    
+    # 1. CONFIDENCE DISTRIBUTION ANALYSIS
+    print(f"\n📊 CONFIDENCE DISTRIBUTION ANALYSIS:")
+    print("-" * 40)
+    
+    all_confidences = []
+    all_predictions = []
+    
+    for feature_key, results_list in feature_sensitivity_results.items():
+        for result in results_list:
+            for detail in result['details']:
+                all_confidences.append(detail.get('modified_confidence', baseline_confidence))
+                all_predictions.append(detail['modified_pod'])
+    
+    if all_confidences:
+        conf_mean = np.mean(all_confidences)
+        conf_std = np.std(all_confidences)
+        conf_min = np.min(all_confidences)
+        conf_max = np.max(all_confidences)
+        
+        print(f"Confidence across all perturbations:")
+        print(f"  Mean: {conf_mean:.3f} ± {conf_std:.3f}")
+        print(f"  Range: [{conf_min:.3f}, {conf_max:.3f}]")
+        print(f"  Baseline: {baseline_confidence:.3f}")
+        
+        # Check if model is overconfident or underconfident
+        if conf_max - conf_min < 0.1:
+            print("  ⚠️  LOW CONFIDENCE SPREAD - Model may be uncertain or features poorly differentiated")
+        elif conf_max > 0.8:
+            print("  ⚠️  HIGH CONFIDENCE DETECTED - Check for overconfidence")
+        
+        # Analyze prediction diversity
+        unique_predictions = len(set(all_predictions))
+        total_pods = len(all_pods)
+        prediction_diversity = unique_predictions / total_pods
+        
+        print(f"Prediction diversity: {unique_predictions}/{total_pods} pods used ({prediction_diversity:.1%})")
+        
+        if prediction_diversity < 0.5:
+            print("  ⚠️  LOW PREDICTION DIVERSITY - Model may have strong biases")
+    
+    # 2. FEATURE INTERACTION ANALYSIS
+    print(f"\n🔄 FEATURE INTERACTION HINTS:")
+    print("-" * 30)
+    
+    # Look for patterns where certain pods are consistently sensitive
+    pod_sensitivity_counts = {}
+    for feature_key, results_list in feature_sensitivity_results.items():
+        for result in results_list:
+            most_sensitive_pod = result.get('most_sensitive_pod')
+            if most_sensitive_pod is not None:
+                if most_sensitive_pod not in pod_sensitivity_counts:
+                    pod_sensitivity_counts[most_sensitive_pod] = []
+                pod_sensitivity_counts[most_sensitive_pod].append(feature_key)
+    
+    print("Pods with high sensitivity to multiple features:")
+    for pod_idx, features in pod_sensitivity_counts.items():
+        if len(features) >= 3:  # Pod sensitive to 3+ features
+            feature_names = [feature_types.get(f, {}).get('name', f) for f in features]
+            print(f"  Pod {pod_idx}: {len(features)} features - {', '.join(feature_names)}")
+            print("    💡 This pod may be a key decision boundary")
+    
+    # 3. ROUTING STRATEGY ANALYSIS
+    print(f"\n🎯 INFERRED ROUTING STRATEGY:")
+    print("-" * 30)
+    
+    # Analyze which direction of changes cause routing shifts
+    capacity_features = ['running_requests', 'waiting_requests', 'inflight_requests']
+    latency_features = ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms']
+    cache_features = ['kv_hit_ratio']
+    
+    strategy_insights = []
+    
+    # Check capacity-based routing
+    capacity_sensitivity = np.mean([feature_avg_sensitivity.get(f, 0) for f in capacity_features])
+    if capacity_sensitivity > 0.15:
+        strategy_insights.append("✅ Load-aware routing: Avoids overloaded pods")
+    
+    # Check latency-based routing  
+    latency_sensitivity = np.mean([feature_avg_sensitivity.get(f, 0) for f in latency_features])
+    if latency_sensitivity > 0.15:
+        strategy_insights.append("✅ Performance-aware routing: Considers latency metrics")
+    
+    # Check cache-based routing
+    cache_sensitivity = feature_avg_sensitivity.get('kv_hit_ratio', 0)
+    if cache_sensitivity > 0.15:
+        strategy_insights.append("✅ Cache-aware routing: Prefers high cache hit rates")
+    
+    if not strategy_insights:
+        strategy_insights.append("⚠️  Unclear routing strategy - may be learning static preferences")
+    
+    for insight in strategy_insights:
+        print(f"  {insight}")
+    
+    # 4. ACTIONABLE RECOMMENDATIONS
+    print(f"\n💡 SPECIFIC RECOMMENDATIONS:")
+    print("-" * 25)
+    
+    recommendations = []
+    
+    # Based on confidence analysis
+    if conf_max - conf_min < 0.05:
+        recommendations.append("🔧 Increase feature discrimination:")
+        recommendations.append("   - Check if features are over-normalized")
+        recommendations.append("   - Verify reward signal correlates with pod differences")
+    
+    # Based on sensitivity patterns
+    if overall_sensitivity_score < 0.2:
+        recommendations.append("🔧 Improve model responsiveness:")
+        recommendations.append("   - Increase learning rate for pod-specific features")
+        recommendations.append("   - Add regularization to prevent feature collapse")
+    
+    # Based on prediction diversity
+    if 'prediction_diversity' in locals() and prediction_diversity < 0.6:
+        dominant_pods = [k for k, v in pod_sensitivity_counts.items() if len(v) > 3]
+        if dominant_pods:
+            recommendations.append(f"🔧 Address pod bias toward: {dominant_pods}")
+            recommendations.append("   - Check training data balance")
+            recommendations.append("   - Verify reward calculation fairness")
+    
+    # Feature-specific recommendations
+    if cache_sensitivity < 0.1:
+        recommendations.append("🔧 Improve cache utilization:")
+        recommendations.append("   - Verify KV hit ratio calculation accuracy")
+        recommendations.append("   - Check if cache features are properly scaled")
+    
+    if latency_sensitivity < 0.1:
+        recommendations.append("🔧 Enhance latency awareness:")
+        recommendations.append("   - Ensure latency metrics are updated frequently")
+        recommendations.append("   - Verify latency features aren't stale")
+    
+    if not recommendations:
+        recommendations.append("✅ Model shows good feature utilization patterns")
+    
+    for rec in recommendations:
+        print(f"  {rec}")
+    
+    # 5. COMPARATIVE BASELINE
+    print(f"\n📏 BASELINE COMPARISON:")
+    print("-" * 20)
+    
+    # Compare against random routing
+    random_sensitivity = 1.0 / len(all_pods)  # Random chance of changing prediction
+    print(f"Random baseline sensitivity: {random_sensitivity:.1%}")
+    print(f"Model average sensitivity: {overall_sensitivity_score:.1%}")
+    
+    if overall_sensitivity_score > random_sensitivity * 3:
+        print("✅ Model significantly outperforms random routing")
+    elif overall_sensitivity_score > random_sensitivity * 1.5:
+        print("📊 Model moderately better than random")
     else:
-        logger.info("⚠️  LIMITED: Model shows weak pod feature utilization")
+        print("❌ Model barely better than random - check training")
     
-    logger.info("=" * 70)
+    # Compare against simple heuristics
+    if capacity_sensitivity > 0.2:
+        print("✅ Model implements reasonable load balancing")
+    if latency_sensitivity > 0.15:
+        print("✅ Model considers user experience metrics")
+    if cache_sensitivity > 0.15:
+        print("✅ Model optimizes for cache efficiency")
+    
+    print("=" * 70)
     
     return {
         'feature_sensitivity_results': feature_sensitivity_results,
         'feature_avg_sensitivity': feature_avg_sensitivity,
+        'feature_stats': feature_stats,
         'sorted_features': sorted_features,
-        'overall_pod_sensitivity': overall_pod_sensitivity
+        'overall_sensitivity_score': overall_sensitivity_score,
+        'confidence_analysis': {
+            'mean': conf_mean if 'conf_mean' in locals() else 0,
+            'std': conf_std if 'conf_std' in locals() else 0,
+            'range': (conf_min, conf_max) if 'conf_min' in locals() else (0, 0),
+            'prediction_diversity': prediction_diversity if 'prediction_diversity' in locals() else 0
+        },
+        'routing_strategy': {
+            'capacity_sensitivity': capacity_sensitivity,
+            'latency_sensitivity': latency_sensitivity, 
+            'cache_sensitivity': cache_sensitivity,
+            'insights': strategy_insights
+        },
+        'recommendations': recommendations,
+        'pod_sensitivity_patterns': pod_sensitivity_counts
     }
 
 def analyze_model_behavior(args, test_data_subset=None):
@@ -1363,28 +1991,61 @@ def diagnose_training_data_issues(args, train_data_sample):
 def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
-    parser.add_argument('--test_file', help='Optional CSV file containing log messages for testing')
-    parser.add_argument('--test_single', help='Single log message string for testing')
     parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
-    parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio (default: 0.8 for 80%% train, 20%% test)')
-    parser.add_argument('--auto_split', action='store_true', help='Automatically split data_file into train/test')
-    parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='random_forest', help='Model type to use for training (default: random_forest)')
+    parser.add_argument('--split_ratio', type=float, default=0.9, help='Train/test split ratio (default: 0.8 for 90%% train, 10%% test)')
+    parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
     parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
     parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
 
     args = parser.parse_args()
-    
+
     # Check if data file exists
     if not os.path.exists(args.data_file):
         logger.error(f"Data file {args.data_file} not found")
         return
     
-    # Check if test file exists (if specified)
-    if args.test_file and not os.path.exists(args.test_file):
-        logger.error(f"Test file {args.test_file} not found")
+        
+
+    # Handle data splitting
+    logger.info("=== SPLITTING DATA ===")
+
+    # Check if data_file is file or directory
+    if os.path.isfile(args.data_file):
+        data_dir = os.path.dirname(args.data_file)
+        logger.info(f"data_file specified: {args.data_file}")
+        all_data = read_csv_data(args.data_file)
+
+    elif os.path.isdir(args.data_file):
+        data_dir = args.data_file
+        logger.info(f"data_file is a directory: {args.data_file}")
+        for root, dirs, files in os.walk(args.data_file):
+            for file in files:
+                if file == "data.csv":
+                    file_path = os.path.join(root, file)
+                    logger.info(f"Found data.csv at: {file_path}")
+                    data = read_csv_data(file_path)
+                    if data:
+                        all_data.extend(list(data.values()))
+    args.data_dir = data_dir
+
+    if all_data is None or len(all_data) == 0:
+        logger.error("Failed to read data or no valid log messages found")
         return
     
+    # Split data
+    all_messages = list(all_data.values())
+    split_point = int(len(all_messages) * args.split_ratio)
+    
+    train_messages = all_messages[:split_point]
+    test_messages = all_messages[split_point:]
+    
+    # Convert back to dict format
+    train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
+    test_data = {f"request_{i}": msg for i, msg in enumerate(test_messages)}
+    
+    logger.info(f"Split {len(all_data)} messages into {len(train_data)} train + {len(test_data)} test")
+        
     # Create necessary directories
     if not os.path.exists(ENCODED_DATA_DIR):
         os.makedirs(ENCODED_DATA_DIR)
@@ -1395,36 +2056,6 @@ def main():
         shutil.rmtree(ENCODED_DATA_DIR)
         os.makedirs(ENCODED_DATA_DIR)
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
-
-    # Handle data splitting
-    if args.auto_split or not args.test_file:
-        logger.info("=== SPLITTING DATA ===")
-        all_data = read_csv_data(args.data_file)
-        if all_data is None or len(all_data) == 0:
-            logger.error("Failed to read data or no valid log messages found")
-            return
-        
-        # Split data
-        all_messages = list(all_data.values())
-        split_point = int(len(all_messages) * args.split_ratio)
-        
-        train_messages = all_messages[:split_point]
-        test_messages = all_messages[split_point:]
-        
-        # Convert back to dict format
-        train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
-        test_data = {f"request_{i}": msg for i, msg in enumerate(test_messages)}
-        
-        logger.info(f"Split {len(all_data)} messages into {len(train_data)} train + {len(test_data)} test")
-        
-    else:
-        # Use separate files
-        train_data = read_csv_data(args.data_file)
-        test_data = read_csv_data(args.test_file) if args.test_file else None
-        
-        if train_data is None or len(train_data) == 0:
-            logger.error("Failed to read training data or no valid log messages found")
-            return
     
     # Read and process training data
     if not args.skip_training:
@@ -1451,7 +2082,7 @@ def main():
     if args.analyze_behavior and test_data and len(test_data) > 0:
         logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
         # analyze_model_behavior(args, test_data)
-        analyze_detailed_feature_sensitivity(args, test_data)
+        sensitivity_results = analyze_detailed_feature_sensitivity(args, test_data)
         logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
     
     
