@@ -44,7 +44,7 @@ PRETRAINED_MODEL_PATH = os.getenv("PRETRAINED_MODEL_PATH", "final_model")
 ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
 MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
 final_model_path = "final_model"
-continue_from_pretrained = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower() == "true"
+CONTINUE_FROM_PRETRAINED = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower() == "true"
 TTFT_SLO = int(os.getenv("TTFT_SLO", 500))
 AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 40))
 first_request_starting_time = None
@@ -587,7 +587,7 @@ def handle_infer():
 
 
 def train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, continue_from_pretrained, NUM_NEW_DATA
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, CONTINUE_FROM_PRETRAINED, NUM_NEW_DATA
     # Load pretrained model on first training if available
     if NUM_TRAINS == 0 and LOAD_PRETRAINED_MODEL:
         if not os.path.exists(PRETRAINED_MODEL_PATH):
@@ -618,15 +618,17 @@ def train_routine():
     if ENABLE_ONLINE_LEARNING and TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
         logger.info(f"train_routine, Starting {NUM_TRAINS}th online training iteration")
-        
-        if MODEL == "simpler_contextual_bandit":
-            simpler_contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=continue_from_pretrained)
-        elif MODEL == "contextual_bandit":
-            contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=continue_from_pretrained)
-        else:
-            logger.error(f"Unknown model {MODEL}")
+        try:
+            if MODEL == "simpler_contextual_bandit":
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, secondary_final_model_path_=None, continue_from_pretrained=CONTINUE_FROM_PRETRAINED)
+            elif MODEL == "contextual_bandit":
+                contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=CONTINUE_FROM_PRETRAINED)
+            else:
+                logger.error(f"Unknown model {MODEL}")
+                return
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
             return
-            
         MODEL_UPDATED = True
         TRAINING_DATA_UPDATED = False
         logger.info(f"train_routine, Successfully completed {NUM_TRAINS}th online training, took {time.time() - training_start_time} seconds")
