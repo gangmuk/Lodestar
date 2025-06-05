@@ -1759,7 +1759,7 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
     if continue_from_pretrained:
         # Use fewer epochs for online learning
         training_epochs = max(5, hyperparameters['training_epochs'] // 4)
-        logger.info(f"Online learning mode: reduced epochs to {training_epochs}, exploration to {exploration_rate}")
+        logger.info(f"Online learning mode: reduced epochs to {training_epochs}, exploration to {hyperparameters['exploration_rate']}")
     else:
         training_epochs = hyperparameters['training_epochs']
     
@@ -1926,7 +1926,7 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
     
-    os.system(f"cp -r {final_model_dir} final_model")
+    # os.system(f"cp -r {final_model_dir} final_model")
 
     return {
         'agent': agent,

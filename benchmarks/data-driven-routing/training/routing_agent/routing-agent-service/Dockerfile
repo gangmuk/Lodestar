@@ -15,7 +15,6 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 
 COPY requirements.txt .
 COPY *.py .
-COPY hyperparameters.txt .
 COPY final_model final_model
 
 # RUN pip install --no-cache-dir -r requirements.txt

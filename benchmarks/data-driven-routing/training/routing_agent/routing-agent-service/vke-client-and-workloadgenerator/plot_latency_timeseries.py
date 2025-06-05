@@ -599,7 +599,6 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     
     # Save files
-    plt.savefig("latency_metrics_analysis.png", dpi=300, bbox_inches='tight')
     plt_fn = f"{log_dir}/latency_metrics_analysis.pdf"
     plt.savefig(plt_fn, bbox_inches='tight')
     

@@ -198,21 +198,21 @@ def test_inference(args, log_message):
         
         # Encode data
         encode_start_time = time.time()
-        tensor_dataset, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
+        tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
         # Perform inference
         infer_from_tensor_start_time = time.time()
         if args.model == "random_forest":
-            result, infer_from_tensor_overhead_summary = random_forest.infer_from_tensor(
+            result, _ = random_forest.infer_from_tensor(
                 tensor_data=tensor_dataset, 
                 exploration_enabled=True, 
                 exploration_rate=0.2, 
                 model_updated=MODEL_UPDATED
         )
         elif args.model == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(
+            result, _ = simpler_contextual_bandit.infer_from_tensor(
                 tensor_data=tensor_dataset, 
                 model_updated=MODEL_UPDATED
             )
@@ -333,7 +333,7 @@ def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
     parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
-    parser.add_argument('--split_ratio', type=float, default=0.9, help='Train/test split ratio (default: 0.8 for 90%% train, 10%% test)')
+    parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio (default: 0.8 for 80%% train, 20%% test)')
     parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
     parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
     parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
