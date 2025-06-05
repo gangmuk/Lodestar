@@ -16,8 +16,10 @@ import os
 SIGNAL_AMPLIFICATION_DEGREE = 1.0  # 1.5
 REWARD_AMPLIFICATION_DEGREE = 2.0
 REWARD_AMPLIFICATION_THRESHOLD = 0.5
-STD_THRESHOLD_FOR_NORMALIZATION = 0.1
-
+STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION = 10
+STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION = 10 # 0.1
+ENABLE_POD_NORMALIZATION = True     # Toggle pod feature normalization
+ENABLE_REQUEST_NORMALIZATION = True  # Toggle request feature normalization
 
 class RunningStats:
     """Maintains running mean and standard deviation for feature normalization"""
@@ -179,7 +181,7 @@ class PerFeatureRunningStats:
     def load(cls, filename):
         """Load feature statistics from file"""
         if not os.path.exists(filename):
-            logger.info(f"Statistics file {filename} not found, initializing new per-feature stats")
+            logger.error(f"Statistics file {filename} not found, initializing new per-feature stats")
             return cls()
         
         instance = cls()
@@ -225,8 +227,7 @@ class PerFeatureRunningStats:
 def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningStats) -> Tuple[pd.DataFrame, PerFeatureRunningStats, dict]:
     # Feature categorization
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-    pod_features_cols = [col for col in df.columns if col.startswith('pod_') and 
-                        df[col].dtype in ['float64', 'int64']]
+    pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
     
     logger.info("🔧 POD-CENTRIC FEATURE PROCESSING")
     logger.info("=" * 50)
@@ -235,86 +236,95 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
     logger.info("Raw feature analysis:")
     high_variance_pod_features = []
     
-    for feature in pod_features_cols:
-        if feature in df.columns:
-            values = df[feature].values
-            std_val = values.std()
-            logger.info(f"  {feature}: std={std_val:.3f}, range=[{values.min():.2f}, {values.max():.2f}]")
+    # for feature in pod_features_cols:
+    #     if feature in df.columns:
+    #         values = df[feature].values
+    #         std_val = values.std()
+    #         logger.info(f"  {feature}: std={std_val:.3f}, range=[{values.min():.2f}, {values.max():.2f}]")
             
-            if std_val > STD_THRESHOLD_FOR_NORMALIZATION:
-                high_variance_pod_features.append(feature)
-                logger.warning(f"Normalize since it has high variance ({feature}, std:{std_val})")
-            else:
-                logger.warning(f"Skip normalize since it has low variance ({feature}, std:{std_val})")
+    #         if std_val > STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION:
+    #             high_variance_pod_features.append(feature)
+    #             logger.warning(f"Normalize since it has high variance ({feature}, std:{std_val})")
+    #         else:
+    #             logger.warning(f"Skip normalize since it has low variance ({feature}, std:{std_val})")
     
     logger.info(f"High variance pod features: {len(high_variance_pod_features)}")
     
-    # Request feature analysis (offline only)
-    logger.info("\nRequest feature handling:")
-    for feature in request_features:
-        if feature in df.columns:
-            values = df[feature].values
-            std_val = values.std()
-            logger.info(f"  {feature}: std={std_val:.3f}")
-            if std_val > STD_THRESHOLD_FOR_NORMALIZATION:
-                logger.info(f"    → Will normalize")
-            else:
-                logger.info(f"    → Using RAW values (no normalization)")
+    # # Request feature analysis
+    # logger.info("\nRequest feature handling:")
+    # for feature in request_features:
+    #     if feature in df.columns:
+    #         values = df[feature].values
+    #         std_val = values.std()
+    #         logger.info(f"  {feature}: std={std_val:.3f}")
+    #         if std_val > STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION:
+    #             logger.info(f"    → Will normalize")
+    #         else:
+    #             logger.info(f"    → Using RAW values (no normalization)")
     
     # ===== SELECTIVE NORMALIZATION STRATEGY =====
     
     # 1. Handle request features - only normalize if they have reasonable variance
     request_normalized_count = 0
-    for feature in request_features:
-        if feature in df.columns:
-            values = df[feature].values
-            if values.std() > STD_THRESHOLD_FOR_NORMALIZATION:
-                feature_data = values.reshape(-1, 1)
-                if feature not in stats.feature_stats:
-                    stats.feature_stats[feature] = RunningStats()
-                stats.feature_stats[feature].update(feature_data)
-                normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                df[feature] = normalized_feature.flatten()
-                request_normalized_count += 1
-                
-                logger.info(f"✅ Normalized request feature: {feature}")
-            else:
-                logger.info(f"⚪ Kept raw values for: {feature}")
-
+    if ENABLE_REQUEST_NORMALIZATION:
+        for feature in request_features:
+            if feature in df.columns:
+                values = df[feature].values
+                if values.std() > STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION:
+                    feature_data = values.reshape(-1, 1)
+                    if feature not in stats.feature_stats:
+                        stats.feature_stats[feature] = RunningStats()
+                    stats.feature_stats[feature].update(feature_data)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    request_normalized_count += 1
+                    new_std = df[feature].std()
+                    
+                    logger.info(f"✅ Normalized request feature: {feature}. prev std: {values.std()} -> new std: {new_std:.3f}")
+                else:
+                    logger.info(f"⚪ Kept raw values for: {feature}. Variance is already low (std: {values.std():.3f})")
+    else:
+        logger.info("🚫 Request feature normalization DISABLED - using raw values")
+        
     # 2. Handle pod features - normalize high-variance features only
     pod_normalized_count = 0
-    for feature in pod_features_cols:
-        if feature in df.columns:
-            if 'kv_hit_ratio' in feature:
-                logger.info(f"⚪ Skipping normalization for {feature} (already 0-100 scale)")
-                continue
-            
-            values = df[feature].values
-            if values.std() > STD_THRESHOLD_FOR_NORMALIZATION:
-                feature_data = values.reshape(-1, 1)
+    if ENABLE_POD_NORMALIZATION:
+        for feature in pod_features_cols:
+            if feature in df.columns:
+                if 'kv_hit_ratio' in feature:
+                    logger.info(f"⚪ Skipping normalization for {feature} (already 0-100 scale)")
+                    continue
                 
-                if feature not in stats.feature_stats:
-                    stats.feature_stats[feature] = RunningStats()
-                
-                # Store original std for verification
-                original_std = df[feature].std()
-                
-                stats.feature_stats[feature].update(feature_data)
-                normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                df[feature] = normalized_feature.flatten()
-                
-                # Verify normalization didn't destroy variance
-                new_std = df[feature].std()
-                
-                if new_std > 0.5:  # Ensure reasonable post-normalization variance
-                    pod_normalized_count += 1
-                    logger.info(f"✅ Normalized pod feature: {feature} (std: {original_std:.3f} → {new_std:.3f})")
+                values = df[feature].values
+                if values.std() > STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION:
+                    feature_data = values.reshape(-1, 1)
+                    
+                    if feature not in stats.feature_stats:
+                        stats.feature_stats[feature] = RunningStats()
+                    
+                    # Store original std for verification
+                    original_std = df[feature].std()
+                    
+                    stats.feature_stats[feature].update(feature_data)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    
+                    # Verify normalization didn't destroy variance
+                    new_std = df[feature].std()
+                    
+                    if new_std > 0.5:  # Ensure reasonable post-normalization variance
+                        pod_normalized_count += 1
+                        logger.info(f"✅ Normalized pod feature: {feature} (std: {original_std:.3f} → {new_std:.3f})")
+                    else:
+                        logger.warning(f"⚠️  Post-normalization variance too low for {feature} (std: {original_std:.3f} → {new_std:.3f})")
                 else:
-                    logger.warning(f"⚠️  Post-normalization variance too low for {feature} (std: {original_std:.3f} → {new_std:.3f})")
+                    logger.info(f"⚪ Variance is already low (std: {values.std():.3f}). Kept raw values for pod feature: {feature}")
+    else:
+        logger.info("🚫 Pod feature normalization DISABLED - using raw values")
 
     # 3. FEATURE IMPORTANCE AMPLIFICATION
     amplified_count = 0
-    if SIGNAL_AMPLIFICATION_DEGREE > 1.0:
+    if ENABLE_POD_NORMALIZATION and SIGNAL_AMPLIFICATION_DEGREE > 1.0:
         critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
         for feature in pod_features_cols:
             if any(critical in feature for critical in critical_features):
@@ -339,57 +349,50 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
 
 
 def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningStats) -> pd.DataFrame:
-    """
-    Normalize features for inference using training statistics.
-    
-    Args:
-        df: DataFrame with preprocessed features
-        stats: PerFeatureRunningStats object with training statistics
-    
-    Returns:
-        pd.DataFrame: Normalized DataFrame
-    """
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-    pod_features_cols = [col for col in df.columns if col.startswith('pod_') and 
-                        df[col].dtype in ['float64', 'int64']]
+    pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
     
     if stats.count > 0:
         logger.debug("Applying pod-centric normalization for inference")
-        
-        # 1. Request features - only normalize if they were normalized in training
-        for feature in request_features:
-            if feature in df.columns and feature in stats.feature_stats:
-                feature_data = df[feature].values.reshape(-1, 1)
-                normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                df[feature] = normalized_feature.flatten()
-                logger.debug(f"Normalized request feature {feature} for inference")
-            else:
-                logger.debug(f"Kept raw values for request feature {feature}")
-        
+        if ENABLE_REQUEST_NORMALIZATION:    
+            # 1. Request features - only normalize if they were normalized in training
+            for feature in request_features:
+                if feature in df.columns and feature in stats.feature_stats:
+                    feature_data = df[feature].values.reshape(-1, 1)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    logger.debug(f"✅ Normalized request feature {feature} for inference")
+                else:
+                    logger.debug(f"Kept raw values for request feature {feature}")
+        else:
+            logger.debug("Request feature normalization DISABLED for inference")
+
         # 2. Pod features - normalize those that were normalized in training
         pod_normalized_count = 0
-        for feature in pod_features_cols:
-            if 'kv_hit_ratio' in feature:
-                continue  # Skip normalization
-            if feature in df.columns and feature in stats.feature_stats:
-                feature_data = df[feature].values.reshape(-1, 1)
-                normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                df[feature] = normalized_feature.flatten()
-                pod_normalized_count += 1
-                logger.debug(f"Normalized pod feature {feature} for inference")
-        
-        # 3. Apply same critical feature amplification as training
-        critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
-        amplified_count = 0
-        for feature in pod_features_cols:
-            if any(critical in feature for critical in critical_features):
-                if feature in df.columns:
-                    df[feature] = df[feature] * SIGNAL_AMPLIFICATION_DEGREE
-                    amplified_count += 1
-                    logger.debug(f"Amplified critical feature {feature} for inference")
-        
-        logger.debug(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
-        
+        if ENABLE_POD_NORMALIZATION:
+            for feature in pod_features_cols:
+                if 'kv_hit_ratio' in feature:
+                    continue  # Skip normalization
+                if feature in df.columns and feature in stats.feature_stats:
+                    feature_data = df[feature].values.reshape(-1, 1)
+                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    df[feature] = normalized_feature.flatten()
+                    pod_normalized_count += 1
+                    logger.debug(f"Normalized pod feature {feature} for inference")
+            
+            # 3. Apply same critical feature amplification as training
+            critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
+            amplified_count = 0
+            for feature in pod_features_cols:
+                if any(critical in feature for critical in critical_features):
+                    if feature in df.columns:
+                        df[feature] = df[feature] * SIGNAL_AMPLIFICATION_DEGREE
+                        amplified_count += 1
+                        logger.debug(f"Amplified critical feature {feature} for inference")
+            
+            logger.debug(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
+        else:
+            logger.debug("Pod feature normalization DISABLED for inference")
     else:
         logger.warning(f"No normalization stats available for inference")
     

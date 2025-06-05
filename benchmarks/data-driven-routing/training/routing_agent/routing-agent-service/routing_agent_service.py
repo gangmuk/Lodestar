@@ -43,8 +43,8 @@ ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == 
 MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
 final_model_path = "final_model"
 CONTINUE_FROM_PRETRAINED = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower() == "true"
-TTFT_SLO = int(os.getenv("TTFT_SLO", 500))
-AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 40))
+TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
+AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
 first_request_starting_time = None
 
 TOTAL_NUM_DATA = 0
@@ -151,7 +151,7 @@ def handle_infer():
             
             first_key = list(log_data.keys())[0]
             log_message = log_data[first_key]
-        logger.info(f"Received inference request:\n{log_message}")
+        logger.debug(f"Received inference request:\n{log_message}")
 
         # Extract request ID for logging purposes
         parts = log_message.split("requestID@")
