@@ -1108,12 +1108,9 @@ class LLMRoutingDataProcessor:
             return None, None
 
 
-def encode_for_train(all_pods, df, output_dir, request_stats, request_features_train, request_features_reward):
+def encode_for_train(all_pods, df, output_dir, request_features_train, request_features_reward):
     """Main function to process LLM routing data."""
-    test_split = 0.2
     random_seed = 42
-    batch_size = 32
-    create_loaders = False
     
     # Set random seed
     np.random.seed(random_seed)

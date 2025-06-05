@@ -9,32 +9,29 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
 import pickle
 import time
 import matplotlib.pyplot as plt
-from datetime import datetime
 import glob
 from logger import logger
-import traceback
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
-training_results_dir = "training_results"
-final_model_path = "final_model"
-secondary_final_model_path = None
+final_model_dir = "final_model"
 
 hyperparameters = {
-        'hidden_dim': 32,  # Reduced hidden dimension for small dataset
-        'batch_size': 32,  # Smaller batch size for small dataset
-        'lr': 0.001,  # Learning rate
-        'exploration_rate': 0.1,  # Exploration rate
-        'training_epochs': 10,  # Number of training epochs
-        'max_updates_per_epoch': 100,  # Maximum updates per epoch
-        'eval_interval': 10  # Evaluation interval
+        'hidden_dim': 32,
+        # 'hidden_dim': 256,
+        'batch_size': 32,
+        'lr': 0.001,
+        'exploration_rate': 0.1,
+        'training_epochs': 5,
+        # 'training_epochs': 10,
+        # 'max_updates_per_epoch': 1000000000,
+        'max_updates_per_epoch': 100,
+        'eval_interval': 10,
     }
 
 class FixedPolicyNetwork(nn.Module):
@@ -203,6 +200,10 @@ class SimplifiedContextualBandit:
     def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate):
         self.batch_size = batch_size
         self.exploration_rate = exploration_rate
+
+        self.current_epoch = 0
+        self.global_batch_counter = 0
+        self.learn_call_counter = 0
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
@@ -268,6 +269,8 @@ class SimplifiedContextualBandit:
                 'reward': 0.0,
                 'entropy': 0.0
             }
+
+        self.learn_call_counter += 1
         
         # Stack all tensors
         pod_features = torch.cat(self.pod_features, dim=0)
@@ -293,14 +296,14 @@ class SimplifiedContextualBandit:
         np.random.shuffle(indices)
         batches = [indices[i:i + batch_size] for i in batch_start]
         
-        logger.debug(f"Starting learning with {n_samples} experiences in memory")
+        logger.debug(f"Learn call #{self.learn_call_counter} (Epoch {self.current_epoch}): Processing {n_samples} samples in {len(batches)} batches")
         
         epoch_loss = 0
         epoch_entropy = 0
         num_updates = 0
         
         # Process each batch
-        for batch_idx, batch_indices in enumerate(batches):
+        for local_batch_idx, batch_indices in enumerate(batches):
             # Get batch data
             batch_pod_features = pod_features[batch_indices]
             batch_kv_hit_ratios = kv_hit_ratios[batch_indices]
@@ -308,18 +311,22 @@ class SimplifiedContextualBandit:
             batch_actions = actions[batch_indices]
             batch_rewards = normalized_rewards[batch_indices]
             
-            # ADD THESE PRINTS HERE:
-            logger.debug(f"Batch {batch_idx}: rewards range [{batch_rewards.min():.3f}, {batch_rewards.max():.3f}]")
-            logger.debug(f"Batch {batch_idx}: actions {batch_actions.cpu().numpy()}")
-            logger.debug(f"Batch {batch_idx}: rewards {batch_rewards.squeeze().cpu().numpy()}")
+            self.global_batch_counter += 1
+            logger.debug(f"Epoch {self.current_epoch}, Learn call {self.learn_call_counter}, "
+                        f"Local batch {local_batch_idx}, Global batch {self.global_batch_counter}: "
+                        f"rewards range [{batch_rewards.min():.3f}, {batch_rewards.max():.3f}]")
+            logger.debug(f"Epoch {self.current_epoch}, Global batch {self.global_batch_counter}: "
+                        f"actions {batch_actions.cpu().numpy()}")
+            logger.debug(f"Epoch {self.current_epoch}, Global batch {self.global_batch_counter}: "
+                        f"rewards {batch_rewards.squeeze().cpu().numpy()}")
             
 
             # Get current policy distributions
             action_probs = self.policy(batch_pod_features, batch_kv_hit_ratios, batch_request_features)
             # ADD THIS:
             pred_actions = torch.argmax(action_probs, dim=1)
-            # logger.info(f"Batch {batch_idx}: model predictions {pred_actions[:10].cpu().numpy()}")
-            # logger.info(f"Batch {batch_idx}: actual actions    {batch_actions[:10].cpu().numpy()}")
+            # logger.info(f"Batch {local_batch_idx}: model predictions {pred_actions[:10].cpu().numpy()}")
+            # logger.info(f"Batch {local_batch_idx}: actual actions    {batch_actions[:10].cpu().numpy()}")
 
             # Add small epsilon to prevent numerical issues
             action_probs = action_probs + 1e-8
@@ -338,10 +345,12 @@ class SimplifiedContextualBandit:
             
             # Add small entropy bonus to encourage exploration
             # entropy_bonus = 0.01 * entropy
-            entropy_bonus = 0.2 * entropy  # 20x stronger!
+            entropy_bonus = 0.1 * entropy  # 10x stronger!
             total_loss = loss - entropy_bonus
 
-            logger.info(f"Batch {batch_idx}: Loss={loss.item():.4f}, Entropy={entropy.item():.4f}, Total_loss={total_loss.item():.4f}")
+            logger.info(f"[Epoch {self.current_epoch:2d}] [Global Batch Idx {self.global_batch_counter:4d}] "
+                   f"[Learn #{self.learn_call_counter:2d}.{local_batch_idx}] "
+                   f"Loss={loss.item():.4f}, Entropy={entropy.item():.4f}, Total={total_loss.item():.4f}")
 
             # Update policy
             self.optimizer.zero_grad()
@@ -408,8 +417,7 @@ class SimplifiedContextualBandit:
             pickle.dump(history, f)
             
         # Copy to final model path
-        os.makedirs(final_model_path, exist_ok=True)
-        os.system(f"cp {directory}/* {final_model_path}")
+        os.makedirs(directory, exist_ok=True)
         logger.info(f"Saved simplified agent to {directory}")
     
     def load(self, directory):
@@ -824,7 +832,6 @@ def evaluate_agent(agent, eval_data, num_samples=100):
     agent.policy.train()
     return metrics
 def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
-    global final_model_path
     """
     Enhanced plotting function with proper train/eval data separation
     """
@@ -1234,15 +1241,11 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
     plt.tight_layout()
     
     # Save the plot
-    fn = f"{output_dir}/comprehensive_training_metrics.pdf"
-    plt.savefig(fn, dpi=150, bbox_inches='tight')
-    
-    if os.path.exists(final_model_path):
-        os.system(f"cp {fn} {final_model_path}/")
-    
+    pdf_fn = f"{output_dir}/comprehensive_training_metrics.pdf"
+    plt.savefig(pdf_fn, dpi=150, bbox_inches='tight')
     plt.close()
     
-    logger.info(f"Saved comprehensive training metrics plots to {output_dir}")
+    logger.info(f"* Saved training plots: {pdf_fn}")
     
     # Print summary to console
     if eval_metrics:
@@ -1332,10 +1335,10 @@ def load_all_encoded_data(encoded_data_dir):
 
 def load_previous_model():
     """Load previous model if it exists"""
-    global final_model_path
-    if os.path.exists(final_model_path):
-        logger.info(f"Found previous model at {final_model_path}")
-        return final_model_path
+    global final_model_dir
+    if os.path.exists(final_model_dir):
+        logger.info(f"Found previous model at {final_model_dir}")
+        return final_model_dir
     return None
 
 
@@ -1685,13 +1688,12 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
     }
 
 
-
-# Modify the train function signature
-def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pretrained=False):
+def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
     """Main training function with optimized hyperparameters for small datasets"""
-    global training_results_dir, final_model_path, secondary_final_model_path
-    secondary_final_model_path = secondary_final_model_path_
-    
+    global final_model_dir
+    final_model_dir = model_output_dir
+    os.makedirs(final_model_dir, exist_ok=True)
+    logger.info("Starting training process. final_model_dir: %s", final_model_dir)
     # Get pretrained model path from environment
     pretrained_model_path = os.getenv("PRETRAINED_MODEL_PATH", None)
     
@@ -1699,17 +1701,6 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
     seed = 42
     torch.manual_seed(seed)
     np.random.seed(seed)
-    
-    # Set output directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(training_results_dir, exist_ok=True)
-    
-    # Use different naming for online learning
-    if continue_from_pretrained:
-        output_dir = os.path.join(training_results_dir, f"online_cb_{timestamp}")
-    else:
-        output_dir = os.path.join(training_results_dir, f"simple_cb_{timestamp}")
-    os.makedirs(output_dir, exist_ok=True)
     
     # Load and combine data from all batches
     combined_data = load_all_encoded_data(encoded_data_dir)
@@ -1768,21 +1759,19 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
     if continue_from_pretrained:
         # Use fewer epochs for online learning
         training_epochs = max(5, hyperparameters['training_epochs'] // 4)
-        exploration_rate = hyperparameters['exploration_rate'] * 0.5  # Less exploration
         logger.info(f"Online learning mode: reduced epochs to {training_epochs}, exploration to {exploration_rate}")
     else:
         training_epochs = hyperparameters['training_epochs']
-        exploration_rate = hyperparameters['exploration_rate']
     
     # Update agent's exploration rate
-    agent.exploration_rate = exploration_rate
+    agent.exploration_rate = hyperparameters['exploration_rate']
     
     # Create configuration
     config = {
         'hidden_dim': hyperparameters['hidden_dim'],
         'batch_size': hyperparameters['batch_size'],
         'learning_rate': hyperparameters['lr'],
-        'exploration_rate': exploration_rate,
+        'exploration_rate': hyperparameters['exploration_rate'],
         'num_training_epochs': training_epochs,
         'max_updates_per_epoch': hyperparameters['max_updates_per_epoch'],
         'eval_interval': hyperparameters['eval_interval'],
@@ -1792,10 +1781,6 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
         'pretrained_model_path': pretrained_model_path,
         'dataset_analysis': dataset_analysis
     }
-    
-    # Save configuration
-    with open(os.path.join(output_dir, 'config.json'), 'w') as f:
-        json.dump(config, f, indent=4, default=str)
     
     # Create dataset
     dataset = RoutingDataset(combined_data)
@@ -1812,7 +1797,7 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
     best_accuracy = 0.0
     
     for epoch in range(training_epochs):  # Use adjusted epochs
-        # ... rest of training loop remains the same ...
+        agent.current_epoch = epoch
         epoch_start_time = time.time()
         epoch_loss = 0
         epoch_reward = 0
@@ -1820,13 +1805,14 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
         epoch_updates = 0
         
         dataloader_iter = iter(dataloader)
-        num_iter_per_data = 3 if not continue_from_pretrained else 1  # Fewer iterations for online learning
+        # num_iter_per_data = 3 if not continue_from_pretrained else 1  # Fewer iterations for online learning
+        num_iter_per_data = 1
         total_iter = number_of_batches * num_iter_per_data
         final_total_num_iteration = min(config['max_updates_per_epoch'], total_iter)
-        
-        logger.info(f"Epoch: {epoch+1}/{training_epochs}, Total iterations: {final_total_num_iteration}")
-        
-        # ... rest of the training loop remains exactly the same ...
+        logger.info(f"=" * 80)
+        logger.info(f"EPOCH {epoch+1}/{training_epochs} - Processing final_total_num_iteration: {final_total_num_iteration} iterations")
+        logger.info(f"=" * 80)        
+
         for batch_iter_idx in range(final_total_num_iteration):
             try:
                 batch = next(dataloader_iter)
@@ -1849,26 +1835,21 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
                     rewards[j:j+1]
                 )
             
-            trigger_learning = (batch_iter_idx+1) % 3 == 0 or batch_iter_idx == final_total_num_iteration - 1
-            if trigger_learning:
-                if len(agent.pod_features) > 0:
-                    try:
-                        update_metrics = agent.learn()
-                        total_updates += 1
-                        epoch_updates += 1
-                        epoch_loss += update_metrics['loss']
-                        epoch_reward += update_metrics['reward']
-                        epoch_entropy += update_metrics['entropy']
-                        
-                        if batch_iter_idx % max(1, final_total_num_iteration//3) == 0:
-                            logger.info(f"Batch: {batch_iter_idx+1}/{final_total_num_iteration}, "
-                                       f"Loss: {update_metrics['loss']:.4f}")
-                    except Exception as e:
-                        logger.error(f"Error during learning: {e}")
-            
+            if len(agent.pod_features) > 0:
+                try:
+                    update_metrics = agent.learn()
+                    total_updates += 1
+                    epoch_updates += 1
+                    epoch_loss += update_metrics['loss']
+                    epoch_reward += update_metrics['reward']
+                    epoch_entropy += update_metrics['entropy']
+                    if batch_iter_idx % max(1, final_total_num_iteration//3) == 0:
+                        logger.info(f"Batch: {batch_iter_idx+1}/{final_total_num_iteration}, Loss: {update_metrics['loss']:.4f}")
+                except Exception as e:
+                    logger.error(f"Error during learning: {e}")
+        
             if (batch_iter_idx + 1) % max(1, final_total_num_iteration // config['eval_interval']) == 0:
                 logger.info(f"Evaluating agent at batch {batch_iter_idx+1}")
-                
                 try:
                     eval_indices = torch.randperm(len(dataset))[:min(200, len(dataset))]
                     eval_data = {
@@ -1878,28 +1859,32 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
                         'actions': combined_data['actions'][eval_indices],
                         'rewards': combined_data['rewards'][eval_indices]
                     }
-
-                    # USE THIS ONE - more comprehensive analysis
-                    metrics = enhanced_evaluation_with_identity_analysis(agent, eval_data, output_dir)
+                    
+                    # Use the standard evaluate_agent function for plotting compatibility
+                    metrics = evaluate_agent(agent, eval_data, num_samples=200)
                     eval_metrics.append(metrics)
-                    
                     logger.info(f"Evaluation - Accuracy: {metrics['accuracy']:.4f}")
+                    logger.info(f"Evaluation - Confidence: {metrics.get('avg_confidence', 0):.4f}")
                     
-                    # Log key identity insights
-                    if 'identity_analysis' in metrics:
-                        identity = metrics['identity_analysis']
-                        most_favored = identity.get('most_favored_pod', -1)
-                        max_concentration = identity.get('max_concentration', 0)
-                        correlation = identity.get('correlation', 0)
-                        
-                        logger.info(f"Identity Analysis - Most favored pod: {most_favored}, "
-                                f"Concentration: {max_concentration:.1%}, "
-                                f"Correlation: {correlation:.3f}")
-                        
-                        if max_concentration > 0.6:
-                            logger.warning(f"⚠️  Pod {most_favored} is getting {max_concentration:.1%} of traffic!")
+                    # Do identity analysis separately (every few evaluations to avoid spam)
+                    if len(eval_metrics) % 3 == 0:  # Every 3rd evaluation
+                        try:
+                            identity_analysis = analyze_pod_identity_learning(agent, eval_data, final_model_dir)
+                            most_favored = identity_analysis.get('most_favored_pod', -1)
+                            max_concentration = identity_analysis.get('max_concentration', 0)
+                            correlation = identity_analysis.get('correlation', 0)
+                            logger.info(f"Identity Analysis - Most favored pod: {most_favored}, "
+                                    f"Concentration: {max_concentration:.1%}, "
+                                    f"Correlation: {correlation:.3f}")
+                            if max_concentration > 0.6:
+                                logger.warning(f"⚠️  Pod {most_favored} is getting {max_concentration:.1%} of traffic!")
+                        except Exception as e:
+                            logger.error(f"Error in identity analysis: {e}")
+                            
                 except Exception as e:
                     logger.error(f"Error during evaluation: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         # End of epoch logging
         epoch_duration = time.time() - epoch_start_time
@@ -1908,32 +1893,44 @@ def train(encoded_data_dir, secondary_final_model_path_=None, continue_from_pret
             avg_reward = epoch_reward / epoch_updates
             avg_entropy = epoch_entropy / epoch_updates
             
-            logger.info(f"Epoch {epoch+1}/{training_epochs} completed - "
-                       f"Loss: {avg_loss:.4f}, Reward: {avg_reward:.4f}")
+            logger.info(f"=" * 80)
+            logger.info(f"EPOCH {epoch+1} SUMMARY:")
+            logger.info(f"  Duration: {epoch_duration:.1f}s")
+            logger.info(f"  Updates: {epoch_updates}")
+            logger.info(f"  Global batches processed: {agent.global_batch_counter}")
+            logger.info(f"  Avg Loss: {avg_loss:.4f}")
+            logger.info(f"  Avg Reward: {avg_reward:.4f}")
+            logger.info(f"  Avg Entropy: {avg_entropy:.4f}")
+            logger.info(f"=" * 80)
     
+    
+    # Save configuration
+    with open(os.path.join(final_model_dir, 'config.json'), 'w') as f:
+        json.dump(config, f, indent=4, default=str)
+
     # Save final model
-    agent.save(output_dir)
-    logger.info(f"Saved final model to {output_dir}")
+    agent.save(final_model_dir)
     
-    # Copy to final model path for inference
-    os.makedirs(final_model_path, exist_ok=True)
-    os.system(f"cp {output_dir}/* {final_model_path}/")
-    logger.info(f"Copied model to {final_model_path} for inference")
-    if secondary_final_model_path is not None:
-        os.makedirs(secondary_final_model_path, exist_ok=True)
-        os.system(f"cp -r {output_dir} {secondary_final_model_path}/final_model")
-        logger.info(f"Copied model to {secondary_final_model_path}")
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # if continue_from_pretrained:
+    #     temp_model_output_dir = os.path.join(final_model_dir, f"online_cb_{timestamp}")
+    # else:
+    #     temp_model_output_dir = os.path.join(final_model_dir, f"simple_cb_{timestamp}")
+    # os.makedirs(final_model_dir, exist_ok=True)
+    # os.system(f"cp -r {final_model_dir} {temp_model_output_dir}/")
+    # logger.info(f"Copied model to {final_model_dir} for inference")
     
     # Rest of the function (plotting, analysis) remains the same...
     try:
-        plot_training_metrics(agent, eval_metrics, output_dir, combined_data)
+        plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data)
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
     
+    os.system(f"cp -r {final_model_dir} final_model")
+
     return {
         'agent': agent,
-        'model_dir': output_dir,
-        'output_dir': output_dir,
+        'model_dir': final_model_dir,
         'config': config,
         'eval_metrics': eval_metrics,
         'best_accuracy': best_accuracy
@@ -1951,7 +1948,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
     """
     Inference function optimized for the simplified model
     """
-    global final_model_path, _cached_metadata, _cached_agent, _cached_agent_config
+    global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
     
     infer_start_time = time.time()
     
@@ -2001,7 +1998,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         'request_features': request_features.shape[1],
         'num_pods': pod_features.shape[1],
         'exploration_rate': hyperparameters['exploration_rate'],
-        'final_model_path': final_model_path
+        'final_model_dir': final_model_dir
     }
     
     # Check if we can reuse cached agent
@@ -2039,7 +2036,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
 
     # Load model weights if needed
     if not agent_cache_hit or model_updated:
-        agent.load(final_model_path)
+        agent.load(final_model_dir)
         agent.policy.eval()
         logger.info("Loaded model weights from disk")
 
@@ -2070,7 +2067,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         'selected_pod_index': selected_action,
         'confidence': confidence,
         'pod_probabilities': action_probs[0].cpu().numpy().tolist(),
-        'final_model_path': final_model_path,
+        'final_model_dir': final_model_dir,
         'exploration_enabled': hyperparameters['exploration_rate'] > 0,
         'model_type': 'simplified'
     }
@@ -2640,7 +2637,25 @@ def analyze_pod_identity_learning(agent, eval_data, output_dir):
             logger.info(f"  hist_rewards: {hist_rewards}")  
             logger.info(f"  current_probs: {current_probs}")
             logger.info(f"  correlation: {correlation}")
-            
+
+        # ADD THE CALIBRATION CHECK HERE:
+        logger.info("\n" + "="*50)
+        logger.info("CALIBRATION CHECK:")
+        logger.info("="*50)
+        for pod_idx in range(num_pods):
+            historical_reward = pod_performance[pod_idx]['avg_reward']
+            current_prob = avg_probs[pod_idx].item()
+            logger.info(f"Pod {pod_idx}: reward={historical_reward:.3f}, prob={current_prob:.3f}")
+
+        # Print sorted by reward (best to worst)
+        sorted_pods = sorted(range(num_pods), key=lambda x: pod_performance[x]['avg_reward'], reverse=True)
+        logger.info("\nPods sorted by performance (best to worst):")
+        for pod_idx in sorted_pods:
+            reward = pod_performance[pod_idx]['avg_reward']
+            prob = avg_probs[pod_idx].item()
+            logger.info(f"  Pod {pod_idx}: {reward:.3f} → {prob:.1%}")
+        logger.info("="*50)
+
         # 5. FEATURE IMPORTANCE ANALYSIS
         logger.info("\n5️⃣ FEATURE IMPORTANCE ANALYSIS:")
         
