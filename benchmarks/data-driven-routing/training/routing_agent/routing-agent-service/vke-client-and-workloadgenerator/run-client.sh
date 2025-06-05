@@ -20,22 +20,26 @@ ipaddr=10.0.3.21 # external-ip of envoy-aibrix-system-aibrix-eg-903790dc svc in 
 # port=8888
 # ipaddr=localhost
 
-iterations=2
+iterations=1
 
 input_workload_dirs=(
     # "workload/one_request"
 
     # "workload/prefix-sharing-workload/p4096_s1024_rps5"
-    # "workload/prefix-sharing-workload/p4096_s1024_rps10"
-    "workload/prefix-sharing-workload/p4096_s1024_rps15"
+    "workload/prefix-sharing-workload/p4096_s1024_rps10_spp_20_ndp_100"
+    # "workload/prefix-sharing-workload/p4096_s1024_rps10_spp_10_ndp200"
+    # "workload/prefix-sharing-workload/p4096_s1024_rps5_spp_10_ndp200"
+    # "workload/prefix-sharing-workload/p4096_s1024_rps7_spp_10_ndp200"
+    # "workload/prefix-sharing-workload/p4096_s1024_rps15"
     # "workload/prefix-sharing-workload/p4096_s1024_rps20"
+    # "workload/prefix-sharing-workload/p8096_s2048_rps10"
+    # "workload/prefix-sharing-workload/p8096_s2048_rps15"
 
-    # "workload/prefix-sharing-workload/p1024_s128_rps10-p2048_s128_rps10-p4096_s128_rps10-p8096_s128_rps10"
-    # "workload/prefix-sharing-workload/p2048_s512_rps10-p4096_s1024_rps10-p8096_s2048_rps5"
-    
-    
-    # "workload/prefix-sharing-workload/p2048_s512_rps10-p4096_s1024_rps10-p8096_s2048_rps10"
-    # "workload/prefix-sharing-workload/p2048_s512_rps10-p4096_s1024_rps10-p8096_s2048_rps5-p16192_s4096_rps3-pp"
+    # "workload/prefix-sharing-workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50"
+    # "workload/prefix-sharing-workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80"
+    # "workload/prefix-sharing-workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps2_spp_20_ndp80"
+    # "workload/prefix-sharing-workload/SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80"
+    # "workload/prefix-sharing-workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80"
 
     # "workload/prefix-sharing-workload/merged-comprehensive-workload"
 
@@ -54,96 +58,102 @@ input_workload_dirs=(
 delimiter="+"
 routing_configs=(
     "rl-online-router${delimiter}none"
-    "rl-online-router${delimiter}prefix-cache"
-    "rl-online-router${delimiter}random"
+    # "rl-online-router${delimiter}prefix-cache"
+    # "rl-online-router${delimiter}random"
     # # "latency-prediction-based${delimiter}none"
     # "prefix-cache-and-load${delimiter}none"
     # # "flexible-prefix-cache${delimiter}prefix-cache"
     # # "least-latency${delimiter}none"
     # "flexible-prefix-cache${delimiter}random"
 )
-TTFT_SLO=400
-AVG_TPOT_SLO=40
+TTFT_SLO=1500
+AVG_TPOT_SLO=50
 idxs=(5555)
-for workload_dir in "${input_workload_dirs[@]}"; do
-    for idx in "${idxs[@]}"; do
-        for config in "${routing_configs[@]}"; do
-            routing="${config%%${delimiter}*}"
-            subAlgorithm="${config#*${delimiter}}"
-            output_dir="${workload_dir}/${config}"
-            # if output_dir exist, rename
-            if [ -d "${output_dir}" ]; then
-                timestamp=$(date +%Y%m%d-%H%M%S)
-                output_dir="${output_dir}-${timestamp}"
-                echo "output_dir already exists, renaming to ${output_dir}"
-            fi
+# for online_learning in true false; do
+for online_learning in false; do
+    for workload_dir in "${input_workload_dirs[@]}"; do
+        for idx in "${idxs[@]}"; do
+            for config in "${routing_configs[@]}"; do
+                routing="${config%%${delimiter}*}"
+                subAlgorithm="${config#*${delimiter}}"
+                if [ "${online_learning}" = "true" ] && [ "${subAlgorithm}" != "none" ]; then
+                    echo "Skipping online learning for ${subAlgorithm} as it is not supported."
+                    continue
+                fi
+                python3 update_k8s_env.py --env TTFT_SLO=${TTFT_SLO} --env AVG_TPOT_SLO=${AVG_TPOT_SLO} --env MODEL=simpler_contextual_bandit --env ENABLE_ONLINE_LEARNING=${online_learning} --deployment routing-agent-service --namespace default
+                start_time=$(date +%s)
+                
+                kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
+                # kubectl rollout restart deployment latency-predictor-service -n default
+                kubectl rollout restart deployment routing-agent-service -n default
+                python3 check_ready.py
+                sleep 3
 
-            if [ ! -d "${output_dir}" ]; then
-                mkdir -p "${output_dir}"
-            fi
-            python update_slo_env.py --ttft-slo ${TTFT_SLO} --avg-tpot-slo ${AVG_TPOT_SLO}
-            workload_path="${workload_dir}/workload.jsonl"
-            client_log_file_name=${output_dir}/"client.log.txt"
-            start_time=$(date +%s)
-            kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
-            # kubectl rollout restart deployment latency-predictor-service -n default
-            kubectl rollout restart deployment routing-agent-service -n default
-            python3 check_ready.py
-            sleep 3
-            
-            kubectl logs -f -n aibrix-system $(kubectl get pods -n aibrix-system | grep aibrix-gateway-plugins | awk '{print $1}') > ${output_dir}/all-aibrix-gateway-plugins.log.txt &
-            pid_1=$!
+                if [ "${subAlgorithm}" == "none" ]; then
+                    output_dir="${workload_dir}/${config}-onlinelearning_${online_learning}"
+                else
+                    output_dir="${workload_dir}/${config}"
+                fi
+                # if output_dir exist, rename
+                if [ -d "${output_dir}" ]; then
+                    timestamp=$(date +%Y%m%d-%H%M%S)
+                    output_dir="${output_dir}-${timestamp}"
+                    echo "output_dir already exists, renaming to ${output_dir}"
+                fi
 
-            # kubectl logs -f -n default $(kubectl get pods -n default | grep latency-predictor-service | awk '{print $1}') > ${output_dir}/all-latency-predictor-service.log.txt &
-            # pid_2=$!
+                if [ ! -d "${output_dir}" ]; then
+                    mkdir -p "${output_dir}"
+                fi
+                workload_path="${workload_dir}/workload.jsonl"
+                client_log_file_name=${output_dir}/"client.log.txt"
+                
+                kubectl logs -f -n aibrix-system $(kubectl get pods -n aibrix-system | grep aibrix-gateway-plugins | awk '{print $1}') > ${output_dir}/all-aibrix-gateway-plugins.log.txt &
+                pid_1=$!
+                # kubectl logs -f -n default $(kubectl get pods -n default | grep latency-predictor-service | awk '{print $1}') > ${output_dir}/all-latency-predictor-service.log.txt &
+                # pid_2=$!
+                kubectl logs -f -n default $(kubectl get pods -n default | grep routing-agent-service | awk '{print $1}') > ${output_dir}/all-routing-agent-service.log.txt &
+                pid_3=$!
 
-            kubectl logs -f -n default $(kubectl get pods -n default | grep routing-agent-service | awk '{print $1}') > ${output_dir}/all-routing-agent-service.log.txt &
-            pid_3=$!
+                echo "========================================"
+                python kubectl_cp_from_host_to_pod.py hyperparameters.txt /app/hyperparameters.txt routing-agent-service default
+                echo "* output_dir: ${output_dir}"
+                echo "* workload_path: ${workload_path}"
+                echo "* client_log_file_name: ${client_log_file_name}"
+                echo "* all gateway log: ${output_dir}/all-aibrix-gateway-plugins.log.txt"
+                echo "* routing agent service log: ${output_dir}/all-routing-agent-service.log.txt"
+                sleep 3
+                python3 async-client.py \
+                        --workload_path ${workload_path} \
+                        --model ${model} \
+                        --endpoint http://${ipaddr}:${port} \
+                        --api_key ${api_key} \
+                        --output_file_path ${output_jsonl_path} \
+                        --routing_strategy ${routing} \
+                        --subAlgorithm ${subAlgorithm} \
+                        --max_tokens ${max_tokens} \
+                        --output_dir ${output_dir} \
+                        --iterations ${iterations} \
+                        --streaming &> ${client_log_file_name}
+                        # --streaming 2>&1 | tee ${client_log_file_name}
+                duration=$(( $(date +%s) - start_time ))
 
-            echo "========================================"
+                python kubectl_cp_from_pod_to_host.py /app/final_model "${output_dir}/final_model" routing-agent-service default
+                python kubectl_cp_from_pod_to_host.py /app/llm_router.log "${output_dir}/llm_router.log" routing-agent-service default
 
-            python kubectl_cp_from_host_to_pod.py hyperparameters.txt /app/hyperparameters.txt routing-agent-service default
+                cat ${output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" > ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
+                echo "* filtered gateway log: ${output_dir}/filtered-aibrix-gateway-plugins.log.csv"
+                
+                python plot_latency_timeseries.py ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
 
-            echo "* output_dir: ${output_dir}"
-            echo "* workload_path: ${workload_path}"
-            echo "* client_log_file_name: ${client_log_file_name}"
-            echo "* all gateway log: ${output_dir}/all-aibrix-gateway-plugins.log.txt"
-            echo "* routing agent service log: ${output_dir}/all-routing-agent-service.log.txt"
-            python3 async-client.py \
-                    --workload_path ${workload_path} \
-                    --model ${model} \
-                    --endpoint http://${ipaddr}:${port} \
-                    --api_key ${api_key} \
-                    --output_file_path ${output_jsonl_path} \
-                    --routing_strategy ${routing} \
-                    --subAlgorithm ${subAlgorithm} \
-                    --max_tokens ${max_tokens} \
-                    --output_dir ${output_dir} \
-                    --iterations ${iterations} \
-                    --streaming &> ${client_log_file_name}
-                    # --streaming 2>&1 | tee ${client_log_file_name}
-            duration=$(( $(date +%s) - start_time ))
+                # echo "* latency predictor service log: ${output_dir}/all-latency-predictor-service.log.txt"
+                sleep 5
 
-            python kubectl_cp_from_pod_to_host.py /app/final_model "${output_dir}/final_model" routing-agent-service default
-            python kubectl_cp_from_pod_to_host.py /app/final_model "${output_dir}/final_model" routing-agent-service default
-            python kubectl_cp_from_pod_to_host.py /app/llm_router.log "${output_dir}/llm_router.log" routing-agent-service default
-            python kubectl_cp_from_pod_to_host.py /app/global_tensor_dataset.pt "${output_dir}/global_tensor_dataset.pt" routing-agent-service default
-
-
-
-            cat ${output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" > ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
-            
-            python plot_latency_timeseries.py ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
-
-            echo "* filtered gateway log: ${output_dir}/filtered-aibrix-gateway-plugins.log.csv"
-            # echo "* latency predictor service log: ${output_dir}/all-latency-predictor-service.log.txt"
-            sleep 5
-
-            kill $pid_1
-            # kill $pid_2
-            kill $pid_3
-            echo "* Total time taken for the experiment: ${duration} seconds"
-            echo "========================================"
+                kill $pid_1
+                # kill $pid_2
+                kill $pid_3
+                echo "* Total time taken for the experiment: ${duration} seconds"
+                echo "========================================"
+            done
         done
     done
 done
