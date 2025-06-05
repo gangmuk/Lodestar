@@ -69,28 +69,28 @@ def parse_log_file(file_path):
         assert False
     return df, json_columns
 
-def normalize_time(df):
-    first_request_start_time = df['request_start_time'].min()
-    df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
-    df['normalized_end_time'] = df['request_end_time'] - first_request_start_time
-    df['normalized_start_time'] /= 1_000_000
-    df['normalized_end_time'] /= 1_000_000
+# def normalize_time(df):
+#     first_request_start_time = df['request_start_time'].min()
+#     df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
+#     df['normalized_end_time'] = df['request_end_time'] - first_request_start_time
+#     df['normalized_start_time'] /= 1_000_000
+#     df['normalized_end_time'] /= 1_000_000
     
     
-    if 'log_window_start_time' in df.columns:
-        df['log_window_start_time'] = df['log_window_start_time'] - first_request_start_time
-        df['log_window_start_time'] /= 1_000_000
-    if 'log_window_end_time' in df.columns:
-        df['log_window_end_time'] = df['log_window_end_time'] - first_request_start_time
-        df['log_window_end_time'] /= 1_000_000
+#     if 'log_window_start_time' in df.columns:
+#         df['log_window_start_time'] = df['log_window_start_time'] - first_request_start_time
+#         df['log_window_start_time'] /= 1_000_000
+#     if 'log_window_end_time' in df.columns:
+#         df['log_window_end_time'] = df['log_window_end_time'] - first_request_start_time
+#         df['log_window_end_time'] /= 1_000_000
 
-    df.loc[:, 'normalized_start_time'] = df['normalized_start_time'] - df['normalized_start_time'].min()
-    df.loc[:, 'normalized_end_time'] = df['normalized_end_time'] - df['normalized_start_time'].min()
-    df = df.sort_values(by='normalized_start_time', ascending=True)
-    df['time_bucket'] = df['normalized_start_time'].astype(int)
-    df = df[['normalized_start_time', 'time_bucket', 'normalized_end_time'] + [col for col in df.columns if col != 'normalized_start_time' and col != 'normalized_end_time' and col != 'time_bucket']]
-    df.reset_index(drop=True, inplace=True)
-    return df
+#     df.loc[:, 'normalized_start_time'] = df['normalized_start_time'] - df['normalized_start_time'].min()
+#     df.loc[:, 'normalized_end_time'] = df['normalized_end_time'] - df['normalized_start_time'].min()
+#     df = df.sort_values(by='normalized_start_time', ascending=True)
+#     df['time_bucket'] = df['normalized_start_time'].astype(int)
+#     df = df[['normalized_start_time', 'time_bucket', 'normalized_end_time'] + [col for col in df.columns if col != 'normalized_start_time' and col != 'normalized_end_time' and col != 'time_bucket']]
+#     df.reset_index(drop=True, inplace=True)
+#     return df
 
 def safe_parse_json(json_str):
     """Safely parse Python dictionary-like strings or JSON strings"""
@@ -438,16 +438,6 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
         'ttft_reward': ttft_rewards,
         'tpot_reward': tpot_rewards,
         'reward': ttft_rewards + tpot_rewards,
-        'ttft_normalized': np.where(
-            ttft_values > 0,
-            np.minimum(1.0, np.maximum(0.0, ttft_values / 500)),
-            0
-        ),
-        'tpot_normalized': np.where(
-            tpot_values > 0,
-            np.minimum(1.0, np.maximum(0.0, tpot_values / 25)),
-            0
-        )
     })
     slo_update_overhead = time.time() - slo_update_start_time
 
@@ -616,46 +606,6 @@ def preprocess_single_row_fast(df, ttft_slo, avg_tpot_slo):
         base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
         base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
     
-    # # Calculate derived values directly
-    # pod_to_index = {str(pod): idx for idx, pod in enumerate(all_pods)}
-    # index_to_pod = {int(idx): str(pod) for pod, idx in pod_to_index.items()}
-    
-    # # base_features['action'] = pod_to_index[str(base_features['selected_pod'])]
-    # base_features['action'] = -1
-    
-    # # Fast reward calculations
-    # ttft_val = base_features['ttft']
-    # tpot_val = base_features['avg_tpot']
-    
-    # base_features['avg_tpot_slo_satisfied'] = tpot_val <= avg_tpot_slo
-    # base_features['avg_ttft_slo_satisfied'] = ttft_val <= ttft_slo
-    
-    # # Direct reward calculation without numpy overhead
-    # if ttft_val <= 0:
-    #     ttft_reward = 0.5
-    # elif ttft_val <= ttft_slo:
-    #     ttft_reward = 0.5 - (0.4 * ttft_val / ttft_slo)
-    # else:
-    #     excess_factor = min(1.0, (ttft_val - ttft_slo) / ttft_slo)
-    #     ttft_reward = -0.1 - (0.4 * excess_factor)
-    
-    # if tpot_val <= 0:
-    #     tpot_reward = -0.5
-    # elif tpot_val <= avg_tpot_slo:
-    #     tpot_reward = 0.1 + (0.4 * (1 - tpot_val / avg_tpot_slo))
-    # else:
-    #     excess_factor = min(1.0, (tpot_val - avg_tpot_slo) / avg_tpot_slo)
-    #     tpot_reward = -0.1 - (0.4 * excess_factor)
-    
-    # base_features['ttft_reward'] = ttft_reward
-    # base_features['tpot_reward'] = tpot_reward
-    # base_features['reward'] = ttft_reward + tpot_reward
-    
-    # # Normalized metrics
-    # base_features['ttft_normalized'] = min(1.0, max(0.0, ttft_val / 500)) if ttft_val > 0 else 0
-    # base_features['tpot_normalized'] = min(1.0, max(0.0, tpot_val / 25)) if tpot_val > 0 else 0
-    
-    # Create DataFrame only once at the end
     processed_df = pd.DataFrame([base_features])
     
     # # Mapping info

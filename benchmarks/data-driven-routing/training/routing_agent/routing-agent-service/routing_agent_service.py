@@ -26,6 +26,7 @@ from logger import logger
 import preprocess
 import pickle
 import threading
+import feature_normalization
 
 app = Flask(__name__)
 
@@ -35,9 +36,6 @@ STATS_FILE = "request_feature_stats.pkl"  # Add this near the top with your othe
 NUM_TRAINS = 0
 MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
-TOTAL_NUM_DATA = 0
-NUM_NEW_DATA = 0
-MIN_NUM_TRAINING_DATA = 1000  # Minimum number of training data required to trigger training
 LOCK_TRAINING_DATA = threading.Lock()
 LOAD_PRETRAINED_MODEL = os.getenv("LOAD_PRETRAINED_MODEL", "true").lower() == "true"
 PRETRAINED_MODEL_PATH = os.getenv("PRETRAINED_MODEL_PATH", "final_model")
@@ -48,213 +46,13 @@ CONTINUE_FROM_PRETRAINED = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower()
 TTFT_SLO = int(os.getenv("TTFT_SLO", 500))
 AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 40))
 first_request_starting_time = None
-signal_amplification_degree = 1.0 # 1.5
-reward_amplification_degree = 2.0
-reward_amplification_threshold = 0.5
+
+TOTAL_NUM_DATA = 0
+NUM_NEW_DATA = 0
+MIN_NUM_TRAINING_DATA = 1000  # Minimum number of training data required to trigger training
 
 logger.info(f"TTFT_SLO: {TTFT_SLO}")
 logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
-
-class RunningStats:
-    """Maintains running mean and standard deviation for feature normalization"""
-    def __init__(self, feature_names=None):
-        self.count = 0
-        self.mean = None
-        self.var = None  # Variance
-        self.feature_names = feature_names
-        
-    def update(self, new_data):
-        """Update statistics with new batch of data"""
-        if new_data is None or len(new_data) == 0:
-            return
-        
-        # Convert to numpy array
-        new_data = np.array(new_data, dtype=np.float64)
-        new_count = len(new_data)
-        
-        # First update
-        if self.count == 0:
-            self.mean = np.mean(new_data, axis=0)
-            self.var = np.var(new_data, axis=0) * new_count
-            self.count = new_count
-            logger.debug(f"Initialized running stats with {new_count} samples")
-            return
-        
-        # Compute batch statistics
-        batch_mean = np.mean(new_data, axis=0)
-        batch_var = np.var(new_data, axis=0) * new_count
-        
-        # Update running statistics using Welford's algorithm
-        new_count = len(new_data)
-        new_total = self.count + new_count
-        
-        # Update mean
-        delta = batch_mean - self.mean
-        self.mean = self.mean + delta * new_count / new_total
-        
-        # Update variance
-        self.var = self.var + batch_var + delta**2 * self.count * new_count / new_total
-        
-        # Update count
-        self.count = new_total
-        
-        logger.debug(f"Updated running stats, now have {self.count} samples")
-        
-    def get_mean(self):
-        """Get current mean"""
-        return self.mean if self.mean is not None else 0
-        
-    def get_std(self):
-        """Get current standard deviation"""
-        if self.count <= 1 or self.var is None:
-            return np.ones_like(self.mean) if self.mean is not None else 1.0
-        std = np.sqrt(self.var / self.count)
-        # Ensure no zeros to prevent division by zero during normalization
-        if isinstance(std, np.ndarray):
-            std[std < 1.0] = 1.0
-        return std
-        
-    def normalize(self, data):
-        """Normalize data using current statistics"""
-        if self.count == 0:
-            logger.warning("No statistics available, returning original data")
-            return data
-        
-        mean = self.get_mean()
-        std = self.get_std()
-        
-        return (data - mean) / std
-        
-    def save(self, filename):
-        """Save statistics to file"""
-        with open(filename, 'wb') as f:
-            pickle.dump({
-                'count': self.count,
-                'mean': self.mean,
-                'var': self.var,
-                'feature_names': self.feature_names
-            }, f)
-        logger.info(f"Saved running statistics to {filename}")
-        
-    @classmethod
-    def load(cls, filename):
-        """Load statistics from file"""
-        if not os.path.exists(filename):
-            logger.info(f"Statistics file {filename} not found, initializing new stats")
-            return cls()
-        
-        with open(filename, 'rb') as f:
-            data = pickle.load(f)
-            
-        stats = cls(feature_names=data.get('feature_names'))
-        stats.count = data.get('count', 0)
-        stats.mean = data.get('mean')
-        stats.var = data.get('var')
-        
-        logger.info(f"Loaded running statistics from {filename} with {stats.count} samples")
-        return stats
-
-class PerFeatureRunningStats:
-    """Maintains separate running statistics for each feature"""
-    def __init__(self):
-        self.feature_stats = {}  # Dict[feature_name, RunningStats]
-        
-    def update(self, data, feature_names):
-        """Update statistics for each feature separately"""
-        if data is None or len(data) == 0:
-            return
-            
-        data = np.array(data, dtype=np.float64)
-        
-        for i, feature_name in enumerate(feature_names):
-            if feature_name not in self.feature_stats:
-                self.feature_stats[feature_name] = RunningStats()
-            
-            # Extract single feature column
-            feature_data = data[:, i:i+1]  # Keep 2D shape
-            self.feature_stats[feature_name].update(feature_data)
-    
-    def normalize(self, data, feature_names):
-        """Normalize each feature separately using its own statistics"""
-        if data is None or len(data) == 0:
-            return data
-            
-        data = np.array(data, dtype=np.float64)
-        normalized_data = np.zeros_like(data)
-        
-        for i, feature_name in enumerate(feature_names):
-            if feature_name in self.feature_stats and self.feature_stats[feature_name].count > 0:
-                # Normalize using feature-specific stats
-                feature_column = data[:, i:i+1]  # Keep 2D shape
-                normalized_column = self.feature_stats[feature_name].normalize(feature_column)
-                normalized_data[:, i] = normalized_column.flatten()
-            else:
-                # No normalization if no stats available
-                normalized_data[:, i] = data[:, i]
-                logger.warning(f"No statistics available for feature '{feature_name}', using original values")
-        
-        return normalized_data
-    
-    def save(self, filename):
-        """Save all feature statistics to file"""
-        save_data = {}
-        for feature_name, stats in self.feature_stats.items():
-            save_data[feature_name] = {
-                'count': stats.count,
-                'mean': stats.mean,
-                'var': stats.var,
-                'feature_names': stats.feature_names
-            }
-        
-        with open(filename, 'wb') as f:
-            pickle.dump(save_data, f)
-        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {filename}")
-    
-    @classmethod
-    def load(cls, filename):
-        """Load feature statistics from file"""
-        if not os.path.exists(filename):
-            logger.info(f"Statistics file {filename} not found, initializing new per-feature stats")
-            return cls()
-        
-        instance = cls()
-        
-        try:
-            with open(filename, 'rb') as f:
-                save_data = pickle.load(f)
-            
-            # Handle both old format (single RunningStats) and new format (per-feature)
-            if isinstance(save_data, dict) and 'count' in save_data:
-                # Old format - single RunningStats for all features
-                logger.info("Found old format statistics file, initializing new per-feature stats")
-                return cls()
-            
-            # New format - per-feature statistics
-            for feature_name, stats_data in save_data.items():
-                stats = RunningStats(feature_names=stats_data.get('feature_names'))
-                stats.count = stats_data.get('count', 0)
-                stats.mean = stats_data.get('mean')
-                stats.var = stats_data.get('var')
-                instance.feature_stats[feature_name] = stats
-            
-            logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {filename}")
-            
-        except Exception as e:
-            logger.warning(f"Error loading statistics file {filename}: {e}, initializing new stats")
-            return cls()
-        
-        return instance
-    
-    @property
-    def count(self):
-        """Return total count across all features (for compatibility)"""
-        if not self.feature_stats:
-            return 0
-        return max(stats.count for stats in self.feature_stats.values())
-    
-    def get_feature_names(self):
-        """Get list of all feature names with statistics"""
-        return list(self.feature_stats.keys())
 
 request_stats = None
 
@@ -262,8 +60,7 @@ def get_request_stats():
     """Get or initialize request feature statistics"""
     global request_stats
     if request_stats is None:
-        # request_stats = RunningStats.load(STATS_FILE)
-        request_stats = PerFeatureRunningStats.load(STATS_FILE)
+        request_stats = feature_normalization.load_stats(STATS_FILE)
     return request_stats
 
 def write_to_file(log_data, raw_data):
@@ -299,99 +96,18 @@ def handle_flush():
         df, _, all_pods, _ = preprocess.main(raw_data, "", TTFT_SLO, AVG_TPOT_SLO)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
-        
-        ## old
-        # request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-        # pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
-        # all_features = request_features + pod_features_cols
-        
-        # # Update running stats for each feature separately
-        # stats = get_request_stats()
-        # stats.update(df[all_features].values, all_features)  # Pass feature names
-        # stats.save(STATS_FILE)
-        
-        # # Apply per-feature normalization
-        # normalized_values = stats.normalize(df[all_features].values, all_features)  # Pass feature names
-        # for i, feature in enumerate(all_features):
-        #     df[feature] = normalized_values[:, i]
-
-        # ===== POD-CENTRIC FEATURE ENGINEERING =====
-        request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-        pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
-        logger.debug(f"Found features. Request: {request_features}, Pod: {len(pod_features_cols)} features")
-
-        # ===== SELECTIVE NORMALIZATION STRATEGY =====
+        # ===== SHARED NORMALIZATION LOGIC =====
         stats = get_request_stats()
+        df, stats, _ = feature_normalization.normalize_features_for_training(df, stats)
+        feature_normalization.save_stats(stats, STATS_FILE)
 
-        # 1. Handle request features - only normalize if they have reasonable variance
-        request_normalized_count = 0
-        for feature in request_features:
-            if feature in df.columns:
-                values = df[feature].values
-                if values.std() > 10:  # Only normalize if reasonable variance
-                    feature_data = values.reshape(-1, 1)
-                    if feature not in stats.feature_stats:
-                        stats.feature_stats[feature] = RunningStats()
-                    stats.feature_stats[feature].update(feature_data)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                    df[feature] = normalized_feature.flatten()
-                    request_normalized_count += 1
-                    logger.debug(f"Normalized request feature: {feature}")
-                else:
-                    logger.debug(f"Kept raw values for: {feature}")
-
-        # 2. Handle pod features - normalize high-variance features only
-        pod_normalized_count = 0
-        for feature in pod_features_cols:
-            if feature in df.columns:
-                if 'kv_hit_ratio' in feature:
-                    logger.debug(f"Skipping normalization for {feature} (already 0-100 scale)")
-                    continue
-                
-                values = df[feature].values
-                if values.std() > 0.1:  # Only normalize features with meaningful variance
-                    feature_data = values.reshape(-1, 1)
-                    
-                    if feature not in stats.feature_stats:
-                        stats.feature_stats[feature] = RunningStats()
-                    
-                    stats.feature_stats[feature].update(feature_data)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                    df[feature] = normalized_feature.flatten()
-                    pod_normalized_count += 1
-                    logger.debug(f"Normalized pod feature: {feature}")
-
-        # 3. FEATURE IMPORTANCE AMPLIFICATION
-        critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
-        amplified_count = 0
-        for feature in pod_features_cols:
-            if any(critical in feature for critical in critical_features):
-                if feature in df.columns:
-                    df[feature] = df[feature] * signal_amplification_degree
-                    amplified_count += 1
-                    logger.debug(f"Amplified critical feature: {feature}")
-
-        # Save updated stats
-        stats.save(STATS_FILE)
-
-        logger.debug(f"Feature processing: {request_normalized_count} request features normalized, "
-                f"{pod_normalized_count} pod features normalized, {amplified_count} features amplified")
-
-        # ===== REWARD ENGINEERING =====
-        if 'reward' in df.columns:
-            rewards = df['reward'].values
-            reward_gap = rewards.max() - rewards.min()
-            if reward_gap < reward_amplification_threshold:
-                logger.debug("Applying reward amplification")
-                reward_mean = rewards.mean()
-                df['reward'] = reward_mean + (rewards - reward_mean) * reward_amplification_degree
-                logger.debug(f"Amplified rewards: gap {reward_gap:.3f} -> {df['reward'].max() - df['reward'].min():.3f}")
+        # ===== SHARED REWARD ENGINEERING =====
+        df = feature_normalization.apply_reward_engineering(df)
         
         # Encode preprocessed data
         ts_encode = time.time()
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{BATCH_ID}"
-        # encoding.encode_for_train(all_pods, df, encoded_data_subdir, stats, request_features_train, request_features_reward)
-        encoding.encode_for_train(all_pods, df, encoded_data_subdir, None, request_features_train, request_features_reward)
+        encoding.encode_for_train(all_pods, df, encoded_data_subdir, request_features_train, request_features_reward)
         logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TRAINING_DATA_UPDATED = True
@@ -455,70 +171,13 @@ def handle_infer():
         get_stat_start_time = time.time()
         stats = get_request_stats()
         if stats is None or stats.count == 0:
-            # logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}, stats.mean: {stats.mean}, stats.var: {stats.var}")
             logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}")
 
-            
-        # Apply SAME normalization as training
-        request_features = ['input_tokens', 'output_tokens', 'total_tokens']
-        pod_features_cols = [col for col in processed_df.columns if col.startswith('pod_') and 
-                            processed_df[col].dtype in ['float64', 'int64']]
-        
-        all_features = request_features + pod_features_cols
-        
-
-        # if all(feature in processed_df.columns for feature in all_features) and stats.count > 0:
-        #     normalized_values = stats.normalize(processed_df[all_features].values, all_features)  # Pass feature names
-        #     for i, feature in enumerate(all_features):
-        #         processed_df[feature] = normalized_values[:, i]
-        #     logger.debug(f"Applied per-feature normalization to {len(all_features)} features for inference: {len(request_features)} request + {len(pod_features_cols)} pod features")
-        # else:
-        #     logger.warning(f"Could not apply normalization - missing features or no stats available")
-
-        # Apply SAME pod-centric normalization as training
-        if stats.count > 0:
-            logger.debug("Applying pod-centric normalization for inference")
-            
-            # 1. Request features - only normalize if they were normalized in training
-            for feature in request_features:
-                if feature in processed_df.columns and feature in stats.feature_stats:
-                    feature_data = processed_df[feature].values.reshape(-1, 1)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                    processed_df[feature] = normalized_feature.flatten()
-                    logger.debug(f"Normalized request feature {feature} for inference")
-                else:
-                    logger.debug(f"Kept raw values for request feature {feature}")
-            
-            # 2. Pod features - normalize those that were normalized in training
-            pod_normalized_count = 0
-            for feature in pod_features_cols:
-                if 'kv_hit_ratio' in feature:
-                    continue  # Skip normalization
-                if feature in processed_df.columns and feature in stats.feature_stats:
-                    feature_data = processed_df[feature].values.reshape(-1, 1)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
-                    processed_df[feature] = normalized_feature.flatten()
-                    pod_normalized_count += 1
-                    logger.debug(f"Normalized pod feature {feature} for inference")
-            
-            # 3. Apply same critical feature amplification as training
-            critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
-            amplified_count = 0
-            for feature in pod_features_cols:
-                if any(critical in feature for critical in critical_features):
-                    if feature in processed_df.columns:
-                        processed_df[feature] = processed_df[feature] * signal_amplification_degree
-                        amplified_count += 1
-                        logger.debug(f"Amplified critical feature {feature} for inference")
-            
-            logger.debug(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
-            
-        else:
-            logger.warning(f"No normalization stats available for inference")
+        # ===== SHARED NORMALIZATION LOGIC =====
+        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats)
         
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
-        
         # Encode data (normalization already done)
         encode_start_time = time.time()
         tensor_dataset, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
