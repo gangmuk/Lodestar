@@ -10,16 +10,18 @@ import pickle
 from logger import logger
 from typing import Dict, List, Optional, Any, Union, Tuple
 import os
+import json
 
 
-# Global normalization parameters
-SIGNAL_AMPLIFICATION_DEGREE = 1.0  # 1.5
-REWARD_AMPLIFICATION_DEGREE = 2.0
-REWARD_AMPLIFICATION_THRESHOLD = 0.5
-STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION = 10
-STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION = 10 # 0.1
-ENABLE_POD_NORMALIZATION = True     # Toggle pod feature normalization
-ENABLE_REQUEST_NORMALIZATION = True  # Toggle request feature normalization
+CONFIG = {
+    "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
+    "REWARD_AMPLIFICATION_DEGREE": 2.0,
+    "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+    "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 10,
+    "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 10, # 0.1
+    "ENABLE_POD_NORMALIZATION": True,     # Toggle pod feature normalization
+    "ENABLE_REQUEST_NORMALIZATION": True,  # Toggle request feature normalization
+}
 
 class RunningStats:
     """Maintains running mean and standard deviation for feature normalization"""
@@ -102,25 +104,6 @@ class RunningStats:
             }, f)
         logger.info(f"Saved running statistics to {filename}")
         
-    @classmethod
-    def load(cls, filename):
-        """Load statistics from file"""
-        if not os.path.exists(filename):
-            logger.info(f"Statistics file {filename} not found, initializing new stats")
-            return cls()
-        
-        with open(filename, 'rb') as f:
-            data = pickle.load(f)
-            
-        stats = cls(feature_names=data.get('feature_names'))
-        stats.count = data.get('count', 0)
-        stats.mean = data.get('mean')
-        stats.var = data.get('var')
-        
-        logger.info(f"Loaded running statistics from {filename} with {stats.count} samples")
-        return stats
-
-
 class PerFeatureRunningStats:
     """Maintains separate running statistics for each feature"""
     def __init__(self):
@@ -176,25 +159,42 @@ class PerFeatureRunningStats:
         with open(filename, 'wb') as f:
             pickle.dump(save_data, f)
         logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {filename}")
+
+        # also write them in text file
+        stat_in_text_file = filename.replace('.pkl', '.txt')
+        with open(stat_in_text_file, 'w') as f:
+            f.write(f"Per-feature statistics for {len(self.feature_stats)} features:\n")
+            for feature_name, stats in self.feature_stats.items():
+                f.write(f"{feature_name}: count={stats.count}, mean={stats.mean}, var={stats.var}\n")
+        
+        # Write CONFIG to json file
+        config_file = filename.replace('.pkl', '_config.json')
+        with open(config_file, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
     
     @classmethod
-    def load(cls, filename):
+    def load(cls, feature_normalization_stats_file):
         """Load feature statistics from file"""
-        if not os.path.exists(filename):
-            logger.error(f"Statistics file {filename} not found, initializing new per-feature stats")
+        if not os.path.exists(feature_normalization_stats_file):
+            logger.error(f"Statistics file {feature_normalization_stats_file} not found, initializing new per-feature stats")
             return cls()
         
         instance = cls()
         
         try:
-            with open(filename, 'rb') as f:
-                save_data = pickle.load(f)
+            with open(feature_normalization_stats_file, 'rb') as pkl_file:
+                save_data = pickle.load(pkl_file)
             
-            # Handle both old format (single RunningStats) and new format (per-feature)
-            if isinstance(save_data, dict) and 'count' in save_data:
-                # Old format - single RunningStats for all features
-                logger.info("Found old format statistics file, initializing new per-feature stats")
+            # Validate it's the expected per-feature format
+            if not isinstance(save_data, dict):
+                logger.error(f"Invalid file format in {feature_normalization_stats_file}. Expected dictionary format.")
                 return cls()
+
+            # Check if it looks like per-feature format (each value should be a dict with stats)
+            for feature_name, stats_data in save_data.items():
+                if not isinstance(stats_data, dict) or 'count' not in stats_data:
+                    logger.error(f"Invalid per-feature format in {feature_normalization_stats_file}. Feature '{feature_name}' missing required fields.")
+                    return cls()
             
             # New format - per-feature statistics
             for feature_name, stats_data in save_data.items():
@@ -204,10 +204,10 @@ class PerFeatureRunningStats:
                 stats.var = stats_data.get('var')
                 instance.feature_stats[feature_name] = stats
             
-            logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {filename}")
+            logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {feature_normalization_stats_file}")
             
         except Exception as e:
-            logger.warning(f"Error loading statistics file {filename}: {e}, initializing new stats")
+            logger.error(f"Error loading statistics file {feature_normalization_stats_file}: {e}. Expected per-feature format.")
             return cls()
         
         return instance
@@ -236,41 +236,16 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
     logger.info("Raw feature analysis:")
     high_variance_pod_features = []
     
-    # for feature in pod_features_cols:
-    #     if feature in df.columns:
-    #         values = df[feature].values
-    #         std_val = values.std()
-    #         logger.info(f"  {feature}: std={std_val:.3f}, range=[{values.min():.2f}, {values.max():.2f}]")
-            
-    #         if std_val > STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION:
-    #             high_variance_pod_features.append(feature)
-    #             logger.warning(f"Normalize since it has high variance ({feature}, std:{std_val})")
-    #         else:
-    #             logger.warning(f"Skip normalize since it has low variance ({feature}, std:{std_val})")
-    
     logger.info(f"High variance pod features: {len(high_variance_pod_features)}")
     
-    # # Request feature analysis
-    # logger.info("\nRequest feature handling:")
-    # for feature in request_features:
-    #     if feature in df.columns:
-    #         values = df[feature].values
-    #         std_val = values.std()
-    #         logger.info(f"  {feature}: std={std_val:.3f}")
-    #         if std_val > STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION:
-    #             logger.info(f"    → Will normalize")
-    #         else:
-    #             logger.info(f"    → Using RAW values (no normalization)")
-    
     # ===== SELECTIVE NORMALIZATION STRATEGY =====
-    
     # 1. Handle request features - only normalize if they have reasonable variance
     request_normalized_count = 0
-    if ENABLE_REQUEST_NORMALIZATION:
+    if CONFIG["ENABLE_REQUEST_NORMALIZATION"]:
         for feature in request_features:
             if feature in df.columns:
                 values = df[feature].values
-                if values.std() > STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION:
+                if values.std() > CONFIG["STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION"]:
                     feature_data = values.reshape(-1, 1)
                     if feature not in stats.feature_stats:
                         stats.feature_stats[feature] = RunningStats()
@@ -288,7 +263,7 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
         
     # 2. Handle pod features - normalize high-variance features only
     pod_normalized_count = 0
-    if ENABLE_POD_NORMALIZATION:
+    if CONFIG["ENABLE_POD_NORMALIZATION"]:
         for feature in pod_features_cols:
             if feature in df.columns:
                 if 'kv_hit_ratio' in feature:
@@ -296,7 +271,7 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
                     continue
                 
                 values = df[feature].values
-                if values.std() > STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION:
+                if values.std() > CONFIG["STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION"]:
                     feature_data = values.reshape(-1, 1)
                     
                     if feature not in stats.feature_stats:
@@ -324,14 +299,14 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
 
     # 3. FEATURE IMPORTANCE AMPLIFICATION
     amplified_count = 0
-    if ENABLE_POD_NORMALIZATION and SIGNAL_AMPLIFICATION_DEGREE > 1.0:
+    if CONFIG["ENABLE_POD_NORMALIZATION"] and CONFIG["SIGNAL_AMPLIFICATION_DEGREE"] > 1.0:
         critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
         for feature in pod_features_cols:
             if any(critical in feature for critical in critical_features):
                 if feature in df.columns:
-                    df[feature] = df[feature] * SIGNAL_AMPLIFICATION_DEGREE
+                    df[feature] = df[feature] * CONFIG["SIGNAL_AMPLIFICATION_DEGREE"]
                     amplified_count += 1
-                    logger.info(f"📈 Amplified critical feature: {feature} by {SIGNAL_AMPLIFICATION_DEGREE}%, min: {df[feature].min()}, max: {df[feature].max()}, mean: {df[feature].mean()}")
+                    logger.info(f"📈 Amplified critical feature: {feature} by {CONFIG['SIGNAL_AMPLIFICATION_DEGREE']}%, min: {df[feature].min()}, max: {df[feature].max()}, mean: {df[feature].mean()}")
 
     # Summary logging
     logger.info(f"✅ FEATURE PROCESSING COMPLETE:")
@@ -354,7 +329,7 @@ def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningS
     
     if stats.count > 0:
         logger.debug("Applying pod-centric normalization for inference")
-        if ENABLE_REQUEST_NORMALIZATION:    
+        if CONFIG["ENABLE_REQUEST_NORMALIZATION"]:    
             # 1. Request features - only normalize if they were normalized in training
             for feature in request_features:
                 if feature in df.columns and feature in stats.feature_stats:
@@ -369,7 +344,7 @@ def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningS
 
         # 2. Pod features - normalize those that were normalized in training
         pod_normalized_count = 0
-        if ENABLE_POD_NORMALIZATION:
+        if CONFIG["ENABLE_POD_NORMALIZATION"]:
             for feature in pod_features_cols:
                 if 'kv_hit_ratio' in feature:
                     continue  # Skip normalization
@@ -386,7 +361,7 @@ def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningS
             for feature in pod_features_cols:
                 if any(critical in feature for critical in critical_features):
                     if feature in df.columns:
-                        df[feature] = df[feature] * SIGNAL_AMPLIFICATION_DEGREE
+                        df[feature] = df[feature] * CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
                         amplified_count += 1
                         logger.debug(f"Amplified critical feature {feature} for inference")
             
@@ -406,10 +381,10 @@ def apply_reward_engineering(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("=" * 30)
         logger.info(f"Original rewards: range=[{rewards.min():.3f}, {rewards.max():.3f}], std={rewards.std():.3f}")
         reward_gap = rewards.max() - rewards.min()
-        if reward_gap < REWARD_AMPLIFICATION_THRESHOLD:
-            logger.info(f"Reward gap is too small: {reward_gap:.2f}, 📈 Applying reward amplification ({REWARD_AMPLIFICATION_THRESHOLD})")
+        if reward_gap < CONFIG["REWARD_AMPLIFICATION_THRESHOLD"]:
+            logger.info(f"Reward gap is too small: {reward_gap:.2f}, 📈 Applying reward amplification ({CONFIG['REWARD_AMPLIFICATION_THRESHOLD']})")
             reward_mean = rewards.mean()
-            df['reward'] = reward_mean + (rewards - reward_mean) * REWARD_AMPLIFICATION_DEGREE
+            df['reward'] = reward_mean + (rewards - reward_mean) * CONFIG["REWARD_AMPLIFICATION_DEGREE"]
             new_rewards = df['reward'].values
             logger.info(f"Amplified rewards: range=[{new_rewards.min():.3f}, {new_rewards.max():.3f}], std={new_rewards.std():.3f}")
         else:
@@ -417,11 +392,11 @@ def apply_reward_engineering(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_stats(stats_file: str) -> PerFeatureRunningStats:
+def load_stats(feature_normalization_stats_file: str) -> PerFeatureRunningStats:
     """Load statistics from file"""
-    return PerFeatureRunningStats.load(stats_file)
+    return PerFeatureRunningStats.load(feature_normalization_stats_file)
 
 
-def save_stats(stats: PerFeatureRunningStats, stats_file: str) -> None:
+def save_stats(stats: PerFeatureRunningStats, feature_normalization_stats_file: str) -> None:
     """Save statistics to file"""
-    stats.save(stats_file)
+    stats.save(feature_normalization_stats_file)
