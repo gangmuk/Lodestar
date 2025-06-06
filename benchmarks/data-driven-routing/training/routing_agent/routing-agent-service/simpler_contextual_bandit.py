@@ -71,6 +71,7 @@ class FixedPolicyNetwork(nn.Module):
         logger.info(f"  Request features: {request_feature_size}")
         logger.info(f"  Combined input per pod: {combined_input_size}")
         logger.info(f"  Pod scorer outputs 1 score per pod")
+
         
     def forward(self, pod_features, kv_hit_ratios, request_features, return_attention=False):
         batch_size = pod_features.shape[0]
@@ -194,13 +195,15 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    """
-    Simplified Contextual Bandit optimized for small datasets
-    """
-    def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate):
+    def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate, output_dir):
+        self.output_dir = output_dir
         self.batch_size = batch_size
         self.exploration_rate = exploration_rate
-
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        self.lr = lr
+        self.weight_decay = 1e-4
         self.current_epoch = 0
         self.global_batch_counter = 0
         self.learn_call_counter = 0
@@ -210,20 +213,10 @@ class SimplifiedContextualBandit:
         self.policy = FixedPolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
 
         # Optimizer with weight decay for regularization
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(), 
-            lr=lr, 
-            weight_decay=1e-4
-        )
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, weight_decay=self.weight_decay)
         
         # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 
-            mode='min', 
-            factor=0.5, 
-            patience=5, 
-            verbose=True
-        )
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5, verbose=True)
         
         # Initialize memory attributes
         self.pod_features = []
@@ -236,6 +229,7 @@ class SimplifiedContextualBandit:
         self.loss_history = []
         self.reward_history = []
         self.entropy_history = []
+        
         
     def remember(self, pod_features, kv_hit_ratios, request_features, action, reward):
         """Store context-action-reward tuple in memory"""
@@ -1688,12 +1682,12 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
     }
 
 
+# main entry point
 def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
-    """Main training function with optimized hyperparameters for small datasets"""
     global final_model_dir
     final_model_dir = model_output_dir
     os.makedirs(final_model_dir, exist_ok=True)
-    logger.info("Starting training process. final_model_dir: %s", final_model_dir)
+    logger.info(f"Starting training process. final_model_dir: {final_model_dir}")
     # Get pretrained model path from environment
     pretrained_model_path = os.getenv("PRETRAINED_MODEL_PATH", None)
     
@@ -1704,12 +1698,8 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
     
     # Load and combine data from all batches
     combined_data = load_all_encoded_data(encoded_data_dir)
-    
-    # Analyze dataset
     dataset_analysis = analyze_dataset_detailed(combined_data)
     
-    
-    # Determine state dimensions
     state_dim = {
         'pod_features': combined_data['pod_features_with_staleness'].shape[2],
         'kv_hit_ratios': combined_data['kv_hit_ratios'].shape[2],
@@ -1717,9 +1707,7 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         'num_pods': combined_data['pod_features'].shape[1]
     }
     
-    # Determine action dimension (number of pods)
-    action_dim = combined_data['pod_features'].shape[1]
-    
+    action_dim = combined_data['pod_features'].shape[1]    
     logger.info(f"State dimensions: {state_dim}")
     logger.info(f"Action dimension: {action_dim}")
     
@@ -1730,7 +1718,8 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         hidden_dim=hyperparameters['hidden_dim'],
         lr=hyperparameters['lr'],
         batch_size=hyperparameters['batch_size'],
-        exploration_rate=hyperparameters['exploration_rate']
+        exploration_rate=hyperparameters['exploration_rate'],
+        output_dir = final_model_dir,
     )
 
     ## stupid analysis
@@ -1905,7 +1894,7 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
     
     
     # Save configuration
-    with open(os.path.join(final_model_dir, 'config.json'), 'w') as f:
+    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
         json.dump(config, f, indent=4, default=str)
 
     # Save final model
@@ -1945,34 +1934,31 @@ _cached_metadata = None
 
 
 def infer_from_tensor(tensor_data, model_updated=False):
-    """
-    Inference function optimized for the simplified model
-    """
     global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
     
     infer_start_time = time.time()
     
-    # Load feature metadata (cached)
-    if _cached_metadata is None:
-        logger.info("Loading feature metadata into cache...")
-        _cached_metadata = {
-            'metadata': None,
-            'pod_features_list': None,
-            'feature_indices_map': None
-        }
+    # # NOTE: _cached_metadata is not being used in simpler_contextual_bandit.pys
+    # if _cached_metadata is None:
+    #     logger.info("Loading feature metadata into cache...")
+    #     _cached_metadata = {
+    #         'metadata': None,
+    #         'pod_features_list': None,
+    #         'feature_indices_map': None
+    #     }
         
-        try:
-            if os.path.exists("metadata.json"):
-                with open("metadata.json", 'r') as f:
-                    _cached_metadata['metadata'] = json.load(f)
-            if os.path.exists("pod_features_list.pkl"):
-                with open("pod_features_list.pkl", 'rb') as f:
-                    _cached_metadata['pod_features_list'] = pickle.load(f)
-            if os.path.exists("feature_indices_map.pkl"):
-                with open("feature_indices_map.pkl", 'rb') as f:
-                    _cached_metadata['feature_indices_map'] = pickle.load(f)
-        except Exception as e:
-            logger.error(f"Error loading feature metadata: {e}")
+    #     try:
+    #         if os.path.exists("metadata.json"):
+    #             with open(f"metadata.json", 'r') as f:
+    #                 _cached_metadata['metadata'] = json.load(f)
+    #         if os.path.exists("pod_features_list.pkl"):
+    #             with open(f"pod_features_list.pkl", 'rb') as f:
+    #                 _cached_metadata['pod_features_list'] = pickle.load(f)
+    #         if os.path.exists("feature_indices_map.pkl"):
+    #             with open(f"feature_indices_map.pkl", 'rb') as f:
+    #                 _cached_metadata['feature_indices_map'] = pickle.load(f)
+    #     except Exception as e:
+    #         logger.error(f"Error loading feature metadata: {e}")
 
     # Extract data from tensor dataset and move to device
     try:
@@ -2106,10 +2092,6 @@ def print_tensor_data_summary(tensor_data):
 
 
 def comprehensive_root_cause_analysis(agent, combined_data, eval_data):
-    """
-    Systematic analysis to identify the root cause of overconfidence
-    """
-    
     logger.info("=" * 80)
     logger.info("🔍 COMPREHENSIVE ROOT CAUSE ANALYSIS")
     logger.info("=" * 80)
@@ -2121,7 +2103,7 @@ def comprehensive_root_cause_analysis(agent, combined_data, eval_data):
     # 1. DATA QUALITY ANALYSIS
     # ==========================================================================
     
-    logger.info("\n" + "="*50)
+    logger.info("="*50)
     logger.info("1️⃣  DATA QUALITY ANALYSIS")
     logger.info("="*50)
     
