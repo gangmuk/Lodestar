@@ -16,29 +16,33 @@ import time
 import matplotlib.pyplot as plt
 import glob
 from logger import logger
+import random
+
+# Set random seed
+seed = 42
+torch.manual_seed(seed)
+np.random.seed(seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 final_model_dir = "final_model"
 
 hyperparameters = {
-        'hidden_dim': 32,
-        # 'hidden_dim': 256,
+        'hidden_dim': 32, # 256,
         'batch_size': 32,
         'lr': 0.001,
         'exploration_rate': 0.1,
-        'training_epochs': 5,
-        # 'training_epochs': 10,
-        # 'max_updates_per_epoch': 1000000000,
-        'max_updates_per_epoch': 100,
+        'training_epochs': 5, # 10,
+        'max_updates_per_epoch': 100, # 1000000000
         'eval_interval': 10,
+        'custom_weight_initialization': True,  # Use custom weight initialization
     }
 
 class FixedPolicyNetwork(nn.Module):
     """
     Fixed architecture that preserves pod structure
     """
-    def __init__(self, state_dim, action_dim, hidden_dim):
+    def __init__(self, state_dim, action_dim, hidden_dim, custom_weight_initialization=True):
         super().__init__()
         
         self.state_dim = state_dim
@@ -72,7 +76,56 @@ class FixedPolicyNetwork(nn.Module):
         logger.info(f"  Combined input per pod: {combined_input_size}")
         logger.info(f"  Pod scorer outputs 1 score per pod")
 
-        
+        # Initialize weights. This is not necessary though.
+        if custom_weight_initialization:
+            self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """initialization with kaiming_uniform_, layer-specific strategies"""
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                # Get layer position info
+                is_output_layer = (module.out_features == 1)
+                is_first_layer = ('0' in name)  # First layer in sequential
+                
+                if is_output_layer:
+                    # Output layer: smaller weights for stability
+                    torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
+                    torch.nn.init.constant_(module.bias, 0.0)
+                elif is_first_layer:
+                    # First layer: slightly smaller to prevent saturation
+                    torch.nn.init.kaiming_uniform_(module.weight, 
+                                                mode='fan_in', 
+                                                nonlinearity='relu')
+                    torch.nn.init.constant_(module.bias, 0.01)
+                else:
+                    # Hidden layers: standard He initialization
+                    torch.nn.init.kaiming_uniform_(module.weight, 
+                                                mode='fan_in', 
+                                                nonlinearity='relu')
+                    torch.nn.init.constant_(module.bias, 0.01)
+
+    # def _initialize_weights(self):
+    #     """Xavier/Glorot initialization with layer-specific strategies"""
+    #     for name, module in self.named_modules():
+    #         if isinstance(module, nn.Linear):
+    #             # Get layer position info
+    #             is_output_layer = (module.out_features == 1)
+    #             is_first_layer = ('0' in name)  # First layer in sequential
+                
+    #             if is_output_layer:
+    #                 # Output layer: smaller weights for stability
+    #                 torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
+    #                 torch.nn.init.constant_(module.bias, 0.0)
+    #             elif is_first_layer:
+    #                 # First layer: slightly smaller to prevent saturation
+    #                 torch.nn.init.xavier_uniform_(module.weight, gain=0.8)
+    #                 torch.nn.init.constant_(module.bias, 0.01)
+    #             else:
+    #                 # Hidden layers: standard Xavier initialization
+    #                 torch.nn.init.xavier_uniform_(module.weight, gain=1.0)
+    #                 torch.nn.init.constant_(module.bias, 0.01)
+
     def forward(self, pod_features, kv_hit_ratios, request_features, return_attention=False):
         batch_size = pod_features.shape[0]
         num_pods = pod_features.shape[1]
@@ -195,8 +248,7 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate, output_dir):
-        self.output_dir = output_dir
+    def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate, custom_weight_initialization):
         self.batch_size = batch_size
         self.exploration_rate = exploration_rate
         self.state_dim = state_dim
@@ -207,10 +259,11 @@ class SimplifiedContextualBandit:
         self.current_epoch = 0
         self.global_batch_counter = 0
         self.learn_call_counter = 0
+        self.custom_weight_initialization = custom_weight_initialization
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.policy = FixedPolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
+        self.policy = FixedPolicyNetwork(state_dim, action_dim, hidden_dim, custom_weight_initialization).to(device)
 
         # Optimizer with weight decay for regularization
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, weight_decay=self.weight_decay)
@@ -389,16 +442,16 @@ class SimplifiedContextualBandit:
         self.actions = []
         self.rewards = []
 
-    def save(self, directory):
+    def save(self, final_model_dir):
         """Save the agent's parameters to the specified directory"""
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"Creating directory: {directory}")
+        os.makedirs(final_model_dir, exist_ok=True)
+        logger.info(f"Creating final_model_dir: {final_model_dir}")
         
         # Save policy network
-        torch.save(self.policy.state_dict(), os.path.join(directory, 'policy.pth'))
+        torch.save(self.policy.state_dict(), os.path.join(final_model_dir, 'policy.pth'))
         
         # Save optimizer state
-        torch.save(self.optimizer.state_dict(), os.path.join(directory, 'optimizer.pth'))
+        torch.save(self.optimizer.state_dict(), os.path.join(final_model_dir, 'optimizer.pth'))
         
         # Save training history
         history = {
@@ -407,12 +460,12 @@ class SimplifiedContextualBandit:
             'entropy': self.entropy_history
         }
         
-        with open(os.path.join(directory, 'history.pkl'), 'wb') as f:
+        with open(os.path.join(final_model_dir, 'history.pkl'), 'wb') as f:
             pickle.dump(history, f)
             
         # Copy to final model path
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"Saved simplified agent to {directory}")
+        os.makedirs(final_model_dir, exist_ok=True)
+        logger.info(f"Saved simplified agent to {final_model_dir}")
     
     def load(self, directory):
         """Load the agent's parameters from the specified directory"""
@@ -721,52 +774,6 @@ def analyze_reward_signal_strength(combined_data, agent=None):
     }
 
 
-def test_reward_amplification(combined_data, amplification_factors=[1, 2, 5, 10]):
-    """
-    Test how different reward amplification factors affect signal strength
-    """
-    logger.info("\n🧪 REWARD AMPLIFICATION TESTING")
-    logger.info("=" * 60)
-    
-    actions = combined_data['actions']
-    rewards = combined_data['rewards']
-    
-    results = {}
-    
-    for factor in amplification_factors:
-        logger.info(f"\n📈 Testing amplification factor: {factor}x")
-        
-        # Create amplified dataset
-        amplified_data = combined_data.copy()
-        amplified_data['rewards'] = rewards * factor
-        
-        # Analyze signal strength
-        analysis = analyze_reward_signal_strength(amplified_data)
-        
-        results[factor] = {
-            'signal_to_noise': analysis['signal_to_noise_ratio'],
-            'cohens_d': analysis['cohens_d'],
-            'reward_gap': analysis['reward_gap']
-        }
-        
-        logger.info(f"  Signal-to-Noise: {analysis['signal_to_noise_ratio']:.4f}")
-        logger.info(f"  Cohen's d: {analysis['cohens_d']:.4f}")
-        logger.info(f"  Reward gap: {analysis['reward_gap']:.4f}")
-    
-    # Find optimal amplification
-    logger.info(f"\n🎯 AMPLIFICATION RECOMMENDATIONS:")
-    
-    for factor, result in results.items():
-        if result['signal_to_noise'] > 1.0 and abs(result['cohens_d']) > 0.5:
-            logger.info(f"  ✅ Factor {factor}x: Good signal strength")
-            break
-    else:
-        logger.info(f"  ⚠️  Consider testing higher amplification factors")
-    
-    return results
-
-
-
 def evaluate_agent(agent, eval_data, num_samples=100):
     """Evaluate agent performance"""
     # Extract data
@@ -825,6 +832,8 @@ def evaluate_agent(agent, eval_data, num_samples=100):
     
     agent.policy.train()
     return metrics
+
+
 def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
     """
     Enhanced plotting function with proper train/eval data separation
@@ -1214,19 +1223,19 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
         summary_text += f"Random baseline: {random_baseline:.3f} ({random_baseline*100:.1f}%)\n"
         
         if final_accuracy > random_baseline * 1.5:
-            summary_text += f"\n✅ LEARNING DETECTED\n"
+            summary_text += f"\nLEARNING DETECTED\n"
         elif final_accuracy > random_baseline * 1.1:
-            summary_text += f"\n⚠️  MODEST LEARNING\n"
+            summary_text += f"\nMODEST LEARNING\n"
         else:
-            summary_text += f"\n❌ NO CLEAR LEARNING\n"
+            summary_text += f"\nNO CLEAR LEARNING\n"
         
         # Calibration assessment
         if abs(final_confidence - final_accuracy) < 0.1:
-            summary_text += "✅ Well calibrated\n"
+            summary_text += "Well calibrated\n"
         elif final_confidence > final_accuracy + 0.2:
-            summary_text += "⚠️  Overconfident\n"
+            summary_text += "Overconfident\n"
         else:
-            summary_text += "⚠️  Underconfident\n"
+            summary_text += "Underconfident\n"
     
     plt.text(0.1, 0.9, summary_text, transform=plt.gca().transAxes, 
             fontsize=10, verticalalignment='top', fontfamily='monospace',
@@ -1337,7 +1346,6 @@ def load_previous_model():
 
 
 def read_hyperparameters_from_file(file_path):
-    """Read hyperparameters from a file"""
     with open(file_path, 'r') as f:
         lines = f.readlines()
     params = {}
@@ -1666,9 +1674,6 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
     """
     Complete LLM routing analysis replacing generic signal analysis
     """
-    # Basic dataset stats
-    basic_analysis = analyze_dataset_detailed(combined_data)
-    
     # LLM-specific performance analysis
     llm_performance = analyze_llm_routing_performance(combined_data, agent)
     
@@ -1676,37 +1681,27 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
     context_sensitivity = analyze_routing_context_sensitivity(combined_data)
     
     return {
-        **basic_analysis,
         'llm_performance': llm_performance,
         'context_sensitivity': context_sensitivity
     }
 
 
 # main entry point
-def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
+def train(encoded_data_dir, model_output_dir):
     global final_model_dir
     final_model_dir = model_output_dir
     os.makedirs(final_model_dir, exist_ok=True)
     logger.info(f"Starting training process. final_model_dir: {final_model_dir}")
-    # Get pretrained model path from environment
-    pretrained_model_path = os.getenv("PRETRAINED_MODEL_PATH", None)
-    
-    # Set random seed
-    seed = 42
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    
+
     # Load and combine data from all batches
     combined_data = load_all_encoded_data(encoded_data_dir)
     dataset_analysis = analyze_dataset_detailed(combined_data)
-    
     state_dim = {
         'pod_features': combined_data['pod_features_with_staleness'].shape[2],
         'kv_hit_ratios': combined_data['kv_hit_ratios'].shape[2],
         'request_features': combined_data['request_features'].shape[1],
         'num_pods': combined_data['pod_features'].shape[1]
     }
-    
     action_dim = combined_data['pod_features'].shape[1]    
     logger.info(f"State dimensions: {state_dim}")
     logger.info(f"Action dimension: {action_dim}")
@@ -1716,41 +1711,33 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=hyperparameters['hidden_dim'],
-        lr=hyperparameters['lr'],
         batch_size=hyperparameters['batch_size'],
+        lr=hyperparameters['lr'],
         exploration_rate=hyperparameters['exploration_rate'],
-        output_dir = final_model_dir,
+        # training_epochs=hyperparameters['training_epochs'],
+        # max_updates_per_epoch=hyperparameters['max_updates_per_epoch'],
+        # eval_interval=hyperparameters['eval_interval'],
+        custom_weight_initialization = hyperparameters['custom_weight_initialization'],
     )
 
-    ## stupid analysis
-    # reward_analysis = analyze_reward_signal_strength(combined_data, agent)
-    # llm_analysis = comprehensive_llm_routing_analysis(combined_data, agent)
-
-    
-    # Load pretrained model if available and continuing training
-    if continue_from_pretrained and pretrained_model_path and os.path.exists(pretrained_model_path):
+    ##############################################
+    # Load pretrained model
+    if final_model_dir and os.path.exists(final_model_dir):
         try:
-            agent.load(pretrained_model_path)
-            logger.info(f"Successfully loaded pretrained model from {pretrained_model_path} for online learning")
-            
+            agent.load(final_model_dir)
+            logger.info(f"Successfully loaded pretrained model from {final_model_dir} for online learning")
             # Adjust learning rate for online learning (typically lower)
             online_lr = hyperparameters['lr'] * 0.1  # 10x lower learning rate
             for param_group in agent.optimizer.param_groups:
                 param_group['lr'] = online_lr
             logger.info(f"Adjusted learning rate to {online_lr} for online learning")
-            
         except Exception as e:
             logger.error(f"Error loading pretrained model: {e}")
             logger.info("Starting training from scratch")
-            continue_from_pretrained = False
-    
-    # Adjust training parameters for online learning
-    if continue_from_pretrained:
-        # Use fewer epochs for online learning
-        training_epochs = max(5, hyperparameters['training_epochs'] // 4)
-        logger.info(f"Online learning mode: reduced epochs to {training_epochs}, exploration to {hyperparameters['exploration_rate']}")
-    else:
-        training_epochs = hyperparameters['training_epochs']
+
+    # Use fewer epochs for online learning
+    hyperparameters['training_epochs'] = max(5, hyperparameters['training_epochs'] // 4)
+    logger.info(f"Online learning mode: reduced epochs to {hyperparameters['training_epochs']}, exploration to {hyperparameters['exploration_rate']}")
     
     # Update agent's exploration rate
     agent.exploration_rate = hyperparameters['exploration_rate']
@@ -1761,31 +1748,37 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         'batch_size': hyperparameters['batch_size'],
         'learning_rate': hyperparameters['lr'],
         'exploration_rate': hyperparameters['exploration_rate'],
-        'num_training_epochs': training_epochs,
+        'num_training_epochs': hyperparameters['training_epochs'],
         'max_updates_per_epoch': hyperparameters['max_updates_per_epoch'],
         'eval_interval': hyperparameters['eval_interval'],
         'seed': seed,
         'model_type': 'simplified',
-        'continue_from_pretrained': continue_from_pretrained,
-        'pretrained_model_path': pretrained_model_path,
         'dataset_analysis': dataset_analysis
     }
+    # Save configuration
+    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
+        json.dump(config, f, indent=4, default=str)
     
     # Create dataset
     dataset = RoutingDataset(combined_data)
-    dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
+    
+    # fixed randomness for shuffling
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=config['batch_size'], 
+        shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+    )
     number_of_batches = len(dataloader)
     
     logger.info(f"Loaded dataset with {len(dataset)} samples")
-    logger.info(f"Training mode: {'Online Learning' if continue_from_pretrained else 'From Scratch'}")
-    
     # Training loop (rest remains the same but with adjusted epochs)
     logger.info("Starting training...")
     total_updates = 0
     eval_metrics = []
     best_accuracy = 0.0
     
-    for epoch in range(training_epochs):  # Use adjusted epochs
+    for epoch in range(hyperparameters['training_epochs']):  # Use adjusted epochs
         agent.current_epoch = epoch
         epoch_start_time = time.time()
         epoch_loss = 0
@@ -1794,12 +1787,11 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         epoch_updates = 0
         
         dataloader_iter = iter(dataloader)
-        # num_iter_per_data = 3 if not continue_from_pretrained else 1  # Fewer iterations for online learning
         num_iter_per_data = 1
         total_iter = number_of_batches * num_iter_per_data
         final_total_num_iteration = min(config['max_updates_per_epoch'], total_iter)
         logger.info(f"=" * 80)
-        logger.info(f"EPOCH {epoch+1}/{training_epochs} - Processing final_total_num_iteration: {final_total_num_iteration} iterations")
+        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']} - Processing final_total_num_iteration: {final_total_num_iteration} iterations")
         logger.info(f"=" * 80)        
 
         for batch_iter_idx in range(final_total_num_iteration):
@@ -1891,32 +1883,14 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
             logger.info(f"  Avg Reward: {avg_reward:.4f}")
             logger.info(f"  Avg Entropy: {avg_entropy:.4f}")
             logger.info(f"=" * 80)
-    
-    
-    # Save configuration
-    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
-        json.dump(config, f, indent=4, default=str)
 
     # Save final model
     agent.save(final_model_dir)
-    
-    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # if continue_from_pretrained:
-    #     temp_model_output_dir = os.path.join(final_model_dir, f"online_cb_{timestamp}")
-    # else:
-    #     temp_model_output_dir = os.path.join(final_model_dir, f"simple_cb_{timestamp}")
-    # os.makedirs(final_model_dir, exist_ok=True)
-    # os.system(f"cp -r {final_model_dir} {temp_model_output_dir}/")
-    # logger.info(f"Copied model to {final_model_dir} for inference")
-    
-    # Rest of the function (plotting, analysis) remains the same...
     try:
         plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data)
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
-    
     # os.system(f"cp -r {final_model_dir} final_model")
-
     return {
         'agent': agent,
         'model_dir': final_model_dir,
@@ -1925,13 +1899,10 @@ def train(encoded_data_dir, model_output_dir, continue_from_pretrained=False):
         'best_accuracy': best_accuracy
     }
 
-
-
 # Global cache for agent instance (for inference)
 _cached_agent = None
 _cached_agent_config = None
 _cached_metadata = None
-
 
 def infer_from_tensor(tensor_data, model_updated=False):
     global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
@@ -2015,6 +1986,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
             lr=hyperparameters['lr'],
             batch_size=hyperparameters['batch_size'],
             exploration_rate=hyperparameters['exploration_rate'],
+            custom_weight_initialization=hyperparameters['custom_weight_initialization'],
         )
         
         _cached_agent = agent
@@ -2029,9 +2001,10 @@ def infer_from_tensor(tensor_data, model_updated=False):
     # Run inference
     agent.policy.eval()
     with torch.no_grad():
-        # Get action probabilities
+        # Run inference (forward())
         action_probs = agent.policy(pod_features, kv_hit_ratios, request_features)
         
+        ## epsilon-greedy exploration - it either picks the model's best choice OR a random action for exploration.
         if hyperparameters['exploration_rate'] > 0:
             # Use exploration strategy
             action, _ = agent.policy.get_action(

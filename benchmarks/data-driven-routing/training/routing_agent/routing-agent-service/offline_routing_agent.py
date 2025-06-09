@@ -28,19 +28,12 @@ TRAINING_DATA_UPDATED = False
 TOTAL_NUM_DATA = 0
 MIN_NUM_TRAINING_DATA = 500
 LOCK_TRAINING_DATA = threading.Lock()
-request_stats = None
+stats_instance = None
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
-request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
+# request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
 # this is supposed to be here which means after global variables
 import model_and_data_analysis_helper
-
-def get_request_stats(feature_normalization_stats_file):
-    """Get or initialize request feature statistics"""
-    global request_stats
-    if request_stats is None:
-        request_stats = feature_normalization.load_stats(feature_normalization_stats_file)
-    return request_stats
 
 def write_to_file(log_data, raw_data):
     with open(raw_data, "w") as log_file:
@@ -156,8 +149,7 @@ def train_model(args):
 
 def test_inference(args, log_message, feature_normalization_stats_file):
     """Test inference on a single log message with original vs predicted comparison"""
-    global NUM_TRAINS, MODEL_UPDATED
-    
+    global NUM_TRAINS, MODEL_UPDATED, stats_instance
     if NUM_TRAINS == 0:
         logger.warning("No trained model available, please train first")
         return None
@@ -173,7 +165,7 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         # Debug: show what we're passing to preprocess
         logger.debug(f"Calling preprocess.main(None, log_message, {args.ttft_slo}, {args.avg_tpot_slo})")
         
-        processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo)
+        processed_df, _, all_pods, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo)
         logger.debug(f"Successfully parsed data for inference")
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
@@ -193,14 +185,13 @@ def test_inference(args, log_message, feature_normalization_stats_file):
                 original_pod_choice = match.group(1)
         
         logger.debug(f"Original pod choice: {original_pod_choice}")
-
-        # ===== SHARED NORMALIZATION LOGIC =====
-        stats = get_request_stats(feature_normalization_stats_file)
-        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats)
+        if stats_instance is None:
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance)
         
         # Encode data
         encode_start_time = time.time()
-        tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
+        tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, request_features_train)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
@@ -257,30 +248,19 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         
         return result_summary
         
-    except AssertionError as e:
-        logger.error(f"AssertionError in preprocessing - this suggests the log message format is unexpected")
-        logger.error(f"Log message being processed: {log_message}")
-        logger.error(f"Error: {str(e)}")
-        return None
-        
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
         logger.error(f"Error in test_inference: {str(e)}")
         logger.error(f"Traceback: {error_traceback}")
-        logger.error(f"Log message being processed: {log_message}")
-        return None
+        assert False
 
 def process_training_data(args, log_data, feature_normalization_stats_file):
     """Process training data with shared normalization logic"""
-    global ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
-    
+    global ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, stats_instance
     flush_start_time = time.time()
-    
     try:
         logger.info(f"Processing training data with {len(log_data)} entries")
-        
-        # Create raw data file
         if not os.path.exists("temp_training_data"):
             os.mkdir("temp_training_data")
         raw_data = "temp_training_data/offline_batch.csv"
@@ -292,38 +272,29 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
 
         # Preprocess raw data
         ts_preprocess = time.time()
-        df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo)
+        processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        
-        # ===== SHARED NORMALIZATION LOGIC =====
-        stats = get_request_stats(feature_normalization_stats_file)
-        df, stats, _ = feature_normalization.normalize_features_for_training(df, stats)
-        feature_normalization.save_stats(stats, feature_normalization_stats_file)
-
-        # ===== SHARED REWARD ENGINEERING =====
-        df = feature_normalization.apply_reward_engineering(df)
-
+        if stats_instance is None:
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+        processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+        stats_instance.write_stats_to_file(feature_normalization_stats_file)
+        processed_df = feature_normalization.try_reward_amplification(processed_df)
         # Continue with encoding...
         ts_encode = time.time()
-        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_1"
-        encoding.encode_for_train(all_pods, df, encoded_data_subdir, request_features_train, request_features_reward)
-        logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
-        
+        encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
+        encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train)
+        logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
         # Verify encoded data
-        expected_tensor_path = f"{encoded_data_subdir}/tensor_dataset.pt"
-        train_tensor_path = f"{encoded_data_subdir}/train/tensor_dataset.pt"
-        
+        expected_tensor_path = f"{encoded_data_output_dir}/tensor_dataset.pt"
+        train_tensor_path = f"{encoded_data_output_dir}/train/tensor_dataset.pt"
         if os.path.exists(expected_tensor_path):
             logger.info(f"✓ Found tensor dataset at: {expected_tensor_path}")
         elif os.path.exists(train_tensor_path):
             logger.info(f"✓ Found tensor dataset at: {train_tensor_path}")
-        
         TRAINING_DATA_UPDATED = True
         TOTAL_NUM_DATA += len(log_data)
-        
         logger.info(f"Successfully processed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         return True
-        
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
@@ -335,7 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
     parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
-    parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio (default: 0.8 for 80%% train, 20%% test)')
+    parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
     parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
     parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
     parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
@@ -374,31 +345,23 @@ def main():
 
     args.data_dir = data_dir
     args.model_dir = f"{data_dir}/final_model"
+    os.makedirs(args.model_dir, exist_ok=True)
     feature_normalization_stats_file = f"{args.model_dir}/feature_normalization_statistics.pkl"
     logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
-
     if all_data is None or len(all_data) == 0:
         logger.error("Failed to read data or no valid log messages found")
         return
-    
     # Split data
     all_messages = list(all_data.values())
     split_point = int(len(all_messages) * args.split_ratio)
-    
     train_messages = all_messages[:split_point]
     test_messages = all_messages[split_point:]
-    
     # Convert back to dict format
     train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
     test_data = {f"request_{i}": msg for i, msg in enumerate(test_messages)}
-    
     logger.info(f"Split {len(all_data)} messages into {len(train_data)} train + {len(test_data)} test")
-        
-    # Create necessary directories
     if not os.path.exists(ENCODED_DATA_DIR):
         os.makedirs(ENCODED_DATA_DIR)
-    
-    # Clean up any existing encoded data for fresh start
     if os.path.exists(ENCODED_DATA_DIR):
         import shutil
         shutil.rmtree(ENCODED_DATA_DIR)
@@ -408,19 +371,15 @@ def main():
     # Read and process training data
     if not args.skip_training:
         logger.info("=== STARTING TRAINING PHASE ===")
-        
         # Process training data
         if not process_training_data(args, train_data, feature_normalization_stats_file):
             logger.error("Failed to process training data")
             return
-
         model_and_data_analysis_helper.diagnose_training_data_issues(args, train_data)
-        
         # Train model
         if not train_model(args):
             logger.error("Failed to train model")
             return
-        
         logger.info("=== TRAINING COMPLETED ===")
     else:
         logger.info("=== SKIPPING TRAINING (using existing model) ===")

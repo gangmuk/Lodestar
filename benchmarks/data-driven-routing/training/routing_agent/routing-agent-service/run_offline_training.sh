@@ -1,13 +1,17 @@
 #!/bin/bash
 
+
 training_data_dir="training_data/p4096_s1024_rps10_spp_20_ndp_100/prefix"
 final_model_dir="${training_data_dir}/final_model"
+rm -r ${final_model_dir}
+echo "Removed existing final model directory: ${final_model_dir}"
 
 # Define the command without backgrounding it initially
 python_cmd="python3 offline_routing_agent.py ${training_data_dir}/data.csv --model simpler_contextual_bandit --analyze_behavior --ttft_slo 1000 --avg_tpot_slo 50"
 
 # Execute the command, redirecting output
 ${python_cmd} &> output.log
+# ${python_cmd}
 
 # Check the exit status of the previous command
 if [ $? -eq 0 ]; then

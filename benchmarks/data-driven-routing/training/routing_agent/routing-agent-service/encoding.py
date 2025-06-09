@@ -30,7 +30,8 @@ import argparse
 from datetime import datetime
 from logger import logger
 import time
-
+random_seed = 42
+np.random.seed(random_seed)
 class LLMRoutingDataProcessor:
     """Processes raw LLM request routing data into formatted tensors for RL training.
     
@@ -592,7 +593,7 @@ class LLMRoutingDataProcessor:
     # Find the line where prepare_for_encoding is called and add randomization there as well
 
         
-    def prepare_for_encoding(self, df, all_pods, request_features_train, request_features_reward, overhead_summary):
+    def prepare_for_encoding(self, df, all_pods, request_features_train, overhead_summary):
         n_samples = len(df)
         
         # STEP 1: ULTRA-FAST pod data extraction
@@ -698,7 +699,6 @@ class LLMRoutingDataProcessor:
     
     # OPTIMIZATION 1: Replace request_numeric_features section (was 1.43ms -> target 0.2ms)
     def _ultra_fast_extract_request_features(self, df, request_features_train, n_samples):
-        """Ultra-fast request feature extraction - 80% speedup."""
         request_numeric_features_start_time = time.time()
         
         if request_features_train:
@@ -708,20 +708,21 @@ class LLMRoutingDataProcessor:
                 # Hardcode indices [2, 3, 4] for maximum speed
                 request_features = df.values[:, 2:5].astype(np.float32, copy=False)
             else:
-                # Fallback for different feature counts
-                request_features = df[request_features_train].values.astype(np.float32, copy=False)
+                # # Fallback for different feature counts
+                # request_features = df[request_features_train].values.astype(np.float32, copy=False)
+                logger.error(f"Unexpected request features count: {len(request_features_train)}, expected 3")
+                assert False
         else:
-            request_features = np.zeros((n_samples, 0), dtype=np.float32)
+            logger.error("No request features provided for inference, using empty array")
+            # request_features = np.zeros((n_samples, 0), dtype=np.float32)
+            assert False
         
         request_numeric_features_overhead = time.time() - request_numeric_features_start_time
         return request_features, request_numeric_features_overhead
 
 
     def _ultra_fast_process_pod_features(self, pod_data, n_samples):
-        """Ultra-fast pod processing - 50% speedup."""
-        
         n_pods = len(self.pod_ids)
-        
         if not pod_data:
             # Return minimal defaults
             default_shape = (n_samples, n_pods, 1)
@@ -1108,71 +1109,33 @@ class LLMRoutingDataProcessor:
             return None, None
 
 
-def encode_for_train(all_pods, df, output_dir, request_features_train, request_features_reward):
+def encode_for_train(all_pods, df, output_dir, request_features_train):
     """Main function to process LLM routing data."""
-    random_seed = 42
-    
-    # Set random seed
-    np.random.seed(random_seed)
-    
-    # Print some column samples
     logger.debug(f"columns: {list(df.columns)}")
-    
-    # Preview the first few rows (just to check format)
     if len(df) > 0:
         logger.info("First row selected_pod value: " + str(df.iloc[0].get('selected_pod', 'N/A')))
-    
     # Check if data contains the expected column pattern
     pod_cols = [c for c in df.columns if 'pod_' in c or '-pod' in c]
     if not pod_cols:
         logger.warning("No columns with 'pod_' prefix or '-pod' pattern found")
-    
     # Check if 'selected_pod' column contains valid pod IDs
     if 'selected_pod' in df.columns:
         pod_values = df['selected_pod'].dropna().unique()
         logger.info(f"Unique selected_pod values: {pod_values}")
-    
     # Basic data quality checks
     logger.info("Performing data quality checks...")
     missing_pct = df.isnull().mean() * 100
     high_missing = missing_pct[missing_pct > 20].index.tolist()
     if high_missing:
         logger.warning(f"Columns with >20% missing values: {len(high_missing)} columns")
-    
     processor = LLMRoutingDataProcessor(output_dir=output_dir)
-    
     logger.info("Data already normalized in routing_agent_service.py, proceeding with encoding...")
-
     logger.info("Processing training data...")
     overhead_summary = {}
-    train_processed = processor.prepare_for_encoding(df, all_pods, request_features_train, request_features_reward, overhead_summary)
+    train_processed = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary)
     train_path = processor.save_processed_data(train_processed)
-    
-    # # Process test data
-    # logger.info("Processing test data...")
-    # test_processed = processor.prepare_for_encoding(test_df, all_pods)
-    # test_path = processor.save_processed_data(test_processed, prefix="test")
-    
-    # # Create data loaders if requested
-    # if create_loaders:
-    #     logger.info("Creating PyTorch DataLoader objects...")
-    #     train_loader, val_loader = processor.create_dataset_loaders(
-    #         train_processed, batch_size=batch_size
-    #     )
-        
-    #     # Print batch sample information
-    #     if train_loader is not None:
-    #         for batch in train_loader:
-    #             logger.info(f"Sample batch shapes:")
-    #             for i, tensor in enumerate(batch):
-    #                 logger.info(f"  Tensor {i}: {tensor.shape}")
-    #             break
-    
-    # Log results
     logger.info("Data processing complete!")
     logger.info(f"Training data: {train_path}")
-    # logger.info(f"Test data: {test_path}")
-    
     # Print dataset shape information
     logger.info(f"Dataset shapes:")
     logger.info(f"  pod_features: {train_processed['pod_features'].shape}")
@@ -1182,12 +1145,10 @@ def encode_for_train(all_pods, df, output_dir, request_features_train, request_f
     logger.info(f"  positional_encodings: {train_processed['positional_encodings'].shape}")
     logger.info(f"  actions: {train_processed['actions'].shape}")
     logger.info(f"  rewards: {train_processed['rewards'].shape}")
-
     return train_path
 
 
-# Fixed encode_for_inference function
-def encode_for_inference(all_pods, df, request_stats, request_features_train, request_features_reward):
+def encode_for_inference(all_pods, df, request_features_train):
     """Version optimized for inference - data already normalized in handle_infer."""
     
     # STEP 1: Skip all normalization (already done in handle_infer)
@@ -1202,7 +1163,7 @@ def encode_for_inference(all_pods, df, request_stats, request_features_train, re
     prepare_for_encoding_start = time.time()
     processor = LLMRoutingDataProcessor(output_dir="temp_inference")
     overhead_summary = {}
-    processed_data = processor.prepare_for_encoding(df, all_pods, request_features_train, request_features_reward, overhead_summary)
+    processed_data = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary)
     prepare_for_encoding_overhead = time.time() - prepare_for_encoding_start
 
     # STEP 3: Create tensors

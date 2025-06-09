@@ -638,23 +638,24 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
     # input_file is None for inference workload, valid only for training workflow.
     parse_log_file_start_time = time.time()
     
+    ## Training path
     if input_file is not None:
         df, json_columns = parse_log_file(input_file)
         if len(df) == 0:
             logger.error("No data found in the log file.")
+            assert False
+    ## Inference path
     else:
         # Use the optimized parser (same function name)
         df, json_columns = parse_log_message(log_message)
         if len(df) == 0:
             logger.error("No data found in the log message.")
-    
+            assert False
     logger.debug(f"df.columns: {list(df.columns)}, json_columns: {json_columns}")
-    
     if len(df) == 0:
         logger.error("No data found after parsing JSON columns.")
         logger.info(f"Parsed {len(df)} records from {input_file}")
         assert False
-    
     parse_log_file_overhead = time.time() - parse_log_file_start_time
     
     # NEW: Fast path detection

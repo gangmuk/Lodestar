@@ -10,15 +10,7 @@ import preprocess
 import random_forest
 import torch
 import feature_normalization
-
-from offline_routing_agent import (
-    ENCODED_DATA_DIR,
-    NUM_TRAINS, 
-    get_request_stats,
-    request_features_train,
-    request_features_reward
-)
-
+import offline_routing_agent
 
 def diagnose_training_data_issues(args, train_data_sample):
     """
@@ -29,7 +21,7 @@ def diagnose_training_data_issues(args, train_data_sample):
     logger.info("=" * 60)
     
     # Check encoded data
-    encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_1"
+    encoded_data_subdir = f"{offline_routing_agent.ENCODED_DATA_DIR}/batch_1"
     tensor_path = f"{encoded_data_subdir}/tensor_dataset.pt"
     train_tensor_path = f"{encoded_data_subdir}/train/tensor_dataset.pt"
     
@@ -199,9 +191,8 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
     """
     Improved feature-specific sensitivity analysis that uses statistically meaningful perturbations
     """
-    global NUM_TRAINS
     
-    if NUM_TRAINS == 0:
+    if offline_routing_agent.NUM_TRAINS == 0:
         logger.warning("No trained model available for detailed feature analysis")
         return None
     
@@ -295,7 +286,7 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
             request_features = ['input_tokens', 'output_tokens', 'total_tokens']
             pod_features_cols = [col for col in processed_df.columns if col.startswith('pod_') and processed_df[col].dtype in ['float64', 'int64']]
             
-            stats = get_request_stats(stats_file)
+            stats = offline_routing_agent.get_stats_instance(stats_file)
             if stats.count > 0:
                 # Apply normalization and amplification as in training
                 for feature in pod_features_cols:
@@ -312,8 +303,7 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
                             processed_df[feature] = processed_df[feature] * feature_normalization.SIGNAL_AMPLIFICATION_DEGREE
             
             # Encode baseline data
-            tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, 
-                                                            request_features_train, request_features_reward)
+            tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, offline_routing_agent.request_features_train)
             
             # Get baseline prediction
             if args.model == "simpler_contextual_bandit":
@@ -827,9 +817,8 @@ def analyze_model_behavior(args, test_data_subset, stats_file):
     Analyze what the model has actually learned by systematically modifying features
     and observing prediction changes. This reveals if the model is truly contextual.
     """
-    global NUM_TRAINS
     
-    if NUM_TRAINS == 0:
+    if offline_routing_agent.NUM_TRAINS == 0:
         logger.warning("No trained model available for behavior analysis")
         return None
     
@@ -862,7 +851,7 @@ def analyze_model_behavior(args, test_data_subset, stats_file):
             request_features = ['input_tokens', 'output_tokens', 'total_tokens']
             pod_features_cols = [col for col in processed_df.columns if col.startswith('pod_') and processed_df[col].dtype in ['float64', 'int64']]
             all_features = request_features + pod_features_cols
-            stats = get_request_stats(stats_file)
+            stats = offline_routing_agent.get_stats_instance(stats_file)
             
             if stats.count > 0:
                 for feature in all_features:
@@ -872,8 +861,7 @@ def analyze_model_behavior(args, test_data_subset, stats_file):
                         processed_df[feature] = normalized_feature.flatten()
             
             # Encode baseline data
-            tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, 
-                                                            request_features_train, request_features_reward)
+            tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, offline_routing_agent.request_features_train)
             
             # Get baseline prediction
             if args.model == "simpler_contextual_bandit":
