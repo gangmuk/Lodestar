@@ -6,9 +6,7 @@ import pandas as pd
 import numpy as np
 # import uvicorn
 # from pydantic import BaseModel
-from typing import Dict, List, Optional, Any, Union
 import os
-import logging
 import time
 # import asyncio
 # from concurrent.futures import ThreadPoolExecutor
@@ -30,38 +28,26 @@ import feature_normalization
 
 app = Flask(__name__)
 
-BATCH_ID = 0
+FLUSH_BATCH_ID = 0
 ENCODED_DATA_DIR = "encoded_data"
-STATS_FILE = "request_feature_stats.pkl"  # Add this near the top with your other constants
+final_model_path = "final_model"
+feature_normalization_stats_file = f"{final_model_path}/feature_normalization_statistics.pkl"  # Add this near the top with your other constants;
 NUM_TRAINS = 0
-MODEL_UPDATED = False
+MODEL_UPDATED = True
 TRAINING_DATA_UPDATED = False
 LOCK_TRAINING_DATA = threading.Lock()
-LOAD_PRETRAINED_MODEL = os.getenv("LOAD_PRETRAINED_MODEL", "true").lower() == "true"
-PRETRAINED_MODEL_PATH = os.getenv("PRETRAINED_MODEL_PATH", "final_model")
 ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
 MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
-final_model_path = "final_model"
-CONTINUE_FROM_PRETRAINED = os.getenv("CONTINUE_FROM_PRETRAINED", "true").lower() == "true"
 TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
 AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
 first_request_starting_time = None
-
+stats_instance = None 
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
-MIN_NUM_TRAINING_DATA = 1000  # Minimum number of training data required to trigger training
+MIN_NUM_TRAINING_DATA = 500  # Minimum number of training data required to trigger training
 
 logger.info(f"TTFT_SLO: {TTFT_SLO}")
 logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
-
-request_stats = None
-
-def get_request_stats():
-    """Get or initialize request feature statistics"""
-    global request_stats
-    if request_stats is None:
-        request_stats = feature_normalization.load_stats(STATS_FILE)
-    return request_stats
 
 def write_to_file(log_data, raw_data):
     with open(raw_data, "w") as log_file:
@@ -70,44 +56,48 @@ def write_to_file(log_data, raw_data):
     logger.info(f"Successfully wrote {len(log_data)} entries to {raw_data}")
 
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
-request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
+# request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
 
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global BATCH_ID, ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA
+    global FLUSH_BATCH_ID, ENCODED_DATA_DIR, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
     flush_start_time = time.time()
     log_data = request.json
     try:
         logger.info(f"Received log data with {len(log_data) if log_data else 0} entries")
         if not os.path.exists("raw_training_data"):
             os.mkdir("raw_training_data")
-        raw_data = f"raw_training_data/batch_{BATCH_ID}.csv"
-        BATCH_ID += 1
+        raw_data_path = f"raw_training_data/batch_{FLUSH_BATCH_ID}.csv"
+        FLUSH_BATCH_ID += 1
         
         # Write raw data to file
         ts_write_raw_data = time.time()
-        write_to_file(log_data, raw_data)
-        logger.info(f"wrote {len(log_data)} entries to {raw_data}, took {time.time() - ts_write_raw_data} seconds")
+        write_to_file(log_data, raw_data_path)
+        logger.info(f"wrote {len(log_data)} entries to {raw_data_path}, took {time.time() - ts_write_raw_data} seconds")
 
         # Preprocess raw data
         ts_preprocess = time.time()
-        df, _, all_pods, _ = preprocess.main(raw_data, "", TTFT_SLO, AVG_TPOT_SLO)
+        processed_df, _, all_pods, _ = preprocess.main(raw_data_path, "", TTFT_SLO, AVG_TPOT_SLO)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        
-        # ===== SHARED NORMALIZATION LOGIC =====
-        stats = get_request_stats()
-        df, stats, _ = feature_normalization.normalize_features_for_training(df, stats)
-        feature_normalization.save_stats(stats, STATS_FILE)
+        try:
+            if stats_instance is None:
+                stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+        except Exception as e:
+            logger.error(f"Could not load feature normalization stats: {e}")
+            assert False
+        if ENABLE_ONLINE_LEARNING:
+            processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+            stats_instance.write_stats_to_file(feature_normalization_stats_file)
 
         # ===== SHARED REWARD ENGINEERING =====
-        df = feature_normalization.apply_reward_engineering(df)
+        processed_df = feature_normalization.try_reward_amplification(processed_df)
         
         # Encode preprocessed data
         ts_encode = time.time()
-        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{BATCH_ID}"
-        encoding.encode_for_train(all_pods, df, encoded_data_subdir, request_features_train, request_features_reward)
+        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{FLUSH_BATCH_ID}"
+        encoding.encode_for_train(all_pods, processed_df, encoded_data_subdir, request_features_train)
         logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TRAINING_DATA_UPDATED = True
@@ -124,16 +114,15 @@ def handle_flush():
         return jsonify({"status": "error", "message": str(e), "traceback": error_traceback}), 500
 
 
-# Fixed handle_infer function
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time
+    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
         logger.info(f"First request starting time set to {first_request_starting_time}")
-    if NUM_TRAINS == 0:
-        logger.warning("No trained model available, please call /flush to train first")
-        return jsonify({"error": "No trained model available, please call /flush to train first"}), 503
+    # if NUM_TRAINS == 0:
+    #     logger.warning("No trained model available, please call /flush to train first")
+    #     return jsonify({"error": "No trained model available, please call /flush to train first"}), 503
     handle_infer_start_time = time.time()
     try:
         # Get the log message as a string from the request body
@@ -169,26 +158,27 @@ def handle_infer():
 
         # Get running statistics and apply normalization (SAME AS TRAINING)
         get_stat_start_time = time.time()
-        stats = get_request_stats()
-        if stats is None or stats.count == 0:
-            logger.warning(f"No running statistics available, stats: {stats}, stats.count: {stats.count}")
-
-        # ===== SHARED NORMALIZATION LOGIC =====
-        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats)
-        
+        if stats_instance is None:
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+        if stats_instance is None:
+            logger.error(f"No running statistics available, stats_instance: {stats_instance}")
+            assert False
+        if stats_instance.count == 0:
+            logger.warning(f"Stats instance count is 0, no data available for normalization")
+        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance)
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
         # Encode data (normalization already done)
         encode_start_time = time.time()
-        tensor_dataset, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, stats, request_features_train, request_features_reward)
+        tensor_data, encode_for_inference_overhead_summary = encoding.      encode_for_inference(all_pods, processed_df, request_features_train)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
         if MODEL == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, model_updated=MODEL_UPDATED)
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
         elif MODEL == "contextual_bandit":
-            result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_dataset, model_updated=MODEL_UPDATED)
+            result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
         else:
             logger.error(f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'")
             return jsonify({"error": f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'"}), 500
@@ -220,7 +210,7 @@ def handle_infer():
             "request_id": request_id,
             "* handle_infer_total_prep_overhead": handle_infer_total_prep_overhead*1000,
             "* handle_infer_total_total_preprocess_overhead": handle_infer_total_total_preprocess_overhead*1000,
-            # "* handle_infer_total_get_stat_overhead": handle_infer_total_get_stat_overhead*1000,
+            "* handle_infer_total_get_stat_overhead": handle_infer_total_get_stat_overhead*1000,
             "* handle_infer_total_total_encoding_overhead": handle_infer_total_total_encoding_overhead*1000,
             "* handle_infer_total_wrapup_overhead": handle_infer_total_wrapup_overhead*1000,
             "* handle_infer_total_total_infer_from_tensor_overhead": handle_infer_total_total_infer_from_tensor_overhead*1000,
@@ -245,43 +235,17 @@ def handle_infer():
         return jsonify({"error": str(e), "traceback": error_traceback}), 500
 
 
-def train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, CONTINUE_FROM_PRETRAINED, NUM_NEW_DATA
-    # Load pretrained model on first training if available
-    if NUM_TRAINS == 0 and LOAD_PRETRAINED_MODEL:
-        if not os.path.exists(PRETRAINED_MODEL_PATH):
-            logger.error(f"Pretrained model path {PRETRAINED_MODEL_PATH} does not exist, cannot load pretrained model")
-            assert False
-        else:
-            logger.info(f"Loading pretrained model from {PRETRAINED_MODEL_PATH} for online learning")
-            try:
-                # Copy pretrained model to final_model_path for inference
-                os.makedirs(final_model_path, exist_ok=True)
-                os.system(f"cp {PRETRAINED_MODEL_PATH}/* {final_model_path}/")
-                
-                # Mark model as updated so inference will load it
-                MODEL_UPDATED = True
-                NUM_TRAINS = 1  # Set to 1 to indicate we have a model
-                logger.info("Successfully loaded pretrained model for online learning")
-                
-                # If online learning is disabled, just use the pretrained model
-                if not ENABLE_ONLINE_LEARNING:
-                    logger.info("Online learning disabled - using pretrained model only")
-                    return
-                    
-            except Exception as e:
-                logger.error(f"Failed to load pretrained model: {e}")
-                NUM_TRAINS = 0  # Reset to train from scratch
-    
-    # Continue with existing training logic only if online learning is enabled
-    if ENABLE_ONLINE_LEARNING and TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
+def online_train_routine():
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, NUM_NEW_DATA
+
+    if  TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
-        logger.info(f"train_routine, Starting {NUM_TRAINS}th online training iteration")
+        logger.info(f"online_train_routine, Starting {NUM_TRAINS}th online training iteration")
         try:
             if MODEL == "simpler_contextual_bandit":
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, secondary_final_model_path_=None, continue_from_pretrained=CONTINUE_FROM_PRETRAINED)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path)
             elif MODEL == "contextual_bandit":
-                contextual_bandit.train(ENCODED_DATA_DIR, continue_from_pretrained=CONTINUE_FROM_PRETRAINED)
+                contextual_bandit.train(ENCODED_DATA_DIR)
             else:
                 logger.error(f"Unknown model {MODEL}")
                 return
@@ -290,24 +254,21 @@ def train_routine():
             return
         MODEL_UPDATED = True
         TRAINING_DATA_UPDATED = False
-        logger.info(f"train_routine, Successfully completed {NUM_TRAINS}th online training, took {time.time() - training_start_time} seconds")
+        logger.info(f"online_train_routine, Successfully completed {NUM_TRAINS}th online training, took {time.time() - training_start_time} seconds")
         NUM_TRAINS += 1
         NUM_NEW_DATA = 0
     else:
-        if not ENABLE_ONLINE_LEARNING:
-            logger.info("Online learning disabled - skipping training")
-        else:
-            logger.info(f"train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
-
-
+        logger.info(f"online_train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    
     scheduler = BackgroundScheduler()
-    scheduler.add_job(func=train_routine, trigger="interval", seconds=1)
+    # If online learning is disabled, just use the pretrained model
+    if ENABLE_ONLINE_LEARNING:
+        scheduler.add_job(func=online_train_routine, trigger="interval", seconds=1)
+    else:
+        logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
-
     app.run(host="0.0.0.0", port=port, debug=False)

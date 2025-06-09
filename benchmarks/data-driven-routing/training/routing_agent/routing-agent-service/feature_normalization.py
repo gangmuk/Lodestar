@@ -8,10 +8,9 @@ import pandas as pd
 import numpy as np
 import pickle
 from logger import logger
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Tuple
 import os
 import json
-
 
 CONFIG = {
     "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
@@ -19,21 +18,25 @@ CONFIG = {
     "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
     "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 10,
     "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 10, # 0.1
-    "ENABLE_POD_NORMALIZATION": True,     # Toggle pod feature normalization
-    "ENABLE_REQUEST_NORMALIZATION": True,  # Toggle request feature normalization
+    "ENABLE_POD_NORMALIZATION": True,
+    "ENABLE_REQUEST_NORMALIZATION": True,
 }
 
 class RunningStats:
     """Maintains running mean and standard deviation for feature normalization"""
-    def __init__(self, feature_names=None):
+    def __init__(self, feature_names):
         self.count = 0
         self.mean = None
         self.var = None  # Variance
+        if feature_names == None:
+            logger.error("RunningStats initialized with None feature_names, setting to empty list")
+            assert False
         self.feature_names = feature_names
         
-    def update(self, new_data):
-        """Update statistics with new batch of data"""
+    def update_stats_incrementally(self, new_data):
+        """Incrementally update statistics with new batch of data using Welford's algorithm"""
         if new_data is None or len(new_data) == 0:
+            logger.error("Received empty data for RunningStats.update, skipping")
             return
         
         # Convert to numpy array
@@ -45,7 +48,7 @@ class RunningStats:
             self.mean = np.mean(new_data, axis=0)
             self.var = np.var(new_data, axis=0) * new_count
             self.count = new_count
-            logger.debug(f"Initialized running stats with {new_count} samples")
+            logger.info(f"The very first RunningStats.update call for {self.feature_names}. Initialized running stats with {new_count} samples")
             return
         
         # Compute batch statistics
@@ -66,14 +69,12 @@ class RunningStats:
         # Update count
         self.count = new_total
         
-        logger.debug(f"Updated running stats, now have {self.count} samples")
+        logger.info(f"{self.feature_names}, Updated running stats, now have {self.count} samples")
         
     def get_mean(self):
-        """Get current mean"""
         return self.mean if self.mean is not None else 0
         
     def get_std(self):
-        """Get current standard deviation"""
         if self.count <= 1 or self.var is None:
             return np.ones_like(self.mean) if self.mean is not None else 1.0
         std = np.sqrt(self.var / self.count)
@@ -85,67 +86,30 @@ class RunningStats:
     def normalize(self, data):
         """Normalize data using current statistics"""
         if self.count == 0:
-            logger.warning("No statistics available, returning original data")
-            return data
-        
+            logger.error(f"{self.feature_names}: No statistics available. normalization cannot be performed.")
+            assert False
         mean = self.get_mean()
         std = self.get_std()
-        
         return (data - mean) / std
-        
-    def save(self, filename):
-        """Save statistics to file"""
-        with open(filename, 'wb') as f:
-            pickle.dump({
-                'count': self.count,
-                'mean': self.mean,
-                'var': self.var,
-                'feature_names': self.feature_names
-            }, f)
-        logger.info(f"Saved running statistics to {filename}")
+    
+    ## not used
+    # def save(self, filename):
+    #     """Save statistics to file"""
+    #     with open(filename, 'wb') as f:
+    #         pickle.dump({
+    #             'count': self.count,
+    #             'mean': self.mean,
+    #             'var': self.var,
+    #             'feature_names': self.feature_names
+    #         }, f)
+    #     logger.info(f"Saved running statistics to {filename}")
         
 class PerFeatureRunningStats:
     """Maintains separate running statistics for each feature"""
     def __init__(self):
         self.feature_stats = {}  # Dict[feature_name, RunningStats]
-        
-    def update(self, data, feature_names):
-        """Update statistics for each feature separately"""
-        if data is None or len(data) == 0:
-            return
-            
-        data = np.array(data, dtype=np.float64)
-        
-        for i, feature_name in enumerate(feature_names):
-            if feature_name not in self.feature_stats:
-                self.feature_stats[feature_name] = RunningStats()
-            
-            # Extract single feature column
-            feature_data = data[:, i:i+1]  # Keep 2D shape
-            self.feature_stats[feature_name].update(feature_data)
     
-    def normalize(self, data, feature_names):
-        """Normalize each feature separately using its own statistics"""
-        if data is None or len(data) == 0:
-            return data
-            
-        data = np.array(data, dtype=np.float64)
-        normalized_data = np.zeros_like(data)
-        
-        for i, feature_name in enumerate(feature_names):
-            if feature_name in self.feature_stats and self.feature_stats[feature_name].count > 0:
-                # Normalize using feature-specific stats
-                feature_column = data[:, i:i+1]  # Keep 2D shape
-                normalized_column = self.feature_stats[feature_name].normalize(feature_column)
-                normalized_data[:, i] = normalized_column.flatten()
-            else:
-                # No normalization if no stats available
-                normalized_data[:, i] = data[:, i]
-                logger.warning(f"No statistics available for feature '{feature_name}', using original values")
-        
-        return normalized_data
-    
-    def save(self, filename):
+    def write_stats_to_file(self, feature_normalization_stats_file):
         """Save all feature statistics to file"""
         save_data = {}
         for feature_name, stats in self.feature_stats.items():
@@ -156,31 +120,32 @@ class PerFeatureRunningStats:
                 'feature_names': stats.feature_names
             }
         
-        with open(filename, 'wb') as f:
+        with open(feature_normalization_stats_file, 'wb') as f:
             pickle.dump(save_data, f)
-        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {filename}")
+        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {feature_normalization_stats_file}")
 
         # also write them in text file
-        stat_in_text_file = filename.replace('.pkl', '.txt')
+        stat_in_text_file = feature_normalization_stats_file.replace('.pkl', '.txt')
         with open(stat_in_text_file, 'w') as f:
             f.write(f"Per-feature statistics for {len(self.feature_stats)} features:\n")
             for feature_name, stats in self.feature_stats.items():
                 f.write(f"{feature_name}: count={stats.count}, mean={stats.mean}, var={stats.var}\n")
         
         # Write CONFIG to json file
-        config_file = filename.replace('.pkl', '_config.json')
+        config_file = feature_normalization_stats_file.replace('.pkl', '_config.json')
         with open(config_file, 'w') as f:
             json.dump(CONFIG, f, indent=4)
     
     @classmethod
-    def load(cls, feature_normalization_stats_file):
-        """Load feature statistics from file"""
+    def create_new_empty_instance(cls):
+        return cls()
+
+    @classmethod
+    def create_new_instance_with_stats_file(cls, feature_normalization_stats_file):
         if not os.path.exists(feature_normalization_stats_file):
-            logger.error(f"Statistics file {feature_normalization_stats_file} not found, initializing new per-feature stats")
-            return cls()
-        
+            logger.error(f"Feature normalization stats file {feature_normalization_stats_file} does not exist.")
+            assert False
         instance = cls()
-        
         try:
             with open(feature_normalization_stats_file, 'rb') as pkl_file:
                 save_data = pickle.load(pkl_file)
@@ -188,17 +153,17 @@ class PerFeatureRunningStats:
             # Validate it's the expected per-feature format
             if not isinstance(save_data, dict):
                 logger.error(f"Invalid file format in {feature_normalization_stats_file}. Expected dictionary format.")
-                return cls()
+                assert False
 
             # Check if it looks like per-feature format (each value should be a dict with stats)
             for feature_name, stats_data in save_data.items():
                 if not isinstance(stats_data, dict) or 'count' not in stats_data:
                     logger.error(f"Invalid per-feature format in {feature_normalization_stats_file}. Feature '{feature_name}' missing required fields.")
-                    return cls()
+                    assert False
             
             # New format - per-feature statistics
             for feature_name, stats_data in save_data.items():
-                stats = RunningStats(feature_names=stats_data.get('feature_names'))
+                stats = RunningStats(feature_names=stats_data['feature_names'])
                 stats.count = stats_data.get('count', 0)
                 stats.mean = stats_data.get('mean')
                 stats.var = stats_data.get('var')
@@ -208,7 +173,20 @@ class PerFeatureRunningStats:
             
         except Exception as e:
             logger.error(f"Error loading statistics file {feature_normalization_stats_file}: {e}. Expected per-feature format.")
-            return cls()
+            # print pickle file
+            try:
+                with open(feature_normalization_stats_file, 'rb') as f:
+                    content = pickle.load(f) # Use pickle.load() to deserialize the content
+                    logger.error(f"Content of {feature_normalization_stats_file}:\n{content}")
+                logger.error("Please ensure the file is in the correct per-feature format.")
+            except FileNotFoundError:
+                logger.error(f"Error: The file '{feature_normalization_stats_file}' was not found.")
+            except pickle.UnpicklingError as e:
+                logger.error(f"Error: Could not unpickle the file '{feature_normalization_stats_file}'. It might be corrupted or not a valid pickle file. Details: {e}")
+            except Exception as e:
+                logger.error(f"An unexpected error occurred: {e}")
+
+            assert False
         
         return instance
     
@@ -228,10 +206,7 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
     # Feature categorization
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
     pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
-    
-    logger.info("🔧 POD-CENTRIC FEATURE PROCESSING")
-    logger.info("=" * 50)
-    
+
     # Analyze raw feature ranges (offline only)
     logger.info("Raw feature analysis:")
     high_variance_pod_features = []
@@ -246,18 +221,18 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
             if feature in df.columns:
                 values = df[feature].values
                 if values.std() > CONFIG["STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION"]:
+                    logger.info(f"🔍 {feature}, Normalizing. Variance is high (std: {values.std():.3f})")
                     feature_data = values.reshape(-1, 1)
                     if feature not in stats.feature_stats:
-                        stats.feature_stats[feature] = RunningStats()
-                    stats.feature_stats[feature].update(feature_data)
+                        stats.feature_stats[feature] = RunningStats(feature_names=feature)
+                    stats.feature_stats[feature].update_stats_incrementally(feature_data)
                     normalized_feature = stats.feature_stats[feature].normalize(feature_data)
                     df[feature] = normalized_feature.flatten()
                     request_normalized_count += 1
                     new_std = df[feature].std()
-                    
-                    logger.info(f"✅ Normalized request feature: {feature}. prev std: {values.std()} -> new std: {new_std:.3f}")
+                    logger.info(f"✅ {feature}, Normalize. prev std: {values.std()} -> new std: {new_std:.3f}")
                 else:
-                    logger.info(f"⚪ Kept raw values for: {feature}. Variance is already low (std: {values.std():.3f})")
+                    logger.info(f"⚪ {feature}, Kept raw values. Variance is already low (std: {values.std():.3f})")
     else:
         logger.info("🚫 Request feature normalization DISABLED - using raw values")
         
@@ -267,30 +242,22 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
         for feature in pod_features_cols:
             if feature in df.columns:
                 if 'kv_hit_ratio' in feature:
-                    logger.info(f"⚪ Skipping normalization for {feature} (already 0-100 scale)")
+                    logger.info(f"⚪ {feature}, Skip normalization. (already 0-100 scale)")
                     continue
-                
                 values = df[feature].values
                 if values.std() > CONFIG["STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION"]:
+                    logger.info(f"🔍 Normalizing pod feature: {feature} (std: {values.std():.3f})")
                     feature_data = values.reshape(-1, 1)
-                    
                     if feature not in stats.feature_stats:
-                        stats.feature_stats[feature] = RunningStats()
-                    
-                    # Store original std for verification
+                        stats.feature_stats[feature] = RunningStats(feature_names=feature)
                     original_std = df[feature].std()
-                    
-                    stats.feature_stats[feature].update(feature_data)
+                    stats.feature_stats[feature].update_stats_incrementally(feature_data)
                     normalized_feature = stats.feature_stats[feature].normalize(feature_data)
                     df[feature] = normalized_feature.flatten()
-                    
-                    # Verify normalization didn't destroy variance
+                    pod_normalized_count += 1
                     new_std = df[feature].std()
-                    
-                    if new_std > 0.5:  # Ensure reasonable post-normalization variance
-                        pod_normalized_count += 1
-                        logger.info(f"✅ Normalized pod feature: {feature} (std: {original_std:.3f} → {new_std:.3f})")
-                    else:
+                    logger.info(f"✅ Normalized pod feature: {feature}, prev std: {original_std:.3f} → new std: {new_std:.3f}")
+                    if new_std <= 0.5:
                         logger.warning(f"⚠️  Post-normalization variance too low for {feature} (std: {original_std:.3f} → {new_std:.3f})")
                 else:
                     logger.info(f"⚪ Variance is already low (std: {values.std():.3f}). Kept raw values for pod feature: {feature}")
@@ -323,24 +290,23 @@ def normalize_features_for_training(df: pd.DataFrame, stats: PerFeatureRunningSt
     return df, stats, normalization_summary
 
 
-def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningStats) -> pd.DataFrame:
+def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatureRunningStats) -> pd.DataFrame:
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
     pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
-    
-    if stats.count > 0:
-        logger.debug("Applying pod-centric normalization for inference")
+    if stats_instance.count > 0:
+        logger.info("Applying normalize_features_for_inference")
         if CONFIG["ENABLE_REQUEST_NORMALIZATION"]:    
             # 1. Request features - only normalize if they were normalized in training
             for feature in request_features:
-                if feature in df.columns and feature in stats.feature_stats:
+                if feature in df.columns and feature in stats_instance.feature_stats:
                     feature_data = df[feature].values.reshape(-1, 1)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    normalized_feature = stats_instance.feature_stats[feature].normalize(feature_data)
                     df[feature] = normalized_feature.flatten()
-                    logger.debug(f"✅ Normalized request feature {feature} for inference")
+                    logger.info(f"✅ Normalized request feature {feature} for inference")
                 else:
-                    logger.debug(f"Kept raw values for request feature {feature}")
+                    logger.info(f"Kept raw values for request feature {feature}")
         else:
-            logger.debug("Request feature normalization DISABLED for inference")
+            logger.info("Request feature normalization DISABLED for inference")
 
         # 2. Pod features - normalize those that were normalized in training
         pod_normalized_count = 0
@@ -348,12 +314,12 @@ def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningS
             for feature in pod_features_cols:
                 if 'kv_hit_ratio' in feature:
                     continue  # Skip normalization
-                if feature in df.columns and feature in stats.feature_stats:
+                if feature in df.columns and feature in stats_instance.feature_stats:
                     feature_data = df[feature].values.reshape(-1, 1)
-                    normalized_feature = stats.feature_stats[feature].normalize(feature_data)
+                    normalized_feature = stats_instance.feature_stats[feature].normalize(feature_data)
                     df[feature] = normalized_feature.flatten()
                     pod_normalized_count += 1
-                    logger.debug(f"Normalized pod feature {feature} for inference")
+                    logger.info(f"Normalized pod feature {feature} for inference")
             
             # 3. Apply same critical feature amplification as training
             critical_features = ['running_requests', 'waiting_requests', 'decode_tokens', 'prefill_tokens']
@@ -363,18 +329,17 @@ def normalize_features_for_inference(df: pd.DataFrame, stats: PerFeatureRunningS
                     if feature in df.columns:
                         df[feature] = df[feature] * CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
                         amplified_count += 1
-                        logger.debug(f"Amplified critical feature {feature} for inference")
-            
-            logger.debug(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
+                        logger.info(f"Amplified critical feature {feature} for inference")
+            logger.info(f"Applied pod-centric normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
         else:
-            logger.debug("Pod feature normalization DISABLED for inference")
+            logger.info("Pod feature normalization DISABLED for inference")
     else:
-        logger.warning(f"No normalization stats available for inference")
+        logger.warning(f"No normalization stats_instance available for inference")
     
     return df
 
 
-def apply_reward_engineering(df: pd.DataFrame) -> pd.DataFrame:
+def try_reward_amplification(df: pd.DataFrame) -> pd.DataFrame:
     if 'reward' in df.columns:
         rewards = df['reward'].values
         logger.info("\n🎯 REWARD ENGINEERING")
@@ -392,11 +357,16 @@ def apply_reward_engineering(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_stats(feature_normalization_stats_file: str) -> PerFeatureRunningStats:
-    """Load statistics from file"""
-    return PerFeatureRunningStats.load(feature_normalization_stats_file)
+def create_new_instance_with_stats_file(feature_normalization_stats_file: str) -> PerFeatureRunningStats:
+    return PerFeatureRunningStats.create_new_instance_with_stats_file(feature_normalization_stats_file)
 
+def create_new_empty_instance() -> PerFeatureRunningStats:
+    return PerFeatureRunningStats.create_new_empty_instance()
 
-def save_stats(stats: PerFeatureRunningStats, feature_normalization_stats_file: str) -> None:
-    """Save statistics to file"""
-    stats.save(feature_normalization_stats_file)
+def get_stats_instance(feature_normalization_stats_file):
+    if os.path.exists(feature_normalization_stats_file):
+        logger.info(f"Creating feature normalization stats instance from {feature_normalization_stats_file}")
+        return create_new_instance_with_stats_file(feature_normalization_stats_file)
+    else:
+        logger.info(f"{feature_normalization_stats_file} does not exist. Creating new empty feature normalization stats instance")
+        return create_new_empty_instance()

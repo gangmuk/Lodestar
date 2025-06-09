@@ -10,7 +10,7 @@ def setup_logging():
     logging.basicConfig(
         level=logging_level,
         # format="%(asctime)s - %(levelname)s - %(filename)s - %(funcName)s:%(lineno)d - %(message)s",
-        format="%(filename)s - %(funcName)s:%(lineno)d - %(message)s",
+        format="%(filename)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
         handlers=[
             logging.StreamHandler(),
             logging.FileHandler("llm_router.log")
