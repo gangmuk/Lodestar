@@ -87,9 +87,10 @@ def handle_flush():
         except Exception as e:
             logger.error(f"Could not load feature normalization stats: {e}")
             assert False
-        if ENABLE_ONLINE_LEARNING:
-            processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-            stats_instance.write_stats_to_file(feature_normalization_stats_file)
+            
+        # if ENABLE_ONLINE_LEARNING:
+        processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+        stats_instance.write_stats_to_file(feature_normalization_stats_file)
 
         # ===== SHARED REWARD ENGINEERING =====
         processed_df = feature_normalization.try_reward_amplification(processed_df)

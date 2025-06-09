@@ -279,11 +279,13 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
         processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
         stats_instance.write_stats_to_file(feature_normalization_stats_file)
         processed_df = feature_normalization.try_reward_amplification(processed_df)
-        # Continue with encoding...
+        
+        # encoding
         ts_encode = time.time()
         encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
         encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train)
         logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
+
         # Verify encoded data
         expected_tensor_path = f"{encoded_data_output_dir}/tensor_dataset.pt"
         train_tensor_path = f"{encoded_data_output_dir}/train/tensor_dataset.pt"
@@ -376,8 +378,10 @@ def main():
             logger.error("Failed to process training data")
             return
         model_and_data_analysis_helper.diagnose_training_data_issues(args, train_data)
+        
         # Train model
-        if not train_model(args):
+        ret = train_model(args)
+        if not ret:
             logger.error("Failed to train model")
             return
         logger.info("=== TRAINING COMPLETED ===")
