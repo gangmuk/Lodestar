@@ -541,7 +541,7 @@ def parse_log_message(log_message):
     else:
         return pd.DataFrame(), []
 
-def preprocess_single_row_fast(df, ttft_slo, avg_tpot_slo):
+def preprocess_single_row_fast(df, log_message):
     """
     Ultra-fast preprocessing for single row (inference workload)
     Avoids most DataFrame operations by working with dictionaries
@@ -551,7 +551,9 @@ def preprocess_single_row_fast(df, ttft_slo, avg_tpot_slo):
     
     # Quick validation
     if not row.get('podMetricsLastSecond'):
-        logger.error("No data found after parsing JSON columns.")
+        logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
+        logger.error(f"Log message: {log_message}")
+        logger.error(f"Row data: {row}")
         assert False
     
     # Get all pods from the row data
@@ -650,11 +652,13 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
         df, json_columns = parse_log_message(log_message)
         if len(df) == 0:
             logger.error("No data found in the log message.")
+            logger.error(f"Log message: {log_message}")
             assert False
     logger.debug(f"df.columns: {list(df.columns)}, json_columns: {json_columns}")
     if len(df) == 0:
         logger.error("No data found after parsing JSON columns.")
         logger.info(f"Parsed {len(df)} records from {input_file}")
+        logger.error(f"Log message: {log_message}")
         assert False
     parse_log_file_overhead = time.time() - parse_log_file_start_time
     
@@ -663,7 +667,7 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
     if len(df) == 1 and input_file is None:
         # Ultra-fast inference path
         # processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, TTFT_SLO, AVG_TPOT_SLO)
-        processed_df, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, TTFT_SLO, AVG_TPOT_SLO)
+        processed_df, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, log_message)
     else:
         # Existing batch processing for training
         # REMOVED: No need for parse_json_columns since JSON is already parsed
