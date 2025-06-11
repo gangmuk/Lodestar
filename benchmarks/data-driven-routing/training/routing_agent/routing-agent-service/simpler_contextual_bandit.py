@@ -27,30 +27,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 final_model_dir = "final_model"
 
-hyperparameters = {
-        'hidden_dim': 32, # 256,
-        'batch_size': 32,
-        'lr': 0.01, # 0.001
-        'weight_decay': 0.0001,
-        'exploration_rate': 0.1,
-        'training_epochs': 10, # 5,
-        'max_updates_per_epoch': 100, # 1000000000
-        'eval_interval': 10,
-        'custom_weight_initialization': False,
-        'entropy_bonus_factor': 0.01,
-        'learning_every_x_iter': 5,
-        'per_learn_reward_normalization': False,
-        'normalization': {
-            "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
-            "REWARD_AMPLIFICATION_DEGREE": 2.0,
-            "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
-            "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
-            "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
-            "ENABLE_POD_NORMALIZATION": True,
-            "ENABLE_REQUEST_NORMALIZATION": True,
-        }
-    }
-
 class FixedPolicyNetwork(nn.Module):
     """
     Fixed architecture that preserves pod structure
@@ -261,10 +237,10 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    def __init__(self, state_dim, action_dim, hyperparameters):
+    def __init__(self, state_dim, action_dim, HYPERPARAMETERS):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.hyperparameters = hyperparameters
+        self.hyperparameters = HYPERPARAMETERS
         self.current_epoch = 0
         self.global_batch_counter = 0
         self.learn_call_counter = 0
@@ -618,6 +594,21 @@ def analyze_dataset_detailed(combined_data):
     if len(action_reward_stats) > 1:
         reward_values = list(action_reward_stats.values())
         reward_gap = max(reward_values) - min(reward_values)
+        reward_distribution = {}
+        reward_distribution['mean'] = np.mean(reward_values)
+        reward_distribution['std'] = np.std(reward_values)
+        reward_distribution['min'] = np.min(reward_values)
+        reward_distribution['p10'] = np.percentile(reward_values, 10)
+        reward_distribution['p20'] = np.percentile(reward_values, 20)
+        reward_distribution['p30'] = np.percentile(reward_values, 30)
+        reward_distribution['p40'] = np.percentile(reward_values, 40)
+        reward_distribution['p50'] = np.percentile(reward_values, 50)
+        reward_distribution['p60'] = np.percentile(reward_values, 60)
+        reward_distribution['p70'] = np.percentile(reward_values, 70)
+        reward_distribution['p80'] = np.percentile(reward_values, 80)
+        reward_distribution['p90'] = np.percentile(reward_values, 90)
+        reward_distribution['p99'] = np.percentile(reward_values, 99)
+        reward_distribution['max'] = np.max(reward_values)
         logger.info(f"\nReward signal strength:")
         logger.info(f"  Reward gap: {reward_gap:.4f}")
         
@@ -628,7 +619,8 @@ def analyze_dataset_detailed(combined_data):
         'total_samples': total_samples,
         'imbalance_ratio': imbalance_ratio,
         'reward_gap': reward_gap if 'reward_gap' in locals() else 0,
-        'action_distribution': action_counts
+        'reward_distribution': reward_distribution,
+        'action_distribution': action_counts,
     }
 
 def analyze_reward_signal_strength(combined_data, agent=None):
@@ -1727,7 +1719,7 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
 
 
 # main entry point
-def train(encoded_data_dir, model_output_dir):
+def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
     global final_model_dir
     final_model_dir = model_output_dir
     os.makedirs(final_model_dir, exist_ok=True)
@@ -1736,6 +1728,7 @@ def train(encoded_data_dir, model_output_dir):
     # Load and combine data from all batches
     combined_data = load_all_encoded_data(encoded_data_dir)
     dataset_analysis = analyze_dataset_detailed(combined_data)
+    HYPERPARAMETERS['dataset_analysis'] = dataset_analysis
     state_dim = {
         'pod_features': combined_data['pod_features_with_staleness'].shape[2],
         'kv_hit_ratios': combined_data['kv_hit_ratios'].shape[2],
@@ -1750,16 +1743,7 @@ def train(encoded_data_dir, model_output_dir):
     agent = SimplifiedContextualBandit(
         state_dim=state_dim,
         action_dim=action_dim,
-        hyperparameters=hyperparameters,
-        # hidden_dim=hyperparameters['hidden_dim'],
-        # batch_size=hyperparameters['batch_size'],
-        # lr=hyperparameters['lr'],
-        # exploration_rate=hyperparameters['exploration_rate'],
-        # training_epochs=hyperparameters['training_epochs'],
-        # max_updates_per_epoch=hyperparameters['max_updates_per_epoch'],
-        # eval_interval=hyperparameters['eval_interval'],
-        # custom_weight_initialization = hyperparameters['custom_weight_initialization'],
-        # entropy_bonus_factor = hyperparameters['entropy_bonus_factor'],
+        HYPERPARAMETERS=HYPERPARAMETERS,
     )
 
     ##############################################
@@ -1769,7 +1753,7 @@ def train(encoded_data_dir, model_output_dir):
             agent.load(final_model_dir)
             logger.info(f"Successfully loaded pretrained model from {final_model_dir} for online learning")
             # Adjust learning rate for online learning (typically lower)
-            online_lr = hyperparameters['lr'] * 0.1  # 10x lower learning rate
+            online_lr = HYPERPARAMETERS['lr'] * 0.1  # 10x lower learning rate
             for param_group in agent.optimizer.param_groups:
                 param_group['lr'] = online_lr
             logger.info(f"Adjusted learning rate to {online_lr} for online learning")
@@ -1778,32 +1762,11 @@ def train(encoded_data_dir, model_output_dir):
             logger.info("Starting training from scratch")
 
     # Use fewer epochs for online learning
-    hyperparameters['training_epochs'] = max(5, hyperparameters['training_epochs'] // 4)
-    logger.info(f"Online learning mode: reduced epochs to {hyperparameters['training_epochs']}, exploration to {hyperparameters['exploration_rate']}")
+    HYPERPARAMETERS['training_epochs'] = max(5, HYPERPARAMETERS['training_epochs'] // 4)
+    logger.info(f"Online learning mode: reduced epochs to {HYPERPARAMETERS['training_epochs']}, exploration to {HYPERPARAMETERS['exploration_rate']}")
     
     # Update agent's exploration rate
-    agent.exploration_rate = hyperparameters['exploration_rate']
-    
-    # Create configuration
-    config = {
-        'hidden_dim': hyperparameters['hidden_dim'],
-        'batch_size': hyperparameters['batch_size'],
-        'learning_rate': hyperparameters['lr'],
-        'exploration_rate': hyperparameters['exploration_rate'],
-        'num_training_epochs': hyperparameters['training_epochs'],
-        'max_updates_per_epoch': hyperparameters['max_updates_per_epoch'],
-        'eval_interval': hyperparameters['eval_interval'],
-        'seed': seed,
-        'model_type': 'simplified',
-        'dataset_analysis': dataset_analysis
-    }
-    for k, v in hyperparameters.items():
-        if k not in config:
-            config[k] = v
-
-    # Save configuration
-    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
-        json.dump(config, f, indent=4, default=str)
+    agent.exploration_rate = HYPERPARAMETERS['exploration_rate']
     
     # Create dataset
     dataset = RoutingDataset(combined_data)
@@ -1811,7 +1774,7 @@ def train(encoded_data_dir, model_output_dir):
     # fixed randomness for shuffling
     dataloader = DataLoader(
         dataset, 
-        batch_size=config['batch_size'], 
+        batch_size=HYPERPARAMETERS['batch_size'], 
         shuffle=True,
         # generator=torch.Generator().manual_seed(seed), # If this is true, DataLoader will serve data in a fixed pattern even if shuffle is True. Then, it will lead to not convering policy entropy. it sees the same data in the same order every time.
     )
@@ -1824,9 +1787,9 @@ def train(encoded_data_dir, model_output_dir):
     eval_metrics = []
     best_accuracy = 0.0
     
-    for epoch in range(hyperparameters['training_epochs']):
+    for epoch in range(HYPERPARAMETERS['training_epochs']):
         logger.info(f"=" * 80)
-        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']}")
+        logger.info(f"EPOCH {epoch+1}/{HYPERPARAMETERS['training_epochs']}")
         logger.info(f"=" * 80)
         agent.current_epoch = epoch
         epoch_start_time = time.time()
@@ -1838,10 +1801,10 @@ def train(encoded_data_dir, model_output_dir):
         dataloader_iter = iter(dataloader)
         num_iter_per_data = 1
         total_iter = number_of_batches * num_iter_per_data
-        # final_total_num_iteration_per_epoch = min(config['max_updates_per_epoch'], total_iter)
+        # final_total_num_iteration_per_epoch = min(HYPERPARAMETERS['max_updates_per_epoch'], total_iter)
         final_total_num_iteration_per_epoch = len(dataloader)
         logger.info(f"=" * 80)
-        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']} - Processing final_total_num_iteration_per_epoch: {final_total_num_iteration_per_epoch} iterations")
+        logger.info(f"EPOCH {epoch+1}/{HYPERPARAMETERS['training_epochs']} - Processing final_total_num_iteration_per_epoch: {final_total_num_iteration_per_epoch} iterations")
         logger.info(f"=" * 80)        
 
         for batch_iter_idx in range(final_total_num_iteration_per_epoch):
@@ -1866,7 +1829,7 @@ def train(encoded_data_dir, model_output_dir):
                     rewards[j:j+1]
                 )
             
-            trigger_learning = (batch_iter_idx+1) % hyperparameters['learning_every_x_iter'] == 0 or batch_iter_idx == final_total_num_iteration_per_epoch - 1
+            trigger_learning = (batch_iter_idx+1) % HYPERPARAMETERS['learning_every_x_iter'] == 0 or batch_iter_idx == final_total_num_iteration_per_epoch - 1
             if trigger_learning:
                 if len(agent.pod_features) > 0:
                     try:
@@ -1881,7 +1844,7 @@ def train(encoded_data_dir, model_output_dir):
                     except Exception as e:
                         logger.error(f"Error during learning: {e}")
         
-            if (batch_iter_idx + 1) % max(1, final_total_num_iteration_per_epoch // config['eval_interval']) == 0:
+            if (batch_iter_idx + 1) % max(1, final_total_num_iteration_per_epoch // HYPERPARAMETERS['eval_interval']) == 0:
                 logger.info(f"Evaluating agent at batch {batch_iter_idx+1}")
                 try:
                     eval_indices = torch.randperm(len(dataset))[:min(200, len(dataset))]
@@ -1943,12 +1906,17 @@ def train(encoded_data_dir, model_output_dir):
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
     # os.system(f"cp -r {final_model_dir} final_model")
+
+    # Save configuration
+    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
+        json.dump(HYPERPARAMETERS, f, indent=4, default=str)
+    
     return {
         'agent': agent,
         'model_dir': final_model_dir,
-        'config': config,
         'eval_metrics': eval_metrics,
-        'best_accuracy': best_accuracy
+        'best_accuracy': best_accuracy,
+        'HYPERPARAMETERS': HYPERPARAMETERS,
     }
 
 # Global cache for agent instance (for inference)
@@ -1956,7 +1924,7 @@ _cached_agent = None
 _cached_agent_config = None
 _cached_metadata = None
 
-def infer_from_tensor(tensor_data, model_updated=False):
+def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
     
     infer_start_time = time.time()
@@ -2006,7 +1974,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         'kv_hit_ratios': kv_hit_ratios.shape[2], 
         'request_features': request_features.shape[1],
         'num_pods': pod_features.shape[1],
-        'exploration_rate': hyperparameters['exploration_rate'],
+        'exploration_rate': HYPERPARAMETERS['exploration_rate'],
         'final_model_dir': final_model_dir
     }
     
@@ -2034,7 +2002,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         agent = SimplifiedContextualBandit(
             state_dim=state_dim,
             action_dim=action_dim,
-            hyperparameters=hyperparameters,
+            HYPERPARAMETERS=HYPERPARAMETERS,
         )
         
         _cached_agent = agent
@@ -2053,12 +2021,12 @@ def infer_from_tensor(tensor_data, model_updated=False):
         action_probs = agent.policy(pod_features, kv_hit_ratios, request_features)
         
         ## epsilon-greedy exploration - it either picks the model's best choice OR a random action for exploration.
-        if hyperparameters['exploration_rate'] > 0:
+        if HYPERPARAMETERS['exploration_rate'] > 0:
             # Use exploration strategy
             action, _ = agent.policy.get_action(
                 pod_features, kv_hit_ratios, request_features, 
                 explore=True, 
-                epsilon=hyperparameters['exploration_rate'],
+                epsilon=HYPERPARAMETERS['exploration_rate'],
             )
             selected_action = action.item()
             confidence = action_probs[0, selected_action].item()
@@ -2075,7 +2043,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         'confidence': confidence,
         'pod_probabilities': action_probs[0].cpu().numpy().tolist(),
         'final_model_dir': final_model_dir,
-        'exploration_enabled': hyperparameters['exploration_rate'] > 0,
+        'exploration_enabled': HYPERPARAMETERS['exploration_rate'] > 0,
         'model_type': 'simplified'
     }
     
@@ -2112,12 +2080,12 @@ def print_tensor_data_summary(tensor_data):
 
 
 
-def comprehensive_root_cause_analysis(agent, combined_data, eval_data):
+def comprehensive_root_cause_analysis(agent, combined_data, eval_data, HYPERPARAMETERS):
     logger.info("=" * 80)
     logger.info("🔍 COMPREHENSIVE ROOT CAUSE ANALYSIS")
     logger.info("=" * 80)
 
-    for key, value in hyperparameters.items():
+    for key, value in HYPERPARAMETERS.items():
         logger.info(f"Hyperparameter: {key} = {value}")
     
     # ==========================================================================
@@ -2414,7 +2382,7 @@ def comprehensive_root_cause_analysis(agent, combined_data, eval_data):
     logger.info("DIAGNOSIS")
     logger.info("="*50)
     
-    def diagnose_root_cause():
+    def diagnose_root_cause(data_analysis, feature_analysis, model_analysis, prediction_analysis):
         issues = []
         severity_score = 0
         
@@ -2505,7 +2473,8 @@ def comprehensive_root_cause_analysis(agent, combined_data, eval_data):
             'severity_score': severity_score
         }
     
-    diagnosis = diagnose_root_cause()
+    # def diagnose_root_cause(data_analysis, feature_analysis, model_analysis, prediction_analysis):
+    diagnosis = diagnose_root_cause(data_analysis, feature_analysis, model_analysis, prediction_analysis)
     
     # ==========================================================================
     # 7. SUMMARY REPORT

@@ -18,6 +18,38 @@ import random_forest
 import torch
 import feature_normalization
 
+# hyperparameters for simpler_contextual_bandit model
+RL_MODEL_HYPERPARAMETERS = {
+    'model_type': 'simplified',
+    'hidden_dim': 32, # 256,
+    'batch_size': 32,
+    'lr': 0.01, # 0.001
+    'weight_decay': 0.0001,
+    'exploration_rate': 0.1,
+    'training_epochs': 10, # 5,
+    'max_updates_per_epoch': 100, # 1000000000
+    'eval_interval': 10,
+    'custom_weight_initialization': True,
+    'entropy_bonus_factor': 0.01,
+    'learning_every_x_iter': 5,
+    'per_learn_reward_normalization': False,
+    'normalization': {
+        "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
+        "REWARD_AMPLIFICATION_DEGREE": 2.0,
+        "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+        "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+        "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+        "ENABLE_POD_NORMALIZATION": True,
+        "ENABLE_REQUEST_NORMALIZATION": True,
+        "FEATURES_NORMALIZED": set(),
+        "NUM_FEATURES_NORMALIZED": 0,
+        "FEATURE_AMPLIFICATION": False,
+        "FEATURES_AMPLIFIED": set(),
+        "NUM_FEATURES_AMPLIFIED": 0,
+    },
+    'dataset_analysis': None,
+}
+
 
 # Global variables (simplified for offline use)
 ENCODED_DATA_DIR = "encoded_data"
@@ -125,7 +157,7 @@ def train_model(args):
             if args.model == "random_forest":
                 random_forest.train(ENCODED_DATA_DIR)
             elif args.model == "simpler_contextual_bandit":
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir, RL_MODEL_HYPERPARAMETERS)
             else:
                 logger.error(f"Unknown model type: {args.model}")
                 return False
@@ -186,7 +218,7 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         
         logger.debug(f"Original pod choice: {original_pod_choice}")
         if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
         processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance)
         
         # Encode data
@@ -207,7 +239,8 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         elif args.model == "simpler_contextual_bandit":
             result, _ = simpler_contextual_bandit.infer_from_tensor(
                 tensor_data=tensor_dataset, 
-                model_updated=MODEL_UPDATED
+                model_updated=MODEL_UPDATED,
+                HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
             )
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
@@ -275,10 +308,10 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
         processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
         processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
         stats_instance.write_stats_to_file(feature_normalization_stats_file)
-        processed_df = feature_normalization.try_reward_amplification(processed_df)
+        # processed_df = feature_normalization.try_reward_amplification(processed_df)
         
         # encoding
         ts_encode = time.time()

@@ -24,9 +24,14 @@ from logger import logger
 import preprocess
 import pickle
 import threading
+import ast
+import json
 import feature_normalization
 
 app = Flask(__name__)
+
+RL_MODEL_HYPERPARAMETERS = None
+hyperparameter_file_path = '/app/final_model/model_config.json'
 
 FLUSH_BATCH_ID = 0
 ENCODED_DATA_DIR = "encoded_data"
@@ -83,7 +88,7 @@ def handle_flush():
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         try:
             if stats_instance is None:
-                stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+                stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
         except Exception as e:
             logger.error(f"Could not load feature normalization stats: {e}")
             assert False
@@ -92,8 +97,8 @@ def handle_flush():
         processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
         stats_instance.write_stats_to_file(feature_normalization_stats_file)
 
-        # ===== SHARED REWARD ENGINEERING =====
-        processed_df = feature_normalization.try_reward_amplification(processed_df)
+        # # ===== SHARED REWARD ENGINEERING =====
+        # processed_df = feature_normalization.try_reward_amplification(processed_df)
         
         # Encode preprocessed data
         ts_encode = time.time()
@@ -117,7 +122,7 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance
+    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
         logger.info(f"First request starting time set to {first_request_starting_time}")
@@ -160,7 +165,7 @@ def handle_infer():
         # Get running statistics and apply normalization (SAME AS TRAINING)
         get_stat_start_time = time.time()
         if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file)
+            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
             assert False
@@ -177,7 +182,7 @@ def handle_infer():
 
         infer_from_tensor_start_time = time.time()
         if MODEL == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
         elif MODEL == "contextual_bandit":
             result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
         else:
@@ -237,14 +242,14 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, NUM_NEW_DATA
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, hyperparameter_file_path
 
     if  TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
         logger.info(f"online_train_routine, Starting {NUM_TRAINS}th online training iteration")
         try:
             if MODEL == "simpler_contextual_bandit":
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
             elif MODEL == "contextual_bandit":
                 contextual_bandit.train(ENCODED_DATA_DIR)
             else:
@@ -262,7 +267,70 @@ def online_train_routine():
         logger.info(f"online_train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
 
 
+def load_rl_hyperparameters(file_path):
+    if not os.path.exists(file_path):
+        logger.error(f"Hyperparameter file {file_path} does not exist")
+        assert False
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    
+    # Convert FEATURES_NORMALIZED from string representation of set to actual set
+    features_normalized_str = data['normalization']['FEATURES_NORMALIZED']
+    if features_normalized_str and features_normalized_str != "set()":
+        # Parse the string representation of the set
+        features_normalized = ast.literal_eval(features_normalized_str)
+    else:
+        features_normalized = set()
+    
+    # Convert FEATURES_AMPLIFIED from string representation of set to actual set
+    features_amplified_str = data['normalization']['FEATURES_AMPLIFIED']
+    if features_amplified_str and features_amplified_str != "set()":
+        features_amplified = ast.literal_eval(features_amplified_str)
+    else:
+        features_amplified = set()
+    
+    rl_model_hyperparameters = {
+        'model_type': data['model_type'],
+        'hidden_dim': data['hidden_dim'],
+        'batch_size': data['batch_size'],
+        'lr': data['lr'],
+        'weight_decay': data['weight_decay'],
+        'exploration_rate': data['exploration_rate'],
+        'training_epochs': data['training_epochs'],
+        'max_updates_per_epoch': data['max_updates_per_epoch'],
+        'eval_interval': data['eval_interval'],
+        'custom_weight_initialization': data['custom_weight_initialization'],
+        'entropy_bonus_factor': data['entropy_bonus_factor'],
+        'learning_every_x_iter': data['learning_every_x_iter'],
+        'per_learn_reward_normalization': data['per_learn_reward_normalization'],
+        'normalization': {
+            "SIGNAL_AMPLIFICATION_DEGREE": data['normalization']["SIGNAL_AMPLIFICATION_DEGREE"],
+            "REWARD_AMPLIFICATION_DEGREE": data['normalization']["REWARD_AMPLIFICATION_DEGREE"],
+            "REWARD_AMPLIFICATION_THRESHOLD": data['normalization']["REWARD_AMPLIFICATION_THRESHOLD"],
+            "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": data['normalization']["STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION"],
+            "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": data['normalization']["STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION"],
+            "ENABLE_POD_NORMALIZATION": data['normalization']["ENABLE_POD_NORMALIZATION"],
+            "ENABLE_REQUEST_NORMALIZATION": data['normalization']["ENABLE_REQUEST_NORMALIZATION"],
+            "FEATURES_NORMALIZED": features_normalized,
+            "NUM_FEATURES_NORMALIZED": data['normalization']["NUM_FEATURES_NORMALIZED"],
+            "FEATURE_AMPLIFICATION": data['normalization']["FEATURE_AMPLIFICATION"],
+            "FEATURES_AMPLIFIED": features_amplified,
+            "NUM_FEATURES_AMPLIFIED": data['normalization']["NUM_FEATURES_AMPLIFIED"],
+        },
+        'dataset_analysis': data['dataset_analysis'],
+    }
+    
+    return rl_model_hyperparameters
+
+def init():
+    global RL_MODEL_HYPERPARAMETERS
+    if RL_MODEL_HYPERPARAMETERS is None:
+        logger.info("Loading RL hyperparameters from model_config.json")
+        RL_MODEL_HYPERPARAMETERS = load_rl_hyperparameters(hyperparameter_file_path)
+
 if __name__ == "__main__":
+    init()
+
     port = int(os.environ.get("PORT", 8080))
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model
