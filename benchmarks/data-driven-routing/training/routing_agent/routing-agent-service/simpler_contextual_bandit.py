@@ -30,12 +30,16 @@ final_model_dir = "final_model"
 hyperparameters = {
         'hidden_dim': 32, # 256,
         'batch_size': 32,
-        'lr': 0.001,
+        'lr': 0.01, # 0.001
+        'weight_decay': 0.0001,
         'exploration_rate': 0.1,
-        'training_epochs': 5, # 10,
+        'training_epochs': 10, # 5,
         'max_updates_per_epoch': 100, # 1000000000
         'eval_interval': 10,
-        'custom_weight_initialization': True,  # Use custom weight initialization
+        'custom_weight_initialization': False,
+        'entropy_bonus_factor': 0.01,
+        'learning_every_x_iter': 5,
+        'per_learn_reward_normalization': False,
     }
 
 class FixedPolicyNetwork(nn.Module):
@@ -248,25 +252,20 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    def __init__(self, state_dim, action_dim, hidden_dim, lr, batch_size, exploration_rate, custom_weight_initialization):
-        self.batch_size = batch_size
-        self.exploration_rate = exploration_rate
+    def __init__(self, state_dim, action_dim, hyperparameters):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.lr = lr
-        self.weight_decay = 1e-4
+        self.hyperparameters = hyperparameters
         self.current_epoch = 0
         self.global_batch_counter = 0
         self.learn_call_counter = 0
-        self.custom_weight_initialization = custom_weight_initialization
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.policy = FixedPolicyNetwork(state_dim, action_dim, hidden_dim, custom_weight_initialization).to(device)
+        self.policy = FixedPolicyNetwork(state_dim, action_dim,  self.hyperparameters['hidden_dim'],  self.hyperparameters['custom_weight_initialization']).to(device)
 
         # Optimizer with weight decay for regularization
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, weight_decay=self.weight_decay)
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['lr'], weight_decay= self.hyperparameters['weight_decay'])
         
         # Learning rate scheduler
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5, verbose=True)
@@ -304,7 +303,7 @@ class SimplifiedContextualBandit:
                 # Exploration-exploitation during training
                 action, log_prob = self.policy.get_action(
                     pod_features, kv_hit_ratios, request_features, 
-                    explore=True, epsilon=self.exploration_rate
+                    explore=True, epsilon= self.hyperparameters['exploration_rate']
                 )
                 return action, log_prob
     
@@ -325,29 +324,44 @@ class SimplifiedContextualBandit:
         request_features = torch.cat(self.request_features, dim=0)
         actions = torch.cat(self.actions, dim=0)
         rewards = torch.cat(self.rewards, dim=0).view(-1, 1)
-        
-        # # Improved reward normalization with clipping
-        # if rewards.std() > 1e-6:
-        #     normalized_rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-        #     # Clip extreme values to prevent instability
-        #     normalized_rewards = torch.clamp(normalized_rewards, -3.0, 3.0)
-        # else:
-        #     # If rewards have no variance, use them as-is
-        normalized_rewards = rewards
+        if  self.hyperparameters['per_learn_reward_normalization']:
+            # Reward Normalization!
+            # NOTE: There is another normalization in train() function. Choose only one.
+            # Improved reward normalization with clipping
+            if rewards.std() > 1e-6:
+                normalized_rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+                # Clip extreme values to prevent instability
+                normalized_rewards = torch.clamp(normalized_rewards, -3.0, 3.0)
+                logger.info(f"NOTE: Rewards normalized: mean={normalized_rewards.mean():.3f}, std={normalized_rewards.std():.3f}")
+            else:
+                # If rewards have no variance, use them as-is
+                normalized_rewards = rewards
+        else:
+            normalized_rewards = rewards
         
         # Create batches
         n_samples = len(self.pod_features)
-        batch_size = min(self.batch_size, n_samples)
-        batch_start = np.arange(0, n_samples, batch_size)
+        batch_size = min( self.hyperparameters['batch_size'], n_samples)
+        batch_start = np.arange(0, n_samples,  self.hyperparameters['batch_size'])
         indices = np.arange(n_samples, dtype=np.int64)
-        np.random.shuffle(indices)
-        batches = [indices[i:i + batch_size] for i in batch_start]
+        # np.random.shuffle(indices) # By commenting this line, process Batches Sequentially (Not Randomly)
+        batches = [indices[i:i +  self.hyperparameters['batch_size']] for i in batch_start]
         
+        # if len(batches) > 1:
+        #     batches = batches[:1]  # Only process first batch
+        #     logger.info(f"Limiting to 1 batch update (was {len(batches)})")
+            
         logger.debug(f"Learn call #{self.learn_call_counter} (Epoch {self.current_epoch}): Processing {n_samples} samples in {len(batches)} batches")
         
         epoch_loss = 0
         epoch_entropy = 0
         num_updates = 0
+        
+        logger.info(f"="*60)
+        logger.info(f"LEARN CALL #{self.learn_call_counter}: {n_samples} samples → {len(batches)} batches")
+        
+        # ADD THIS: Track parameter changes
+        initial_param_snapshot = {name: param.clone().detach() for name, param in self.policy.named_parameters()}
         
         # Process each batch
         for local_batch_idx, batch_indices in enumerate(batches):
@@ -357,7 +371,10 @@ class SimplifiedContextualBandit:
             batch_request_features = request_features[batch_indices]
             batch_actions = actions[batch_indices]
             batch_rewards = normalized_rewards[batch_indices]
-            
+            # Per-batch Reward Normalization!
+            # # NOTE: per-batch reward normalization. There is another reward normalization in learn function. Choose only one of them.
+            # if batch_rewards.std() > 1e-6:
+            #     batch_rewards = (batch_rewards - batch_rewards.mean()) / (batch_rewards.std() + 1e-8)
             self.global_batch_counter += 1
             logger.debug(f"Epoch {self.current_epoch}, Learn call {self.learn_call_counter}, "
                         f"Local batch {local_batch_idx}, Global batch {self.global_batch_counter}: "
@@ -370,8 +387,9 @@ class SimplifiedContextualBandit:
 
             # Get current policy distributions
             action_probs = self.policy(batch_pod_features, batch_kv_hit_ratios, batch_request_features)
-            # ADD THIS:
-            pred_actions = torch.argmax(action_probs, dim=1)
+            
+            # # ADD THIS:
+            # pred_actions = torch.argmax(action_probs, dim=1)
             # logger.info(f"Batch {local_batch_idx}: model predictions {pred_actions[:10].cpu().numpy()}")
             # logger.info(f"Batch {local_batch_idx}: actual actions    {batch_actions[:10].cpu().numpy()}")
 
@@ -390,9 +408,10 @@ class SimplifiedContextualBandit:
             # Calculate loss (policy gradient with baseline)
             loss = -(log_probs * batch_rewards.squeeze()).mean()
             
-            # Add small entropy bonus to encourage exploration
+            ## Higher entropy means action probabilites are more uniform, and model is uncertain about its actions.
+            ## entropy_bonus_factor encourages exploration and prevent the policy from converging too early to a suboptimal solution.
             # entropy_bonus = 0.01 * entropy
-            entropy_bonus = 0.1 * entropy  # 10x stronger!
+            entropy_bonus =  self.hyperparameters['entropy_bonus_factor'] * entropy  # 10x stronger!
             total_loss = loss - entropy_bonus
 
             logger.info(f"[Epoch {self.current_epoch:2d}] [Global Batch Idx {self.global_batch_counter:4d}] "
@@ -408,16 +427,28 @@ class SimplifiedContextualBandit:
             
             self.optimizer.step()
             
+
+            max_param_change = 0
+            for name, param in self.policy.named_parameters():
+                param_change = (param - initial_param_snapshot[name]).abs().max().item()
+                max_param_change = max(max_param_change, param_change)
+            logger.info(f"    → Max param change: {max_param_change:.6f}")
+            for name, param in self.policy.named_parameters():
+                initial_param_snapshot[name] = param.clone().detach()
+
+
             # Track metrics
             epoch_loss += total_loss.item()
             epoch_entropy += entropy.item()
             num_updates += 1
-        
+
+        logger.info(f"="*60)
+
         # Update learning rate based on loss
         avg_loss = epoch_loss / max(1, num_updates)
         self.scheduler.step(avg_loss)
         
-        # Clear memory
+        # Clear memory.
         self.clear_memory()
         
         # Store metrics
@@ -1710,14 +1741,16 @@ def train(encoded_data_dir, model_output_dir):
     agent = SimplifiedContextualBandit(
         state_dim=state_dim,
         action_dim=action_dim,
-        hidden_dim=hyperparameters['hidden_dim'],
-        batch_size=hyperparameters['batch_size'],
-        lr=hyperparameters['lr'],
-        exploration_rate=hyperparameters['exploration_rate'],
+        hyperparameters=hyperparameters,
+        # hidden_dim=hyperparameters['hidden_dim'],
+        # batch_size=hyperparameters['batch_size'],
+        # lr=hyperparameters['lr'],
+        # exploration_rate=hyperparameters['exploration_rate'],
         # training_epochs=hyperparameters['training_epochs'],
         # max_updates_per_epoch=hyperparameters['max_updates_per_epoch'],
         # eval_interval=hyperparameters['eval_interval'],
-        custom_weight_initialization = hyperparameters['custom_weight_initialization'],
+        # custom_weight_initialization = hyperparameters['custom_weight_initialization'],
+        # entropy_bonus_factor = hyperparameters['entropy_bonus_factor'],
     )
 
     ##############################################
@@ -1755,6 +1788,10 @@ def train(encoded_data_dir, model_output_dir):
         'model_type': 'simplified',
         'dataset_analysis': dataset_analysis
     }
+    for k, v in hyperparameters.items():
+        if k not in config:
+            config[k] = v
+
     # Save configuration
     with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
         json.dump(config, f, indent=4, default=str)
@@ -1767,7 +1804,7 @@ def train(encoded_data_dir, model_output_dir):
         dataset, 
         batch_size=config['batch_size'], 
         shuffle=True,
-        generator=torch.Generator().manual_seed(seed),
+        # generator=torch.Generator().manual_seed(seed), # If this is true, DataLoader will serve data in a fixed pattern even if shuffle is True. Then, it will lead to not convering policy entropy. it sees the same data in the same order every time.
     )
     number_of_batches = len(dataloader)
     
@@ -1778,7 +1815,10 @@ def train(encoded_data_dir, model_output_dir):
     eval_metrics = []
     best_accuracy = 0.0
     
-    for epoch in range(hyperparameters['training_epochs']):  # Use adjusted epochs
+    for epoch in range(hyperparameters['training_epochs']):
+        logger.info(f"=" * 80)
+        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']}")
+        logger.info(f"=" * 80)
         agent.current_epoch = epoch
         epoch_start_time = time.time()
         epoch_loss = 0
@@ -1789,17 +1829,18 @@ def train(encoded_data_dir, model_output_dir):
         dataloader_iter = iter(dataloader)
         num_iter_per_data = 1
         total_iter = number_of_batches * num_iter_per_data
-        final_total_num_iteration = min(config['max_updates_per_epoch'], total_iter)
+        # final_total_num_iteration_per_epoch = min(config['max_updates_per_epoch'], total_iter)
+        final_total_num_iteration_per_epoch = len(dataloader)
         logger.info(f"=" * 80)
-        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']} - Processing final_total_num_iteration: {final_total_num_iteration} iterations")
+        logger.info(f"EPOCH {epoch+1}/{hyperparameters['training_epochs']} - Processing final_total_num_iteration_per_epoch: {final_total_num_iteration_per_epoch} iterations")
         logger.info(f"=" * 80)        
 
-        for batch_iter_idx in range(final_total_num_iteration):
-            try:
-                batch = next(dataloader_iter)
-            except StopIteration:
-                dataloader_iter = iter(dataloader)
-                batch = next(dataloader_iter)
+        for batch_iter_idx in range(final_total_num_iteration_per_epoch):
+            # try:
+            batch = next(dataloader_iter)
+            # except StopIteration:
+            #     dataloader_iter = iter(dataloader)
+            #     batch = next(dataloader_iter)
             
             pod_features = batch['pod_features'].to(device)
             kv_hit_ratios = batch['kv_hit_ratios'].to(device)
@@ -1816,20 +1857,22 @@ def train(encoded_data_dir, model_output_dir):
                     rewards[j:j+1]
                 )
             
-            if len(agent.pod_features) > 0:
-                try:
-                    update_metrics = agent.learn()
-                    total_updates += 1
-                    epoch_updates += 1
-                    epoch_loss += update_metrics['loss']
-                    epoch_reward += update_metrics['reward']
-                    epoch_entropy += update_metrics['entropy']
-                    if batch_iter_idx % max(1, final_total_num_iteration//3) == 0:
-                        logger.info(f"Batch: {batch_iter_idx+1}/{final_total_num_iteration}, Loss: {update_metrics['loss']:.4f}")
-                except Exception as e:
-                    logger.error(f"Error during learning: {e}")
+            trigger_learning = (batch_iter_idx+1) % hyperparameters['learning_every_x_iter'] == 0 or batch_iter_idx == final_total_num_iteration_per_epoch - 1
+            if trigger_learning:
+                if len(agent.pod_features) > 0:
+                    try:
+                        update_metrics = agent.learn()
+                        total_updates += 1
+                        epoch_updates += 1
+                        epoch_loss += update_metrics['loss']
+                        epoch_reward += update_metrics['reward']
+                        epoch_entropy += update_metrics['entropy']
+                        if batch_iter_idx % max(1, final_total_num_iteration_per_epoch//3) == 0:
+                            logger.info(f"Batch: {batch_iter_idx+1}/{final_total_num_iteration_per_epoch}, Loss: {update_metrics['loss']:.4f}")
+                    except Exception as e:
+                        logger.error(f"Error during learning: {e}")
         
-            if (batch_iter_idx + 1) % max(1, final_total_num_iteration // config['eval_interval']) == 0:
+            if (batch_iter_idx + 1) % max(1, final_total_num_iteration_per_epoch // config['eval_interval']) == 0:
                 logger.info(f"Evaluating agent at batch {batch_iter_idx+1}")
                 try:
                     eval_indices = torch.randperm(len(dataset))[:min(200, len(dataset))]
@@ -1982,11 +2025,7 @@ def infer_from_tensor(tensor_data, model_updated=False):
         agent = SimplifiedContextualBandit(
             state_dim=state_dim,
             action_dim=action_dim,
-            hidden_dim=hyperparameters['hidden_dim'],
-            lr=hyperparameters['lr'],
-            batch_size=hyperparameters['batch_size'],
-            exploration_rate=hyperparameters['exploration_rate'],
-            custom_weight_initialization=hyperparameters['custom_weight_initialization'],
+            hyperparameters=hyperparameters,
         )
         
         _cached_agent = agent
