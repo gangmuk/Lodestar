@@ -365,8 +365,8 @@ def create_new_empty_instance() -> PerFeatureRunningStats:
 
 def get_stats_instance(feature_normalization_stats_file):
     if os.path.exists(feature_normalization_stats_file):
-        logger.info(f"Creating feature normalization stats instance from {feature_normalization_stats_file}")
+        logger.info(f"Creating new stats instance from {feature_normalization_stats_file}")
         return create_new_instance_with_stats_file(feature_normalization_stats_file)
     else:
-        logger.info(f"{feature_normalization_stats_file} does not exist. Creating new empty feature normalization stats instance")
+        logger.info(f"{feature_normalization_stats_file} does not exist. Creating new stats instance empty one!")
         return create_new_empty_instance()
