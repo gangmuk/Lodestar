@@ -11,16 +11,8 @@ from logger import logger
 from typing import Tuple
 import os
 import json
-
-CONFIG = {
-    "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
-    "REWARD_AMPLIFICATION_DEGREE": 2.0,
-    "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
-    "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1, # 0.1 or 10?
-    "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1, # 0.1 or 10?
-    "ENABLE_POD_NORMALIZATION": True,
-    "ENABLE_REQUEST_NORMALIZATION": True,
-}
+from simpler_contextual_bandit import hyperparameters
+CONFIG = hyperparameters['normalization']
 
 class RunningStats:
     """Maintains running mean and standard deviation for feature normalization"""
@@ -131,10 +123,10 @@ class PerFeatureRunningStats:
             for feature_name, stats in self.feature_stats.items():
                 f.write(f"{feature_name}: count={stats.count}, mean={stats.mean}, var={stats.var}\n")
         
-        # Write CONFIG to json file
-        config_file = feature_normalization_stats_file.replace('.pkl', '_config.json')
-        with open(config_file, 'w') as f:
-            json.dump(CONFIG, f, indent=4)
+        # # Write config to json file
+        # config_file = feature_normalization_stats_file.replace('.pkl', '_config.json')
+        # with open(config_file, 'w') as f:
+        #     json.dump(CONFIG, f, indent=4)
     
     @classmethod
     def create_new_empty_instance(cls):

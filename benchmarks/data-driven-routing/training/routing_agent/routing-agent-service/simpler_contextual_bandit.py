@@ -40,6 +40,15 @@ hyperparameters = {
         'entropy_bonus_factor': 0.01,
         'learning_every_x_iter': 5,
         'per_learn_reward_normalization': False,
+        'normalization': {
+            "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
+            "REWARD_AMPLIFICATION_DEGREE": 2.0,
+            "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+            "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+            "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+            "ENABLE_POD_NORMALIZATION": True,
+            "ENABLE_REQUEST_NORMALIZATION": True,
+        }
     }
 
 class FixedPolicyNetwork(nn.Module):
