@@ -1978,48 +1978,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     if len(request_features.shape) == 1:
         request_features = request_features.unsqueeze(0)
 
-
-    num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
-    gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
-    num_numeric_pod_features = 7  # Your base numeric pod features
-    expected_pod_features = num_numeric_pod_features + gpu_onehot_dim
-    expected_per_pod_features = expected_pod_features + 1  # +1 for KV hit ratio
-    expected_request_features = 3  # input_tokens, output_tokens, total_tokens
-    expected_input_dim = expected_per_pod_features + expected_request_features
-
-    # Calculate actual dimensions
-    actual_pod_features = pod_features.shape[2]
-    actual_kv_features = kv_hit_ratios.shape[2] 
-    actual_request_features = request_features.shape[1]
-    actual_input_dim = actual_pod_features + actual_kv_features + actual_request_features
-
-    if actual_input_dim != expected_input_dim:
-        logger.error(f"Dimension mismatch!")
-        logger.error(f"Expected: {expected_input_dim} (pod:{expected_pod_features} + kv:1 + req:{expected_request_features})")
-        logger.error(f"Actual: {actual_input_dim} (pod:{actual_pod_features} + kv:{actual_kv_features} + req:{actual_request_features})")
-        logger.error(f"GPU types: {num_gpu_types}, GPU one-hot dim: {gpu_onehot_dim}")
-        logger.error("Need to retrain model with new feature dimensions")
-        assert False, "Architecture mismatch - cannot use pretrained model"
-    
-    logger.info("🔍 INPUT DIMENSION CHECK:")
-    logger.info(f"  pod_features shape: {pod_features.shape}")
-    logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")  
-    logger.info(f"  request_features shape: {request_features.shape}")
-
-    # Calculate expected input size for the model
-    batch_size = pod_features.shape[0]
-    num_pods = pod_features.shape[1]
-    expected_per_pod_input = pod_features.shape[2] + kv_hit_ratios.shape[2] + request_features.shape[1]
-
-    logger.info(f"  Expected per-pod input size: {expected_per_pod_input}")
-    logger.info(f"  Model was designed for per-pod input size: {agent.policy.pod_scorer[0].in_features}")
-
-    if expected_per_pod_input != agent.policy.pod_scorer[0].in_features:
-        logger.error(f"❌ INPUT DIMENSION MISMATCH!")
-        logger.error(f"   Data provides: {expected_per_pod_input} features per pod")
-        logger.error(f"   Model expects: {agent.policy.pod_scorer[0].in_features} features per pod") 
-        assert False, f"Input dimension mismatch: {expected_per_pod_input} vs {agent.policy.pod_scorer[0].in_features}"
-
     # Cache agent instance
     current_config = {
         'pod_features': pod_features.shape[2],
@@ -2066,6 +2024,61 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         agent.policy.eval()
         logger.info("Loaded model weights from disk")
 
+
+    #================================================================
+    num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
+    gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
+    num_numeric_pod_features = 7  # Your base numeric pod features
+    expected_pod_features = num_numeric_pod_features + gpu_onehot_dim
+    expected_per_pod_features = expected_pod_features + 1  # +1 for KV hit ratio
+    expected_request_features = 3  # input_tokens, output_tokens, total_tokens
+    expected_input_dim = expected_per_pod_features + expected_request_features
+
+    # Calculate actual dimensions
+    actual_pod_features = pod_features.shape[2]
+    actual_kv_features = kv_hit_ratios.shape[2] 
+    actual_request_features = request_features.shape[1]
+    actual_input_dim = actual_pod_features + actual_kv_features + actual_request_features
+
+    if actual_input_dim != expected_input_dim:
+        logger.error(f"Dimension mismatch!")
+        logger.error(f"Expected: {expected_input_dim} (pod:{expected_pod_features} + kv:1 + req:{expected_request_features})")
+        logger.error(f"Actual: {actual_input_dim} (pod:{actual_pod_features} + kv:{actual_kv_features} + req:{actual_request_features})")
+        logger.error(f"GPU types: {num_gpu_types}, GPU one-hot dim: {gpu_onehot_dim}")
+        logger.error("Need to retrain model with new feature dimensions")
+        assert False, "Architecture mismatch - cannot use pretrained model"
+    
+    logger.info("🔍 INPUT DIMENSION CHECK:")
+    logger.info(f"  pod_features shape: {pod_features.shape}")
+    logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")  
+    logger.info(f"  request_features shape: {request_features.shape}")
+
+    # Calculate expected input size for the model
+    batch_size = pod_features.shape[0]
+    num_pods = pod_features.shape[1]
+    expected_per_pod_input = pod_features.shape[2] + kv_hit_ratios.shape[2] + request_features.shape[1]
+
+    logger.info(f"  Expected per-pod input size: {expected_per_pod_input}")
+    logger.info(f"  Model was designed for per-pod input size: {agent.policy.pod_scorer[0].in_features}")
+
+    if expected_per_pod_input != agent.policy.pod_scorer[0].in_features:
+        logger.error(f"❌ INPUT DIMENSION MISMATCH!")
+        logger.error(f"   Data provides: {expected_per_pod_input} features per pod")
+        logger.error(f"   Model expects: {agent.policy.pod_scorer[0].in_features} features per pod") 
+        assert False, f"Input dimension mismatch: {expected_per_pod_input} vs {agent.policy.pod_scorer[0].in_features}"
+
+    logger.info("🔍 FEATURE VALUE ANALYSIS:")
+    logger.info(f"  Pod features stats: min={pod_features.min():.4f}, max={pod_features.max():.4f}, mean={pod_features.mean():.4f}")
+    logger.info(f"  KV ratios stats: min={kv_hit_ratios.min():.4f}, max={kv_hit_ratios.max():.4f}, mean={kv_hit_ratios.mean():.4f}")
+    logger.info(f"  Request features stats: min={request_features.min():.4f}, max={request_features.max():.4f}, mean={request_features.mean():.4f}")
+
+    # Check for unusual values
+    if torch.isnan(pod_features).any():
+        logger.error("❌ NaN values found in pod_features!")
+    if torch.isinf(pod_features).any():
+        logger.error("❌ Infinity values found in pod_features!")
+    #================================================================
+
     # Run inference
     agent.policy.eval()
     with torch.no_grad():
@@ -2088,6 +2101,85 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
             confidence = action_probs[0, selected_action].item()
 
     total_inference_time = time.time() - infer_start_time
+
+    logger.info("🔍 GRADIENT ANALYSIS:")
+    try:
+        # Re-create the forward pass with gradients enabled
+        pod_features_grad = pod_features.clone().detach().requires_grad_(True)
+        kv_hit_ratios_grad = kv_hit_ratios.clone().detach().requires_grad_(True)
+        request_features_grad = request_features.clone().detach().requires_grad_(True)
+        
+        # Forward pass with gradients
+        combined_pod_features = torch.cat([pod_features_grad, kv_hit_ratios_grad], dim=2)
+        expanded_request = request_features_grad.unsqueeze(1).expand(-1, pod_features.shape[1], -1)
+        full_features = torch.cat([combined_pod_features, expanded_request], dim=2)
+        reshaped_features = full_features.view(pod_features.shape[0] * pod_features.shape[1], -1)
+        
+        raw_scores = agent.policy.pod_scorer(reshaped_features)
+        raw_scores = raw_scores.view(pod_features.shape[0], pod_features.shape[1])
+        
+        # Get gradient for the selected action
+        selected_score = raw_scores[0, selected_action]
+        selected_score.backward()
+        
+        # Analyze GPU feature gradients (assuming GPU feature is at position 7)
+        gpu_gradient = pod_features_grad.grad[:, :, 7]  # GPU feature gradients
+        logger.info(f"🔍 GPU FEATURE GRADIENTS: {gpu_gradient[0].cpu().numpy()}")
+        logger.info(f"GPU gradient magnitude: {gpu_gradient.abs().mean().item():.6f}")
+        
+        # Also check gradients for other features for comparison
+        other_gradients = pod_features_grad.grad[:, :, :7]  # First 7 features
+        logger.info(f"Other features gradient magnitude: {other_gradients.abs().mean().item():.6f}")
+        
+    except Exception as e:
+        logger.error(f"Error in gradient analysis: {e}")
+
+    # In infer_from_tensor(), after the model forward pass but before returning results:
+
+    logger.info("🔍 MODEL BEHAVIOR ANALYSIS:")
+    with torch.no_grad():
+        # Get raw scores before softmax
+        combined_pod_features = torch.cat([pod_features, kv_hit_ratios], dim=2)
+        expanded_request = request_features.unsqueeze(1).expand(-1, pod_features.shape[1], -1)
+        full_features = torch.cat([combined_pod_features, expanded_request], dim=2)
+        reshaped_features = full_features.view(pod_features.shape[0] * pod_features.shape[1], -1)
+        
+        raw_scores = agent.policy.pod_scorer(reshaped_features)
+        raw_scores = raw_scores.view(pod_features.shape[0], pod_features.shape[1])
+        
+        logger.info(f"  Raw scores (before softmax): {raw_scores[0].cpu().numpy()}")
+        logger.info(f"  Raw score range: [{raw_scores.min().item():.4f}, {raw_scores.max().item():.4f}]")
+        logger.info(f"  Raw score spread: {(raw_scores.max() - raw_scores.min()).item():.4f}")
+        
+        # Check if scores are extreme
+        score_range = raw_scores.max().item() - raw_scores.min().item()
+        if score_range > 10:
+            logger.warning(f"⚠️  EXTREME RAW SCORES! Range: {score_range:.4f}")
+            logger.warning("This will cause overconfident probabilities after softmax")
+        
+        logger.info(f"  Final probabilities: {action_probs[0].cpu().numpy()}")
+        logger.info(f"  Selected action: {selected_action}, confidence: {confidence:.4f}")
+
+    # In infer_from_tensor(), after getting raw scores:
+    with torch.no_grad():
+        # Get raw scores WITH GPU feature (current)
+        raw_scores_with_gpu = raw_scores.clone()
+        
+        # Now test WITHOUT GPU feature by zeroing it out
+        modified_features = full_features.clone()
+        # Zero out the GPU feature column (position 7 in pod features)
+        modified_features[:, :, 7] = 0.0  # Assuming GPU is at position 7
+        
+        modified_reshaped = modified_features.view(batch_size * num_pods, -1)
+        raw_scores_without_gpu = agent.policy.pod_scorer(modified_reshaped)
+        raw_scores_without_gpu = raw_scores_without_gpu.view(batch_size, num_pods)
+        
+        score_difference = raw_scores_with_gpu - raw_scores_without_gpu
+        logger.info(f"🔍 GPU FEATURE IMPACT ANALYSIS:")
+        logger.info(f"  Scores WITH GPU:    {raw_scores_with_gpu[0].cpu().numpy()}")
+        logger.info(f"  Scores WITHOUT GPU: {raw_scores_without_gpu[0].cpu().numpy()}")
+        logger.info(f"  Difference:         {score_difference[0].cpu().numpy()}")
+        logger.info(f"  Max impact:         {score_difference.abs().max().item():.4f}")
     
     # Return inference results
     results = {
