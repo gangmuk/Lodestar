@@ -48,6 +48,13 @@ RL_MODEL_HYPERPARAMETERS = {
         "NUM_FEATURES_AMPLIFIED": 0,
     },
     'dataset_analysis': None,
+    'GPU_MAP': {
+        'NVIDIA-L20': 0,
+        'NVIDIA-L40': 1,
+        'NVIDIA-A10': 2,
+        'NVIDIA-A100': 3,
+        'NVIDIA-H100': 4,
+    }
 }
 
 
@@ -197,7 +204,7 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         # Debug: show what we're passing to preprocess
         logger.debug(f"Calling preprocess.main(None, log_message, {args.ttft_slo}, {args.avg_tpot_slo})")
         
-        processed_df, _, all_pods, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo)
+        processed_df, _, all_pods, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
         logger.debug(f"Successfully parsed data for inference")
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
@@ -223,7 +230,9 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         
         # Encode data
         encode_start_time = time.time()
-        tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, request_features_train)
+        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
@@ -305,7 +314,7 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
 
         # Preprocess raw data
         ts_preprocess = time.time()
-        processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo)
+        processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         if stats_instance is None:
             stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
@@ -316,7 +325,9 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
         # encoding
         ts_encode = time.time()
         encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
-        encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train)
+        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
         # Verify encoded data
@@ -337,6 +348,67 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
         logger.error(f"Traceback: {error_traceback}")
         return False
 
+def fetch_pod_gpu_mapping():
+    """
+    Fetch GPU model for each pod in the llama-3-8b-instruct deployment
+    Returns a dictionary mapping pod_ip -> gpu_model
+    """
+    try:
+        from kubernetes import client, config
+        
+        # Try local config first (for running outside cluster)
+        try:
+            config.load_kube_config()
+            logger.info("Loaded local kubeconfig for Kubernetes access")
+        except:
+            # Fallback to in-cluster config (for running inside cluster)
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster config for Kubernetes access")
+        
+        v1 = client.CoreV1Api()
+        
+        # Get all pods with the label selector for llama-3-8b-instruct
+        label_selector = "model.aibrix.ai/name=llama-3-8b-instruct"
+        pods = v1.list_pod_for_all_namespaces(label_selector=label_selector)
+        
+        pod_gpu_mapping = {}
+        
+        for pod in pods.items:
+            if pod.status.phase == "Running" and pod.status.pod_ip:
+                pod_ip = pod.status.pod_ip
+                
+                # Get the node name where this pod is running
+                node_name = pod.spec.node_name
+                
+                if node_name:
+                    # Get node details to extract GPU model
+                    try:
+                        node = v1.read_node(name=node_name)
+                        node_labels = node.metadata.labels or {}
+                        
+                        # Extract GPU model from node label
+                        gpu_model = node_labels.get('machine.cluster.vke.volcengine.com/gpu-name', 'unknown')
+                        pod_gpu_mapping[pod_ip] = gpu_model
+                        
+                        logger.info(f"Pod {pod.metadata.name} (IP: {pod_ip}) -> GPU: {gpu_model}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to get node info for {node_name}: {e}")
+                        pod_gpu_mapping[pod_ip] = 'unknown'
+                else:
+                    logger.warning(f"Pod {pod.metadata.name} has no node assignment")
+                    pod_gpu_mapping[pod_ip] = 'unknown'
+        
+        logger.info(f"Successfully fetched GPU mapping for {len(pod_gpu_mapping)} pods")
+        return pod_gpu_mapping
+        
+    except ImportError:
+        logger.error("kubernetes package not installed. Install with: pip install kubernetes")
+        assert False
+    except Exception as e:
+        logger.error(f"Failed to fetch pod GPU mapping: {e}")
+        assert False
+
 def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
@@ -352,7 +424,37 @@ def main():
     # Check if data file exists
     if not os.path.exists(args.data_file):
         logger.error(f"Data file {args.data_file} not found")
-        return
+        assert False
+
+
+    logger.info("=== INITIALIZING GPU MAPPING ===")
+    try:
+        pod_gpu_mapping = fetch_pod_gpu_mapping()
+        if pod_gpu_mapping:
+            # Create GPU model to ID mapping
+            unique_gpus = list(set(pod_gpu_mapping.values()))
+            gpu_name_to_id = {gpu_name: idx for idx, gpu_name in enumerate(unique_gpus)}
+            
+            # Create direct pod_ip -> gpu_model_id mapping
+            pod_gpu_id_mapping = {pod_ip: gpu_name_to_id[gpu_name] 
+                                for pod_ip, gpu_name in pod_gpu_mapping.items()}
+            
+            # Update RL_MODEL_HYPERPARAMETERS with actual GPU mapping
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = pod_gpu_mapping
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+            RL_MODEL_HYPERPARAMETERS['GPU_MAP'] = gpu_name_to_id
+            
+            logger.info(f"GPU name to ID mapping: {gpu_name_to_id}")
+            logger.info(f"Created direct pod IP to GPU ID mapping for {len(pod_gpu_id_mapping)} pods")
+        else:
+            logger.warning("No pod GPU mapping available, using default GPU_MAP from hyperparameters")
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = {}
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = {}
+            # Keep existing GPU_MAP from hyperparameters
+            
+    except Exception as e:
+        logger.error(f"Failed to initialize GPU mapping: {e}")
+        assert False
 
     # Handle data splitting
     logger.info("=== SPLITTING DATA ===")

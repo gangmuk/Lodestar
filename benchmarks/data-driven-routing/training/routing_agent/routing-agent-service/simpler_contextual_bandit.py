@@ -488,7 +488,35 @@ class SimplifiedContextualBandit:
         # Load policy network
         policy_path = os.path.join(directory, 'policy.pth')
         if os.path.exists(policy_path):
-            self.policy.load_state_dict(torch.load(policy_path, map_location=device))
+            logger.info(f"🔍 DIMENSION CHECK: Loading model from {policy_path}")
+            
+            # Load the state dict
+            saved_state_dict = torch.load(policy_path, map_location=device)
+            
+            # Check dimensions of the first layer (most likely to have mismatch)
+            current_model_dict = self.policy.state_dict()
+            
+            logger.info("🔍 COMPARING MODEL DIMENSIONS:")
+            for key in saved_state_dict.keys():
+                if key in current_model_dict:
+                    saved_shape = saved_state_dict[key].shape
+                    current_shape = current_model_dict[key].shape
+                    
+                    logger.info(f"  Layer {key}:")
+                    logger.info(f"    Saved model:   {saved_shape}")
+                    logger.info(f"    Current model: {current_shape}")
+                    
+                    if saved_shape != current_shape:
+                        logger.error(f"❌ DIMENSION MISMATCH in layer {key}!")
+                        logger.error(f"   Saved: {saved_shape}, Current: {current_shape}")
+                        logger.error(f"   This will cause silent failures and wrong behavior!")
+                        assert False, f"Model architecture mismatch in layer {key}: saved {saved_shape} vs current {current_shape}"
+            
+            # If we get here, dimensions match
+            logger.info("✅ All layer dimensions match - safe to load")
+            self.policy.load_state_dict(saved_state_dict)
+        else:
+            logger.warning(f"No policy file found at {policy_path}")
         
         # Load optimizer state if available
         optimizer_path = os.path.join(directory, 'optimizer.pth')
@@ -1191,6 +1219,8 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
         confidences = [m.get('avg_confidence', 0) for m in eval_metrics]
         
         plt.scatter(confidences, accuracies, alpha=0.6, s=50)
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
         plt.title('Accuracy vs Confidence')
         plt.xlabel('Average Confidence')
         plt.ylabel('Accuracy')
@@ -1738,6 +1768,10 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
     action_dim = combined_data['pod_features'].shape[1]    
     logger.info(f"State dimensions: {state_dim}")
     logger.info(f"Action dimension: {action_dim}")
+
+    logger.info(f"State dimensions (should show GPU moved from request to pod features):")
+    logger.info(f"  pod_features: {state_dim['pod_features']} (should be ~11, was ~7)")
+    logger.info(f"  request_features: {state_dim['request_features']} (should be 3, was ~7)")
     
     # Create Simplified Contextual Bandit agent
     agent = SimplifiedContextualBandit(
@@ -1928,30 +1962,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
     
     infer_start_time = time.time()
-    
-    # # NOTE: _cached_metadata is not being used in simpler_contextual_bandit.pys
-    # if _cached_metadata is None:
-    #     logger.info("Loading feature metadata into cache...")
-    #     _cached_metadata = {
-    #         'metadata': None,
-    #         'pod_features_list': None,
-    #         'feature_indices_map': None
-    #     }
-        
-    #     try:
-    #         if os.path.exists("metadata.json"):
-    #             with open(f"metadata.json", 'r') as f:
-    #                 _cached_metadata['metadata'] = json.load(f)
-    #         if os.path.exists("pod_features_list.pkl"):
-    #             with open(f"pod_features_list.pkl", 'rb') as f:
-    #                 _cached_metadata['pod_features_list'] = pickle.load(f)
-    #         if os.path.exists("feature_indices_map.pkl"):
-    #             with open(f"feature_indices_map.pkl", 'rb') as f:
-    #                 _cached_metadata['feature_indices_map'] = pickle.load(f)
-    #     except Exception as e:
-    #         logger.error(f"Error loading feature metadata: {e}")
-
-    # Extract data from tensor dataset and move to device
     try:
         pod_features = tensor_data['pod_features_with_staleness'].to(device)
         kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
@@ -1967,6 +1977,48 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         kv_hit_ratios = kv_hit_ratios.unsqueeze(0)
     if len(request_features.shape) == 1:
         request_features = request_features.unsqueeze(0)
+
+
+    num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
+    gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
+    num_numeric_pod_features = 7  # Your base numeric pod features
+    expected_pod_features = num_numeric_pod_features + gpu_onehot_dim
+    expected_per_pod_features = expected_pod_features + 1  # +1 for KV hit ratio
+    expected_request_features = 3  # input_tokens, output_tokens, total_tokens
+    expected_input_dim = expected_per_pod_features + expected_request_features
+
+    # Calculate actual dimensions
+    actual_pod_features = pod_features.shape[2]
+    actual_kv_features = kv_hit_ratios.shape[2] 
+    actual_request_features = request_features.shape[1]
+    actual_input_dim = actual_pod_features + actual_kv_features + actual_request_features
+
+    if actual_input_dim != expected_input_dim:
+        logger.error(f"Dimension mismatch!")
+        logger.error(f"Expected: {expected_input_dim} (pod:{expected_pod_features} + kv:1 + req:{expected_request_features})")
+        logger.error(f"Actual: {actual_input_dim} (pod:{actual_pod_features} + kv:{actual_kv_features} + req:{actual_request_features})")
+        logger.error(f"GPU types: {num_gpu_types}, GPU one-hot dim: {gpu_onehot_dim}")
+        logger.error("Need to retrain model with new feature dimensions")
+        assert False, "Architecture mismatch - cannot use pretrained model"
+    
+    logger.info("🔍 INPUT DIMENSION CHECK:")
+    logger.info(f"  pod_features shape: {pod_features.shape}")
+    logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")  
+    logger.info(f"  request_features shape: {request_features.shape}")
+
+    # Calculate expected input size for the model
+    batch_size = pod_features.shape[0]
+    num_pods = pod_features.shape[1]
+    expected_per_pod_input = pod_features.shape[2] + kv_hit_ratios.shape[2] + request_features.shape[1]
+
+    logger.info(f"  Expected per-pod input size: {expected_per_pod_input}")
+    logger.info(f"  Model was designed for per-pod input size: {agent.policy.pod_scorer[0].in_features}")
+
+    if expected_per_pod_input != agent.policy.pod_scorer[0].in_features:
+        logger.error(f"❌ INPUT DIMENSION MISMATCH!")
+        logger.error(f"   Data provides: {expected_per_pod_input} features per pod")
+        logger.error(f"   Model expects: {agent.policy.pod_scorer[0].in_features} features per pod") 
+        assert False, f"Input dimension mismatch: {expected_per_pod_input} vs {agent.policy.pod_scorer[0].in_features}"
 
     # Cache agent instance
     current_config = {
