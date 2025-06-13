@@ -173,7 +173,7 @@ def extract_key_pod_metrics(pod_metrics, pod_id):
 
 
 ## new
-def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
+def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
     # Pre-parse all JSON columns once to avoid repeated parsing
     logger.info("Pre-parsing JSON columns...")
     json_columns = [
@@ -231,7 +231,8 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
         'vllmNumRequestsWaiting',
         'podMetricsLastSecond', 
         'numPrefillTokensForAllPods',
-        'numDecodeTokensForAllPods'
+        'numDecodeTokensForAllPods',
+        # 'GPU_model',
     ]
 
     expected_last_second_pod_metrics_keys = [
@@ -254,10 +255,25 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
         'last_second_total_requests', 
         'last_second_total_decode_tokens', 
         'last_second_total_prefill_tokens', 
-        'last_second_total_tokens'
+        'last_second_total_tokens',
     ]
-    
+
     column_check_start_time = time.time()
+
+    # Encode GPU model using hyperparameters GPU_MAP
+    gpu_mapping = HYPERPARAMS['pod_gpu_id_mapping']  # Will crash if missing
+    df['gpu_model_encoded'] = df['selectedpod'].map(gpu_mapping)
+    unmapped_pods = df[df['gpu_model_encoded'].isna()]['selectedpod'].unique()
+    if len(unmapped_pods) > 0:
+        logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
+        logger.error(f"Available pod mappings: {list(gpu_mapping.keys())}")
+        assert False, f"Unmapped GPU models found for pods: {unmapped_pods}"
+
+    df['gpu_model_encoded'] = df['gpu_model_encoded'].astype(int)
+
+    logger.info("Encoded GPU model using hyperparameters GPU_MAP.")
+    # -1 for unknown GPU models
+    
     # Check for missing expected columns
     missing_columns = [col for col in expected_columns if col not in df.columns]
     if missing_columns:
@@ -354,6 +370,7 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo):
         'ttft': df['ttft'].values,
         'avg_tpot': df['avg_tpot'].values,
         'e2e_latency': df['e2e'].values,
+        'gpu_model_encoded': df['gpu_model_encoded'].values,  # ADD THIS
     }
     
     # Pre-extract all JSON data to avoid repeated parsing
@@ -541,7 +558,7 @@ def parse_log_message(log_message):
     else:
         return pd.DataFrame(), []
 
-def preprocess_single_row_fast(df, log_message):
+def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
     """
     Ultra-fast preprocessing for single row (inference workload)
     Avoids most DataFrame operations by working with dictionaries
@@ -560,6 +577,15 @@ def preprocess_single_row_fast(df, log_message):
     pod_metrics = row['podMetricsLastSecond']
     all_pods = list(pod_metrics.keys())
     
+    logger.info(f"DEBUG: all_pods from podMetricsLastSecond: {all_pods}")
+    logger.info(f"DEBUG: pod_gpu_mapping keys: {list(HYPERPARAMS.get('pod_gpu_mapping', {}).keys())}")
+    logger.info(f"DEBUG: selectedpod from row: {row['selectedpod']}")
+
+    if HYPERPARAMS and 'pod_gpu_id_mapping' in HYPERPARAMS:
+        gpu_model_encoded = HYPERPARAMS['pod_gpu_id_mapping'].get(row['selectedpod'], 0)
+    else:
+        assert False, "HYPERPARAMS must contain 'pod_gpu_id_mapping' for inference workload"
+
     # Pre-allocate result dictionary with known structure
     base_features = {
         'request_id': row['requestID'],
@@ -570,6 +596,7 @@ def preprocess_single_row_fast(df, log_message):
         'ttft': row['ttft'],
         'avg_tpot': row['avg_tpot'],
         'e2e_latency': row['e2e'],
+        'gpu_model_encoded': gpu_model_encoded,
     }
     
     # Extract metrics directly without repeated dictionary lookups
@@ -585,7 +612,14 @@ def preprocess_single_row_fast(df, log_message):
     # Build pod features directly
     for pod_id in all_pods:
         pod_prefix = f"pod_{pod_id}"
-        
+        # Get actual GPU model for this pod with fallback
+        if HYPERPARAMS and 'pod_gpu_mapping' in HYPERPARAMS:
+            if pod_id not in HYPERPARAMS['pod_gpu_mapping']:
+                logger.error(f"Error: Pod ID {pod_id} not found in HYPERPARAMS['pod_gpu_mapping']:{HYPERPARAMS['pod_gpu_mapping']}")
+                assert False
+            gpu_model = HYPERPARAMS['pod_gpu_mapping'][pod_id]
+        else:
+            assert False
         # Direct assignment without intermediate dictionaries
         base_features[f"{pod_prefix}-kv_hit_ratio"] = kv_cache.get(pod_id, 0)
         base_features[f"{pod_prefix}-inflight_requests"] = inflight.get(pod_id, 0)
@@ -595,7 +629,7 @@ def preprocess_single_row_fast(df, log_message):
         base_features[f"{pod_prefix}-waiting_requests"] = waiting.get(pod_id, 0)
         base_features[f"{pod_prefix}-prefill_tokens"] = prefill.get(pod_id, 0)
         base_features[f"{pod_prefix}-decode_tokens"] = decode.get(pod_id, 0)
-        base_features[f"{pod_prefix}-gpu_model"] = "NVIDIA-L20"
+        base_features[f"{pod_prefix}-gpu_model"] = gpu_model
         
         # Pod metrics
         pod_metrics_for_pod = pod_metrics.get(pod_id, {})
@@ -636,7 +670,7 @@ def preprocess_single_row_fast(df, log_message):
     return processed_df, all_pods, preprocess_dataset_overhead_summary
 
 
-def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
+def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, HYPERPARAMS):
     # input_file is None for inference workload, valid only for training workflow.
     parse_log_file_start_time = time.time()
     
@@ -667,12 +701,12 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO):
     if len(df) == 1 and input_file is None:
         # Ultra-fast inference path
         # processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, TTFT_SLO, AVG_TPOT_SLO)
-        processed_df, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, log_message)
+        processed_df, all_pods, preprocess_dataset_overhead_summary = preprocess_single_row_fast(df, log_message, HYPERPARAMS)
     else:
         # Existing batch processing for training
         # REMOVED: No need for parse_json_columns since JSON is already parsed
         # df = parse_json_columns(df, json_columns)
-        processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary = preprocess_dataset(df, TTFT_SLO, AVG_TPOT_SLO)
+        processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary = preprocess_dataset(df, TTFT_SLO, AVG_TPOT_SLO, HYPERPARAMS)
     
     total_preprocess_dataset_overhead = time.time() - preprocess_dataset_start_time
 

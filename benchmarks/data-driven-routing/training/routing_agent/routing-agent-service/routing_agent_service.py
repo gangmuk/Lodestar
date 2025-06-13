@@ -24,6 +24,7 @@ from logger import logger
 import preprocess
 import pickle
 import threading
+from kubernetes import client, config
 import ast
 import json
 import feature_normalization
@@ -84,7 +85,7 @@ def handle_flush():
 
         # Preprocess raw data
         ts_preprocess = time.time()
-        processed_df, _, all_pods, _ = preprocess.main(raw_data_path, "", TTFT_SLO, AVG_TPOT_SLO)
+        processed_df, _, all_pods, _ = preprocess.main(raw_data_path, "", TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         try:
             if stats_instance is None:
@@ -103,7 +104,9 @@ def handle_flush():
         # Encode preprocessed data
         ts_encode = time.time()
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{FLUSH_BATCH_ID}"
-        encoding.encode_for_train(all_pods, processed_df, encoded_data_subdir, request_features_train)
+        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        encoding.encode_for_train(all_pods, processed_df, encoded_data_subdir, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TRAINING_DATA_UPDATED = True
@@ -158,7 +161,7 @@ def handle_infer():
 
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
-        processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO)
+        processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
         logger.debug(f"Successfully parsed data for request_{request_id}")
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
@@ -176,7 +179,9 @@ def handle_infer():
 
         # Encode data (normalization already done)
         encode_start_time = time.time()
-        tensor_data, encode_for_inference_overhead_summary = encoding.      encode_for_inference(all_pods, processed_df, request_features_train)
+        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(all_pods, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
 
@@ -246,7 +251,7 @@ def online_train_routine():
 
     if  TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
-        logger.info(f"online_train_routine, Starting {NUM_TRAINS}th online training iteration")
+        logger.info(f"online_train_routine, train! Starting {NUM_TRAINS}th online training iteration")
         try:
             if MODEL == "simpler_contextual_bandit":
                 simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
@@ -319,14 +324,144 @@ def load_rl_hyperparameters(file_path):
         },
         'dataset_analysis': data['dataset_analysis'],
     }
-    
+
+    for key, value in rl_model_hyperparameters.items():
+        if key == 'normalization':
+            for sub_key, sub_value in value.items():
+                logger.info(f"{key}.{sub_key}: {sub_value}")
+        else:
+            logger.info(f"{key}: {value}")
+
     return rl_model_hyperparameters
+
+
+def fetch_pod_gpu_mapping():
+    """
+    Fetch GPU model for each pod in the llama-3-8b-instruct deployment
+    Returns a dictionary mapping pod_ip -> gpu_model
+    """
+    try:
+        from kubernetes import client, config
+        
+        # Try in-cluster config first (for running inside cluster)
+        try:
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster config for Kubernetes access")
+        except:
+            # Fallback to local config (for development/testing)
+            config.load_kube_config()
+            logger.info("Loaded local kubeconfig for Kubernetes access")
+        
+        v1 = client.CoreV1Api()
+        
+        # Get all pods with the label selector for llama-3-8b-instruct
+        label_selector = "model.aibrix.ai/name=llama-3-8b-instruct"
+        pods = v1.list_pod_for_all_namespaces(label_selector=label_selector)
+        
+        pod_gpu_mapping = {}
+        
+        for pod in pods.items:
+            if pod.status.phase == "Running" and pod.status.pod_ip:
+                pod_ip = pod.status.pod_ip
+                
+                # Get the node name where this pod is running
+                node_name = pod.spec.node_name
+                
+                if node_name:
+                    # Get node details to extract GPU model
+                    try:
+                        node = v1.read_node(name=node_name)
+                        node_labels = node.metadata.labels or {}
+                        
+                        # Extract GPU model from node label
+                        gpu_model = node_labels.get('machine.cluster.vke.volcengine.com/gpu-name', 'unknown')
+                        pod_gpu_mapping[pod_ip] = gpu_model
+                        
+                        logger.info(f"Pod {pod.metadata.name} (IP: {pod_ip}) -> GPU: {gpu_model}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to get node info for {node_name}: {e}")
+                        pod_gpu_mapping[pod_ip] = 'unknown'
+                else:
+                    logger.warning(f"Pod {pod.metadata.name} has no node assignment")
+                    pod_gpu_mapping[pod_ip] = 'unknown'
+            else:
+                logger.debug(f"Skipping pod {pod.metadata.name} - Status: {pod.status.phase}, IP: {pod.status.pod_ip}")
+        
+        logger.info(f"Successfully fetched GPU mapping for {len(pod_gpu_mapping)} pods")
+        return pod_gpu_mapping
+        
+    except ImportError:
+        logger.error("kubernetes package not installed. Install with: pip install kubernetes")
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to fetch pod GPU mapping: {e}")
+        return {}
+
+def test_kubernetes_permissions():
+    """Test if we have the required Kubernetes permissions"""
+    try:
+        config.load_incluster_config()
+        
+        v1 = client.CoreV1Api()
+        
+        # Test 1: Can we list pods?
+        try:
+            pods = v1.list_pod_for_all_namespaces(label_selector="model.aibrix.ai/name=llama-3-8b-instruct", limit=1)
+            logger.info("✅ Successfully listed pods - pod permissions OK")
+        except Exception as e:
+            logger.error(f"❌ Cannot list pods: {e}")
+            return False
+            
+        # Test 2: Can we read nodes?
+        try:
+            nodes = v1.list_node(limit=1)
+            logger.info("✅ Successfully listed nodes - node permissions OK")
+        except Exception as e:
+            logger.error(f"❌ Cannot list nodes: {e}")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Kubernetes API access failed: {e}")
+        return False
+
+
 
 def init():
     global RL_MODEL_HYPERPARAMETERS
     if RL_MODEL_HYPERPARAMETERS is None:
         logger.info("Loading RL hyperparameters from model_config.json")
         RL_MODEL_HYPERPARAMETERS = load_rl_hyperparameters(hyperparameter_file_path)
+        
+        # Test permissions first
+        logger.info("Testing Kubernetes API permissions...")
+        if not test_kubernetes_permissions():
+            logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
+            assert False
+        
+        # Fetch pod GPU mapping and add to hyperparameters
+        logger.info("Fetching pod GPU mapping from Kubernetes cluster")
+        pod_gpu_mapping = fetch_pod_gpu_mapping()  # pod_ip -> gpu_model_name
+        
+        if pod_gpu_mapping:
+            # Create GPU model to ID mapping
+            unique_gpus = list(set(pod_gpu_mapping.values()))
+            gpu_name_to_id = {gpu_name: idx for idx, gpu_name in enumerate(unique_gpus)}
+            
+            # Create direct pod_ip -> gpu_model_id mapping
+            pod_gpu_id_mapping = {pod_ip: gpu_name_to_id[gpu_name] for pod_ip, gpu_name in pod_gpu_mapping.items()}
+            
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = pod_gpu_mapping  # Keep original for logging
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping  # Direct mapping
+            RL_MODEL_HYPERPARAMETERS['GPU_MAP'] = gpu_name_to_id  # Keep for compatibility
+            
+            logger.info(f"GPU name to ID mapping: {gpu_name_to_id}")
+            logger.info(f"Created direct pod IP to GPU ID mapping for {len(pod_gpu_id_mapping)} pods")
+        else:
+            logger.error("No pod GPU mapping available, using default mappings")
+            assert False
 
 if __name__ == "__main__":
     init()

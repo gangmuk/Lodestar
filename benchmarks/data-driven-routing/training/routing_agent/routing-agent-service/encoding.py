@@ -81,6 +81,9 @@ class LLMRoutingDataProcessor:
         self.pod_encoder = None
         self.selected_pod_encoder = None
 
+        self.gpu_map = None  # Will be set from hyperparameters
+        self.num_gpu_types = 0
+
 
     def extract_pod_columns(self, df, all_pods):
         """Extract pod-related columns and organize by pod ID and feature type - OPTIMIZED."""
@@ -336,41 +339,6 @@ class LLMRoutingDataProcessor:
         return expanded_request
 
 
-    def _optimized_extract_actions_rewards(self, df, n_samples):
-        """Extract actions and rewards - OPTIMIZED section for Step 7."""
-        actions = np.zeros(n_samples, dtype=np.int64)
-        rewards = np.zeros(n_samples)
-        ttft_rewards = np.zeros(n_samples)
-        tpot_rewards = np.zeros(n_samples)
-        
-        # OPTIMIZATION: Pre-build pod_to_idx mapping
-        if 'selected_pod' in df.columns:
-            pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.pod_ids)}
-            # OPTIMIZATION: Vectorized action extraction
-            selected_pods = df['selected_pod'].values
-            valid_mask = pd.notna(selected_pods)
-            
-            if valid_mask.any():
-                valid_indices = np.where(valid_mask)[0]
-                valid_pods = selected_pods[valid_mask].astype(str)
-                
-                for i, selected_pod in enumerate(valid_pods):
-                    if selected_pod in pod_to_idx:
-                        actions[valid_indices[i]] = pod_to_idx[selected_pod]
-        elif 'action' in df.columns:
-            actions = df['action'].fillna(0).astype(np.int64).values
-        
-        # OPTIMIZATION: Vectorized reward extraction
-        if 'reward' in df.columns:
-            rewards = df['reward'].fillna(0).values
-        if 'ttft_reward' in df.columns:
-            ttft_rewards = df['ttft_reward'].fillna(0).values
-        if 'tpot_reward' in df.columns:
-            tpot_rewards = df['tpot_reward'].fillna(0).values
-        
-        return actions, rewards, ttft_rewards, tpot_rewards
-    
-
     def _filter_identity_features(self, pod_features_array, feature_names):
         """
         Remove features that enable pod identity learning.
@@ -443,7 +411,12 @@ class LLMRoutingDataProcessor:
         return shuffled_pod_features, shuffled_kv_hit_ratios
 
 
-    def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary):
+    def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary, HYPERPARAMETERS):
+        logger.info(f"DEBUG GPU SETUP:")
+        logger.info(f"  self.num_gpu_types: {self.num_gpu_types}")
+        logger.info(f"  HYPERPARAMETERS GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', 'NOT_FOUND')}")
+        logger.info(f"  HYPERPARAMETERS pod_gpu_id_mapping: {HYPERPARAMETERS.get('pod_gpu_id_mapping', 'NOT_FOUND')}")
+        
         if not pod_data:
             logger.error("No pod data in expected format")
             assert False
@@ -459,9 +432,29 @@ class LLMRoutingDataProcessor:
         n_pods = len(self.pod_ids)
         n_numeric = len(ALL_NUMERIC_FEATURES)
         
-        # Pre-allocate arrays - SINGLE array for all features
-        all_features_array = np.zeros((n_samples, n_pods, n_numeric), dtype=np.float32)
+        # Calculate total feature dimensions including GPU one-hot encoding
+        gpu_onehot_dim = self.num_gpu_types
+        total_feature_dim = n_numeric + gpu_onehot_dim
+        all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
         
+        logger.info(f"DEBUG GPU MAPPING:")
+        logger.info(f"  self.pod_ids: {self.pod_ids}")
+        logger.info(f"  pod_gpu_id_mapping keys: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
+        logger.info(f"  GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', {})}")
+
+        gpu_encoded_per_pod = {}
+        for pod_id in self.pod_ids:
+            if pod_id not in HYPERPARAMETERS['pod_gpu_id_mapping']:
+                logger.error(f"CRITICAL: Pod {pod_id} not found in pod_gpu_id_mapping!")
+                logger.error(f"Available pods: {list(HYPERPARAMETERS['pod_gpu_id_mapping'].keys())}")
+                assert False, f"Unknown GPU model for pod {pod_id}"
+            gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
+            if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
+                logger.error(f"CRITICAL: Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
+                logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
+                assert False, f"Invalid GPU model ID {gpu_model_id}"
+            gpu_encoded_per_pod[pod_id] = gpu_model_id
+
         # Extract all features into single array
         for pod_idx, pod_id in enumerate(self.pod_ids):
             if pod_id in pod_data:
@@ -485,7 +478,12 @@ class LLMRoutingDataProcessor:
                 # KV ratio in main array
                 if 'kv_hit_ratio' in pod_features:
                     all_features_array[:, pod_idx, 7] = pod_features['kv_hit_ratio'].fillna(0)
-        
+                
+                gpu_model_id = gpu_encoded_per_pod[pod_id]
+                gpu_onehot = np.zeros(gpu_onehot_dim)
+                gpu_onehot[gpu_model_id] = 1
+                all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
+
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         
         build_feature_start_time = time.time()
@@ -493,13 +491,20 @@ class LLMRoutingDataProcessor:
         # Apply feature masking BEFORE randomization
         masking_start_time = time.time()
         
-        # Set original features list to match what we extracted
-        original_features = ALL_NUMERIC_FEATURES.copy()
+        # Separate numeric and GPU features before masking
+        numeric_features_only = all_features_array[:, :, :n_numeric]  # First 8 features
+        gpu_features_only = all_features_array[:, :, n_numeric:]      # Last gpu_onehot_dim features
         
-        # Apply masking
-        filtered_features_array, kept_features = self._filter_identity_features(
-            all_features_array, original_features
+        # Apply masking to numeric features only
+        original_features = ALL_NUMERIC_FEATURES.copy()
+        filtered_numeric_features, kept_numeric_features = self._filter_identity_features(
+            numeric_features_only, original_features
         )
+        
+        # Combine filtered numeric + all GPU features (GPU features are never masked)
+        filtered_features_array = np.concatenate([filtered_numeric_features, gpu_features_only], axis=2)
+        gpu_feature_names = [f'gpu_model_{i}' for i in range(self.num_gpu_types)]
+        kept_features = kept_numeric_features + gpu_feature_names
         
         masking_overhead = time.time() - masking_start_time
         
@@ -572,19 +577,35 @@ class LLMRoutingDataProcessor:
         
         build_feature_overhead = time.time() - build_feature_start_time
         
-        # Update overhead tracking
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead'] = vectorized_extraction_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead'] = build_feature_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.masking_overhead'] = masking_overhead * 1000
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.kv_extraction_overhead'] = kv_extraction_overhead * 1000
-        # 🆕 Add randomization overhead
-        overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.randomization_overhead'] = randomization_overhead * 1000
+        # # Update overhead tracking
+        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead'] = vectorized_extraction_overhead * 1000
+        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead'] = build_feature_overhead * 1000
+        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.masking_overhead'] = masking_overhead * 1000
+        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.kv_extraction_overhead'] = kv_extraction_overhead * 1000
+        # # 🆕 Add randomization overhead
+        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.randomization_overhead'] = randomization_overhead * 1000
         
         # # Log final shapes for debugging
         # logger.info(f"Final tensor shapes after randomization:")
         # logger.info(f"  pod_features_array: {pod_features_array.shape}")
         # logger.info(f"  kv_hit_norm: {kv_hit_norm.shape}")
         # logger.info(f"  kept_pod_features: {kept_pod_features}")
+
+        logger.info(f"FINAL TENSOR ANALYSIS:")
+        logger.info(f"pod_features_array shape: {pod_features_array.shape}")
+        logger.info(f"First pod features: {pod_features_array[0, 0, :]}")
+        logger.info(f"Second pod features: {pod_features_array[0, 1, :]}")
+        logger.info(f"Are all pod GPU features identical?")
+        for i in range(min(3, pod_features_array.shape[1])):
+            gpu_start_idx = len(kept_pod_features) - self.num_gpu_types
+            gpu_features = pod_features_array[0, i, gpu_start_idx:]
+            logger.info(f"  Pod {i} GPU features: {gpu_features}")
+
+        logger.info(f"Final feature composition:")
+        logger.info(f"  pod_features_array shape: {pod_features_array.shape}")
+        logger.info(f"  kept_pod_features: {kept_pod_features}")
+        logger.info(f"  kv_hit_norm shape: {kv_hit_norm.shape}")
+        logger.info(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
         
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
 
@@ -592,9 +613,28 @@ class LLMRoutingDataProcessor:
     # Also add randomization to the training path in encode_for_train function
     # Find the line where prepare_for_encoding is called and add randomization there as well
 
+    def encode_gpu_model_onehot(self, gpu_encoded_values, num_gpu_types):
+        """Convert GPU encoded values to one-hot encoding"""
+        # gpu_encoded_values: array of integers from GPU_MAP (or -1 for unknown)
+        # Create one-hot encoding with extra column for unknown (-1)
+        n_samples = len(gpu_encoded_values)
+        one_hot = np.zeros((n_samples, num_gpu_types + 1), dtype=np.float32)
         
-    def prepare_for_encoding(self, df, all_pods, request_features_train, overhead_summary):
+        for i, val in enumerate(gpu_encoded_values):
+            if val == -1:
+                one_hot[i, num_gpu_types] = 1  # Last column for unknown
+            elif 0 <= val < num_gpu_types:
+                one_hot[i, val] = 1
+        
+        return one_hot
+
+        
+    def prepare_for_encoding(self, df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS):
         n_samples = len(df)
+
+        self.num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
+        logger.info(f"Set self.num_gpu_types = {self.num_gpu_types} from HYPERPARAMETERS")
+    
         
         # STEP 1: ULTRA-FAST pod data extraction
         pod_data = self._ultra_fast_extract_pod_columns(df, all_pods)
@@ -622,13 +662,13 @@ class LLMRoutingDataProcessor:
         classify_feature_timing_overhead = time.time() - classify_feature_timing_start
         
         # STEP 5: FAST request feature
-        request_features, request_numeric_features_overhead = self._ultra_fast_extract_request_features(df, request_features_train, n_samples)
+        request_features, request_numeric_features_overhead = self.extract_request_features(df, request_features_train, n_samples)
 
         # STEP 7: ULTRA-OPTIMIZED pod processing
-        pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary)  # ← HERE!
+        pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary, HYPERPARAMETERS)
 
         # STEP 8: actions/rewards (continues as normal)
-        actions, rewards, ttft_rewards, tpot_rewards = self._fast_extract_actions_rewards(df, n_samples)
+        actions, rewards, ttft_rewards, tpot_rewards = self.extract_actions_rewards(df, n_samples)
 
         # STEP 9: SKIP combining
         
@@ -644,7 +684,7 @@ class LLMRoutingDataProcessor:
         
         # STEP 13: FAST interaction features
         interaction_features = np.broadcast_to(request_features[:, np.newaxis, :], (n_samples, pod_features_array.shape[1], request_features.shape[1])).copy()
-        
+
         processed_data = {
             'pod_features': pod_features_array,
             'pod_raw_features': pod_features_array,
@@ -695,14 +735,11 @@ class LLMRoutingDataProcessor:
         
         return pod_data
 
-
     
-    # OPTIMIZATION 1: Replace request_numeric_features section (was 1.43ms -> target 0.2ms)
-    def _ultra_fast_extract_request_features(self, df, request_features_train, n_samples):
-        request_numeric_features_start_time = time.time()
+    def extract_request_features(self, df, request_features_train, n_samples):
+        request_features_start_time = time.time()
         
         if request_features_train:
-            # OPTIMIZATION: Assume features are already normalized by mask step
             # Use hardcoded indices instead of column name lookup
             if len(request_features_train) == 3:  # input_tokens, output_tokens, total_tokens
                 # Hardcode indices [2, 3, 4] for maximum speed
@@ -717,8 +754,8 @@ class LLMRoutingDataProcessor:
             # request_features = np.zeros((n_samples, 0), dtype=np.float32)
             assert False
         
-        request_numeric_features_overhead = time.time() - request_numeric_features_start_time
-        return request_features, request_numeric_features_overhead
+        request_features_overhead = time.time() - request_features_start_time
+        return request_features, request_features_overhead
 
 
     def _ultra_fast_process_pod_features(self, pod_data, n_samples):
@@ -811,7 +848,7 @@ class LLMRoutingDataProcessor:
 
 
 
-    def _fast_extract_actions_rewards(self, df, n_samples):
+    def extract_actions_rewards(self, df, n_samples):
         """Fast action/reward extraction - minimal validation."""
         actions = np.zeros(n_samples, dtype=np.int64)
         rewards = np.zeros(n_samples, dtype=np.float32)
@@ -1109,7 +1146,7 @@ class LLMRoutingDataProcessor:
             return None, None
 
 
-def encode_for_train(all_pods, df, output_dir, request_features_train):
+def encode_for_train(all_pods, df, output_dir, request_features_train, HYPERPARAMETERS):
     """Main function to process LLM routing data."""
     logger.debug(f"columns: {list(df.columns)}")
     if len(df) > 0:
@@ -1132,7 +1169,7 @@ def encode_for_train(all_pods, df, output_dir, request_features_train):
     logger.info("Data already normalized in routing_agent_service.py, proceeding with encoding...")
     logger.info("Processing training data...")
     overhead_summary = {}
-    train_processed = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary)
+    train_processed = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS)
     train_path = processor.save_processed_data(train_processed)
     logger.info("Data processing complete!")
     logger.info(f"Training data: {train_path}")
@@ -1148,7 +1185,7 @@ def encode_for_train(all_pods, df, output_dir, request_features_train):
     return train_path
 
 
-def encode_for_inference(all_pods, df, request_features_train):
+def encode_for_inference(all_pods, df, request_features_train, HYPERPARAMETERS):
     """Version optimized for inference - data already normalized in handle_infer."""
     
     # STEP 1: Skip all normalization (already done in handle_infer)
@@ -1163,7 +1200,7 @@ def encode_for_inference(all_pods, df, request_features_train):
     prepare_for_encoding_start = time.time()
     processor = LLMRoutingDataProcessor(output_dir="temp_inference")
     overhead_summary = {}
-    processed_data = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary)
+    processed_data = processor.prepare_for_encoding(df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS)
     prepare_for_encoding_overhead = time.time() - prepare_for_encoding_start
 
     # STEP 3: Create tensors
