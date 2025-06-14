@@ -524,6 +524,8 @@ def parse_log_message(log_message):
     i = 0
     while i < len(parts) - 1:
         key = parts[i]
+        if key == "numInputTokens":
+            logger.info(f"")
         value = parts[i + 1]
         # Fast JSON detection and parsing
         if value and value[0] == '{' and value[-1] == '}':
@@ -565,11 +567,13 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
     """
     # Extract the single row as a dictionary (much faster than DataFrame operations)
     row = df.iloc[0].to_dict()
+    logger.info(f"Processing single row for inference workload: {row}")
+    logger.info(f"log_message in preprocess_single_row_fast: {log_message}")
     
     # Quick validation
     if not row.get('podMetricsLastSecond'):
         logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
-        logger.error(f"Log message: {log_message}")
+        logger.error(f"log_message: {log_message}")
         logger.error(f"Row data: {row}")
         assert False
     
@@ -673,7 +677,7 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
 def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, HYPERPARAMS):
     # input_file is None for inference workload, valid only for training workflow.
     parse_log_file_start_time = time.time()
-    
+    logger.info(f"log_message in preprocess.main: {log_message}")
     ## Training path
     if input_file is not None:
         df, json_columns = parse_log_file(input_file)
