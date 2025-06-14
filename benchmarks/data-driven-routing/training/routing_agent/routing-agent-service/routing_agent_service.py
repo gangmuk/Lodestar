@@ -36,7 +36,7 @@ app = Flask(__name__)
 RL_MODEL_HYPERPARAMETERS = None
 hyperparameter_file_path = '/app/final_model/model_config.json'
 
-FLUSH_BATCH_ID = 0
+NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 final_model_path = "final_model"
 feature_normalization_stats_file = f"{final_model_path}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
@@ -70,15 +70,15 @@ request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global FLUSH_BATCH_ID, ENCODED_DATA_DIR, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
+    global NUM_FLUSH, ENCODED_DATA_DIR, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
+    NUM_FLUSH += 1
     flush_start_time = time.time()
     log_data = request.json
     try:
         logger.info(f"Received log data with {len(log_data) if log_data else 0} entries")
         if not os.path.exists("raw_training_data"):
             os.mkdir("raw_training_data")
-        raw_data_path = f"raw_training_data/batch_{FLUSH_BATCH_ID}.csv"
-        FLUSH_BATCH_ID += 1
+        raw_data_path = f"raw_training_data/batch_{NUM_FLUSH}.csv"
         
         # Write raw data to file
         ts_write_raw_data = time.time()
@@ -102,7 +102,7 @@ def handle_flush():
 
         # Encode preprocessed data
         ts_encode = time.time()
-        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{FLUSH_BATCH_ID}"
+        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{NUM_FLUSH}"
         encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
         encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
         encoding.encode_for_train(all_pods, processed_df, encoded_data_subdir, request_features_train, RL_MODEL_HYPERPARAMETERS)
@@ -260,6 +260,8 @@ def handle_infer():
         # Return the result
         response = {
             "num_trains": NUM_TRAINS,
+            "num_flush": NUM_FLUSH,
+            "request_timestamp": time.time() - first_request_starting_time,
             "selected_pod": selected_pod,
             "confidence": result['confidence'],
             "request_id": request_id,

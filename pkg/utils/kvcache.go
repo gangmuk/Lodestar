@@ -609,10 +609,11 @@ func NewPodMetricsTracker(windowSize time.Duration) *PodMetricsTracker {
 }
 
 var NumTrains int
+var NumFlush int
 
 var (
 	UseRealRequest = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
-
+	FirstRequestStartTime = 0
 	RunningPodRegistry      = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
 
@@ -688,6 +689,7 @@ var (
 
 func init() {
 	NumTrains = 0
+	NumFlush = 0
 
 	// CleanupRoutineForpodMetrics()
 	RunningPodRegistry = make(map[string]string)
@@ -786,6 +788,14 @@ func SetNumTrains(numTrains int) {
 
 func GetNumTrains() int {
 	return NumTrains
+}
+
+func SetNumFlush(numFlush int) {
+	NumFlush = numFlush
+}
+
+func GetNumFlush() int {
+	return NumFlush
 }
 
 func CleanupRoutineForpodMetrics() {

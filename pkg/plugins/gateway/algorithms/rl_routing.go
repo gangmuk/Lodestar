@@ -243,6 +243,7 @@ type RouteResponse struct {
 	SelectedPod string  `json:"selected_pod"`
 	Confidence  float64 `json:"confidence"`
 	NumTrains   int     `json:"num_trains"`
+	NumFlush    int     `json:"num_flush"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -490,12 +491,12 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			klog.Infof("Unknown sub-algorithm: %s, Use rl-agent!, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 		}
 
-		klog.Infof("asdf, 1")
-		// utils.SetRequestToNumTrains(ctx.RequestID, routeResponse.NumTrains)
 		if routeResponse.NumTrains > utils.GetNumTrains() {
 			utils.SetNumTrains(routeResponse.NumTrains)
 		}
-		klog.Infof("asdf, 2")
+		if routeResponse.NumFlush > utils.GetNumFlush() {
+			utils.SetNumFlush(routeResponse.NumFlush)
+		}
 
 		end_to_end_overhead := time.Since(route_start_time).Milliseconds()
 		longlog := false
@@ -520,10 +521,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				ctx.RequestID, response_process_overhead, // 1ms
 				formattedResponseBody)
 		} else {
-			klog.Infof("asdf, 2")
 			//// short log
 			klog.Infof("RL router, requestID: %s, Route end_to_end_overhead %dms, targetPod: %s", ctx.RequestID, end_to_end_overhead, targetPod.Status.PodIP)
-			klog.Infof("asdf, 3")
 		}
 	}
 
