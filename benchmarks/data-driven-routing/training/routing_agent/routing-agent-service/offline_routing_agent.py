@@ -186,7 +186,7 @@ def train_model(args):
         return False
 
 
-def test_inference(args, log_message, feature_normalization_stats_file):
+def test_inference(args, log_message, request_id):
     """Test inference on a single log message with original vs predicted comparison"""
     global NUM_TRAINS, MODEL_UPDATED, stats_instance
     if NUM_TRAINS == 0:
@@ -224,10 +224,66 @@ def test_inference(args, log_message, feature_normalization_stats_file):
                 original_pod_choice = match.group(1)
         
         logger.debug(f"Original pod choice: {original_pod_choice}")
-        if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
-        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance)
+        # if stats_instance is None:
+        #     stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
         
+        # log before normalize min, max, stats
+        logger.info("🔍 PRE-NORMALIZATION DEBUG:")
+        logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
+        logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+            if feature in processed_df.columns:
+                logger.info(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f}")
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    mean_val = stats.get_mean()
+                    std_val = stats.get_std()
+                    # Handle numpy arrays safely
+                    if hasattr(mean_val, 'item'):
+                        mean_val = mean_val.item()
+                    if hasattr(std_val, 'item'):
+                        std_val = std_val.item()
+                    logger.info(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
+                else:
+                    logger.error(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
+        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
+        #==================================================================================
+        logger.info("🔍 POST-NORMALIZATION DEBUG:")
+        logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
+        logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+            if feature in processed_df.columns:
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    mean_val = stats.get_mean()
+                    std_val = stats.get_std()
+                    # Handle numpy arrays safely
+                    if hasattr(mean_val, 'item'):
+                        mean_val = mean_val.item()
+                    if hasattr(std_val, 'item'):
+                        std_val = std_val.item()
+                    logger.info(f"after normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
+                else:
+                    logger.error(f"after normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
+        #==================================================================================
+
+        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+            if feature in processed_df.columns:
+                logger.info(f"  {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f}")
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    mean_val = stats.get_mean()
+                    std_val = stats.get_std()
+                    # Handle numpy arrays safely
+                    if hasattr(mean_val, 'item'):
+                        mean_val = mean_val.item()
+                    if hasattr(std_val, 'item'):
+                        std_val = std_val.item()
+                    logger.info(f"    → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
+                else:
+                    logger.error(f"    → ❌ NO STATS FOUND for {feature}!")
+
+
         # Encode data
         encode_start_time = time.time()
         encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
@@ -297,9 +353,9 @@ def test_inference(args, log_message, feature_normalization_stats_file):
         logger.error(f"Traceback: {error_traceback}")
         assert False
 
-def process_training_data(args, log_data, feature_normalization_stats_file):
+def process_training_data(args, log_data, stats_instance):
     """Process training data with shared normalization logic"""
-    global ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, stats_instance
+    global ENCODED_DATA_DIR, NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
     flush_start_time = time.time()
     try:
         logger.info(f"Processing training data with {len(log_data)} entries")
@@ -316,10 +372,7 @@ def process_training_data(args, log_data, feature_normalization_stats_file):
         ts_preprocess = time.time()
         processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
-        processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-        stats_instance.write_stats_to_file(feature_normalization_stats_file)
+        processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
         # processed_df = feature_normalization.try_reward_amplification(processed_df)
         
         # encoding
@@ -410,6 +463,8 @@ def fetch_pod_gpu_mapping():
         assert False
 
 def main():
+    global stats_instance
+    
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
     parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
@@ -484,7 +539,6 @@ def main():
     args.model_dir = f"{data_dir}/final_model"
     os.makedirs(args.model_dir, exist_ok=True)
     feature_normalization_stats_file = f"{args.model_dir}/feature_normalization_statistics.pkl"
-    logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
     if all_data is None or len(all_data) == 0:
         logger.error("Failed to read data or no valid log messages found")
         return
@@ -509,9 +563,15 @@ def main():
     if not args.skip_training:
         logger.info("=== STARTING TRAINING PHASE ===")
         # Process training data
-        if not process_training_data(args, train_data, feature_normalization_stats_file):
+        if stats_instance is not None:
+            logger.error("Using existing stats instance for normalization")
+            assert False
+        # stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], feature_normalization_stats_file)
+        stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], None)
+        if not process_training_data(args, train_data, stats_instance):
             logger.error("Failed to process training data")
             return
+        stats_instance.write_stats_to_file(feature_normalization_stats_file)
         model_and_data_analysis_helper.diagnose_training_data_issues(args, train_data)
         
         # Train model
@@ -547,7 +607,7 @@ def main():
         test_items = list(test_data.items())[:total_count]
         for i, (request_id, log_message) in enumerate(test_items):
             logger.info(f"Testing inference {i+1}/{total_count} (request_id: {request_id})")
-            result = test_inference(args, log_message, feature_normalization_stats_file)
+            result = test_inference(args, log_message, request_id)
             if result:
                 success_count += 1
                 

@@ -2026,6 +2026,7 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
 
 
     #================================================================
+    logger.info("======== Start,infer_from_tensor LOGGING ========")
     num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
     gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
     num_numeric_pod_features = 7  # Your base numeric pod features
@@ -2039,7 +2040,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     actual_kv_features = kv_hit_ratios.shape[2] 
     actual_request_features = request_features.shape[1]
     actual_input_dim = actual_pod_features + actual_kv_features + actual_request_features
-
     if actual_input_dim != expected_input_dim:
         logger.error(f"Dimension mismatch!")
         logger.error(f"Expected: {expected_input_dim} (pod:{expected_pod_features} + kv:1 + req:{expected_request_features})")
@@ -2077,7 +2077,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         logger.error("❌ NaN values found in pod_features!")
     if torch.isinf(pod_features).any():
         logger.error("❌ Infinity values found in pod_features!")
-    #================================================================
 
     # Run inference
     agent.policy.eval()
@@ -2180,6 +2179,26 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         logger.info(f"  Scores WITHOUT GPU: {raw_scores_without_gpu[0].cpu().numpy()}")
         logger.info(f"  Difference:         {score_difference[0].cpu().numpy()}")
         logger.info(f"  Max impact:         {score_difference.abs().max().item():.4f}")
+
+    # Add this before the detailed breakdown:
+    logger.info("🔍 NORMALIZATION STATUS CHECK:")
+
+    # Check if values look normalized (should be roughly [-3, +3] for normalized features)
+    pod_looks_normalized = (pod_features.abs().max() < 10).item()
+    kv_looks_normalized = (kv_hit_ratios.max() < 10).item() 
+    request_looks_normalized = (request_features.abs().max() < 10).item()
+
+    logger.info(f"  Pod features look normalized: {pod_looks_normalized} (max_abs: {pod_features.abs().max():.2f})")
+    logger.info(f"  KV ratios look normalized: {kv_looks_normalized} (max: {kv_hit_ratios.max():.2f})")
+    logger.info(f"  Request features look normalized: {request_looks_normalized} (max_abs: {request_features.abs().max():.2f})")
+
+    if not request_looks_normalized:
+        logger.error("❌ REQUEST FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
+    if not pod_looks_normalized:
+        logger.error("❌ POD FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
+        
+    logger.info("======== End,infer_from_tensor LOGGING ========")
+    #================================================================
     
     # Return inference results
     results = {

@@ -27,4 +27,5 @@ ENV LOG_LEVEL=INFO
 
 EXPOSE 8080
 
-CMD ["python", "routing_agent_service.py"]
+# CMD ["python", "routing_agent_service.py"] # this way it makes routing_agent_service.py PID=1, and it can't be killed by SIGTERM
+CMD ["sh", "-c", "python routing_agent_service.py"]

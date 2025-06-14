@@ -28,6 +28,8 @@ from kubernetes import client, config
 import ast
 import json
 import feature_normalization
+import signal
+import sys
 
 app = Flask(__name__)
 
@@ -37,7 +39,7 @@ hyperparameter_file_path = '/app/final_model/model_config.json'
 FLUSH_BATCH_ID = 0
 ENCODED_DATA_DIR = "encoded_data"
 final_model_path = "final_model"
-feature_normalization_stats_file = f"{final_model_path}/feature_normalization_statistics.pkl"  # Add this near the top with your other constants;
+feature_normalization_stats_file = f"{final_model_path}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
 NUM_TRAINS = 0
 MODEL_UPDATED = True
 TRAINING_DATA_UPDATED = False
@@ -87,20 +89,17 @@ def handle_flush():
         ts_preprocess = time.time()
         processed_df, _, all_pods, _ = preprocess.main(raw_data_path, "", TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        try:
-            if stats_instance is None:
-                stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
-        except Exception as e:
-            logger.error(f"Could not load feature normalization stats: {e}")
-            assert False
+        # try:
+        #     if stats_instance is None:
+        #         stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], feature_normalization_stats_file)
+        # except Exception as e:
+        #     logger.error(f"Could not load feature normalization stats: {e}")
+        #     assert False
             
         # if ENABLE_ONLINE_LEARNING:
-        processed_df, stats_instance, _ = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+        processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
         stats_instance.write_stats_to_file(feature_normalization_stats_file)
 
-        # # ===== SHARED REWARD ENGINEERING =====
-        # processed_df = feature_normalization.try_reward_amplification(processed_df)
-        
         # Encode preprocessed data
         ts_encode = time.time()
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{FLUSH_BATCH_ID}"
@@ -149,7 +148,7 @@ def handle_infer():
             
             first_key = list(log_data.keys())[0]
             log_message = log_data[first_key]
-        logger.debug(f"Received inference request:\n{log_message}")
+        logger.info(f"Received inference request in handle_infer:\n{log_message}")
 
         # Extract request ID for logging purposes
         parts = log_message.split("requestID@")
@@ -162,19 +161,64 @@ def handle_infer():
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
         processed_df, _, all_pods, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+        logger.info(f"input_tokens: {processed_df['input_tokens'][0]}")
         logger.debug(f"Successfully parsed data for request_{request_id}")
         handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
 
         # Get running statistics and apply normalization (SAME AS TRAINING)
         get_stat_start_time = time.time()
-        if stats_instance is None:
-            stats_instance = feature_normalization.get_stats_instance(feature_normalization_stats_file, RL_MODEL_HYPERPARAMETERS['normalization'])
+        # if stats_instance is None:
+        #     stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], feature_normalization_stats_file)
+        #     logger.info("🔍 STATS FILE CONTENT DEBUG:")
+        #     logger.info(f"Total features in stats file: {len(stats_instance.feature_stats)}")
+        #     for feature_name, stats in stats_instance.feature_stats.items():
+        #         logger.info(f"  {feature_name}: count={stats.count}")
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
             assert False
         if stats_instance.count == 0:
             logger.warning(f"Stats instance count is 0, no data available for normalization")
-        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance)
+
+        #==================================================================================
+        logger.info("🔍 PRE-NORMALIZATION DEBUG:")
+        logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
+        logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+            if feature in processed_df.columns:
+                logger.info(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f}")
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    mean_val = stats.get_mean()
+                    std_val = stats.get_std()
+                    # Handle numpy arrays safely
+                    if hasattr(mean_val, 'item'):
+                        mean_val = mean_val.item()
+                    if hasattr(std_val, 'item'):
+                        std_val = std_val.item()
+                    logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
+                else:
+                    logger.error(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+        #==================================================================================
+        processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
+        #==================================================================================
+        logger.info("🔍 POST-NORMALIZATION DEBUG:")
+        logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
+        logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+            if feature in processed_df.columns:
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    mean_val = stats.get_mean()
+                    std_val = stats.get_std()
+                    # Handle numpy arrays safely
+                    if hasattr(mean_val, 'item'):
+                        mean_val = mean_val.item()
+                    if hasattr(std_val, 'item'):
+                        std_val = std_val.item()
+                    logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
+                else:
+                    logger.error(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+        #==================================================================================
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
         # Encode data (normalization already done)
@@ -427,10 +471,25 @@ def test_kubernetes_permissions():
         logger.error(f"❌ Kubernetes API access failed: {e}")
         return False
 
+def graceful_shutdown(sig=None, frame=None):
+    """Handle graceful shutdown when receiving SIGTERM or SIGINT"""
+    logger.info(f"Received signal {sig if sig else 'shutdown'}, shutting down gracefully...")
+    
+    # Shutdown the scheduler if it exists
+    if 'scheduler' in globals() and scheduler:
+        try:
+            scheduler.shutdown(wait=False)
+            logger.info("Background scheduler shut down successfully")
+        except Exception as e:
+            logger.error(f"Error shutting down scheduler: {e}")
+    
+    # Any other cleanup you need can go here
+    logger.info("Graceful shutdown completed")
+    sys.exit(0)
 
 
 def init():
-    global RL_MODEL_HYPERPARAMETERS
+    global RL_MODEL_HYPERPARAMETERS, stats_instance
     if RL_MODEL_HYPERPARAMETERS is None:
         logger.info("Loading RL hyperparameters from model_config.json")
         RL_MODEL_HYPERPARAMETERS = load_rl_hyperparameters(hyperparameter_file_path)
@@ -463,7 +522,13 @@ def init():
             logger.error("No pod GPU mapping available, using default mappings")
             assert False
 
+    stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], feature_normalization_stats_file)
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    atexit.register(graceful_shutdown)
+    
     init()
 
     port = int(os.environ.get("PORT", 8080))

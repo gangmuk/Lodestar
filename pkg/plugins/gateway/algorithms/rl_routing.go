@@ -283,7 +283,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Status.PodIP] = struct{}{}
 	}
-	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
+	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message) // character tokenizer by four characters
+	// num_words = len(ctx.Message.split(" "))
 	if err != nil {
 		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
 		return "", err
@@ -321,10 +322,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	var log string
 	log_construction_start_time := time.Now()
 	if utils.UseRealRequest == "true" {
-		klog.Infof("utils.UseRealRequest: %s, requestID: %s", utils.UseRealRequest, ctx.RequestID)
 		numInputTokens := len(tokens)
 		numOutputTokens := 128 // Placeholder for output tokens
 		numTotalTokens := numInputTokens + numOutputTokens
+		klog.Infof("utils.UseRealRequest: %s, requestID: %s, numInputTokens: %d, numOutputTokens: %d(hardcoded), numTotalTokens: %d", utils.UseRealRequest, ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens)
 
 		// Prepare for JSON strings to use in logging
 		var jsonStrings = make(map[string]string)

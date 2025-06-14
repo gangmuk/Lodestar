@@ -10,6 +10,7 @@ import pickle
 from logger import logger
 from typing import Tuple
 import os
+import csv
 import json
 
 class RunningStats:
@@ -18,6 +19,8 @@ class RunningStats:
         self.count = 0
         self.mean = None
         self.var = None  # Variance
+        self.min = None
+        self.max = None
         if feature_names == None:
             logger.error("RunningStats initialized with None feature_names, setting to empty list")
             assert False
@@ -58,16 +61,29 @@ class RunningStats:
         
         # Update count
         self.count = new_total
+        self.min = np.minimum(self.min, np.min(new_data, axis=0))
+        self.max = np.maximum(self.max, np.max(new_data, axis=0))
         
         logger.info(f"{self.feature_names}, Updated running stats, now have {self.count} samples")
         
     def get_mean(self):
         return self.mean if self.mean is not None else 0
         
+
+    ## buggy version
+    # def get_std(self):
+    #     if self.count <= 1 or self.var is None:
+    #         return np.ones_like(self.mean) if self.mean is not None else 1.0
+    #     std = np.sqrt(self.var / self.count)
+    #     # Ensure no zeros to prevent division by zero during normalization
+    #     if isinstance(std, np.ndarray):
+    #         std[std < 1.0] = 1.0
+    #     return std
+
     def get_std(self):
         if self.count <= 1 or self.var is None:
             return np.ones_like(self.mean) if self.mean is not None else 1.0
-        std = np.sqrt(self.var / self.count)
+        std = np.sqrt(self.var)  # Simply take square root of variance
         # Ensure no zeros to prevent division by zero during normalization
         if isinstance(std, np.ndarray):
             std[std < 1.0] = 1.0
@@ -100,31 +116,112 @@ class PerFeatureRunningStats:
         self.feature_stats = {}  # Dict[feature_name, RunningStats]
         self.CONFIG = None
     
-    def write_stats_to_file(self, feature_normalization_stats_file):
-        """Save all feature statistics to file"""
-        save_data = {}
-        for feature_name, stats in self.feature_stats.items():
-            save_data[feature_name] = {
-                'count': stats.count,
-                'mean': stats.mean,
-                'var': stats.var,
-                'feature_names': stats.feature_names
-            }
+    ## old pkl format
+    # def write_stats_to_file(self, feature_normalization_stats_file):
+    #     """Save all feature statistics to file"""
+    #     save_data = {}
+    #     for feature_name, stats in self.feature_stats.items():
+    #         save_data[feature_name] = {
+    #             'count': stats.count,
+    #             'mean': stats.mean,
+    #             'var': stats.var,
+    #             'feature_names': stats.feature_names
+    #         }
         
-        with open(feature_normalization_stats_file, 'wb') as f:
-            pickle.dump(save_data, f)
-        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {feature_normalization_stats_file}")
+    #     with open(feature_normalization_stats_file, 'wb') as f:
+    #         pickle.dump(save_data, f)
+    #     logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {feature_normalization_stats_file}")
 
-        # also write them in text file
-        stat_in_text_file = feature_normalization_stats_file.replace('.pkl', '.txt')
-        with open(stat_in_text_file, 'w') as f:
-            f.write(f"Per-feature statistics for {len(self.feature_stats)} features:\n")
+    #     # also write them in text file
+    #     stat_in_text_file = feature_normalization_stats_file.replace('.pkl', '.txt')
+    #     with open(stat_in_text_file, 'w') as f:
+    #         f.write(f"Per-feature statistics for {len(self.feature_stats)} features:\n")
+    #         for feature_name, stats in self.feature_stats.items():
+    #             f.write(f"{feature_name}: count={stats.count}, mean={stats.mean}, var={stats.var}\n")
+
+    def write_stats_to_file(self, feature_normalization_stats_file):
+        """Save all feature statistics to CSV file"""
+        csv_filename = feature_normalization_stats_file.replace('.pkl', '.csv') # Ensure .csv extension
+        
+        with open(csv_filename, 'w', newline='') as csvfile:
+            fieldnames = ['feature_name', 'stats_type', 'value']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
             for feature_name, stats in self.feature_stats.items():
-                f.write(f"{feature_name}: count={stats.count}, mean={stats.mean}, var={stats.var}\n")
+                writer.writerow({'feature_name': feature_name, 'stats_type': 'count', 'value': stats.count})
+                
+                # Handle mean and var: extract scalar if it's a single-element array
+                mean_value_to_write = stats.mean
+                if isinstance(stats.mean, np.ndarray) and stats.mean.size == 1:
+                    mean_value_to_write = stats.mean.item() # .item() gets the scalar from a 0-d or 1-d array
+                else:
+                    assert False, f"Expected stats.mean to be a scalar or single-element array, got {type(stats.mean)} with size {stats.mean.size} for feature {feature_name}"
+                var_value_to_write = stats.var
+                if isinstance(stats.var, np.ndarray) and stats.var.size == 1:
+                    var_value_to_write = stats.var.item() # .item() gets the scalar from a 0-d or 1-d array
+                else:
+                    assert False, f"Expected stats.var to be a scalar or single-element array, got {type(stats.var)} with size {stats.var.size} for feature {feature_name}"
+                writer.writerow({'feature_name': feature_name, 'stats_type': 'mean', 'value': mean_value_to_write})
+                writer.writerow({'feature_name': feature_name, 'stats_type': 'var', 'value': var_value_to_write})
+        
+        logger.info(f"Saved per-feature statistics for {len(self.feature_stats)} features to {csv_filename}")
+
         
     @classmethod
     def create_new_empty_instance(cls):
         return cls()
+
+    ## old pkl format
+    # @classmethod
+    # def create_new_instance_with_stats_file(cls, feature_normalization_stats_file):
+    #     if not os.path.exists(feature_normalization_stats_file):
+    #         logger.error(f"Feature normalization stats file {feature_normalization_stats_file} does not exist.")
+    #         assert False
+    #     instance = cls()
+    #     try:
+    #         with open(feature_normalization_stats_file, 'rb') as pkl_file:
+    #             save_data = pickle.load(pkl_file)
+            
+    #         # Validate it's the expected per-feature format
+    #         if not isinstance(save_data, dict):
+    #             logger.error(f"Invalid file format in {feature_normalization_stats_file}. Expected dictionary format.")
+    #             assert False
+
+    #         # Check if it looks like per-feature format (each value should be a dict with stats)
+    #         for feature_name, stats_data in save_data.items():
+    #             if not isinstance(stats_data, dict) or 'count' not in stats_data:
+    #                 logger.error(f"Invalid per-feature format in {feature_normalization_stats_file}. Feature '{feature_name}' missing required fields.")
+    #                 assert False
+            
+    #         # New format - per-feature statistics
+    #         for feature_name, stats_data in save_data.items():
+    #             stats = RunningStats(feature_names=stats_data['feature_names'])
+    #             stats.count = stats_data.get('count', 0)
+    #             stats.mean = stats_data.get('mean')
+    #             stats.var = stats_data.get('var')
+    #             instance.feature_stats[feature_name] = stats
+    #         logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {feature_normalization_stats_file}")
+    #     except Exception as e:
+    #         logger.error(f"Error loading statistics file {feature_normalization_stats_file}: {e}. Expected per-feature format.")
+    #         # print pickle file
+    #         try:
+    #             with open(feature_normalization_stats_file, 'rb') as f:
+    #                 content = pickle.load(f) # Use pickle.load() to deserialize the content
+    #                 logger.error(f"Content of {feature_normalization_stats_file}:\n{content}")
+    #             logger.error("Please ensure the file is in the correct per-feature format.")
+    #         except FileNotFoundError:
+    #             logger.error(f"Error: The file '{feature_normalization_stats_file}' was not found.")
+    #         except pickle.UnpicklingError as e:
+    #             logger.error(f"Error: Could not unpickle the file '{feature_normalization_stats_file}'. It might be corrupted or not a valid pickle file. Details: {e}")
+    #         except Exception as e:
+    #             logger.error(f"An unexpected error occurred: {e}")
+    #         assert False
+    #     # print all features and std, mean, and count
+    #     logger.info("Per-feature statistics loaded:")
+    #     for feature_name, stats in instance.feature_stats.items():
+    #         logger.info(f"{feature_name}: count={stats.count}, mean={stats.mean}, std={stats.get_std()}")
+    #     return instance
 
     @classmethod
     def create_new_instance_with_stats_file(cls, feature_normalization_stats_file):
@@ -133,46 +230,64 @@ class PerFeatureRunningStats:
             assert False
         instance = cls()
         try:
-            with open(feature_normalization_stats_file, 'rb') as pkl_file:
-                save_data = pickle.load(pkl_file)
-            
-            # Validate it's the expected per-feature format
-            if not isinstance(save_data, dict):
-                logger.error(f"Invalid file format in {feature_normalization_stats_file}. Expected dictionary format.")
-                assert False
+            with open(feature_normalization_stats_file, 'r', newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                
+                # Temporary dictionary to accumulate stats for each feature
+                temp_feature_data = {}
 
-            # Check if it looks like per-feature format (each value should be a dict with stats)
-            for feature_name, stats_data in save_data.items():
-                if not isinstance(stats_data, dict) or 'count' not in stats_data:
-                    logger.error(f"Invalid per-feature format in {feature_normalization_stats_file}. Feature '{feature_name}' missing required fields.")
-                    assert False
+                for row in reader:
+                    feature_name = row['feature_name']
+                    stats_type = row['stats_type']
+                    value_str = row['value']
+                    logger.info(f"Loading normalization stats, feature_name={feature_name}, stats_type={stats_type}, value={value_str}")
+                    if feature_name not in temp_feature_data:
+                        temp_feature_data[feature_name] = {'count': 0, 'mean': None, 'var': None, 'feature_names': feature_name}
+                    
+                    if stats_type == 'count':
+                        temp_feature_data[feature_name]['count'] = int(value_str)
+                    elif stats_type == 'mean':
+                        try:
+                            # Attempt to load as JSON array, otherwise treat as scalar
+                            temp_feature_data[feature_name]['mean'] = np.array(json.loads(value_str))
+                        except json.JSONDecodeError:
+                            temp_feature_data[feature_name]['mean'] = float(value_str)
+                    elif stats_type == 'var':
+                        try:
+                            # Attempt to load as JSON array, otherwise treat as scalar
+                            temp_feature_data[feature_name]['var'] = np.array(json.loads(value_str))
+                        except json.JSONDecodeError:
+                            temp_feature_data[feature_name]['var'] = float(value_str)
             
-            # New format - per-feature statistics
-            for feature_name, stats_data in save_data.items():
+            # Populate PerFeatureRunningStats instance from accumulated data
+            for feature_name, stats_data in temp_feature_data.items():
                 stats = RunningStats(feature_names=stats_data['feature_names'])
-                stats.count = stats_data.get('count', 0)
-                stats.mean = stats_data.get('mean')
-                stats.var = stats_data.get('var')
+                stats.count = stats_data['count']
+                stats.mean = stats_data['mean']
+                stats.var = stats_data['var']
                 instance.feature_stats[feature_name] = stats
             
             logger.info(f"Loaded per-feature statistics for {len(instance.feature_stats)} features from {feature_normalization_stats_file}")
             
         except Exception as e:
-            logger.error(f"Error loading statistics file {feature_normalization_stats_file}: {e}. Expected per-feature format.")
-            # print pickle file
+            logger.error(f"Error loading statistics file {feature_normalization_stats_file}: {e}. Expected per-feature CSV format.")
             try:
-                with open(feature_normalization_stats_file, 'rb') as f:
-                    content = pickle.load(f) # Use pickle.load() to deserialize the content
+                # Attempt to read the file content as text for better debugging
+                with open(feature_normalization_stats_file, 'r') as f:
+                    content = f.read()
                     logger.error(f"Content of {feature_normalization_stats_file}:\n{content}")
-                logger.error("Please ensure the file is in the correct per-feature format.")
+                logger.error("Please ensure the file is in the correct per-feature CSV format.")
             except FileNotFoundError:
-                logger.error(f"Error: The file '{feature_normalization_stats_file}' was not found.")
-            except pickle.UnpicklingError as e:
-                logger.error(f"Error: Could not unpickle the file '{feature_normalization_stats_file}'. It might be corrupted or not a valid pickle file. Details: {e}")
-            except Exception as e:
-                logger.error(f"An unexpected error occurred: {e}")
+                logger.error(f"Error: The file '{feature_normalization_stats_file}' was not found after initial check.")
+            except Exception as e_inner:
+                logger.error(f"An unexpected error occurred trying to read file content: {e_inner}")
 
             assert False
+
+        # print all features and std, mean, and count
+        logger.info("Per-feature statistics loaded:")
+        for feature_name, stats in instance.feature_stats.items():
+            logger.info(f"{feature_name}: count={stats.count}, mean={stats.mean}, std={stats.get_std()}")
         
         return instance
     
@@ -282,27 +397,36 @@ def normalize_features_for_training(df: pd.DataFrame, stats_instance: PerFeature
 
     df = try_reward_amplification(df, stats_instance.CONFIG)
     
-    return df, stats_instance, normalization_summary
+    return df
 
 
-def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatureRunningStats) -> pd.DataFrame:
+def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatureRunningStats, request_id) -> pd.DataFrame:
+    logger.debug(f"request_id,{request_id},Features to normalize: {list(stats_instance.feature_stats.keys())}")
+
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
     # pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
     pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64'] and 'gpu_model' not in col]
     if stats_instance.count > 0:
-        logger.debug("Applying normalize_features_for_inference")
+        logger.info(f"request_id,{request_id},Applying normalize_features_for_inference")
         if stats_instance.CONFIG["ENABLE_REQUEST_NORMALIZATION"]:    
             # 1. Request features - only normalize if they were normalized in training
             for feature in request_features:
                 if feature in df.columns and feature in stats_instance.feature_stats:
+                    logger.info(f"request_id,{request_id} 🔧 NORMALIZING {feature}, std: {stats_instance.feature_stats[feature].get_std()}, mean: {stats_instance.feature_stats[feature].mean}, count: {stats_instance.feature_stats[feature].count}")
+                    logger.info(f"request_id,{request_id}  BEFORE: {df[feature].iloc[0]:.4f}")
+                    
                     feature_data = df[feature].values.reshape(-1, 1)
+                    logger.info(f"request_id,{request_id}  feature_data shape: {feature_data.shape}, value: {feature_data[0][0]:.4f}")
+                    
                     normalized_feature = stats_instance.feature_stats[feature].normalize(feature_data)
+                    logger.info(f"request_id,{request_id}  normalized_feature shape: {normalized_feature.shape}, value: {normalized_feature[0][0]:.4f}")
+                    
                     df[feature] = normalized_feature.flatten()
-                    logger.debug(f"✅ Normalized request feature {feature} for inference")
+                    logger.info(f"request_id,{request_id}  AFTER: {df[feature].iloc[0]:.4f}")
                 else:
-                    logger.debug(f"Kept raw values for request feature {feature}")
+                    logger.info(f"request_id,{request_id},Kept raw values for request feature {feature}")
         else:
-            logger.debug("Request feature normalization DISABLED for inference")
+            logger.info(f"request_id,{request_id},Request feature normalization DISABLED for inference")
 
         # 2. Pod features - normalize those that were normalized in training
         pod_normalized_count = 0
@@ -315,7 +439,7 @@ def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatur
                     normalized_feature = stats_instance.feature_stats[feature].normalize(feature_data)
                     df[feature] = normalized_feature.flatten()
                     pod_normalized_count += 1
-                    logger.debug(f"Normalized pod feature {feature} for inference")
+                    logger.debug(f"request_id,{request_id},Normalized pod feature {feature} for inference")
             
             amplified_count = 0
             # 3. Apply same critical feature amplification as training
@@ -325,12 +449,12 @@ def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatur
                     if feature in df.columns:
                         df[feature] = df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
                         amplified_count += 1
-                        logger.debug(f"Amplified critical feature {feature} for inference")
-            logger.debug(f"Applied normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
+                        logger.info(f"request_id,{request_id},Amplified critical feature {feature} for inference")
+            logger.info(f"request_id,{request_id},Applied normalization: {pod_normalized_count} pod features normalized, {amplified_count} amplified")
         else:
-            logger.debug("Pod feature normalization DISABLED for inference")
+            logger.info(f"request_id,{request_id},Pod feature normalization DISABLED for inference")
     else:
-        logger.warning(f"No normalization stats_instance available for inference")
+        logger.warning(f"request_id,{request_id},No normalization stats_instance available for inference")
     
     return df
 
@@ -359,12 +483,15 @@ def create_new_instance_with_stats_file(feature_normalization_stats_file: str) -
 def create_new_empty_instance() -> PerFeatureRunningStats:
     return PerFeatureRunningStats.create_new_empty_instance()
 
-def get_stats_instance(feature_normalization_stats_file, CONFIG):
-    if os.path.exists(feature_normalization_stats_file):
-        logger.info(f"Creating new stats instance from {feature_normalization_stats_file}")
+def get_stats_instance(CONFIG, feature_normalization_stats_file=None):
+    if feature_normalization_stats_file is not None and not os.path.exists(feature_normalization_stats_file):
+        logger.error(f"Feature normalization stats file {feature_normalization_stats_file} does not exist.")
+        assert False
+    if feature_normalization_stats_file is not None and os.path.exists(feature_normalization_stats_file):
+        logger.info(f"Creating stats instance from {feature_normalization_stats_file}")
         stats_instance = create_new_instance_with_stats_file(feature_normalization_stats_file)
     else:
-        logger.info(f"{feature_normalization_stats_file} does not exist. Creating new EMPTY stats instance")
+        logger.info(f"{feature_normalization_stats_file} does not exist. Creating stats instance EMPTY one.")
         stats_instance =  create_new_empty_instance()
     stats_instance.CONFIG = CONFIG
     return stats_instance
