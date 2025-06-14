@@ -23,7 +23,7 @@ python_cmd="python3 offline_routing_agent.py ${training_data_dir}/data.csv --mod
 
 ## Execute the command, redirecting output
 ${python_cmd} &> output.log
-# ${python_cmd}
+# ${python_cmd} | tee output.log
 
 # Check the exit status of the previous command
 if [ $? -eq 0 ]; then
