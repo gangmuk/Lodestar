@@ -123,13 +123,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			s.routingContexts.Store(requestID, routingCtx)
 		}
 
-		prefill_tokens, err := utils.TokenizeInputText(routingCtx.Message)
-
+		// prefill_tokens, err := utils.TokenizeInputText(routingCtx.Message)
+		prefill_tokens, err := utils.TokenizeInputTextToByteArray(routingCtx.Message)
 		if err != nil {
 			klog.Errorf("requestID: %s, Tokenization failed: %v", routingCtx.RequestID, err)
 		}
+		// utils.SetNumPrefillTokensForRequest(routingCtx.RequestID, len(prefill_tokens))
 		utils.SetNumPrefillTokensForRequest(routingCtx.RequestID, len(prefill_tokens))
-		klog.V(5).Infof("SetNumPrefillTokensForRequest, %s, %d", routingCtx.RequestID, len(prefill_tokens))
+		klog.Infof("SetNumPrefillTokensForRequest, %s, %d", routingCtx.RequestID, len(prefill_tokens))
 
 		utils.RequestTimings.Store(requestID, &RequestTiming{
 			startTime:         time.Now(),
@@ -138,7 +139,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			decodeTokenCount:  0,
 			IsPrefill:         true,
 		})
-		utils.SetPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
+		// utils.SetPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
+		utils.SetByteArrayPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
 		readyPods := utils.FilterRoutablePods(podsArr.All())
 		utils.StoreInflightRequestsForTheRequest(routingCtx.RequestID)
 		targetMetrics := [...]string{

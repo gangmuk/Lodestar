@@ -661,6 +661,9 @@ var (
 	requestToPrefillTokensMutex sync.RWMutex
 	requestToPrefillTokens      map[string][]int // requestID -> num prefill tokens
 
+	requestToByteArrayPrefillTokensMutex sync.RWMutex
+	requestToByteArrayPrefillTokens      map[string][]byte // requestID -> num prefill tokens
+
 	requestToNumDecodeTokensMutex sync.RWMutex
 	requestToNumDecodeTokens      map[string]int // requestID -> num decode tokens
 
@@ -679,6 +682,8 @@ var (
 	vllmNumRequestsWaitingMutex sync.RWMutex
 	vllmNumRequestsWaiting      map[string]map[string]float64 // requestID -> (podIP -> num requests waiting
 
+	GPUModelMutex sync.RWMutex
+	GPUModel      = make(map[string]string) // podIP -> GPU model
 )
 
 func init() {
@@ -727,8 +732,8 @@ func init() {
 	requestToNumPrefillTokensMutex = sync.RWMutex{}
 	requestToNumPrefillTokens = make(map[string]int)
 
-	requestToPrefillTokensMutex = sync.RWMutex{}
-	requestToPrefillTokens = make(map[string][]int)
+	requestToByteArrayPrefillTokensMutex = sync.RWMutex{}
+	requestToByteArrayPrefillTokens = make(map[string][]byte)
 
 	requestToNumDecodeTokensMutex = sync.RWMutex{}
 	requestToNumDecodeTokens = make(map[string]int)
@@ -747,6 +752,32 @@ func init() {
 
 	vllmNumRequestsWaiting = make(map[string]map[string]float64)
 	vllmNumRequestsWaitingMutex = sync.RWMutex{}
+
+	GPUModel = make(map[string]string) // podIP -> GPU model
+	GPUModelMutex = sync.RWMutex{}
+	klog.Info("Initialized global variables for AIBRIX RL Router")
+}
+
+func SetGPUModel(podIP string, gpuModel string) {
+	GPUModelMutex.Lock()
+	defer GPUModelMutex.Unlock()
+	if _, exists := GPUModel[podIP]; !exists {
+		GPUModel[podIP] = gpuModel
+		klog.V(5).Infof("Set GPU model for pod %s to %s", podIP, gpuModel)
+	}
+}
+
+func GetGPUModel(podIP string) (string, bool) {
+	GPUModelMutex.RLock()
+	defer GPUModelMutex.RUnlock()
+
+	gpuModel, exists := GPUModel[podIP]
+	if !exists {
+		klog.Warningf("Failed GetGPUModel for pod IP: %s, not found. Returning default value: NVIDIA-L20", podIP)
+		return "NVIDIA-L20", false
+	}
+	klog.V(5).Infof("GetGPUModel for podIP %s: %s", podIP, gpuModel)
+	return gpuModel, true
 }
 
 func SetNumTrains(numTrains int) {
@@ -944,6 +975,15 @@ func GetrequestToPrefillTokensMutex() *sync.RWMutex {
 	return &requestToPrefillTokensMutex
 }
 
+func SetPrefillTokensForRequest(requestID string, prefillTokens []int) {
+	requestToPrefillTokensMutex.Lock()
+	defer requestToPrefillTokensMutex.Unlock()
+	if _, ok := requestToPrefillTokens[requestID]; !ok {
+		requestToPrefillTokens[requestID] = make([]int, 0)
+	}
+	requestToPrefillTokens[requestID] = prefillTokens
+}
+
 func GetPrefillTokensForRequest(requestID string) []int {
 	requestToPrefillTokensMutex.RLock()
 	defer requestToPrefillTokensMutex.RUnlock()
@@ -953,13 +993,48 @@ func GetPrefillTokensForRequest(requestID string) []int {
 	return requestToPrefillTokens[requestID]
 }
 
-func SetPrefillTokensForRequest(requestID string, prefillTokens []int) {
+func CleanupPrefillTokensForRequest(requestID string) {
 	requestToPrefillTokensMutex.Lock()
 	defer requestToPrefillTokensMutex.Unlock()
-	if _, ok := requestToPrefillTokens[requestID]; !ok {
-		requestToPrefillTokens[requestID] = make([]int, 0)
+	if _, exists := requestToPrefillTokens[requestID]; exists {
+		delete(requestToPrefillTokens, requestID)
+		klog.Infof("CleanupPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
+	} else {
+		klog.Errorf("CleanupPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
 	}
-	requestToPrefillTokens[requestID] = prefillTokens
+}
+
+func GetrequestToByteArrayPrefillTokensMutex() *sync.RWMutex {
+	return &requestToByteArrayPrefillTokensMutex
+}
+
+func SetByteArrayPrefillTokensForRequest(requestID string, prefillTokens []byte) {
+	requestToByteArrayPrefillTokensMutex.Lock()
+	defer requestToByteArrayPrefillTokensMutex.Unlock()
+	if _, ok := requestToByteArrayPrefillTokens[requestID]; !ok {
+		return
+	}
+	requestToByteArrayPrefillTokens[requestID] = prefillTokens
+}
+
+func GetByteArrayPrefillTokensForRequest(requestID string) []byte { // Change return type from []int to []byte
+	requestToByteArrayPrefillTokensMutex.RLock()
+	defer requestToByteArrayPrefillTokensMutex.RUnlock()
+	if _, ok := requestToByteArrayPrefillTokens[requestID]; !ok {
+		return nil
+	}
+	return requestToByteArrayPrefillTokens[requestID]
+}
+
+func CleanupByteArrayPrefillTokensForRequest(requestID string) {
+	requestToByteArrayPrefillTokensMutex.Lock()
+	defer requestToByteArrayPrefillTokensMutex.Unlock()
+	if _, exists := requestToByteArrayPrefillTokens[requestID]; exists {
+		delete(requestToByteArrayPrefillTokens, requestID)
+		klog.Infof("CleanupByteArrayPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
+	} else {
+		klog.Errorf("CleanupByteArrayPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
+	}
 }
 
 func GetrequestAllPodsKVCacheMutex() *sync.RWMutex {

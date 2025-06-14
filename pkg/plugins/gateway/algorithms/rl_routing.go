@@ -63,7 +63,8 @@ type rlOnlineRouter struct {
 func NewRLOnlineRouter() (types.Router, error) {
 	var tokenizerObj tokenizer.Tokenizer
 	// tokenizerObj = tokenizer.NewTiktokenTokenizer()
-	tokenizerObj = tokenizer.NewCharacterTokenizer()
+	// tokenizerObj = tokenizer.NewCharacterTokenizer()
+	tokenizerObj = tokenizer.NewWordTokenizer()
 
 	c, err := cache.Get()
 	if err != nil {
@@ -283,16 +284,18 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Status.PodIP] = struct{}{}
 	}
-	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message) // character tokenizer by four characters
-	// num_words = len(ctx.Message.split(" "))
-	if err != nil {
-		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
-		return "", err
-	}
+
+	// input_tokens, err := r.tokenizer.TokenizeInputText(ctx.Message) // character tokenizer by four
+	// if err != nil {
+	// 	klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
+	// 	return "", err
+	// }
+	input_tokens := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
+	utils.CleanupByteArrayPrefillTokensForRequest(ctx.RequestID)
 
 	var prefixHashes []uint64
 	var matchedPods map[string]int
-	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens, ctx.Model, readyPodsMap)
 	if len(matchedPods) == 0 {
 		klog.Infof("requestID: %s, No found matchedpods. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
 		for _, pod := range readyPods {
@@ -322,8 +325,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	var log string
 	log_construction_start_time := time.Now()
 	if utils.UseRealRequest == "true" {
-		numInputTokens := len(tokens)
-		numOutputTokens := 128 // Placeholder for output tokens
+		numInputTokens := len(input_tokens)
+		numOutputTokens := 128 // NOTE: hardcoded. This is placeholder for output tokens
 		numTotalTokens := numInputTokens + numOutputTokens
 		klog.Infof("utils.UseRealRequest: %s, requestID: %s, numInputTokens: %d, numOutputTokens: %d(hardcoded), numTotalTokens: %d", utils.UseRealRequest, ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens)
 

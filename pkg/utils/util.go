@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,6 +42,29 @@ func TokenizeInputText(text string) ([]int, error) {
 	// encode
 	token := tke.Encode(text, nil, nil)
 	return token, nil
+}
+
+func TokenizeInputTextToByteArray(text string) ([]byte, error) {
+	// Use exact same tiktoken logic as TokenizeInputText
+	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
+	tke, err := tiktoken.GetEncoding(encoding)
+	if err != nil {
+		return nil, err
+	}
+
+	// encode - identical to TokenizeInputText
+	tokenIDs := tke.Encode(text, nil, nil)
+
+	// Convert []int to []byte
+	// Each int (token ID) becomes 4 bytes (int32)
+	byteArray := make([]byte, len(tokenIDs)*4)
+
+	for i, tokenID := range tokenIDs {
+		// Convert each token ID to 4 bytes using little-endian encoding
+		binary.LittleEndian.PutUint32(byteArray[i*4:(i+1)*4], uint32(tokenID))
+	}
+
+	return byteArray, nil
 }
 
 func DetokenizeText(tokenIds []int) (string, error) {
