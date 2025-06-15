@@ -44,6 +44,7 @@ func TokenizeInputText(text string) ([]int, error) {
 	return token, nil
 }
 
+// NOTE: four bytes per token
 func TokenizeInputTextToByteArray(text string) ([]byte, error) {
 	// Use exact same tiktoken logic as TokenizeInputText
 	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
@@ -61,6 +62,7 @@ func TokenizeInputTextToByteArray(text string) ([]byte, error) {
 
 	for i, tokenID := range tokenIDs {
 		// Convert each token ID to 4 bytes using little-endian encoding
+		// NOTE: Force conversion to uint32 (four bytes), basically truncation.
 		binary.LittleEndian.PutUint32(byteArray[i*4:(i+1)*4], uint32(tokenID))
 	}
 

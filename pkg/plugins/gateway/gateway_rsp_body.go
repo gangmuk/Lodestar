@@ -246,14 +246,12 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			ret := utils.DecrementNumDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
 			klog.V(5).Infof("DecrementNumDecodeTokensForPod(%s) by %d, %d", routerCtx.TargetAddressWithoutPort(), timing.totalTokenCount, ret)
 
+			utils.SetNumOutputTokensForRequest(routerCtx.RequestID, int(usage.CompletionTokens))
+
 			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 			if utils.UseRealRequest == "true" {
 				utils.AddRequestLogMessage(routerCtx.RequestID, logMessage)
 			}
-			// for i := 0; i < 100; i++ {
-			// 	temp_id := fmt.Sprint(i)
-			// 	utils.AddRequestLogMessage(temp_id, example_log_message_1)
-			// }
 			utils.CleanupKVCacheHitRatio(routerCtx.RequestID)
 			utils.CleanupInflightRequests(routerCtx.RequestID)
 			utils.CleanupvLLMGPUKVCacheUsage(routerCtx.RequestID)
@@ -263,9 +261,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupNumPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupNumDecodeTokensForRequest(routerCtx.RequestID)
 			utils.CleanupRequestPodMetrics(routerCtx.RequestID)
+			utils.CleanupRawMessageForRequest(routerCtx.RequestID)
+			utils.CleanupByteArrayPrefillTokensForRequest(routerCtx.RequestID)
+			utils.CleanupHashOfPrefixHashesForRequest(routerCtx.RequestID)
 
 			headers = append(headers, timingHeaders...)
-			// }
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
 		}
@@ -647,7 +647,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["numPrefillTokensForAllPods"],
 		jsonStrings["numDecodeTokensForAllPods"],
 		utils.GetNumTrains(),
-		utils.GetNunFlush(),
+		utils.GetNumFlush(),
 	)
 
 	klog.Infof("%s", logMessage)
