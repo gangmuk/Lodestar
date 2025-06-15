@@ -266,6 +266,9 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
     unmapped_pods = df[df['gpu_model_encoded'].isna()]['selectedpod'].unique()
     if len(unmapped_pods) > 0:
         logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
+        logger.error(f"GPU_MAP in HYPERPARAMS: {gpu_mapping}")
+        unmapped_pods_gpu_models = df[df['selectedpod'].isin(unmapped_pods)]['gpu_model_encoded'].unique()
+        logger.error(f"Unmapped GPU models: {unmapped_pods_gpu_models}")
         logger.error(f"Available pod mappings: {list(gpu_mapping.keys())}")
         assert False, f"Unmapped GPU models found for pods: {unmapped_pods}"
 
@@ -567,23 +570,22 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
     """
     # Extract the single row as a dictionary (much faster than DataFrame operations)
     row = df.iloc[0].to_dict()
-    logger.info(f"Processing single row for inference workload: {row}")
-    logger.info(f"log_message in preprocess_single_row_fast: {log_message}")
+    logger.debug(f"Processing single row for inference workload: {row}")
+    logger.debug(f"log_message in preprocess_single_row_fast: {log_message}")
     
     # Quick validation
     if not row.get('podMetricsLastSecond'):
         logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
         logger.error(f"log_message: {log_message}")
         logger.error(f"Row data: {row}")
-        assert False
     
     # Get all pods from the row data
     pod_metrics = row['podMetricsLastSecond']
     all_pods = list(pod_metrics.keys())
     
-    logger.info(f"DEBUG: all_pods from podMetricsLastSecond: {all_pods}")
-    logger.info(f"DEBUG: pod_gpu_mapping keys: {list(HYPERPARAMS.get('pod_gpu_mapping', {}).keys())}")
-    logger.info(f"DEBUG: selectedpod from row: {row['selectedpod']}")
+    logger.debug(f"all_pods from podMetricsLastSecond: {all_pods}")
+    logger.debug(f"pod_gpu_mapping keys: {list(HYPERPARAMS.get('pod_gpu_mapping', {}).keys())}")
+    logger.debug(f"selectedpod from row: {row['selectedpod']}")
 
     if HYPERPARAMS and 'pod_gpu_id_mapping' in HYPERPARAMS:
         gpu_model_encoded = HYPERPARAMS['pod_gpu_id_mapping'].get(row['selectedpod'], 0)
@@ -677,7 +679,7 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
 def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, HYPERPARAMS):
     # input_file is None for inference workload, valid only for training workflow.
     parse_log_file_start_time = time.time()
-    logger.info(f"log_message in preprocess.main: {log_message}")
+    logger.debug(f"log_message in preprocess.main: {log_message}")
     ## Training path
     if input_file is not None:
         df, json_columns = parse_log_file(input_file)

@@ -28,7 +28,10 @@ ENV LOG_LEVEL=INFO
 
 EXPOSE 8080
 
-CMD ["/app/start.sh"]
+# CMD ["sh", "-c", "echo 'Container ready for manual execution' && tail -f /dev/null"]
+CMD ["python", "routing_agent_service.py"]
+
+# CMD ["/app/start.sh"]
 
 
 

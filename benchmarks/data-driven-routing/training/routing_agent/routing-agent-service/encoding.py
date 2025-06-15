@@ -732,7 +732,12 @@ class LLMRoutingDataProcessor:
                 pod_id = pod_id.replace('pod_', '')
                 if pod_id in all_pods_set:
                     pod_data[pod_id][feature] = df[col]
-        
+        if not pod_data:
+            logger.error("No pod data found in the DataFrame")
+            logger.error(f"df: {df}")
+            logger.error(f"Expected pod IDs: {all_pods_set}")
+            logger.error(f"Extracted pod data: {pod_data}")
+            assert False, "No pod data extracted"
         return pod_data
 
     
