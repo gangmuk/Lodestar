@@ -1,0 +1,72 @@
+{
+    "model_type": "simplified",
+    "hidden_dim": 32,
+    "batch_size": 32,
+    "lr": 0.01,
+    "weight_decay": 0.0001,
+    "exploration_rate": 0.1,
+    "training_epochs": 5,
+    "max_updates_per_epoch": 100,
+    "eval_interval": 10,
+    "custom_weight_initialization": true,
+    "entropy_bonus_factor": 0.01,
+    "learning_every_x_iter": 5,
+    "per_learn_reward_normalization": false,
+    "normalization": {
+        "SIGNAL_AMPLIFICATION_DEGREE": 1.0,
+        "REWARD_AMPLIFICATION_DEGREE": 2.0,
+        "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+        "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+        "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+        "ENABLE_POD_NORMALIZATION": true,
+        "ENABLE_REQUEST_NORMALIZATION": true,
+        "FEATURES_NORMALIZED": "{'pod_10.0.1.83-last_second_p99_ttft_ms', 'pod_10.0.1.83-inflight_requests', 'pod_10.0.3.11-running_requests', 'pod_10.0.1.47-last_second_total_requests', 'pod_10.0.3.53-last_second_avg_tpot_ms', 'pod_10.0.0.39-last_second_p99_ttft_ms', 'pod_10.0.3.53-last_second_total_decode_tokens', 'pod_10.0.3.27-running_requests', 'pod_10.0.3.53-inflight_requests', 'pod_10.0.3.11-last_second_p99_tpot_ms', 'pod_10.0.3.11-last_second_avg_tpot_ms', 'pod_10.0.1.47-prefill_tokens', 'pod_10.0.1.83-last_second_total_requests', 'pod_10.0.0.39-last_second_total_tokens', 'pod_10.0.3.27-inflight_requests', 'pod_10.0.1.33-last_second_total_requests', 'pod_10.0.1.47-running_requests', 'pod_10.0.1.33-running_requests', 'pod_10.0.0.39-inflight_requests', 'pod_10.0.3.53-last_second_total_tokens', 'pod_10.0.0.39-waiting_requests', 'pod_10.0.1.33-last_second_avg_ttft_ms', 'pod_10.0.3.11-last_second_p99_ttft_ms', 'pod_10.0.1.47-inflight_requests', 'pod_10.0.1.33-last_second_total_prefill_tokens', 'pod_10.0.1.47-last_second_p99_ttft_ms', 'pod_10.0.1.47-last_second_p99_tpot_ms', 'pod_10.0.1.33-decode_tokens', 'pod_10.0.3.11-waiting_requests', 'pod_10.0.1.33-waiting_requests', 'pod_10.0.3.11-last_second_total_requests', 'pod_10.0.1.83-last_second_total_decode_tokens', 'pod_10.0.3.11-last_second_total_prefill_tokens', 'pod_10.0.3.53-running_requests', 'pod_10.0.1.83-running_requests', 'pod_10.0.0.39-running_requests', 'pod_10.0.3.11-last_second_total_decode_tokens', 'pod_10.0.1.83-decode_tokens', 'pod_10.0.1.83-prefill_tokens', 'pod_10.0.1.33-last_second_p99_ttft_ms', 'pod_10.0.1.33-inflight_requests', 'pod_10.0.1.47-waiting_requests', 'pod_10.0.3.27-last_second_total_prefill_tokens', 'pod_10.0.3.27-decode_tokens', 'pod_10.0.0.39-last_second_p99_tpot_ms', 'pod_10.0.0.39-last_second_total_decode_tokens', 'pod_10.0.1.33-last_second_total_tokens', 'pod_10.0.3.27-last_second_total_decode_tokens', 'pod_10.0.1.33-last_second_total_decode_tokens', 'pod_10.0.3.27-last_second_p99_tpot_ms', 'pod_10.0.3.27-last_second_total_requests', 'total_tokens', 'pod_10.0.0.39-last_second_total_requests', 'pod_10.0.1.47-decode_tokens', 'pod_10.0.3.27-waiting_requests', 'pod_10.0.1.47-last_second_avg_ttft_ms', 'pod_10.0.3.53-waiting_requests', 'pod_10.0.0.39-last_second_avg_tpot_ms', 'pod_10.0.1.47-last_second_total_decode_tokens', 'pod_10.0.0.39-gpu_kv_cache', 'pod_10.0.3.27-last_second_avg_ttft_ms', 'pod_10.0.1.47-last_second_avg_tpot_ms', 'pod_10.0.3.11-last_second_avg_ttft_ms', 'pod_10.0.3.11-prefill_tokens', 'pod_10.0.1.47-last_second_total_tokens', 'pod_10.0.1.83-last_second_total_tokens', 'pod_10.0.3.11-inflight_requests', 'pod_10.0.1.83-last_second_avg_tpot_ms', 'pod_10.0.3.53-decode_tokens', 'pod_10.0.1.83-last_second_total_prefill_tokens', 'pod_10.0.3.27-last_second_avg_tpot_ms', 'pod_10.0.1.83-last_second_avg_ttft_ms', 'pod_10.0.0.39-last_second_avg_ttft_ms', 'pod_10.0.1.83-last_second_p99_tpot_ms', 'pod_10.0.1.33-prefill_tokens', 'pod_10.0.0.39-decode_tokens', 'pod_10.0.3.27-last_second_p99_ttft_ms', 'pod_10.0.1.33-last_second_avg_tpot_ms', 'input_tokens', 'pod_10.0.3.11-decode_tokens', 'pod_10.0.3.53-last_second_total_requests', 'pod_10.0.3.11-last_second_total_tokens', 'pod_10.0.1.83-waiting_requests', 'pod_10.0.3.53-prefill_tokens', 'pod_10.0.3.53-last_second_p99_ttft_ms', 'pod_10.0.3.53-last_second_p99_tpot_ms', 'pod_10.0.3.27-prefill_tokens', 'pod_10.0.0.39-last_second_total_prefill_tokens', 'pod_10.0.3.53-last_second_avg_ttft_ms', 'pod_10.0.3.27-last_second_total_tokens', 'pod_10.0.1.47-last_second_total_prefill_tokens', 'pod_10.0.3.53-last_second_total_prefill_tokens', 'pod_10.0.0.39-prefill_tokens', 'pod_10.0.1.33-last_second_p99_tpot_ms'}",
+        "NUM_FEATURES_NORMALIZED": 94,
+        "FEATURE_AMPLIFICATION": false,
+        "FEATURES_AMPLIFIED": "set()",
+        "NUM_FEATURES_AMPLIFIED": 0
+    },
+    "dataset_analysis": {
+        "total_samples": 1599,
+        "imbalance_ratio": 2.172185465241047,
+        "reward_gap": 0.4190806895494461,
+        "reward_distribution": {
+            "mean": 0.3880692145654133,
+            "std": 0.11968468807713681,
+            "min": 0.14204512536525726,
+            "p10": 0.2687029778957367,
+            "p20": 0.3564933955669403,
+            "p30": 0.3665489435195923,
+            "p40": 0.3772696673870087,
+            "p50": 0.38832297921180725,
+            "p60": 0.4182020902633667,
+            "p70": 0.4432625472545624,
+            "p80": 0.4586856961250305,
+            "p90": 0.5027463734149933,
+            "p99": 0.5552878707647323,
+            "max": 0.5611258149147034
+        },
+        "action_distribution": "tensor([239, 151, 214, 260, 328, 250, 157])"
+    },
+    "GPU_MAP": {
+        "NVIDIA-L20": 0
+    },
+    "pod_gpu_mapping": {
+        "10.0.1.33": "NVIDIA-L20",
+        "10.0.3.27": "NVIDIA-L20",
+        "10.0.3.11": "NVIDIA-L20",
+        "10.0.0.39": "NVIDIA-L20",
+        "10.0.3.53": "NVIDIA-L20",
+        "10.0.1.47": "NVIDIA-L20",
+        "10.0.1.83": "NVIDIA-L20"
+    },
+    "pod_gpu_id_mapping": {
+        "10.0.1.33": 0,
+        "10.0.3.27": 0,
+        "10.0.3.11": 0,
+        "10.0.0.39": 0,
+        "10.0.3.53": 0,
+        "10.0.1.47": 0,
+        "10.0.1.83": 0
+    }
+}
