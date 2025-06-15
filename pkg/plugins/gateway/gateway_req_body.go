@@ -124,23 +124,30 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		// prefill_tokens, err := utils.TokenizeInputText(routingCtx.Message)
-		prefill_tokens, err := utils.TokenizeInputTextToByteArray(routingCtx.Message)
+		// prefill_token_len := len(prefill_tokens)
+
+		utils.SetRawMessageForRequest(routingCtx.RequestID, routingCtx.Message) // Cleanup in gateway_rsp_body.go
+
+		prefill_tokens, err := utils.TokenizeInputTextToByteArray(routingCtx.Message) // NOTE: four bytes per token
+		prefill_token_len := len(prefill_tokens) / 4
+
 		if err != nil {
 			klog.Errorf("requestID: %s, Tokenization failed: %v", routingCtx.RequestID, err)
 		}
-		// utils.SetNumPrefillTokensForRequest(routingCtx.RequestID, len(prefill_tokens))
-		utils.SetNumPrefillTokensForRequest(routingCtx.RequestID, len(prefill_tokens))
-		klog.Infof("SetNumPrefillTokensForRequest, %s, %d", routingCtx.RequestID, len(prefill_tokens))
+		utils.SetNumPrefillTokensForRequest(routingCtx.RequestID, prefill_token_len)
+		klog.Infof("SetNumPrefillTokensForRequest, %s, %d", routingCtx.RequestID, prefill_token_len)
 
 		utils.RequestTimings.Store(requestID, &RequestTiming{
 			startTime:         time.Now(),
-			totalTokenCount:   int64(len(prefill_tokens)),
-			prefillTokenCount: int64(len(prefill_tokens)),
+			totalTokenCount:   int64(prefill_token_len),
+			prefillTokenCount: int64(prefill_token_len),
 			decodeTokenCount:  0,
 			IsPrefill:         true,
 		})
+
 		// utils.SetPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
-		utils.SetByteArrayPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
+		utils.SetByteArrayPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens) // Cleanup in gateway_rsp_body.go
+
 		readyPods := utils.FilterRoutablePods(podsArr.All())
 		utils.StoreInflightRequestsForTheRequest(routingCtx.RequestID)
 		targetMetrics := [...]string{
@@ -178,8 +185,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 		utils.IncrementNumInflightForPod(routingCtx.RequestID, targetPodIPWithPort)
 
-		ret := utils.IncrementNumPrefillTokensForPod(targetPodIPWithPort, len(prefill_tokens))
-		klog.Infof("IncrementNumPrefillTokensForPod(%s) by %d, %d", targetPodIPWithPort, len(prefill_tokens), ret)
+		ret := utils.IncrementNumPrefillTokensForPod(targetPodIPWithPort, prefill_token_len)
+		klog.Infof("IncrementNumPrefillTokensForPod(%s) by %d, %d", targetPodIPWithPort, prefill_token_len, ret)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
 			return generateErrorResponse(

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
@@ -612,9 +614,9 @@ var NumTrains int
 var NumFlush int
 
 var (
-	UseRealRequest = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
-	FirstRequestStartTime = 0
-	RunningPodRegistry      = make(map[string]string) // Map to track running pods: podIP -> Pod object
+	UseRealRequest                = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
+	FirstRequestStartTime   int64 = 0
+	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
 
 	RequestTimings   sync.Map           // Map to track request timing information: requestID -> *RequestTiming
@@ -658,6 +660,18 @@ var (
 
 	requestToNumPrefillTokensMutex sync.RWMutex
 	requestToNumPrefillTokens      map[string]int // requestID -> num prefill tokens
+
+	requestToRawMessageMutex sync.RWMutex
+	requestToRawMessage      map[string]string // requestID -> raw message (byte array)
+
+	requestToHashOfPrefixHashesMutex sync.RWMutex
+	requestToHashOfPrefixHashes      map[string]uint64 // requestID -> hash of prefix hashes (used to track output tokens)
+
+	hashToNumOutputTokensMutex sync.RWMutex
+	hashToNumOutputTokens      = make(map[uint64]int) // hash value of message -> num output tokens
+
+	MessageToNumOutputTokensMutex sync.RWMutex
+	MessageToNumOutputTokens      = make(map[uint64]int) // hash value of message -> num output tokens
 
 	requestToPrefillTokensMutex sync.RWMutex
 	requestToPrefillTokens      map[string][]int // requestID -> num prefill tokens
@@ -733,6 +747,15 @@ func init() {
 
 	requestToNumPrefillTokensMutex = sync.RWMutex{}
 	requestToNumPrefillTokens = make(map[string]int)
+
+	requestToRawMessageMutex = sync.RWMutex{}
+	requestToRawMessage = make(map[string]string) // requestID -> raw message (byte array)
+
+	requestToHashOfPrefixHashesMutex = sync.RWMutex{}
+	requestToHashOfPrefixHashes = make(map[string]uint64) // requestID -> hash of prefix hashes
+
+	hashToNumOutputTokensMutex = sync.RWMutex{}
+	hashToNumOutputTokens = make(map[uint64]int) // hash value of message -> num output tokens
 
 	requestToByteArrayPrefillTokensMutex = sync.RWMutex{}
 	requestToByteArrayPrefillTokens = make(map[string][]byte)
@@ -1021,18 +1044,24 @@ func GetrequestToByteArrayPrefillTokensMutex() *sync.RWMutex {
 func SetByteArrayPrefillTokensForRequest(requestID string, prefillTokens []byte) {
 	requestToByteArrayPrefillTokensMutex.Lock()
 	defer requestToByteArrayPrefillTokensMutex.Unlock()
-	if _, ok := requestToByteArrayPrefillTokens[requestID]; !ok {
+
+	if _, ok := requestToByteArrayPrefillTokens[requestID]; ok {
+		klog.Errorf("SetByteArrayPrefillTokensForRequest, Request ID %s already exists in requestToByteArrayPrefillTokens", requestID)
 		return
 	}
+
 	requestToByteArrayPrefillTokens[requestID] = prefillTokens
+	klog.Infof("SetByteArrayPrefillTokensForRequest, Set prefill tokens for request ID %s", requestID)
 }
 
 func GetByteArrayPrefillTokensForRequest(requestID string) []byte { // Change return type from []int to []byte
 	requestToByteArrayPrefillTokensMutex.RLock()
 	defer requestToByteArrayPrefillTokensMutex.RUnlock()
 	if _, ok := requestToByteArrayPrefillTokens[requestID]; !ok {
+		klog.Errorf("GetByteArrayPrefillTokensForRequest, Request ID %s not found in requestToByteArrayPrefillTokens", requestID)
 		return nil
 	}
+	klog.Infof("GetByteArrayPrefillTokensForRequest, Retrieved prefill tokens for request ID %s", requestID)
 	return requestToByteArrayPrefillTokens[requestID]
 }
 
@@ -1120,6 +1149,87 @@ func SetNumPrefillTokensForRequest(requestID string, numTokens int) {
 	klog.V(5).Infof("TokenCount, Increment prefill tokens for request %s: by %d, %d", requestID, numTokens, requestToNumPrefillTokens[requestID])
 }
 
+// ///////////////////////
+// // 1. reqeustID -> hash of prefix
+func hash_prefixhashes(prefixHashes []uint64) uint64 {
+	h := fnv.New64a()
+	for _, hash := range prefixHashes {
+		binary.Write(h, binary.LittleEndian, hash)
+	}
+	return h.Sum64()
+}
+
+func SetHashOfPrefixHashesForRequest(requestID string, prefixHashes []uint64) {
+	requestToHashOfPrefixHashesMutex.Lock()
+	defer requestToHashOfPrefixHashesMutex.Unlock()
+
+	if _, exists := requestToHashOfPrefixHashes[requestID]; exists {
+		klog.Errorf("SetHashOfPrefixHashesForRequest, Request ID %s already exists in requestToHashOfPrefixHashes", requestID)
+		return
+	}
+
+	hash := hash_prefixhashes(prefixHashes)
+	requestToHashOfPrefixHashes[requestID] = hash
+	klog.V(5).Infof("SetHashOfPrefixHashesForRequest, Set hash for request ID %s: %d", requestID, hash)
+}
+func GetHashOfPrefixHashesForRequest(requestID string) (uint64, bool) {
+	requestToHashOfPrefixHashesMutex.RLock()
+	defer requestToHashOfPrefixHashesMutex.RUnlock()
+
+	hash, exists := requestToHashOfPrefixHashes[requestID]
+	if !exists {
+		klog.Errorf("GetHashOfPrefixHashesForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
+		return 0, false
+	}
+	klog.V(5).Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
+	return hash, true
+}
+func CleanupHashOfPrefixHashesForRequest(requestID string) {
+	requestToHashOfPrefixHashesMutex.Lock()
+	defer requestToHashOfPrefixHashesMutex.Unlock()
+
+	if _, exists := requestToHashOfPrefixHashes[requestID]; exists {
+		delete(requestToHashOfPrefixHashes, requestID)
+		klog.Infof("CleanupHashOfPrefixHashesForRequest, Deleted hash for request ID: %s", requestID)
+	} else {
+		klog.Errorf("CleanupHashOfPrefixHashesForRequest, No hash found for request ID: %s", requestID)
+	}
+}
+
+/////////////////////////
+
+// 2. hash of prefix -> num output tokens
+func GetNumOutputTokensForPrefixHashes(prefixHashes []uint64) (int, bool) {
+	hash_of_prefixHashes := hash_prefixhashes(prefixHashes)
+	hashToNumOutputTokensMutex.RLock()
+	defer hashToNumOutputTokensMutex.RUnlock()
+	numOutputTokens, exists := hashToNumOutputTokens[hash_of_prefixHashes]
+	if !exists {
+		klog.Warningf("GetNumOutputTokensForPrefixHashes, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
+		return 128, false
+	}
+	klog.V(5).Infof("GetNumOutputTokensForPrefixHashes, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)
+	return numOutputTokens, true
+}
+
+func SetNumOutputTokensForRequest(requestID string, numOutputTokens int) {
+	hash_of_prefixHashes, exists := GetHashOfPrefixHashesForRequest(requestID)
+	if !exists {
+		klog.Errorf("SetNumOutputTokensForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
+		return
+	}
+	hashToNumOutputTokensMutex.Lock()
+	defer hashToNumOutputTokensMutex.Unlock()
+	if _, exists := hashToNumOutputTokens[hash_of_prefixHashes]; exists {
+		klog.Errorf("SetNumOutputTokensForRequest, Hash %d already exists in hashToNumOutputTokens", hash_of_prefixHashes)
+		return
+	}
+	hashToNumOutputTokens[hash_of_prefixHashes] = numOutputTokens
+	klog.V(5).Infof("SetNumOutputTokensForRequest, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
+}
+
+//////////////////
+
 func GetNumPrefillTokensForRequest(requestID string) int {
 	requestToNumPrefillTokensMutex.RLock()
 	defer requestToNumPrefillTokensMutex.RUnlock()
@@ -1127,6 +1237,39 @@ func GetNumPrefillTokensForRequest(requestID string) int {
 		return 0
 	}
 	return requestToNumPrefillTokens[requestID]
+}
+
+func SetRawMessageForRequest(requestID string, rawMessage string) {
+	requestToRawMessageMutex.Lock()
+	defer requestToRawMessageMutex.Unlock()
+	if _, exists := requestToRawMessage[requestID]; exists {
+		klog.Errorf("Request ID %s already exists in requestToRawMessage", requestID)
+		return
+	}
+	requestToRawMessage[requestID] = rawMessage
+	klog.V(5).Infof("Set raw message for request ID %s", requestID)
+}
+func GetRawMessageForRequest(requestID string) (string, bool) {
+	requestToRawMessageMutex.RLock()
+	defer requestToRawMessageMutex.RUnlock()
+
+	rawMessage, exists := requestToRawMessage[requestID]
+	if !exists {
+		klog.Errorf("Failed GetRawMessageForRequest, Request ID %s not found in requestToRawMessage", requestID)
+		return "", false
+	}
+	return rawMessage, true
+}
+func CleanupRawMessageForRequest(requestID string) {
+	requestToRawMessageMutex.Lock()
+	defer requestToRawMessageMutex.Unlock()
+
+	if _, exists := requestToRawMessage[requestID]; exists {
+		delete(requestToRawMessage, requestID)
+		klog.Infof("CleanupRawMessageForRequest, Deleted raw message for request ID: %s", requestID)
+	} else {
+		klog.Errorf("CleanupRawMessageForRequest, No raw message found for request ID: %s", requestID)
+	}
 }
 
 // Increment the number of inflight requests for a specific pod
