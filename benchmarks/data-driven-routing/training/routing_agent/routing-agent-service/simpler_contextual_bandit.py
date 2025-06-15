@@ -488,7 +488,7 @@ class SimplifiedContextualBandit:
         # Load policy network
         policy_path = os.path.join(directory, 'policy.pth')
         if os.path.exists(policy_path):
-            logger.info(f"🔍 DIMENSION CHECK: Loading model from {policy_path}")
+            logger.debug(f"🔍 DIMENSION CHECK: Loading model from {policy_path}")
             
             # Load the state dict
             saved_state_dict = torch.load(policy_path, map_location=device)
@@ -496,15 +496,15 @@ class SimplifiedContextualBandit:
             # Check dimensions of the first layer (most likely to have mismatch)
             current_model_dict = self.policy.state_dict()
             
-            logger.info("🔍 COMPARING MODEL DIMENSIONS:")
+            logger.debug("🔍 COMPARING MODEL DIMENSIONS:")
             for key in saved_state_dict.keys():
                 if key in current_model_dict:
                     saved_shape = saved_state_dict[key].shape
                     current_shape = current_model_dict[key].shape
                     
-                    logger.info(f"  Layer {key}:")
-                    logger.info(f"    Saved model:   {saved_shape}")
-                    logger.info(f"    Current model: {current_shape}")
+                    logger.debug(f"  Layer {key}:")
+                    logger.debug(f"    Saved model:   {saved_shape}")
+                    logger.debug(f"    Current model: {current_shape}")
                     
                     if saved_shape != current_shape:
                         logger.error(f"❌ DIMENSION MISMATCH in layer {key}!")
@@ -513,7 +513,7 @@ class SimplifiedContextualBandit:
                         assert False, f"Model architecture mismatch in layer {key}: saved {saved_shape} vs current {current_shape}"
             
             # If we get here, dimensions match
-            logger.info("✅ All layer dimensions match - safe to load")
+            logger.debug("✅ All layer dimensions match - safe to load")
             self.policy.load_state_dict(saved_state_dict)
         else:
             logger.warning(f"No policy file found at {policy_path}")
@@ -2193,9 +2193,9 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     logger.info(f"  Request features look normalized: {request_looks_normalized} (max_abs: {request_features.abs().max():.2f})")
 
     if not request_looks_normalized:
-        logger.error("❌ REQUEST FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
+        logger.warning("❌ REQUEST FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
     if not pod_looks_normalized:
-        logger.error("❌ POD FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
+        logger.warning("❌ POD FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
         
     logger.info("======== End,infer_from_tensor LOGGING ========")
     #================================================================

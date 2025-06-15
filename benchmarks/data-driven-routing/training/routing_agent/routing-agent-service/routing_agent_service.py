@@ -1,4 +1,4 @@
-# routing_agent_service.py
+## routing_agent_service.py
 
 # import threading
 # import joblib
@@ -148,7 +148,7 @@ def handle_infer():
             
             first_key = list(log_data.keys())[0]
             log_message = log_data[first_key]
-        logger.info(f"Received inference request in handle_infer:\n{log_message}")
+        logger.debug(f"Received inference request in handle_infer:\n{log_message}")
 
         # Extract request ID for logging purposes
         parts = log_message.split("requestID@")
@@ -197,7 +197,7 @@ def handle_infer():
                         std_val = std_val.item()
                     logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
                 else:
-                    logger.error(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+                    logger.warning(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
         #==================================================================================
         processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
         #==================================================================================
@@ -217,7 +217,7 @@ def handle_infer():
                         std_val = std_val.item()
                     logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
                 else:
-                    logger.error(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+                    logger.warning(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
         #==================================================================================
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
