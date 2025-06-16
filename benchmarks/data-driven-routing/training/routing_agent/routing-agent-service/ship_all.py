@@ -15,6 +15,7 @@ from pathlib import Path
 from kubernetes import client, config
 from kubernetes.stream import stream
 import logging
+import vke_files.utils as utils
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -294,7 +295,13 @@ class K8sHotDeployer:
 
 def main():
     """Main function"""
-    
+    logger.info("Restarting gateway and routing-agent-service")
+    os.system("kubectl rollout restart deployment routing-agent-service -n default & kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system")
+    time.sleep(3)
+    logger.info("Check if routing-agent-service is ready")
+    utils.check_deployment_ready_kubernetes('routing-agent-service', 'default')
+    time.sleep(2)
+
     # Configuration
     NAMESPACE = "default"
     APP_LABEL = "routing-agent-service"
@@ -306,8 +313,8 @@ def main():
         "./feature_normalization.py": "/app/feature_normalization.py",
         "./encoding.py": "/app/encoding.py",
         "./simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
-        "./contextual_bandit.py": "/app/contextual_bandit.py",
-        "./logger.py": "/app/logger.py",
+        # "./contextual_bandit.py": "/app/contextual_bandit.py",
+        # "./logger.py": "/app/logger.py",
     }
     
     # Directories to deploy
@@ -366,10 +373,9 @@ def main():
             logger.error(f"❌ Failed to kill routing_agent_service.py in {pod_name}")
             sys.exit(1)
 
-        for pod_name in pods:
-            logger.info(f"\n🔧 Executing additional commands in {pod_name}")
-            deployer.execute_kubectl_command(pod_name, "rm /app/llm_router.log")
-            deployer.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
+        logger.info(f"\n🔧 Executing additional commands in {pod_name}")
+        deployer.execute_kubectl_command(pod_name, "rm /app/llm_router.log")
+        deployer.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
     else:
         logger.error("\n💥 Deployment failed!")
         sys.exit(1)
