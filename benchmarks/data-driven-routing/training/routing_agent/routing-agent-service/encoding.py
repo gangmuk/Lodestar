@@ -425,9 +425,14 @@ class LLMRoutingDataProcessor:
         
         # Include ALL features we want to potentially keep
         ALL_NUMERIC_FEATURES = [
-            'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 
-            'running_requests', 'waiting_requests', 'prefill_tokens', 'decode_tokens',
-            'kv_hit_ratio'  # Always include kv_hit_ratio
+            'inflight_requests', # index 0
+            'gpu_kv_cache', # index 1
+            'cpu_kv_cache', # index 2
+            'running_requests', # index 3
+            'waiting_requests', # index 4
+            'prefill_tokens', # index 5
+            'decode_tokens', # index 6 ← This is your 5.4486e+04 value
+            'kv_hit_ratio' # index 7
         ]
         n_pods = len(self.pod_ids)
         n_numeric = len(ALL_NUMERIC_FEATURES)

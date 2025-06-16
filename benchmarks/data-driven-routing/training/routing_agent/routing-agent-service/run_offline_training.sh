@@ -38,5 +38,5 @@ echo "${python_cmd} &> output.log" > "${final_model_dir}/python_command.txt"
 
 # Copy the generated log file after the python script has finished
 cp output.log "${final_model_dir}/output.log"
-
-echo "Script complete. Logs copied to ${final_model_dir}"
+echo "* Script complete. Logs copied to ${final_model_dir}"
+echo "* Output log copied to ${final_model_dir}/output.log"

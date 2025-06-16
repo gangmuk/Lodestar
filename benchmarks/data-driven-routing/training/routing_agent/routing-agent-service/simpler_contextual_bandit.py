@@ -1958,17 +1958,21 @@ _cached_agent = None
 _cached_agent_config = None
 _cached_metadata = None
 
-def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
+def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     global final_model_dir, _cached_metadata, _cached_agent, _cached_agent_config
-    
+    def print_tensor_data_in_detail(tensor_data, request_id):
+        for key, value in tensor_data.items():
+            if key in ['pod_features', 'kv_hit_ratios', 'request_features']:
+                logger.info(f"tensor_data, request_id:{request_id}, key: {key}, shape: {value.shape}, dtype: {value.dtype}")
+    print_tensor_data_in_detail(tensor_data, request_id)
     infer_start_time = time.time()
     try:
         pod_features = tensor_data['pod_features_with_staleness'].to(device)
         kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
         request_features = tensor_data['request_features'].to(device)
     except KeyError as e:
-        logger.error(f"Missing key in tensor data: {e}")
-        raise ValueError(f"Missing key in tensor data: {e}")
+        logger.error(f"Missing key in tensor_data: {e}")
+        raise ValueError(f"Missing key in tensor_data: {e}")
     
     # Ensure data is in batch format (add batch dimension if needed)
     if len(pod_features.shape) == 2:
@@ -2048,6 +2052,10 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         logger.error("Need to retrain model with new feature dimensions")
         assert False, "Architecture mismatch - cannot use pretrained model"
     
+    '''
+    'input_tokens', 'output_tokens', 'total_tokens', 'ttft', 'avg_tpot', 'e2e_latency', 'gpu_model_encoded', 'pod_10.0.0.39-kv_hit_ratio', 'pod_10.0.0.39-inflight_requests', 'pod_10.0.0.39-gpu_kv_cache', 'pod_10.0.0.39-cpu_kv_cache', 'pod_10.0.0.39-running_requests', 'pod_10.0.0.39-waiting_requests', 'pod_10.0.0.39-prefill_tokens', 'pod_10.0.0.39-decode_tokens', 'pod_10.0.0.39-gpu_model'
+    '''
+
     logger.info("🔍 INPUT DIMENSION CHECK:")
     logger.info(f"  pod_features shape: {pod_features.shape}")
     logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")  
@@ -2133,8 +2141,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
     except Exception as e:
         logger.error(f"Error in gradient analysis: {e}")
 
-    # In infer_from_tensor(), after the model forward pass but before returning results:
-
     logger.info("🔍 MODEL BEHAVIOR ANALYSIS:")
     with torch.no_grad():
         # Get raw scores before softmax
@@ -2159,7 +2165,6 @@ def infer_from_tensor(tensor_data, model_updated, HYPERPARAMETERS):
         logger.info(f"  Final probabilities: {action_probs[0].cpu().numpy()}")
         logger.info(f"  Selected action: {selected_action}, confidence: {confidence:.4f}")
 
-    # In infer_from_tensor(), after getting raw scores:
     with torch.no_grad():
         # Get raw scores WITH GPU feature (current)
         raw_scores_with_gpu = raw_scores.clone()

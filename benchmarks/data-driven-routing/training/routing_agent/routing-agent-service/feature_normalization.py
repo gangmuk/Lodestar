@@ -19,8 +19,8 @@ class RunningStats:
         self.count = 0
         self.mean = None
         self.var = None  # Variance
-        self.min = None
-        self.max = None
+        self.min = -99999
+        self.max = -99999
         if feature_names == None:
             logger.error("RunningStats initialized with None feature_names, setting to empty list")
             assert False
