@@ -304,6 +304,7 @@ def test_inference(args, log_message, request_id):
         elif args.model == "simpler_contextual_bandit":
             result, _ = simpler_contextual_bandit.infer_from_tensor(
                 tensor_data=tensor_dataset, 
+                request_id=request_id,
                 model_updated=MODEL_UPDATED,
                 HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
             )

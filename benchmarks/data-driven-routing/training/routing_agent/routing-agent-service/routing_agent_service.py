@@ -30,6 +30,7 @@ import json
 import feature_normalization
 import signal
 import sys
+from kubernetes import client, config
 
 app = Flask(__name__)
 
@@ -183,41 +184,54 @@ def handle_infer():
         logger.info("🔍 PRE-NORMALIZATION DEBUG:")
         logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
         logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
-        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
-            if feature in processed_df.columns:
-                logger.info(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f}")
-                if feature in stats_instance.feature_stats:
-                    stats = stats_instance.feature_stats[feature]
-                    mean_val = stats.get_mean()
-                    std_val = stats.get_std()
-                    # Handle numpy arrays safely
-                    if hasattr(mean_val, 'item'):
-                        mean_val = mean_val.item()
-                    if hasattr(std_val, 'item'):
-                        std_val = std_val.item()
-                    logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
-                else:
-                    logger.warning(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+        #     if feature in processed_df.columns:
+        non_interest = ['requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
+        feature_interested = [feature for feature in processed_df.columns if "last" not in feature and feature not in non_interest]
+        logger.info(f"feature_interested: {feature_interested}")
+        for feature in processed_df.columns:
+            if feature in stats_instance.feature_stats:
+                stats = stats_instance.feature_stats[feature]
+                mean_val = stats.get_mean()
+                std_val = stats.get_std()
+                # Handle numpy arrays safely
+                if hasattr(mean_val, 'item'):
+                    mean_val = mean_val.item()
+                if hasattr(std_val, 'item'):
+                    std_val = std_val.item()
+                # logger.info(f"feature: {feature}")
+                # logger.info(f"processed_df[feature]: {processed_df[feature]}")
+                # logger.info(f"processed_df[feature].iloc[0]: {processed_df[feature].iloc[0]}")
+                logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={mean_val:.2f}, std={std_val:.2f}")
+            else:
+                logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]} → NO STATS FOUND for {feature}!")
         #==================================================================================
         processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
         #==================================================================================
         logger.info("🔍 POST-NORMALIZATION DEBUG:")
         logger.info(f"Stats instance feature count: {len(stats_instance.feature_stats)}")
         logger.debug(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
-        for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
-            if feature in processed_df.columns:
-                if feature in stats_instance.feature_stats:
-                    stats = stats_instance.feature_stats[feature]
-                    mean_val = stats.get_mean()
-                    std_val = stats.get_std()
-                    # Handle numpy arrays safely
-                    if hasattr(mean_val, 'item'):
-                        mean_val = mean_val.item()
-                    if hasattr(std_val, 'item'):
-                        std_val = std_val.item()
-                    logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
-                else:
-                    logger.warning(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → ❌ NO STATS FOUND for {feature}!")
+        # for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
+        #     if feature in processed_df.columns:
+        for feature in processed_df.columns:
+            if feature in stats_instance.feature_stats:
+                stats = stats_instance.feature_stats[feature]
+                mean_val = stats.get_mean()
+                std_val = stats.get_std()
+                # Handle numpy arrays safely
+                if hasattr(mean_val, 'item'):
+                    mean_val = mean_val.item()
+                if hasattr(std_val, 'item'):
+                    std_val = std_val.item()
+                # try:
+                logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={mean_val:.2f}, std={std_val:.2f}")
+                # except Exception as e:
+                #     logger.error(f"Error formatting value for feature {feature}: {e}")
+                #     logger.info(f"feature: {feature}, value: {processed_df[feature].iloc[0]}, dtype: {type(processed_df[feature].iloc[0])}")
+                #     logger.info(f"count: {stats.count}, min: {stats.min}, max: {stats.max}")
+                #     logger.info(f"mean: {mean_val}")
+                #     logger.info(f"std: {std_val}")
+            else:
+                logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]} → NO STATS FOUND for {feature}!")
         #==================================================================================
         handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
 
@@ -231,9 +245,9 @@ def handle_infer():
 
         infer_from_tensor_start_time = time.time()
         if MODEL == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
-        elif MODEL == "contextual_bandit":
-            result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, request_id=request_id, model_updated=MODEL_UPDATED, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
+        # elif MODEL == "contextual_bandit":
+        #     result, infer_from_tensor_overhead_summary = contextual_bandit.infer_from_tensor(tensor_data=tensor_data, model_updated=MODEL_UPDATED)
         else:
             logger.error(f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'")
             return jsonify({"error": f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'"}), 500
@@ -301,8 +315,8 @@ def online_train_routine():
         try:
             if MODEL == "simpler_contextual_bandit":
                 simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
-            elif MODEL == "contextual_bandit":
-                contextual_bandit.train(ENCODED_DATA_DIR)
+            # elif MODEL == "contextual_bandit":
+            #     contextual_bandit.train(ENCODED_DATA_DIR)
             else:
                 logger.error(f"Unknown model {MODEL}")
                 return
@@ -387,7 +401,6 @@ def fetch_pod_gpu_mapping():
     Returns a dictionary mapping pod_ip -> gpu_model
     """
     try:
-        from kubernetes import client, config
         
         # Try in-cluster config first (for running inside cluster)
         try:
