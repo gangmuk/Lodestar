@@ -402,7 +402,6 @@ def normalize_features_for_training(df: pd.DataFrame, stats_instance: PerFeature
 
 def normalize_features_for_inference(df: pd.DataFrame, stats_instance: PerFeatureRunningStats, request_id) -> pd.DataFrame:
     logger.debug(f"request_id,{request_id},Features to normalize: {list(stats_instance.feature_stats.keys())}")
-
     request_features = ['input_tokens', 'output_tokens', 'total_tokens']
     # pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64']]
     pod_features_cols = [col for col in df.columns if col.startswith('pod_') and df[col].dtype in ['float64', 'int64'] and 'gpu_model' not in col]

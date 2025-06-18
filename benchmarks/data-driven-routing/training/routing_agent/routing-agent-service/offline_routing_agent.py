@@ -9,7 +9,6 @@ import time
 import sys
 import encoding
 import simpler_contextual_bandit
-from logger import logger
 import preprocess
 import pickle
 import threading
@@ -17,6 +16,8 @@ import argparse
 import random_forest
 import torch
 import feature_normalization
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+from kubernetes import client, config
 
 # hyperparameters for simpler_contextual_bandit model
 RL_MODEL_HYPERPARAMETERS = {
@@ -48,15 +49,16 @@ RL_MODEL_HYPERPARAMETERS = {
         "NUM_FEATURES_AMPLIFIED": 0,
     },
     'dataset_analysis': None,
-    'GPU_MAP': {
+}
+
+if INCLUDE_GPU_IN_FEATURE:
+    RL_MODEL_HYPERPARAMETERS['GPU_MAP'] = {
         'NVIDIA-L20': 0,
         'NVIDIA-L40': 1,
         'NVIDIA-A10': 2,
         'NVIDIA-A100': 3,
         'NVIDIA-H100': 4,
     }
-}
-
 
 # Global variables (simplified for offline use)
 ENCODED_DATA_DIR = "encoded_data"
@@ -245,7 +247,7 @@ def test_inference(args, log_message, request_id):
                         std_val = std_val.item()
                     logger.info(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
                 else:
-                    logger.error(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
+                    logger.warning(f"before normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
         processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
         #==================================================================================
         logger.info("🔍 POST-NORMALIZATION DEBUG:")
@@ -264,7 +266,7 @@ def test_inference(args, log_message, request_id):
                         std_val = std_val.item()
                     logger.info(f"after normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
                 else:
-                    logger.error(f"after normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
+                    logger.warning(f"after normalize, {feature}: min={processed_df[feature].min():.4f}, max={processed_df[feature].max():.4f} → ❌ NO STATS FOUND for {feature}!")
         #==================================================================================
 
         for feature in ['input_tokens', 'output_tokens', 'total_tokens']:
@@ -281,13 +283,14 @@ def test_inference(args, log_message, request_id):
                         std_val = std_val.item()
                     logger.info(f"    → Has stats: count={stats.count}, mean={mean_val:.4f}, std={std_val:.4f}")
                 else:
-                    logger.error(f"    → ❌ NO STATS FOUND for {feature}!")
+                    logger.warning(f"    → ❌ NO STATS FOUND for {feature}!")
 
 
         # Encode data
         encode_start_time = time.time()
-        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
-        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        if INCLUDE_GPU_IN_FEATURE:
+            encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+            encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
         tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.debug(f"Successfully encoded data in memory for inference")
         handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
@@ -379,8 +382,9 @@ def process_training_data(args, log_data, stats_instance):
         # encoding
         ts_encode = time.time()
         encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
-        encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
-        encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
+        if INCLUDE_GPU_IN_FEATURE:
+            encoding.GPU_MAP = RL_MODEL_HYPERPARAMETERS['GPU_MAP']
+            encoding.NUM_GPU_TYPES = len(RL_MODEL_HYPERPARAMETERS['GPU_MAP'])
         encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
@@ -408,51 +412,33 @@ def fetch_pod_gpu_mapping():
     Returns a dictionary mapping pod_ip -> gpu_model
     """
     try:
-        from kubernetes import client, config
-        
-        # Try local config first (for running outside cluster)
         try:
             config.load_kube_config()
             logger.info("Loaded local kubeconfig for Kubernetes access")
         except:
-            # Fallback to in-cluster config (for running inside cluster)
             config.load_incluster_config()
             logger.info("Loaded in-cluster config for Kubernetes access")
-        
         v1 = client.CoreV1Api()
-        
-        # Get all pods with the label selector for llama-3-8b-instruct
         label_selector = "model.aibrix.ai/name=llama-3-8b-instruct"
         pods = v1.list_pod_for_all_namespaces(label_selector=label_selector)
-        
         pod_gpu_mapping = {}
-        
         for pod in pods.items:
             if pod.status.phase == "Running" and pod.status.pod_ip:
                 pod_ip = pod.status.pod_ip
-                
-                # Get the node name where this pod is running
                 node_name = pod.spec.node_name
-                
                 if node_name:
-                    # Get node details to extract GPU model
                     try:
                         node = v1.read_node(name=node_name)
                         node_labels = node.metadata.labels or {}
-                        
-                        # Extract GPU model from node label
                         gpu_model = node_labels.get('machine.cluster.vke.volcengine.com/gpu-name', 'unknown')
                         pod_gpu_mapping[pod_ip] = gpu_model
-                        
                         logger.info(f"Pod {pod.metadata.name} (IP: {pod_ip}) -> GPU: {gpu_model}")
-                        
                     except Exception as e:
                         logger.warning(f"Failed to get node info for {node_name}: {e}")
                         pod_gpu_mapping[pod_ip] = 'unknown'
                 else:
                     logger.warning(f"Pod {pod.metadata.name} has no node assignment")
                     pod_gpu_mapping[pod_ip] = 'unknown'
-        
         logger.info(f"Successfully fetched GPU mapping for {len(pod_gpu_mapping)} pods")
         return pod_gpu_mapping
         
@@ -483,34 +469,34 @@ def main():
         assert False
 
 
-    logger.info("=== INITIALIZING GPU MAPPING ===")
-    try:
-        pod_gpu_mapping = fetch_pod_gpu_mapping()
-        if pod_gpu_mapping:
-            # Create GPU model to ID mapping
-            unique_gpus = list(set(pod_gpu_mapping.values()))
-            gpu_name_to_id = {gpu_name: idx for idx, gpu_name in enumerate(unique_gpus)}
-            
-            # Create direct pod_ip -> gpu_model_id mapping
-            pod_gpu_id_mapping = {pod_ip: gpu_name_to_id[gpu_name] 
-                                for pod_ip, gpu_name in pod_gpu_mapping.items()}
-            
-            # Update RL_MODEL_HYPERPARAMETERS with actual GPU mapping
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = pod_gpu_mapping
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
-            RL_MODEL_HYPERPARAMETERS['GPU_MAP'] = gpu_name_to_id
-            
-            logger.info(f"GPU name to ID mapping: {gpu_name_to_id}")
-            logger.info(f"Created direct pod IP to GPU ID mapping for {len(pod_gpu_id_mapping)} pods")
-        else:
-            logger.warning("No pod GPU mapping available, using default GPU_MAP from hyperparameters")
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = {}
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = {}
-            # Keep existing GPU_MAP from hyperparameters
-            
-    except Exception as e:
-        logger.error(f"Failed to initialize GPU mapping: {e}")
-        assert False
+    if INCLUDE_GPU_IN_FEATURE:
+        logger.info("=== INITIALIZING GPU MAPPING ===")
+        try:
+            pod_gpu_mapping = fetch_pod_gpu_mapping()
+            if pod_gpu_mapping:
+                # Create GPU model to ID mapping
+                unique_gpus = list(set(pod_gpu_mapping.values()))
+                gpu_name_to_id = {gpu_name: idx for idx, gpu_name in enumerate(unique_gpus)}
+                
+                # Create direct pod_ip -> gpu_model_id mapping
+                pod_gpu_id_mapping = {pod_ip: gpu_name_to_id[gpu_name] 
+                                    for pod_ip, gpu_name in pod_gpu_mapping.items()}
+                
+                # Update RL_MODEL_HYPERPARAMETERS with actual GPU mapping
+                RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = pod_gpu_mapping
+                RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+                RL_MODEL_HYPERPARAMETERS['GPU_MAP'] = gpu_name_to_id
+                
+                logger.info(f"GPU name to ID mapping: {gpu_name_to_id}")
+                logger.info(f"Created direct pod IP to GPU ID mapping for {len(pod_gpu_id_mapping)} pods")
+            else:
+                logger.warning("No pod GPU mapping available, using default GPU_MAP from hyperparameters")
+                RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = {}
+                RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = {}
+                # Keep existing GPU_MAP from hyperparameters
+        except Exception as e:
+            logger.error(f"Failed to initialize GPU mapping: {e}")
+            assert False
 
     # Handle data splitting
     logger.info("=== SPLITTING DATA ===")

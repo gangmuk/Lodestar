@@ -28,8 +28,11 @@ import logging
 import re
 import argparse
 from datetime import datetime
-from logger import logger
 import time
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+# INCLUDE_GPU_IN_FEATURE = True
+
+
 random_seed = 42
 np.random.seed(random_seed)
 class LLMRoutingDataProcessor:
@@ -59,7 +62,6 @@ class LLMRoutingDataProcessor:
         self.pod_features = []
         self.numeric_request_features = []
         self.categorical_request_features = []
-        self.gpu_models = set()
         self.pod_ids = []
         
         # Key metrics for positional encoding
@@ -81,8 +83,10 @@ class LLMRoutingDataProcessor:
         self.pod_encoder = None
         self.selected_pod_encoder = None
 
-        self.gpu_map = None  # Will be set from hyperparameters
-        self.num_gpu_types = 0
+        if INCLUDE_GPU_IN_FEATURE:
+            self.gpu_models = set()
+            self.gpu_map = None  # Will be set from hyperparameters
+            self.num_gpu_types = 0
 
 
     def extract_pod_columns(self, df, all_pods):
@@ -412,10 +416,10 @@ class LLMRoutingDataProcessor:
 
 
     def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary, HYPERPARAMETERS):
-        logger.info(f"DEBUG GPU SETUP:")
-        logger.info(f"  self.num_gpu_types: {self.num_gpu_types}")
-        logger.info(f"  HYPERPARAMETERS GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', 'NOT_FOUND')}")
-        logger.info(f"  HYPERPARAMETERS pod_gpu_id_mapping: {HYPERPARAMETERS.get('pod_gpu_id_mapping', 'NOT_FOUND')}")
+        if INCLUDE_GPU_IN_FEATURE:
+            logger.info(f"  self.num_gpu_types: {self.num_gpu_types}")
+            logger.info(f"  HYPERPARAMETERS GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', 'NOT_FOUND')}")
+            logger.info(f"  HYPERPARAMETERS pod_gpu_id_mapping: {HYPERPARAMETERS.get('pod_gpu_id_mapping', 'NOT_FOUND')}")
         
         if not pod_data:
             logger.error("No pod data in expected format")
@@ -438,27 +442,31 @@ class LLMRoutingDataProcessor:
         n_numeric = len(ALL_NUMERIC_FEATURES)
         
         # Calculate total feature dimensions including GPU one-hot encoding
-        gpu_onehot_dim = self.num_gpu_types
-        total_feature_dim = n_numeric + gpu_onehot_dim
-        all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
+        if INCLUDE_GPU_IN_FEATURE:
+            gpu_onehot_dim = self.num_gpu_types
+            total_feature_dim = n_numeric + gpu_onehot_dim
+            logger.info(f"DEBUG GPU MAPPING:")
+            logger.info(f"  self.pod_ids: {self.pod_ids}")
+            logger.info(f"  pod_gpu_id_mapping keys: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
+            logger.info(f"  GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', {})}")
+        else:
+            total_feature_dim = n_numeric
         
-        logger.info(f"DEBUG GPU MAPPING:")
-        logger.info(f"  self.pod_ids: {self.pod_ids}")
-        logger.info(f"  pod_gpu_id_mapping keys: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
-        logger.info(f"  GPU_MAP: {HYPERPARAMETERS.get('GPU_MAP', {})}")
+        all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
 
-        gpu_encoded_per_pod = {}
-        for pod_id in self.pod_ids:
-            if pod_id not in HYPERPARAMETERS['pod_gpu_id_mapping']:
-                logger.error(f"CRITICAL: Pod {pod_id} not found in pod_gpu_id_mapping!")
-                logger.error(f"Available pods: {list(HYPERPARAMETERS['pod_gpu_id_mapping'].keys())}")
-                assert False, f"Unknown GPU model for pod {pod_id}"
-            gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
-            if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
-                logger.error(f"CRITICAL: Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
-                logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
-                assert False, f"Invalid GPU model ID {gpu_model_id}"
-            gpu_encoded_per_pod[pod_id] = gpu_model_id
+        if INCLUDE_GPU_IN_FEATURE:
+            gpu_encoded_per_pod = {}
+            for pod_id in self.pod_ids:
+                if pod_id not in HYPERPARAMETERS['pod_gpu_id_mapping']:
+                    logger.error(f"CRITICAL: Pod {pod_id} not found in pod_gpu_id_mapping!")
+                    logger.error(f"Available pods: {list(HYPERPARAMETERS['pod_gpu_id_mapping'].keys())}")
+                    assert False, f"Unknown GPU model for pod {pod_id}"
+                gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
+                if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
+                    logger.error(f"CRITICAL: Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
+                    logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
+                    assert False, f"Invalid GPU model ID {gpu_model_id}"
+                gpu_encoded_per_pod[pod_id] = gpu_model_id
 
         # Extract all features into single array
         for pod_idx, pod_id in enumerate(self.pod_ids):
@@ -483,22 +491,20 @@ class LLMRoutingDataProcessor:
                 # KV ratio in main array
                 if 'kv_hit_ratio' in pod_features:
                     all_features_array[:, pod_idx, 7] = pod_features['kv_hit_ratio'].fillna(0)
-                
-                gpu_model_id = gpu_encoded_per_pod[pod_id]
-                gpu_onehot = np.zeros(gpu_onehot_dim)
-                gpu_onehot[gpu_model_id] = 1
-                all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
+                if INCLUDE_GPU_IN_FEATURE:
+                    gpu_model_id = gpu_encoded_per_pod[pod_id]
+                    gpu_onehot = np.zeros(gpu_onehot_dim)
+                    gpu_onehot[gpu_model_id] = 1
+                    all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
 
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         
         build_feature_start_time = time.time()
         
-        # Apply feature masking BEFORE randomization
-        masking_start_time = time.time()
-        
         # Separate numeric and GPU features before masking
         numeric_features_only = all_features_array[:, :, :n_numeric]  # First 8 features
-        gpu_features_only = all_features_array[:, :, n_numeric:]      # Last gpu_onehot_dim features
+        if INCLUDE_GPU_IN_FEATURE:
+            gpu_features_only = all_features_array[:, :, n_numeric:]      # Last gpu_onehot_dim features
         
         # Apply masking to numeric features only
         original_features = ALL_NUMERIC_FEATURES.copy()
@@ -507,11 +513,13 @@ class LLMRoutingDataProcessor:
         )
         
         # Combine filtered numeric + all GPU features (GPU features are never masked)
-        filtered_features_array = np.concatenate([filtered_numeric_features, gpu_features_only], axis=2)
-        gpu_feature_names = [f'gpu_model_{i}' for i in range(self.num_gpu_types)]
-        kept_features = kept_numeric_features + gpu_feature_names
-        
-        masking_overhead = time.time() - masking_start_time
+        if INCLUDE_GPU_IN_FEATURE:
+            filtered_features_array = np.concatenate([filtered_numeric_features, gpu_features_only], axis=2)
+            gpu_feature_names = [f'gpu_model_{i}' for i in range(self.num_gpu_types)]
+            kept_features = kept_numeric_features + gpu_feature_names
+        else:
+            filtered_features_array = filtered_numeric_features
+            kept_features = kept_numeric_features
         
         # SOLUTION 1: Always ensure kv_hit_ratio is available separately
         kv_extraction_start_time = time.time()
@@ -582,64 +590,31 @@ class LLMRoutingDataProcessor:
         
         build_feature_overhead = time.time() - build_feature_start_time
         
-        # # Update overhead tracking
-        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.vectorized_extraction_overhead'] = vectorized_extraction_overhead * 1000
-        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.build_feature_overhead'] = build_feature_overhead * 1000
-        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.masking_overhead'] = masking_overhead * 1000
-        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.kv_extraction_overhead'] = kv_extraction_overhead * 1000
-        # # 🆕 Add randomization overhead
-        # overhead_summary['encoding.encode_for_inference.prepare_for_encoding._optimized_process_pod_features.randomization_overhead'] = randomization_overhead * 1000
-        
-        # # Log final shapes for debugging
-        # logger.info(f"Final tensor shapes after randomization:")
-        # logger.info(f"  pod_features_array: {pod_features_array.shape}")
-        # logger.info(f"  kv_hit_norm: {kv_hit_norm.shape}")
-        # logger.info(f"  kept_pod_features: {kept_pod_features}")
-
         logger.info(f"FINAL TENSOR ANALYSIS:")
         logger.info(f"pod_features_array shape: {pod_features_array.shape}")
         logger.info(f"First pod features: {pod_features_array[0, 0, :]}")
         logger.info(f"Second pod features: {pod_features_array[0, 1, :]}")
-        logger.info(f"Are all pod GPU features identical?")
-        for i in range(min(3, pod_features_array.shape[1])):
-            gpu_start_idx = len(kept_pod_features) - self.num_gpu_types
-            gpu_features = pod_features_array[0, i, gpu_start_idx:]
-            logger.info(f"  Pod {i} GPU features: {gpu_features}")
-
+        if INCLUDE_GPU_IN_FEATURE:
+            logger.info(f"Are all pod GPU features identical?")
+            for i in range(min(3, pod_features_array.shape[1])):
+                gpu_start_idx = len(kept_pod_features) - self.num_gpu_types
+                gpu_features = pod_features_array[0, i, gpu_start_idx:]
+                logger.info(f"  Pod {i} GPU features: {gpu_features}")
         logger.info(f"Final feature composition:")
         logger.info(f"  pod_features_array shape: {pod_features_array.shape}")
         logger.info(f"  kept_pod_features: {kept_pod_features}")
         logger.info(f"  kv_hit_norm shape: {kv_hit_norm.shape}")
-        logger.info(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
+        if INCLUDE_GPU_IN_FEATURE:
+            logger.info(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
         
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
-
-
-    # Also add randomization to the training path in encode_for_train function
-    # Find the line where prepare_for_encoding is called and add randomization there as well
-
-    def encode_gpu_model_onehot(self, gpu_encoded_values, num_gpu_types):
-        """Convert GPU encoded values to one-hot encoding"""
-        # gpu_encoded_values: array of integers from GPU_MAP (or -1 for unknown)
-        # Create one-hot encoding with extra column for unknown (-1)
-        n_samples = len(gpu_encoded_values)
-        one_hot = np.zeros((n_samples, num_gpu_types + 1), dtype=np.float32)
-        
-        for i, val in enumerate(gpu_encoded_values):
-            if val == -1:
-                one_hot[i, num_gpu_types] = 1  # Last column for unknown
-            elif 0 <= val < num_gpu_types:
-                one_hot[i, val] = 1
-        
-        return one_hot
-
         
     def prepare_for_encoding(self, df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS):
         n_samples = len(df)
 
-        self.num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
-        logger.info(f"Set self.num_gpu_types = {self.num_gpu_types} from HYPERPARAMETERS")
-    
+        if INCLUDE_GPU_IN_FEATURE:
+            self.num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
+            logger.info(f"Set self.num_gpu_types = {self.num_gpu_types} from HYPERPARAMETERS")
         
         # STEP 1: ULTRA-FAST pod data extraction
         pod_data = self._ultra_fast_extract_pod_columns(df, all_pods)
@@ -683,6 +658,9 @@ class LLMRoutingDataProcessor:
         # STEP 11: MINIMAL staleness
         staleness_features = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
         pod_features_with_staleness = np.concatenate([pod_features_array, staleness_features], axis=2)
+        logger.info(f"pod_features_array.shape: {pod_features_array.shape}")
+        logger.info(f"staleness_features.shape: {staleness_features.shape}")
+        logger.info(f"pod_features_with_staleness.shape: {pod_features_with_staleness.shape}")
         
         # STEP 12: MINIMAL cross attention
         cross_attention_inputs = {'query': pod_features_with_staleness, 'key_value': kv_hit_norm}

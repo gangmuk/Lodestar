@@ -313,8 +313,7 @@ def main():
         "./feature_normalization.py": "/app/feature_normalization.py",
         "./encoding.py": "/app/encoding.py",
         "./simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
-        # "./contextual_bandit.py": "/app/contextual_bandit.py",
-        # "./logger.py": "/app/logger.py",
+        "./logger.py": "/app/logger.py",
     }
     
     # Directories to deploy
