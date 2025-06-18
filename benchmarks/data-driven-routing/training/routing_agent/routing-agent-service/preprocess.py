@@ -11,8 +11,9 @@ import os
 from datetime import datetime
 import argparse
 import sys
-from logger import logger
 import time
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+# INCLUDE_GPU_IN_FEATURE = True
 
 def parse_json_columns(df, json_columns):
         for col in json_columns:
@@ -260,22 +261,21 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
 
     column_check_start_time = time.time()
 
-    # Encode GPU model using hyperparameters GPU_MAP
-    gpu_mapping = HYPERPARAMS['pod_gpu_id_mapping']  # Will crash if missing
-    df['gpu_model_encoded'] = df['selectedpod'].map(gpu_mapping)
-    unmapped_pods = df[df['gpu_model_encoded'].isna()]['selectedpod'].unique()
-    if len(unmapped_pods) > 0:
-        logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
-        logger.error(f"GPU_MAP in HYPERPARAMS: {gpu_mapping}")
-        unmapped_pods_gpu_models = df[df['selectedpod'].isin(unmapped_pods)]['gpu_model_encoded'].unique()
-        logger.error(f"Unmapped GPU models: {unmapped_pods_gpu_models}")
-        logger.error(f"Available pod mappings: {list(gpu_mapping.keys())}")
-        assert False, f"Unmapped GPU models found for pods: {unmapped_pods}"
+    if INCLUDE_GPU_IN_FEATURE:
+        # Encode GPU model using hyperparameters GPU_MAP
+        gpu_mapping = HYPERPARAMS['pod_gpu_id_mapping']  # Will crash if missing
+        df['gpu_model_encoded'] = df['selectedpod'].map(gpu_mapping)
+        unmapped_pods = df[df['gpu_model_encoded'].isna()]['selectedpod'].unique()
+        if len(unmapped_pods) > 0:
+            logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
+            logger.error(f"GPU_MAP in HYPERPARAMS: {gpu_mapping}")
+            unmapped_pods_gpu_models = df[df['selectedpod'].isin(unmapped_pods)]['gpu_model_encoded'].unique()
+            logger.error(f"Unmapped GPU models: {unmapped_pods_gpu_models}")
+            logger.error(f"Available pod mappings: {list(gpu_mapping.keys())}")
+            assert False, f"Unmapped GPU models found for pods: {unmapped_pods}"
 
-    df['gpu_model_encoded'] = df['gpu_model_encoded'].astype(int)
-
-    logger.info("Encoded GPU model using hyperparameters GPU_MAP.")
-    # -1 for unknown GPU models
+        df['gpu_model_encoded'] = df['gpu_model_encoded'].astype(int)
+        logger.info("Encoded GPU model using hyperparameters GPU_MAP.")
     
     # Check for missing expected columns
     missing_columns = [col for col in expected_columns if col not in df.columns]
@@ -357,7 +357,8 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
     
 
     # Pre-create pod_gpu_models and pod features structure
-    pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in all_pods}
+    if INCLUDE_GPU_IN_FEATURE:
+        pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in all_pods}
     
     # Vectorized processing using pandas operations
     logger.info("Processing records in vectorized manner...")
@@ -373,8 +374,9 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
         'ttft': df['ttft'].values,
         'avg_tpot': df['avg_tpot'].values,
         'e2e_latency': df['e2e'].values,
-        'gpu_model_encoded': df['gpu_model_encoded'].values,  # ADD THIS
     }
+    if INCLUDE_GPU_IN_FEATURE:
+       base_data['gpu_model_encoded'] = df['gpu_model_encoded'].values
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = df['allPodsKvCacheHitRatios'].values
@@ -398,7 +400,8 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
         base_data[f"pod_{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
         base_data[f"pod_{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
         base_data[f"pod_{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
-        base_data[f"pod_{pod_id}-gpu_model"] = ["NVIDIA-L20"] * len(df)
+        if INCLUDE_GPU_IN_FEATURE:
+            base_data[f"pod_{pod_id}-gpu_model"] = ["NVIDIA-L20"] * len(df)
         
         # Extract key metrics for this pod across all rows
         for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
@@ -477,16 +480,17 @@ def preprocess_dataset(df, ttft_slo, avg_tpot_slo, HYPERPARAMS):
     mapping_info = {
         'pod_to_index': pod_to_index,
         'index_to_pod': index_to_pod,
-        'pod_gpu_models': pod_gpu_models,
     }
+    if INCLUDE_GPU_IN_FEATURE:
+        mapping_info['pod_gpu_models'] = pod_gpu_models
 
     logger.debug(f"Processed dataset shape: {processed_df.shape}")
     logger.debug(f"Processed columns: {processed_df.columns[:10].tolist()}...")
 
-    # logger.debug GPU model mapping
-    logger.debug("\nPod GPU model mapping:")
-    for pod_id, gpu_model in pod_gpu_models.items():
-        logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
+    if INCLUDE_GPU_IN_FEATURE:
+        logger.debug("\nPod GPU model mapping:")
+        for pod_id, gpu_model in pod_gpu_models.items():
+            logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
 
     ##################################################################
 
@@ -564,10 +568,6 @@ def parse_log_message(log_message):
         return pd.DataFrame(), []
 
 def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
-    """
-    Ultra-fast preprocessing for single row (inference workload)
-    Avoids most DataFrame operations by working with dictionaries
-    """
     # Extract the single row as a dictionary (much faster than DataFrame operations)
     row = df.iloc[0].to_dict()
     logger.debug(f"Processing single row for inference workload: {row}")
@@ -584,13 +584,15 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
     all_pods = list(pod_metrics.keys())
     
     logger.debug(f"all_pods from podMetricsLastSecond: {all_pods}")
-    logger.debug(f"pod_gpu_mapping keys: {list(HYPERPARAMS.get('pod_gpu_mapping', {}).keys())}")
+    if INCLUDE_GPU_IN_FEATURE:
+        logger.debug(f"pod_gpu_mapping keys: {list(HYPERPARAMS.get('pod_gpu_mapping', {}).keys())}")
     logger.debug(f"selectedpod from row: {row['selectedpod']}")
 
-    if HYPERPARAMS and 'pod_gpu_id_mapping' in HYPERPARAMS:
-        gpu_model_encoded = HYPERPARAMS['pod_gpu_id_mapping'].get(row['selectedpod'], 0)
-    else:
-        assert False, "HYPERPARAMS must contain 'pod_gpu_id_mapping' for inference workload"
+    if INCLUDE_GPU_IN_FEATURE:
+        if HYPERPARAMS and 'pod_gpu_id_mapping' in HYPERPARAMS:
+            gpu_model_encoded = HYPERPARAMS['pod_gpu_id_mapping'].get(row['selectedpod'], 0)
+        else:
+            assert False, "HYPERPARAMS must contain 'pod_gpu_id_mapping' for inference workload"
 
     # Pre-allocate result dictionary with known structure
     base_features = {
@@ -602,8 +604,9 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
         'ttft': row['ttft'],
         'avg_tpot': row['avg_tpot'],
         'e2e_latency': row['e2e'],
-        'gpu_model_encoded': gpu_model_encoded,
     }
+    if INCLUDE_GPU_IN_FEATURE:
+        base_features['gpu_model_encoded'] = gpu_model_encoded
     
     # Extract metrics directly without repeated dictionary lookups
     kv_cache = row['allPodsKvCacheHitRatios']
@@ -619,35 +622,37 @@ def preprocess_single_row_fast(df, log_message, HYPERPARAMS):
     for pod_id in all_pods:
         pod_prefix = f"pod_{pod_id}"
         # Get actual GPU model for this pod with fallback
-        if HYPERPARAMS and 'pod_gpu_mapping' in HYPERPARAMS:
-            if pod_id not in HYPERPARAMS['pod_gpu_mapping']:
-                logger.error(f"Error: Pod ID {pod_id} not found in HYPERPARAMS['pod_gpu_mapping']:{HYPERPARAMS['pod_gpu_mapping']}")
+        if INCLUDE_GPU_IN_FEATURE:
+            if HYPERPARAMS and 'pod_gpu_mapping' in HYPERPARAMS:
+                if pod_id not in HYPERPARAMS['pod_gpu_mapping']:
+                    logger.error(f"Error: Pod ID {pod_id} not found in HYPERPARAMS['pod_gpu_mapping']:{HYPERPARAMS['pod_gpu_mapping']}")
+                    assert False
+                gpu_model = HYPERPARAMS['pod_gpu_mapping'][pod_id]
+            else:
                 assert False
-            gpu_model = HYPERPARAMS['pod_gpu_mapping'][pod_id]
-        else:
-            assert False
-        # Direct assignment without intermediate dictionaries
-        base_features[f"{pod_prefix}-kv_hit_ratio"] = kv_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-inflight_requests"] = inflight.get(pod_id, 0)
-        base_features[f"{pod_prefix}-gpu_kv_cache"] = gpu_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-cpu_kv_cache"] = cpu_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-running_requests"] = running.get(pod_id, 0)
-        base_features[f"{pod_prefix}-waiting_requests"] = waiting.get(pod_id, 0)
-        base_features[f"{pod_prefix}-prefill_tokens"] = prefill.get(pod_id, 0)
-        base_features[f"{pod_prefix}-decode_tokens"] = decode.get(pod_id, 0)
+    # Direct assignment without intermediate dictionaries
+    base_features[f"{pod_prefix}-kv_hit_ratio"] = kv_cache.get(pod_id, 0)
+    base_features[f"{pod_prefix}-inflight_requests"] = inflight.get(pod_id, 0)
+    base_features[f"{pod_prefix}-gpu_kv_cache"] = gpu_cache.get(pod_id, 0)
+    base_features[f"{pod_prefix}-cpu_kv_cache"] = cpu_cache.get(pod_id, 0)
+    base_features[f"{pod_prefix}-running_requests"] = running.get(pod_id, 0)
+    base_features[f"{pod_prefix}-waiting_requests"] = waiting.get(pod_id, 0)
+    base_features[f"{pod_prefix}-prefill_tokens"] = prefill.get(pod_id, 0)
+    base_features[f"{pod_prefix}-decode_tokens"] = decode.get(pod_id, 0)
+    if INCLUDE_GPU_IN_FEATURE:
         base_features[f"{pod_prefix}-gpu_model"] = gpu_model
-        
-        # Pod metrics
-        pod_metrics_for_pod = pod_metrics.get(pod_id, {})
-        base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
-        base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
-        base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
-        base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
-        base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
-        base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
-        base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
-        base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
     
+    # Pod metrics
+    pod_metrics_for_pod = pod_metrics.get(pod_id, {})
+    base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
+    base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
+    base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
+    base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
+    base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
+    base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
+    base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
+    base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
+
     processed_df = pd.DataFrame([base_features])
     
     # # Mapping info
@@ -744,13 +749,12 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, HYPERPARAMS):
                             logger.info("index_to_pod serialization: OK")
                         except TypeError as e:
                             logger.error(f"index_to_pod serialization failed: {e}")
-                        
-                        try:
-                            json.dumps(mapping_info['pod_gpu_models'])
-                            logger.info("pod_gpu_models serialization: OK")
-                        except TypeError as e:
-                            logger.error(f"pod_gpu_models serialization failed: {e}")
-                        
+                        if INCLUDE_GPU_IN_FEATURE:
+                            try:
+                                json.dumps(mapping_info['pod_gpu_models'])
+                                logger.info("pod_gpu_models serialization: OK")
+                            except TypeError as e:
+                                logger.error(f"pod_gpu_models serialization failed: {e}")
                         raise
                 
             logger.info(f"Mapping information saved to {mapping_file}")

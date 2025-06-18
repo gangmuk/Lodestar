@@ -1,6 +1,9 @@
 import logging
 import os
 
+INCLUDE_GPU_IN_FEATURE = False
+
+
 # Configure logging
 def setup_logging():
     logging_level = os.environ.get("LOG_LEVEL", "INFO")

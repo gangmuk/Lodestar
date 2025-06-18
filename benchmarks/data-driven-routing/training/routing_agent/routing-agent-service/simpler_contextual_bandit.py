@@ -15,8 +15,9 @@ import pickle
 import time
 import matplotlib.pyplot as plt
 import glob
-from logger import logger
 import random
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+# INCLUDE_GPU_IN_FEATURE = True
 
 # Set random seed
 seed = 42
@@ -38,16 +39,17 @@ class FixedPolicyNetwork(nn.Module):
         self.action_dim = action_dim
         
         # Calculate feature sizes
-        pod_feature_size = state_dim['pod_features']  # Features per pod (e.g., 8)
+        pod_feature_size = state_dim['pod_features']  # Features per pod: pod feature + kv hit feature
         kv_feature_size = state_dim['kv_hit_ratios']  # KV features per pod (e.g., 1)
         request_feature_size = state_dim['request_features']  # Global request features (e.g., 3)
         
         # Per-pod feature size
-        per_pod_features = pod_feature_size + kv_feature_size  # e.g., 8 + 1 = 9
-        
+        per_pod_features = pod_feature_size + kv_feature_size
+        logger.info(f"pod_feature_size: {pod_feature_size}, kv_feature_size: {kv_feature_size}, request_feature_size: {request_feature_size}")
+        logger.info(f"Per-pod features: {per_pod_features}")
         # APPROACH 1: Pod-aware scoring network
         # For each pod, combine pod features + request features → score
-        combined_input_size = per_pod_features + request_feature_size  # e.g., 9 + 3 = 12
+        combined_input_size = per_pod_features + request_feature_size
         
         self.pod_scorer = nn.Sequential(
             nn.Linear(combined_input_size, hidden_dim),
@@ -1770,8 +1772,8 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
     logger.info(f"Action dimension: {action_dim}")
 
     logger.info(f"State dimensions (should show GPU moved from request to pod features):")
-    logger.info(f"  pod_features: {state_dim['pod_features']} (should be ~11, was ~7)")
-    logger.info(f"  request_features: {state_dim['request_features']} (should be 3, was ~7)")
+    logger.info(f"  pod_features: {state_dim['pod_features']}")
+    logger.info(f"  request_features: {state_dim['request_features']}")
     
     # Create Simplified Contextual Bandit agent
     agent = SimplifiedContextualBandit(
@@ -2003,7 +2005,6 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     else:
         # Create new agent
         logger.info("Creating new simplified agent for inference")
-        
         state_dim = {
             'pod_features': current_config['pod_features'],
             'kv_hit_ratios': current_config['kv_hit_ratios'],
@@ -2031,31 +2032,30 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
 
     #================================================================
     logger.info("======== Start,infer_from_tensor LOGGING ========")
-    num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
-    gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
-    num_numeric_pod_features = 7  # Your base numeric pod features
-    expected_pod_features = num_numeric_pod_features + gpu_onehot_dim
-    expected_per_pod_features = expected_pod_features + 1  # +1 for KV hit ratio
-    expected_request_features = 3  # input_tokens, output_tokens, total_tokens
-    expected_input_dim = expected_per_pod_features + expected_request_features
+    # if INCLUDE_GPU_IN_FEATURE:
+    #     num_gpu_types = len(HYPERPARAMETERS['GPU_MAP'])
+    #     gpu_onehot_dim = num_gpu_types + 1  # +1 for unknown GPU
+    # num_expected_pod_features = 7 # ???
+    # if INCLUDE_GPU_IN_FEATURE:
+    #     num_expected_pod_features += gpu_onehot_dim
+    # num_expected_per_pod_features = num_expected_pod_features + 1  # +1 for KV hit ratio
+    # num_expected_request_features = 3  # input_tokens, output_tokens, total_tokens
+    # expected_input_dim = num_expected_per_pod_features + num_expected_request_features
 
     # Calculate actual dimensions
     actual_pod_features = pod_features.shape[2]
     actual_kv_features = kv_hit_ratios.shape[2] 
     actual_request_features = request_features.shape[1]
     actual_input_dim = actual_pod_features + actual_kv_features + actual_request_features
-    if actual_input_dim != expected_input_dim:
-        logger.error(f"Dimension mismatch!")
-        logger.error(f"Expected: {expected_input_dim} (pod:{expected_pod_features} + kv:1 + req:{expected_request_features})")
-        logger.error(f"Actual: {actual_input_dim} (pod:{actual_pod_features} + kv:{actual_kv_features} + req:{actual_request_features})")
-        logger.error(f"GPU types: {num_gpu_types}, GPU one-hot dim: {gpu_onehot_dim}")
-        logger.error("Need to retrain model with new feature dimensions")
-        assert False, "Architecture mismatch - cannot use pretrained model"
+    # if actual_input_dim != expected_input_dim:
+    #     logger.error(f"Dimension mismatch!")
+    #     logger.error(f"Expected: {expected_input_dim} (pod:{num_expected_pod_features} + kv:1 + req:{num_expected_request_features})")
+    #     logger.error(f"Actual: {actual_input_dim} (pod:{actual_pod_features} + kv:{actual_kv_features} + req:{actual_request_features})")
+    #     if INCLUDE_GPU_IN_FEATURE:
+    #         logger.error(f"GPU types: {num_gpu_types}, GPU one-hot dim: {gpu_onehot_dim}")
+    #     logger.error("Need to retrain model with new feature dimensions")
+    #     assert False, "Architecture mismatch - cannot use pretrained model"
     
-    '''
-    'input_tokens', 'output_tokens', 'total_tokens', 'ttft', 'avg_tpot', 'e2e_latency', 'gpu_model_encoded', 'pod_10.0.0.39-kv_hit_ratio', 'pod_10.0.0.39-inflight_requests', 'pod_10.0.0.39-gpu_kv_cache', 'pod_10.0.0.39-cpu_kv_cache', 'pod_10.0.0.39-running_requests', 'pod_10.0.0.39-waiting_requests', 'pod_10.0.0.39-prefill_tokens', 'pod_10.0.0.39-decode_tokens', 'pod_10.0.0.39-gpu_model'
-    '''
-
     logger.info("🔍 INPUT DIMENSION CHECK:")
     logger.info(f"  pod_features shape: {pod_features.shape}")
     logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")  
@@ -2089,6 +2089,13 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     # Run inference
     agent.policy.eval()
     with torch.no_grad():
+        logger.info(f"🔍 EXACT MODEL INPUT SHAPES:")
+        logger.info(f"  pod_features shape: {pod_features.shape}")
+        logger.info(f"  kv_hit_ratios shape: {kv_hit_ratios.shape}")
+        logger.info(f"  request_features shape: {request_features.shape}")
+        logger.info(f"  Expected combined input per pod: {pod_features.shape[2] + kv_hit_ratios.shape[2] + request_features.shape[1]}")
+        logger.info(f"  Model expects per pod: {agent.policy.pod_scorer[0].in_features}")
+        
         # Run inference (forward())
         action_probs = agent.policy(pod_features, kv_hit_ratios, request_features)
         
@@ -2129,10 +2136,11 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
         selected_score = raw_scores[0, selected_action]
         selected_score.backward()
         
-        # Analyze GPU feature gradients (assuming GPU feature is at position 7)
-        gpu_gradient = pod_features_grad.grad[:, :, 7]  # GPU feature gradients
-        logger.info(f"🔍 GPU FEATURE GRADIENTS: {gpu_gradient[0].cpu().numpy()}")
-        logger.info(f"GPU gradient magnitude: {gpu_gradient.abs().mean().item():.6f}")
+        if INCLUDE_GPU_IN_FEATURE:
+            # Analyze GPU feature gradients (assuming GPU feature is at position 7)
+            gpu_gradient = pod_features_grad.grad[:, :, 7]  # GPU feature gradients
+            logger.info(f"🔍 GPU FEATURE GRADIENTS: {gpu_gradient[0].cpu().numpy()}")
+            logger.info(f"GPU gradient magnitude: {gpu_gradient.abs().mean().item():.6f}")
         
         # Also check gradients for other features for comparison
         other_gradients = pod_features_grad.grad[:, :, :7]  # First 7 features
@@ -2165,42 +2173,40 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
         logger.info(f"  Final probabilities: {action_probs[0].cpu().numpy()}")
         logger.info(f"  Selected action: {selected_action}, confidence: {confidence:.4f}")
 
-    with torch.no_grad():
-        # Get raw scores WITH GPU feature (current)
-        raw_scores_with_gpu = raw_scores.clone()
-        
-        # Now test WITHOUT GPU feature by zeroing it out
-        modified_features = full_features.clone()
-        # Zero out the GPU feature column (position 7 in pod features)
-        modified_features[:, :, 7] = 0.0  # Assuming GPU is at position 7
-        
-        modified_reshaped = modified_features.view(batch_size * num_pods, -1)
-        raw_scores_without_gpu = agent.policy.pod_scorer(modified_reshaped)
-        raw_scores_without_gpu = raw_scores_without_gpu.view(batch_size, num_pods)
-        
-        score_difference = raw_scores_with_gpu - raw_scores_without_gpu
-        logger.info(f"🔍 GPU FEATURE IMPACT ANALYSIS:")
-        logger.info(f"  Scores WITH GPU:    {raw_scores_with_gpu[0].cpu().numpy()}")
-        logger.info(f"  Scores WITHOUT GPU: {raw_scores_without_gpu[0].cpu().numpy()}")
-        logger.info(f"  Difference:         {score_difference[0].cpu().numpy()}")
-        logger.info(f"  Max impact:         {score_difference.abs().max().item():.4f}")
+    if INCLUDE_GPU_IN_FEATURE:
+        with torch.no_grad():
+            # Get raw scores WITH GPU feature (current)
+            raw_scores_with_gpu = raw_scores.clone()
+            
+            # Now test WITHOUT GPU feature by zeroing it out
+            modified_features = full_features.clone()
+            # Zero out the GPU feature column (position 7 in pod features)
+            modified_features[:, :, 7] = 0.0  # Assuming GPU is at position 7
+            
+            modified_reshaped = modified_features.view(batch_size * num_pods, -1)
+            raw_scores_without_gpu = agent.policy.pod_scorer(modified_reshaped)
+            raw_scores_without_gpu = raw_scores_without_gpu.view(batch_size, num_pods)
+            
+            score_difference = raw_scores_with_gpu - raw_scores_without_gpu
+            logger.info(f"request_id,{request_id}, 🔍 GPU FEATURE IMPACT ANALYSIS:")
+            logger.info(f"request_id,{request_id}, Scores WITH GPU: {raw_scores_with_gpu[0].cpu().numpy()}\nrequest_id,{request_id}, Scores WITHOUT GPU: {raw_scores_without_gpu[0].cpu().numpy()}, \nrequest_id,{request_id}, Difference: {score_difference[0].cpu().numpy()}, \nrequest_id,{request_id}, Max impact: {score_difference.abs().max().item():.4f}")
 
     # Add this before the detailed breakdown:
     logger.info("🔍 NORMALIZATION STATUS CHECK:")
 
     # Check if values look normalized (should be roughly [-3, +3] for normalized features)
-    pod_looks_normalized = (pod_features.abs().max() < 10).item()
-    kv_looks_normalized = (kv_hit_ratios.max() < 10).item() 
-    request_looks_normalized = (request_features.abs().max() < 10).item()
+    pod_feature_large_gap = (pod_features.abs().max() < 10).item()
+    kv_feature_large_gap = (kv_hit_ratios.max() < 10).item() 
+    request_feature_large_gap = (request_features.abs().max() < 10).item()
 
-    logger.info(f"  Pod features look normalized: {pod_looks_normalized} (max_abs: {pod_features.abs().max():.2f})")
-    logger.info(f"  KV ratios look normalized: {kv_looks_normalized} (max: {kv_hit_ratios.max():.2f})")
-    logger.info(f"  Request features look normalized: {request_looks_normalized} (max_abs: {request_features.abs().max():.2f})")
+    logger.info(f"  Pod features look normalized: {not pod_feature_large_gap} (max_abs: {pod_features.abs().max():.2f})")
+    logger.info(f"  KV ratios look normalized: {not kv_feature_large_gap} (max: {kv_hit_ratios.max():.2f})")
+    logger.info(f"  Request features look normalized: {not request_feature_large_gap} (max_abs: {request_features.abs().max():.2f})")
 
-    if not request_looks_normalized:
-        logger.warning("❌ REQUEST FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
-    if not pod_looks_normalized:
-        logger.warning("❌ POD FEATURES NOT NORMALIZED! This will cause extreme model behavior.")
+    if not request_feature_large_gap:
+        logger.warning("LARGE GAPS IN REQUEST FEATURES! This can cause extreme model behavior.")
+    if not pod_feature_large_gap:
+        logger.warning("LARGE GAPS IN POD FEATURES! This can cause extreme model behavior.")
         
     logger.info("======== End,infer_from_tensor LOGGING ========")
     #================================================================
