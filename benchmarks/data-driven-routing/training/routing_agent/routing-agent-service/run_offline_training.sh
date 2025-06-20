@@ -13,7 +13,7 @@ training_data_dir="training_data/p4096_s1024_rps20/rl"
 final_model_dir="${training_data_dir}/final_model"
 if [ -d "${final_model_dir}" ]; then
     echo "Final model directory already exists: ${final_model_dir}"
-    rm -r ${final_model_dir}
+    rm ${final_model_dir}/* || true
     echo "Removed existing final model directory: ${final_model_dir}"
 fi
 mkdir -p "${final_model_dir}"
