@@ -41,6 +41,8 @@ class RunningStats:
             self.mean = np.mean(new_data, axis=0)
             self.var = np.var(new_data, axis=0) * new_count
             self.count = new_count
+            # self.min = np.min(new_data, axis=0) # Initialize min
+            # self.max = np.max(new_data, axis=0) # Initialize max
             logger.info(f"The very first RunningStats.update call for {self.feature_names}. Initialized running stats with {new_count} samples")
             return
         
@@ -61,9 +63,20 @@ class RunningStats:
         
         # Update count
         self.count = new_total
-        self.min = np.minimum(self.min, np.min(new_data, axis=0))
-        self.max = np.maximum(self.max, np.max(new_data, axis=0))
-        
+
+        '''
+        routing_agent_service.py - ERROR - handle_flush:121 - Traceback: Traceback (most recent call last):
+        File "/app/routing_agent_service.py", line 100, in handle_flush
+            processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+        File "/app/feature_normalization.py", line 333, in normalize_features_for_training
+            stats_instance.feature_stats[feature].update_stats_incrementally(feature_data)
+        File "/app/feature_normalization.py", line 66, in update_stats_incrementally
+            self.min = np.minimum(self.min, np.min(new_data, axis=0))
+        TypeError: '<=' not supported between instances of 'NoneType' and 'float'
+        '''
+        # self.min = np.minimum(self.min, np.min(new_data, axis=0)) 
+        # self.max = np.maximum(self.max, np.max(new_data, axis=0))
+
         logger.info(f"{self.feature_names}, Updated running stats, now have {self.count} samples")
         
     def get_mean(self):
@@ -240,7 +253,7 @@ class PerFeatureRunningStats:
                     feature_name = row['feature_name']
                     stats_type = row['stats_type']
                     value_str = row['value']
-                    logger.info(f"Loading normalization stats, feature_name={feature_name}, stats_type={stats_type}, value={value_str}")
+                    logger.debug(f"Loading normalization stats, feature_name={feature_name}, stats_type={stats_type}, value={value_str}")
                     if feature_name not in temp_feature_data:
                         temp_feature_data[feature_name] = {'count': 0, 'mean': None, 'var': None, 'feature_names': feature_name}
                     
@@ -285,9 +298,9 @@ class PerFeatureRunningStats:
             assert False
 
         # print all features and std, mean, and count
-        logger.info("Per-feature statistics loaded:")
+        logger.debug("Per-feature statistics loaded:")
         for feature_name, stats in instance.feature_stats.items():
-            logger.info(f"{feature_name}: count={stats.count}, mean={stats.mean}, std={stats.get_std()}")
+            logger.debug(f"{feature_name}: count={stats.count}, mean={stats.mean}, std={stats.get_std()}")
         
         return instance
     
