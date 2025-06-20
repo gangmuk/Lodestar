@@ -1,0 +1,17 @@
+{
+    "hidden_dim": 32,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "exploration_rate": 0.0,
+    "num_training_epochs": 5,
+    "max_updates_per_epoch": 100,
+    "eval_interval": 10,
+    "seed": 42,
+    "model_type": "simplified",
+    "dataset_analysis": {
+        "total_samples": 1598,
+        "imbalance_ratio": 1.204761917893633,
+        "reward_gap": 0.3720058500766754,
+        "action_distribution": "tensor([216, 210, 222, 233, 222, 253, 242])"
+    }
+}
