@@ -1,15 +1,14 @@
 #!/bin/bash
 
-# input_workload_path="./workload/i_like_apple_request.jsonl"
-# input_workload_path="./workload/one_request.jsonl"
-# input_workload_path="./workload/ten_request"
-# input_workload_path="./workload/5s.jsonl"
-# input_workload_path="./workload/5min-later-part-init.jsonl"
-# input_workload_path="./workload/prefix-sharing-workload/prefixsharingworkload-p1024_s128_rps5.jsonl"
-# input_workload_path="./workload/prefix-sharing-workload/p1024_s128_rps5-p2048_s128_rps5-p4096_s128_rps5.jsonl"
-# input_workload_path="./workload/prefix-sharing-workload/p1024_s128_rps7-p2048_s128_rps7-p4096_s128_rps7-p8096_s128_rps7.jsonl"
-# input_workload_path="./workload/prefix-sharing-workload/p1024_s128_rps10-p2048_s128_rps10-p4096_s128_rps10-p8096_s128_rps10.jsonl"
-# input_workload_path="./workload/prefix-sharing-workload/p2048_s512_rps10-p4096_s1024_rps10-p8096_s2048_rps10-p16192_s4096_rps10.jsonl"
+kill_and_execute_routing_agent_service() {
+    pod_name="$(kubectl get pods -l app=routing-agent-service -o jsonpath='{.items[0].metadata.name}')"
+    kubectl exec "${pod_name}" -- pkill -f routing_agent_service.py
+    echo "sleep 5 seconds..."
+    sleep 5
+    kubectl exec "${pod_name}" -- sh -c "nohup python routing_agent_service.py > /dev/null 2>&1 &"
+    echo "sleep 5 seconds..."
+    sleep 5
+}
 
 max_tokens=100
 api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi" # set your api key
@@ -23,18 +22,23 @@ ipaddr=10.0.3.21 # external-ip of envoy-aibrix-system-aibrix-eg-903790dc svc in 
 iterations=1
 
 input_workload_dirs=(
-    # "workload/one_request"
+    # "workload/three_requests"
 
-    # "workload/prefix-sharing-workload/p4096_s1024_rps5"
+    ## test purpose
+    # "workload/prefix-sharing-workload/SharingRatio64%-p4096_s1024_rps5_spp_5_ndp5"
+
+    # "workload/prefix-sharing-workload/p4096_s1024_rps20"
+
     "workload/prefix-sharing-workload/p4096_s1024_rps10_spp_20_ndp_100"
+    
     # "workload/prefix-sharing-workload/p4096_s1024_rps10_spp_10_ndp200"
     # "workload/prefix-sharing-workload/p4096_s1024_rps5_spp_10_ndp200"
     # "workload/prefix-sharing-workload/p4096_s1024_rps7_spp_10_ndp200"
     # "workload/prefix-sharing-workload/p4096_s1024_rps15"
-    # "workload/prefix-sharing-workload/p4096_s1024_rps20"
     # "workload/prefix-sharing-workload/p8096_s2048_rps10"
     # "workload/prefix-sharing-workload/p8096_s2048_rps15"
 
+    # "workload/prefix-sharing-workload/SharingRatio75%-p4096_s1024_rps10_spp_20_ndp20"
     # "workload/prefix-sharing-workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50"
     # "workload/prefix-sharing-workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80"
     # "workload/prefix-sharing-workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps2_spp_20_ndp80"
@@ -66,11 +70,12 @@ routing_configs=(
     # # "least-latency${delimiter}none"
     # "flexible-prefix-cache${delimiter}random"
 )
-TTFT_SLO=1500
+TTFT_SLO=1000
 AVG_TPOT_SLO=50
 idxs=(5555)
 # for online_learning in true false; do
-for online_learning in false; do
+for online_learning in true; do
+# for online_learning in false; do
     for workload_dir in "${input_workload_dirs[@]}"; do
         for idx in "${idxs[@]}"; do
             for config in "${routing_configs[@]}"; do
@@ -84,10 +89,8 @@ for online_learning in false; do
                 start_time=$(date +%s)
                 
                 kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
-                # kubectl rollout restart deployment latency-predictor-service -n default
                 kubectl rollout restart deployment routing-agent-service -n default
-                python3 check_ready.py
-                sleep 3
+                sleep 3 && python3 check_ready.py && sleep 3
 
                 if [ "${subAlgorithm}" == "none" ]; then
                     output_dir="${workload_dir}/${config}-onlinelearning_${online_learning}"
@@ -106,16 +109,13 @@ for online_learning in false; do
                 fi
                 workload_path="${workload_dir}/workload.jsonl"
                 client_log_file_name=${output_dir}/"client.log.txt"
-                
+
                 kubectl logs -f -n aibrix-system $(kubectl get pods -n aibrix-system | grep aibrix-gateway-plugins | awk '{print $1}') > ${output_dir}/all-aibrix-gateway-plugins.log.txt &
                 pid_1=$!
-                # kubectl logs -f -n default $(kubectl get pods -n default | grep latency-predictor-service | awk '{print $1}') > ${output_dir}/all-latency-predictor-service.log.txt &
-                # pid_2=$!
                 kubectl logs -f -n default $(kubectl get pods -n default | grep routing-agent-service | awk '{print $1}') > ${output_dir}/all-routing-agent-service.log.txt &
-                pid_3=$!
+                pid_2=$!
 
                 echo "========================================"
-                python kubectl_cp_from_host_to_pod.py hyperparameters.txt /app/hyperparameters.txt routing-agent-service default
                 echo "* output_dir: ${output_dir}"
                 echo "* workload_path: ${workload_path}"
                 echo "* client_log_file_name: ${client_log_file_name}"
@@ -136,23 +136,13 @@ for online_learning in false; do
                         --streaming &> ${client_log_file_name}
                         # --streaming 2>&1 | tee ${client_log_file_name}
                 duration=$(( $(date +%s) - start_time ))
-
                 python kubectl_cp_from_pod_to_host.py /app/final_model "${output_dir}/final_model" routing-agent-service default
                 python kubectl_cp_from_pod_to_host.py /app/llm_router.log "${output_dir}/llm_router.log" routing-agent-service default
-
                 cat ${output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" > ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
                 echo "* filtered gateway log: ${output_dir}/filtered-aibrix-gateway-plugins.log.csv"
-                
                 python plot_latency_timeseries.py ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
-
-                # echo "* latency predictor service log: ${output_dir}/all-latency-predictor-service.log.txt"
-                sleep 5
-
                 kill $pid_1
-                # kill $pid_2
-                kill $pid_3
-                echo "* Total time taken for the experiment: ${duration} seconds"
-                echo "========================================"
+                kill $pid_2
             done
         done
     done

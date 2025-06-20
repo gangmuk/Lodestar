@@ -51,8 +51,8 @@ async def load_workload(workload_path: str) -> List[Dict[str, Any]]:
             raise
 
 async def send_request_streaming(client, model, prompt, output_file, request_id, 
-                                session_id, target_time, max_tokens,
-                                temperature, routing_strategy, results_lock, history_lock):
+                                 session_id, target_time, max_tokens,
+                                 temperature, routing_strategy, results_lock, history_lock, ttft_timeout=10):
     """Send a streaming request asynchronously"""
     start_time = asyncio.get_running_loop().time()
     first_response_time = None
@@ -105,8 +105,8 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         # Patch the client to capture headers
         transport = patch_openai_client(client)
 
-        # Send streaming request
-        response_stream = await client.chat.completions.create(
+        # Send streaming request - this returns an async generator
+        response_stream_generator = await client.chat.completions.create( # AWAIT here to get the generator
             model=model,
             messages=prompt,
             max_tokens=max_tokens,
@@ -117,42 +117,56 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
             extra_body={"subAlgorithm": args.subAlgorithm},
         )
         
-        # Extract headers
+        # Extract headers (assuming headers are available after the initial response setup)
         headers_data = extract_headers_data(transport.captured_headers)
-        # print(f"Request {request_id}, headers_data: {headers_data}")
-        # Process streaming response
+
         text_chunks = []
         prompt_tokens = 0
         output_tokens = 0
         total_tokens = 0
         ttft_logged = False
         
-        async for chunk in response_stream:
-            if chunk.choices:
-                if chunk.choices[0].delta.content is not None:
-                    if first_response_time is None:
-                        first_response_time = asyncio.get_running_loop().time()
-                        first_token_time = time.time()
-                        ttft = first_token_time - actual_start_time
-                        if not ttft_logged:
-                            logger.info(f"Request {request_id}: First token received at {time.strftime('%H:%M:%S.%f', time.localtime(first_token_time))[:-3]}, "
-                                        f"TTFT: {ttft:.3f}s")
-                            ttft_logged = True
-                            
-                    output_text = chunk.choices[0].delta.content
-                    text_chunks.append(output_text)
+        try:
+            # Get the first chunk with a timeout
+            logger.debug(f"Request {request_id}: Applying TTFT timeout of {ttft_timeout}s.")
+            first_chunk = await asyncio.wait_for(anext(response_stream_generator), timeout=ttft_timeout) # Use anext() for async generators
             
-            # Extract usage information if available
-            if hasattr(chunk, 'usage') and chunk.usage is not None:
-                if chunk.usage.prompt_tokens is not None:
-                    prompt_tokens = chunk.usage.prompt_tokens
-                if chunk.usage.completion_tokens is not None:
-                    output_tokens = chunk.usage.completion_tokens
-                if chunk.usage.total_tokens is not None:
-                    total_tokens = chunk.usage.total_tokens
+            if first_chunk.choices:
+                if first_chunk.choices[0].delta.content is not None:
+                    first_response_time = asyncio.get_running_loop().time()
+                    first_token_time = time.time()
+                    ttft = first_token_time - actual_start_time
+                    if not ttft_logged:
+                        logger.info(f"Request {request_id}: First token received at {time.strftime('%H:%M:%S.%f', time.localtime(first_token_time))[:-3]}, "
+                                    f"TTFT: {ttft:.3f}s")
+                        ttft_logged = True
+                    output_text = first_chunk.choices[0].delta.content
+                    text_chunks.append(output_text)
+
+            # Process remaining chunks without a specific TTFT timeout, as TTFT already passed
+            async for chunk in response_stream_generator: # Iterate over the rest of the generator
+                if chunk.choices:
+                    if chunk.choices[0].delta.content is not None:
+                        output_text = chunk.choices[0].delta.content
+                        text_chunks.append(output_text)
+
+                # Extract usage information if available
+                if hasattr(chunk, 'usage') and chunk.usage is not None:
+                    if chunk.usage.prompt_tokens is not None:
+                        prompt_tokens = chunk.usage.prompt_tokens
+                    if chunk.usage.completion_tokens is not None:
+                        output_tokens = chunk.usage.completion_tokens
+                    if chunk.usage.total_tokens is not None:
+                        total_tokens = chunk.usage.total_tokens
+
+        except asyncio.TimeoutError:
+            logger.error(f"Request {request_id}: Time-to-first-token (TTFT) timeout of {ttft_timeout}s exceeded.")
+            raise Exception(f"TTFT timeout of {ttft_timeout}s exceeded for request {request_id}") from None
+        except StopAsyncIteration: # Handle cases where generator is empty after first chunk
+            pass # No more chunks to process
+        
         # Combine text chunks to get full response
         response_text = "".join(text_chunks)
-        # print(f"Request {request_id}, response_text: {response_text}")
         response_time = asyncio.get_running_loop().time()
         completion_time = time.time()
     
@@ -803,7 +817,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
 
 
-async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, max_tokens, temperature, routing_strategy, results_lock, history_lock, ttft_timeout):
     """Schedule and execute tasks based on their target times with true concurrency"""
     # Sort tasks by target_time
     tasks.sort(key=lambda t: t["target_time"])
@@ -840,6 +854,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
                 routing_strategy=routing_strategy,
                 results_lock=results_lock,
                 history_lock=history_lock,
+                ttft_timeout=ttft_timeout,
             )
         )
         
@@ -859,7 +874,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
     return results
 
 async def schedule_task(delay, target_time, request_id, send_func, client, model, prompt, 
-                        output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+                        output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, ttft_timeout):
     """Schedule and execute a single task at the specified time"""
     task_start = time.time()
     
@@ -889,13 +904,14 @@ async def schedule_task(delay, target_time, request_id, send_func, client, model
         routing_strategy=routing_strategy,
         results_lock=results_lock,
         history_lock=history_lock,
+        ttft_timeout=ttft_timeout,
     )
     
     return result
 
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
-                       temperature, is_streaming, results_lock, history_lock, iterations=1):
+                       temperature, is_streaming, results_lock, history_lock, ttft_timeout, iterations=1):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Create a client
     client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
@@ -956,6 +972,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             routing_strategy=routing_strategy,
             results_lock=results_lock,
             history_lock=history_lock,
+            ttft_timeout=timeout,
         )
         end_time = time.time()
         
@@ -1025,6 +1042,7 @@ async def main(args):
             is_streaming=args.streaming,
             results_lock=results_lock,
             history_lock=history_lock,
+            ttft_timeout=args.ttft_timeout,
             iterations=args.iterations,
         )
         end_time = time.time()
@@ -1053,9 +1071,10 @@ if __name__ == "__main__":
     parser.add_argument("--subAlgorithm", type=str, default="random", help="Sub Routing strategy that will be used for flexible prefix cache.")
     parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request.")
     parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for the request.")
-    parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout in seconds.")
     parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
     parser.add_argument("--output_dir", type=str, default="./", help="output dir")
+    parser.add_argument("--timeout", type=float, default=300.0, help="End-to-end request timeout in seconds.")
+    parser.add_argument("--ttft_timeout", type=int, default=10, help="ttft timeout")
     parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
 
     args = parser.parse_args()

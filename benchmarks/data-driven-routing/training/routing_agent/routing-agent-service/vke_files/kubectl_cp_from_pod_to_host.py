@@ -4,7 +4,7 @@ import subprocess
 from typing import Tuple, Optional
 from logger import logger
 
-def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: str, container: Optional[str] = None) -> Tuple[bool, str]:
+def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: str, container: Optional[str] = None) -> bool:
     """
     Copy files or directories between a Kubernetes pod and local filesystem using kubectl.
     
@@ -76,7 +76,8 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
             
             check_result = subprocess.run(check_cmd, capture_output=True, text=True)
             if check_result.stdout.strip() != "exists":
-                return False, f"Source path '{src}' does not exist in the pod"
+                logger.error(f"Source path '{src}' does not exist in the pod")
+                return False
             
             # Now check if it's a directory
             check_dir_cmd = ['kubectl', 'exec', pod_name, '-n', namespace]
@@ -90,7 +91,8 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
         else:
             # Local source
             if not os.path.exists(src):
-                return False, f"Source path '{src}' does not exist locally"
+                logger.error(f"Source path '{src}' does not exist locally")
+                return False
             
             is_src_dir = os.path.isdir(src)
             logger.debug(f"Source locally is a {'directory' if is_src_dir else 'file'}: {src}")
@@ -140,19 +142,25 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
         if cp_result.returncode != 0:
             # Check for specific error messages
             if "No such file or directory" in cp_result.stderr:
-                return False, f"Copy failed: Source path '{src}' does not exist"
-            return False, f"Copy command failed: {cp_result.stderr}"
+                logger.error(f"Copy failed: Source path '{src}' does not exist")
+                return False
+            logger.error(f"Copy command failed: {cp_result.stderr}")
+            return False
             
         if is_src_dir:
-            return True, f"Copied directory from {src} to {dst}"
+            print(f"** {dst}")
+            return True
         else:
-            return True, f"Copied file from {src} to {dst}"
+            print(f"** {dst}")
+            return True
             
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode('utf-8') if e.stderr else str(e)
-        return False, f"!!! ERROR !!! Command failed: {error_msg}"
+        logger.error(f"!!! ERROR !!! Command failed: {error_msg}")
+        return False
     except Exception as e:
-        return False, f"!!! ERROR !!!: {str(e)}"
+        logger.error(f"!!! ERROR !!!: {str(e)}")
+        return False
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
@@ -171,9 +179,4 @@ if __name__ == "__main__":
     container = sys.argv[5] if len(sys.argv) > 5 else None
     
     logger.debug(f"Copying from {src} to {dst} in deployment {deployment} in namespace {namespace}")
-    success, output = kubectl_cp_from_pod_to_host(src, dst, deployment, namespace, container)
-    
-    if success:
-        logger.info(f"Success: {output}")
-    else:
-        logger.info(f"!!! ERROR !!!: {output}")
+    success = kubectl_cp_from_pod_to_host(src, dst, deployment, namespace, container)

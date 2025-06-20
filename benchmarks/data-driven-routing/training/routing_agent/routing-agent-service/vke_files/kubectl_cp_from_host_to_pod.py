@@ -25,9 +25,8 @@ def kubectl_cp_from_host_to_pod(src: str, dst: str, deployment: str, namespace: 
                '--selector=app=' + deployment, 
                '-o=jsonpath={.items[0].metadata.name}']
         
-        logger.error(f"Running command: {' '.join(cmd)}")
+        logger.debug(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
         pod_name = result.stdout.strip()
         
         # If pod not found with app label, try listing all pods
@@ -82,7 +81,7 @@ def kubectl_cp_from_host_to_pod(src: str, dst: str, deployment: str, namespace: 
                 
                 mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
                 if mkdir_result.returncode != 0:
-                    logger.errro(f"Warning: Could not create destination directory in pod: {mkdir_result.stderr}")
+                    logger.error(f"Warning: Could not create destination directory in pod: {mkdir_result.stderr}")
         else:
             # If source is a directory, ensure destination directory exists in pod
             mkdir_cmd = ['kubectl', 'exec', pod_name, '-n', namespace]

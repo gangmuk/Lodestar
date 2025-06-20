@@ -9,19 +9,17 @@ import pandas as pd
 import seaborn as sns
 import re
 import json
+from logger import logger
 
 def parse_log_file(filename):
     with open(filename, 'r') as file:
         content = file.read()
-    
     data = []
     lines = content.split('\n')
-    
     for line_num, line in enumerate(lines, 1):
         line = line.strip()
         if not line or "**@latency_metrics@" not in line:
             continue
-            
         try:
             entry = parse_metrics_line(line)
             if entry:
@@ -29,26 +27,35 @@ def parse_log_file(filename):
         except Exception as e:
             print(f"Error parsing line {line_num}: {e}")
             continue
-    
-    # Sort by start time
     data.sort(key=lambda x: x.get('start_time', 0) or 0)
-    
-    # Add relative timing calculations
     if data:
         valid_start_times = [item['start_time'] for item in data if item.get('start_time')]
         if valid_start_times:
             base_time = min(valid_start_times)
             for item in data:
-                if item.get('start_time'):
+                if item.get('start_time') is not None:
                     item['relative_time'] = (item['start_time'] - base_time) / 1000000
-                if item.get('end_time'):
+                else:
+                    logger.error(f"Missing start_time in entry: {item}")
+                    logger.error(f"data: {data}")
+                    assert False
+                # if item.get('end_time'):
+                if item.get('end_time') is not None:
                     item['relative_end_time'] = (item['end_time'] - base_time) / 1000000
                     item['duration'] = (item['end_time'] - item['start_time']) / 1000000
                 else:
-                    item['relative_end_time'] = None
-                    item['duration'] = None
+                    logger.error(f"Missing end_time in entry: {item}")
+                    logger.error(f"data: {data}")
+                    assert False
+        else:
+            logger.error("No valid start times found in the data.")
+            logger.error(f"data: {data}")
+            assert False
+    else:
+        logger.error("No valid entries found in the log file.")
+        assert False
     
-    print(f"Parsed {len(data)} entries from {filename}")
+    print(f"Parsed {len(data)} entries")
     return data
 
 def parse_metrics_line(line):
@@ -77,7 +84,8 @@ def parse_metrics_line(line):
         'e2e': parsed_data.get('e2e'),
         'num_input_tokens': parsed_data.get('numInputTokens'),
         'num_output_tokens': parsed_data.get('numOutputTokens'),
-        'num_trains': parsed_data.get('numTrains')
+        'num_trains': parsed_data.get('numTrains'),
+        'num_flush': parsed_data.get('numFlush'),
     }
     
     # Only require request_id and start_time as essential
@@ -230,6 +238,24 @@ def get_numtrains_transitions(data):
     
     return transitions
 
+def get_numflush_transitions(data):
+    """
+    Get the first occurrence time of each new numFlush value
+    """
+    transitions = []
+    seen_flush = set()
+    
+    for item in data:
+        num_flush = item['num_flush']
+        if num_flush is not None and num_flush not in seen_flush:
+            transitions.append({
+                'num_flush': num_flush,
+                'relative_time': item['relative_time']
+            })
+            seen_flush.add(num_flush)
+    
+    return transitions
+
 def calculate_ttft_reward(ttft, slo_ttft=500):
     """Calculate TTFT reward based on the given formula"""
     if ttft <= 0:
@@ -329,8 +355,12 @@ def calculate_cluster_wise_metrics(df):
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # Convert to DataFrame for easier analysis
     df = pd.DataFrame(data)
+    if len(df) == 0:
+        print("Error, No valid data to plot.")
+        exit()
     cluster_stats = calculate_cluster_wise_metrics(df)
     train_transitions = get_numtrains_transitions(data)
+    flush_transitions = get_numflush_transitions(data)
 
     df['ttft_reward'] = df['ttft'].apply(lambda x: calculate_ttft_reward(x, slo_ttft))
     df['tpot_reward'] = df['avg_tpot'].apply(lambda x: calculate_tpot_reward(x, slo_tpot))
@@ -388,7 +418,8 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # Add vertical lines for numTrains transitions
     for transition in train_transitions:
         ax1.axvline(x=transition['relative_time'], color='purple', linewidth=2, alpha=0.8, zorder=5)
-        # ax1.text(transition['relative_time'], ax1.get_ylim()[1]*0.9, f'numTrains={transition["num_trains"]}', rotation=90, ha='right', va='top', fontsize=10, color='purple', fontweight='bold')
+    for transition in flush_transitions:
+        ax1.axvline(x=transition['relative_time'], color='orange', linewidth=2, alpha=0.8, zorder=5)
 
     # TPOT Plot (ax2)
     for pod in unique_pods:
@@ -402,7 +433,8 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # Add vertical lines for numTrains transitions
     for transition in train_transitions:
         ax2.axvline(x=transition['relative_time'], color='purple', linewidth=2, alpha=0.8, zorder=5)
-        
+    for transition in flush_transitions:
+        ax2.axvline(x=transition['relative_time'], color='orange', linewidth=2, alpha=0.8, zorder=5)
     # E2E Duration Plot (ax3) - Now following the same format as TTFT and TPOT
     for pod in unique_pods:
         pod_data = df[df['pod'] == pod]
@@ -492,7 +524,14 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # set ylim
     ax1.set_ylabel('TTFT (ms)', fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3)
-    ax1.legend(fontsize=12)
+    # ax1.legend(fontsize=12)
+    from matplotlib.lines import Line2D
+    legend_elements = ax1.get_legend_handles_labels()
+    legend_elements[0].append(Line2D([0], [0], color='purple', linewidth=2, label='numTrains transition'))
+    legend_elements[1].append('numTrains transition')
+    legend_elements[0].append(Line2D([0], [0], color='orange', linewidth=2, label='numFlush transition'))
+    legend_elements[1].append('numFlush transition')
+    ax1.legend(legend_elements[0], legend_elements[1], fontsize=12)
     
     ax2.set_title('Average Time Per Output Token (TPOT) for Each Request', fontsize=16, fontweight='bold', pad=10)
     ax2.set_ylabel('Average TPOT (ms)', fontsize=14, fontweight='bold')
@@ -540,7 +579,8 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # Add vertical lines for numTrains transitions
     for transition in train_transitions:
         ax9.axvline(x=transition['relative_time'], color='purple', linewidth=2, alpha=0.8, zorder=5)
-    
+    for transition in flush_transitions:
+        ax9.axvline(x=transition['relative_time'], color='orange', linewidth=2, alpha=0.8, zorder=5)
     # Add horizontal lines for reward boundaries
     ax9.axhline(y=0, color='black', linestyle='--', alpha=0.5)
     ax9.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5)
@@ -583,11 +623,11 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
             ax.grid(True, linestyle='--', alpha=0.3)
     
     # Add reward statistics to the summary print
-    print(f"\nReward Statistics (SLO: TTFT≤{slo_ttft}ms, TPOT≤{slo_tpot}ms):")
-    print(f"TTFT Reward - Min: {df['ttft_reward'].min():.3f}, Max: {df['ttft_reward'].max():.3f}, Avg: {df['ttft_reward'].mean():.3f}")
-    print(f"TPOT Reward - Min: {df['tpot_reward'].min():.3f}, Max: {df['tpot_reward'].max():.3f}, Avg: {df['tpot_reward'].mean():.3f}")
-    print(f"Total Reward - Min: {df['total_reward'].min():.3f}, Max: {df['total_reward'].max():.3f}, Avg: {df['total_reward'].mean():.3f}")
-    print(f"\nSLO Satisfaction:")
+    logger.debug(f"Reward Statistics (SLO: TTFT≤{slo_ttft}ms, TPOT≤{slo_tpot}ms):")
+    logger.debug(f"TTFT Reward - Min: {df['ttft_reward'].min():.3f}, Max: {df['ttft_reward'].max():.3f}, Avg: {df['ttft_reward'].mean():.3f}")
+    logger.debug(f"TPOT Reward - Min: {df['tpot_reward'].min():.3f}, Max: {df['tpot_reward'].max():.3f}, Avg: {df['tpot_reward'].mean():.3f}")
+    logger.debug(f"Total Reward - Min: {df['total_reward'].min():.3f}, Max: {df['total_reward'].max():.3f}, Avg: {df['total_reward'].mean():.3f}")
+    logger.debug(f"SLO Satisfaction:")
     print(f"TTFT: {slo_stats['ttft_satisfied']}/{slo_stats['total_requests']} ({slo_stats['ttft_satisfaction_rate']:.1f}%)")
     print(f"TPOT: {slo_stats['tpot_satisfied']}/{slo_stats['total_requests']} ({slo_stats['tpot_satisfaction_rate']:.1f}%)")
     print(f"Both: {slo_stats['both_satisfied']}/{slo_stats['total_requests']} ({slo_stats['both_satisfaction_rate']:.1f}%)")
@@ -599,6 +639,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     
     # Save files
+    plt.savefig("latency_metrics_analysis.png", dpi=300, bbox_inches='tight')
     plt_fn = f"{log_dir}/latency_metrics_analysis.pdf"
     plt.savefig(plt_fn, bbox_inches='tight')
     
@@ -625,22 +666,22 @@ if __name__ == "__main__":
     data = parse_log_file(log_file)
     
     if not data:
-        print(f"No valid latency metrics found in {log_file}. Please check the file format.")
-        sys.exit(1)
+        logger.error(f"No valid latency metrics found in {log_file}. Please check the file format.")
+        assert False
     
     print(f"Found {len(data)} log entries with latency metrics")
     
     # Create and save the enhanced plot
     fig, output_file = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot)
     
-    print(f"Plot saved to: {output_file}")
+    print(f"** plot saved to: {output_file}")
     
     # Print summary statistics
     df = pd.DataFrame(data)
-    print("\nSummary Statistics:")
-    print(f"TTFT - Min: {df['ttft'].min()} ms, Max: {df['ttft'].max()} ms, Avg: {df['ttft'].mean():.2f} ms")
-    print(f"TPOT - Min: {df['avg_tpot'].min()} ms, Max: {df['avg_tpot'].max()} ms, Avg: {df['avg_tpot'].mean():.2f} ms")
-    print(f"E2E  - Min: {df['e2e'].min()} ms, Max: {df['e2e'].max()} ms, Avg: {df['e2e'].mean():.2f} ms")
+    logger.debug("\nSummary Statistics:")
+    logger.debug(f"TTFT - Min: {df['ttft'].min()} ms, Max: {df['ttft'].max()} ms, Avg: {df['ttft'].mean():.2f} ms")
+    logger.debug(f"TPOT - Min: {df['avg_tpot'].min()} ms, Max: {df['avg_tpot'].max()} ms, Avg: {df['avg_tpot'].mean():.2f} ms")
+    logger.debug(f"E2E  - Min: {df['e2e'].min()} ms, Max: {df['e2e'].max()} ms, Avg: {df['e2e'].mean():.2f} ms")
     
     # Show the plot
     plt.show()
