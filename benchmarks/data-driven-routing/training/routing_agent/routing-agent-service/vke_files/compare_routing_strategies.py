@@ -9,13 +9,14 @@ import json
 from datetime import datetime
 import logging
 import training.preprocess as preprocess
+from matplotlib.gridspec import GridSpec
 
-maintitle_fontsize = 20
-subtitle_fontsize = 18
-legend_fontsize = 14
+maintitle_fontsize = 30
+subtitle_fontsize = 26
+legend_fontsize = 22
 text_fontsize = 14
-ylabel_fontsize = 14
-tick_fontsize = 14
+ylabel_fontsize = 22
+tick_fontsize = 22
 
 def parse_strategy_name(filepath):
     """Extract the routing strategy name from the filepath."""
@@ -29,9 +30,18 @@ def parse_strategy_name(filepath):
         return os.path.basename(os.path.dirname(filepath))
 
 def find_log_files(base_dir):
-    """Recursively find all filtered log CSV files in the base directory."""
-    pattern = os.path.join(base_dir, "**", "filtered-aibrix-gateway-plugins.log.csv")
-    return glob.glob(pattern, recursive=True)
+    """Find all filtered log CSV files in the base directory - only one level deep."""
+    log_files = []
+    
+    # Search in the base directory itself
+    pattern = os.path.join(base_dir, "filtered-aibrix-gateway-plugins.log.csv")
+    log_files.extend(glob.glob(pattern))
+    
+    # Search in immediate subdirectories (one level deep)
+    pattern = os.path.join(base_dir, "*", "filtered-aibrix-gateway-plugins.log.csv")
+    log_files.extend(glob.glob(pattern))
+    
+    return log_files
 
 def analyze_llm_inference_logs(df):
     """Process the dataframe to calculate basic statistics - modified from your existing function."""
@@ -55,6 +65,42 @@ def analyze_llm_inference_logs(df):
     
     return df
 
+# def calculate_performance_metrics(df):
+#     """Calculate the performance metrics for a dataframe."""
+#     metrics = {}
+    
+#     # Calculate TTFT metrics if available
+#     if 'ttft' in df.columns:
+#         metrics['avg_ttft'] = df['ttft'].mean()
+#         metrics['p99_ttft'] = df['ttft'].quantile(0.99)
+    
+#     # Calculate TPOT metrics if available
+#     if 'avg_tpot' in df.columns:
+#         metrics['avg_tpot'] = df['avg_tpot'].mean()
+#         metrics['p99_tpot'] = df['avg_tpot'].quantile(0.99)
+    
+#     # Calculate throughput
+#     if 'normalized_start_time' in df.columns and 'request_end_time' in df.columns:
+#         # Calculate duration in seconds
+#         total_duration = (df['request_end_time'].max() - df['request_start_time'].min()) / 1000000
+#         if total_duration > 0:
+#             metrics['throughput_rps'] = len(df) / total_duration
+#         else:
+#             metrics['throughput_rps'] = 0
+    
+#     # Calculate output token throughput if available
+#     if 'normalized_start_time' in df.columns and 'numOutputTokens' in df.columns:
+#         total_output_tokens = df['numOutputTokens'].sum()
+#         if 'request_end_time' in df.columns and 'request_start_time' in df.columns:
+#             total_duration = (df['request_end_time'].max() - df['request_start_time'].min()) / 1000000
+#             if total_duration > 0:
+#                 metrics['throughput_tps'] = total_output_tokens / total_duration
+#             else:
+#                 metrics['throughput_tps'] = 0
+    
+#     return metrics
+
+
 def calculate_performance_metrics(df):
     """Calculate the performance metrics for a dataframe."""
     metrics = {}
@@ -69,26 +115,48 @@ def calculate_performance_metrics(df):
         metrics['avg_tpot'] = df['avg_tpot'].mean()
         metrics['p99_tpot'] = df['avg_tpot'].quantile(0.99)
     
-    # Calculate throughput
-    if 'normalized_start_time' in df.columns and 'request_end_time' in df.columns:
-        # Calculate duration in seconds
-        total_duration = (df['request_end_time'].max() - df['request_start_time'].min()) / 1000000
-        if total_duration > 0:
-            metrics['throughput_rps'] = len(df) / total_duration
+    # Calculate throughput metrics CORRECTLY - per-second windowing approach
+    if 'relative_time' in df.columns:
+        # Create 1-second time bins
+        df_copy = df.copy()
+        df_copy['time_bin'] = np.floor(df_copy['relative_time']).astype(int)
+        
+        # Calculate per-second metrics
+        per_second_stats = df_copy.groupby('time_bin').agg({
+            'relative_time': 'count',  # Requests per second
+            'numOutputTokens': 'sum' if 'numOutputTokens' in df_copy.columns else lambda x: 0
+        }).reset_index()
+        
+        per_second_stats.columns = ['time_bin', 'requests_per_second', 'tokens_per_second']
+        
+        # Calculate average throughput across all 1-second windows
+        metrics['throughput_rps'] = per_second_stats['requests_per_second'].mean()
+        
+        if 'numOutputTokens' in df.columns:
+            metrics['throughput_tps'] = per_second_stats['tokens_per_second'].mean()
         else:
-            metrics['throughput_rps'] = 0
-    
-    # Calculate output token throughput if available
-    if 'normalized_start_time' in df.columns and 'numOutputTokens' in df.columns:
-        total_output_tokens = df['numOutputTokens'].sum()
-        if 'request_end_time' in df.columns and 'request_start_time' in df.columns:
+            metrics['throughput_tps'] = 0
+            
+        # Optional: Also calculate the experiment-wide average for comparison
+        total_duration = df['relative_time'].max() - df['relative_time'].min()
+        if total_duration > 0:
+            metrics['overall_rps'] = len(df) / total_duration
+            if 'numOutputTokens' in df.columns:
+                metrics['overall_tps'] = df['numOutputTokens'].sum() / total_duration
+    else:
+        # Fallback to old method if relative_time not available
+        if 'normalized_start_time' in df.columns and 'request_end_time' in df.columns:
             total_duration = (df['request_end_time'].max() - df['request_start_time'].min()) / 1000000
             if total_duration > 0:
-                metrics['throughput_tps'] = total_output_tokens / total_duration
+                metrics['throughput_rps'] = len(df) / total_duration
+                if 'numOutputTokens' in df.columns:
+                    metrics['throughput_tps'] = df['numOutputTokens'].sum() / total_duration
             else:
+                metrics['throughput_rps'] = 0
                 metrics['throughput_tps'] = 0
     
     return metrics
+
 def process_log_file(file_path, warmup_seconds, cut_last_seconds):
     """Process a single log file and return its performance metrics AND the processed DataFrame."""
     print(f"Processing {file_path}...")
@@ -188,28 +256,71 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     metrics_df = pd.DataFrame(metrics_list)
     
     # Sort strategies by avg_ttft for consistent ordering
-    if 'avg_ttft' in metrics_df.columns:
-        strategy_order = metrics_df.sort_values('avg_ttft')['strategy'].tolist()
-    else:
-        strategy_order = metrics_df['strategy'].tolist()
-    
-    # Set up colors for each strategy
-    colors = plt.cm.viridis(np.linspace(0, 0.9, len(strategy_order)))
-    color_dict = dict(zip(strategy_order, colors))
+    def get_strategy_priority(strategy_name):
+        if 'none' in strategy_name.lower():
+            return (0, strategy_name)  # First priority
+        elif 'prefix-cache' in strategy_name.lower():
+            return (1, strategy_name)  # Second priority
+        elif 'random' in strategy_name.lower():
+            return (2, strategy_name)  # Third priority
+        else:
+            return (3, strategy_name)  # Others last
+
+    # Sort strategies by custom priority
+    all_strategies = metrics_df['strategy'].tolist()
+    strategy_order = sorted(all_strategies, key=get_strategy_priority)
+
+    # Set up colors by category
+    def get_strategy_color(strategy_name, strategies_in_category, index_in_category):
+        """Get color for strategy based on category and index within category"""
+        if 'none' in strategy_name.lower():
+            # Purple family
+            # base_colors = ['#8b008b','#ba55d3', '#9932cc', '#8a2be2',  '#c71585']
+            # Red family
+            base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']
+        elif 'prefix-cache' in strategy_name.lower():
+            # Blue family
+            base_colors = ['#1f77b4', '#4682b4', '#6495ed', '#aec7e8', '#87ceeb']
+            # Orange family  
+            # base_colors = ['#ff7f0e', '#ffa500', '#ff8c00', '#ffbb78', '#ffb347']
+        elif 'random' in strategy_name.lower():
+            # Green family
+            base_colors = ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']
+        else:
+            # Gray family for others
+            base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']
+        
+        # Use modulo to cycle through colors if more strategies than colors
+        return base_colors[index_in_category % len(base_colors)]
+
+    # Create color dictionary with grouped coloring
+    color_dict = {}
+    category_counts = {'none': 0, 'prefix-cache': 0, 'random': 0, 'other': 0}
+
+    for strategy in strategy_order:
+        if 'none' in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, None, category_counts['none'])
+            category_counts['none'] += 1
+        elif 'prefix-cache' in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, None, category_counts['prefix-cache'])
+            category_counts['prefix-cache'] += 1
+        elif 'random' in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, None, category_counts['random'])
+            category_counts['random'] += 1
+        else:
+            color_dict[strategy] = get_strategy_color(strategy, None, category_counts['other'])
+            category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
     fig = plt.figure(figsize=(24, 20))  # INCREASED height from 16 to 20
     
     # MODIFIED GridSpec with larger spacing between time series plots
-    from matplotlib.gridspec import GridSpec
     gs = GridSpec(5, 6, figure=fig, 
                   height_ratios=[0.8, 1, 1, 1, 1],  # Made bar charts slightly shorter
                   hspace=0.6,  # INCREASED from 0.4 to 0.6 for more vertical spacing
-                  wspace=0.25)
+                  wspace=0.35)
     
     fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.96)
-    
-    # ... rest of your existing subplot code remains the same ...
     
     # FIRST ROW: All 6 bar chart plots
     # Plot 1: Average TTFT
@@ -280,8 +391,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         
         # Plot 10: SLO Satisfaction Comparison (full width)
         ax = fig.add_subplot(gs[4, :])  # Full width of row 4
-        plot_slo_satisfaction_comparison(ax, strategy_slo_stats, strategy_order, 
-                                        color_dict, slo_ttft, slo_tpot)
+        plot_slo_satisfaction_comparison(ax, strategy_slo_stats, strategy_order, color_dict, slo_ttft, slo_tpot)
     else:
         # If no CSV data provided, show placeholder text for reward plots
         for row in [1, 2, 3, 4]:
@@ -298,10 +408,10 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     
     # Place the legend at the bottom
     fig.legend(handles, legend_labels, 
-              loc='lower center', 
-              bbox_to_anchor=(0.5, 0.02),
-              fontsize=legend_fontsize, ncol=len(strategy_order), 
-              title="Routing Strategies")
+              loc='upper right', 
+              bbox_to_anchor=(1.35, 0.5),
+              fontsize=legend_fontsize, 
+              ncol=1)
     
     # MODIFIED layout parameters for better spacing
     plt.subplots_adjust(top=0.93, bottom=0.08, left=0.04, right=0.96)
@@ -320,9 +430,9 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             df = csv_data_dict[strategy]
             color = color_dict[strategy]
 
-            ax.scatter(df['relative_time'], df[reward_column], 
-                      s=8, alpha=0.3, color=color, 
-                      label=f'{strategy} (individual)', zorder=1)
+            # ax.scatter(df['relative_time'], df[reward_column], 
+            #           s=8, alpha=0.3, color=color, 
+            #           label=f'{strategy} (individual)', zorder=1)
             
             # Create 1-second time bins
             df_copy = df.copy()
@@ -369,8 +479,8 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
     ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=1.5)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
     
-    # Position legend in upper right
-    ax.legend(fontsize=10, loc='upper right', framealpha=0.9)
+    # # Position legend in upper right
+    # ax.legend(fontsize=10, loc='upper right', framealpha=0.9)
     
     # Add some additional reference lines for better interpretation
     if 'total' not in reward_column.lower():
@@ -399,15 +509,17 @@ def plot_slo_satisfaction_comparison(ax, strategy_slo_stats, strategy_order, col
     
     # Set up bar positions
     x = np.arange(n_strategies)
-    width = 0.1
+    bar_width = 0.2
     
-    # Create grouped bars
-    bars1 = ax.bar(x - width, ttft_counts, width, label='TTFT SLO', 
-                   color='blue', alpha=0.7, edgecolor='black')
-    bars2 = ax.bar(x, tpot_counts, width, label='TPOT SLO', 
-                   color='green', alpha=0.7, edgecolor='black')
-    bars3 = ax.bar(x + width, both_counts, width, label='Both SLOs', 
-                   color='red', alpha=0.7, edgecolor='black')
+    # Create grouped bars using strategy-specific colors with different alpha values
+    strategy_colors = [color_dict[s] for s in strategies]
+    
+    bars1 = ax.bar(x - bar_width, ttft_counts, bar_width, label='TTFT SLO', 
+                   color=strategy_colors, alpha=0.9, edgecolor='black', linewidth=1)
+    bars2 = ax.bar(x, tpot_counts, bar_width, label='TPOT SLO', 
+                   color=strategy_colors, alpha=0.6, edgecolor='black', linewidth=1)
+    bars3 = ax.bar(x + bar_width, both_counts, bar_width, label='Both SLOs', 
+                   color=strategy_colors, alpha=0.3, edgecolor='black', linewidth=1)
     
     # Add value labels on bars
     def add_value_labels(bars, stat_key):
@@ -416,7 +528,7 @@ def plot_slo_satisfaction_comparison(ax, strategy_slo_stats, strategy_order, col
             strategy = strategies[i]
             rate = strategy_slo_stats[strategy][stat_key]
             ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
-                   f'{int(height)}\n({rate:.1f}%)', 
+                   f'{int(height)}\n({rate:.1f}%)', rotation=45,
                    ha='center', va='bottom', fontsize=14, fontweight='bold')
     
     add_value_labels(bars1, 'ttft_satisfaction_rate')
@@ -424,20 +536,19 @@ def plot_slo_satisfaction_comparison(ax, strategy_slo_stats, strategy_order, col
     add_value_labels(bars3, 'both_satisfaction_rate')
     
     # Customize the plot
-    ax.set_title(f'SLO Satisfaction Comparison\n(TTFT≤{slo_ttft}ms, TPOT≤{slo_tpot}ms)', 
-                fontsize=subtitle_fontsize)
+    ax.set_title(f'SLO Satisfaction Comparison\n(TTFT≤{slo_ttft}ms, TPOT≤{slo_tpot}ms)', fontsize=subtitle_fontsize)
     ax.set_xlabel('Routing Strategy', fontsize=ylabel_fontsize)
     ax.set_ylabel('Number of Requests', fontsize=ylabel_fontsize)
     ax.set_xticks(x)
     ax.set_xticklabels(strategies, rotation=45, ha='right', fontsize=tick_fontsize)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=legend_fontsize, loc='upper right')
     ax.grid(axis='y', alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
     
     # Set y-axis limit with padding
     if ttft_counts or tpot_counts or both_counts:
         max_requests = max(max(ttft_counts or [0]), max(tpot_counts or [0]), max(both_counts or [0]))
-        ax.set_ylim(0, max_requests * 1.15)
+        ax.set_ylim(0, max_requests * 1.4)
 
 
 def plot_metric_bar(ax, metrics_df, metric, title, strategy_order, color_dict):
@@ -455,7 +566,9 @@ def plot_metric_bar(ax, metrics_df, metric, title, strategy_order, color_dict):
     
     # Create bar chart with bars
     bars = ax.bar(bar_positions, plot_data[metric], 
-                  color=[color_dict[s] for s in strategy_order])
+                  color=[color_dict[s] for s in strategy_order],
+                  width=0.8,
+                  )
     
     # Calculate relative performance for latency metrics (lower is better)
     # For throughput metrics (higher is better), we'll calculate inverse ratios
@@ -475,33 +588,35 @@ def plot_metric_bar(ax, metrics_df, metric, title, strategy_order, color_dict):
         min_value = plot_data[metric].min()
         relative_values = plot_data[metric] / min_value
     
+    # Set y-axis limits first to provide space for text labels
+    max_bar_height = plot_data[metric].max()
+    ax.set_ylim(0, max_bar_height * 1.4)  # Provide 40% extra space above bars
+
     # Add value labels on top of each bar with relative performance
     for i, bar in enumerate(bars):
         height = bar.get_height()
         relative_perf = relative_values.iloc[i]
         
-        # Format the annotation text - smaller font for narrow plots
-        if relative_perf == 1.0:
-            annotation_text = f'{height:.1f}\n(1x)'
-        else:
-            annotation_text = f'{height:.1f}\n({relative_perf:.1f}x)'
+        # # Format the annotation text - smaller font for narrow plots
+        # if relative_perf == 1.0:
+        #     annotation_text = f'{height:.0f}\n(1x)'
+        # else:
+        annotation_text = f'{height:.0f}\n({relative_perf:.1f}x)'
         
         # Calculate dynamic offset to prevent overflow
         y_max = ax.get_ylim()[1]
-        if height > y_max * 0.85:  # If bar is too tall, put text inside the bar
-            y_offset = -25
-            va_alignment = 'top'
-            text_color = 'magenta'
-        else:
-            y_offset = 3
-            va_alignment = 'bottom'
-            text_color = 'magenta'
-        
+        # if height > y_max * 0.85:  # If bar is too tall, put text inside the bar
+        y_offset = -30
+        #     va_alignment = 'top'
+        # else:
+        # y_offset = 3
+        va_alignment = 'bottom'
+        text_color = 'black'
         ax.annotate(annotation_text,
                     xy=(bar.get_x() + bar.get_width() / 2, height),
                     xytext=(0, y_offset),
                     textcoords="offset points",
-                    ha='center', va=va_alignment,
+                    ha='center', va=va_alignment, rotation=45,
                     fontsize=text_fontsize-2, color=text_color)  # Smaller font
     
     # Set chart titles and labels - adjusted for narrow plots
