@@ -332,8 +332,9 @@ def normalize_features_for_training(processed_df, stats_instance: PerFeatureRunn
 
 def normalize_features_for_inference(processed_df: pd.DataFrame, stats_instance: PerFeatureRunningStats, request_id: str) -> pd.DataFrame:
     ## Not sure we really need to copy....
-    # df_copy = processed_df
-    df_copy = processed_df.copy()
+    # df_copy = processed_df.copy()
+    df_copy = processed_df # It seems fine and logically shoudul be fine I think..
+    
     target_features = _get_normalizable_features(df_copy)
     if stats_instance.count == 0:
         logger.error(f"request_id,{request_id},No normalization statistics available for inference")
