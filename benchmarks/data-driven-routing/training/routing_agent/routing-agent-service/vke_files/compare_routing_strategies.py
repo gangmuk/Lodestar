@@ -8,7 +8,8 @@ import re
 import json
 from datetime import datetime
 import logging
-import training.preprocess as preprocess
+# import training.preprocess as preprocess
+import preprocess
 from matplotlib.gridspec import GridSpec
 
 maintitle_fontsize = 30
