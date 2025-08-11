@@ -17,9 +17,8 @@ python_cmd="python3 offline_routing_agent.py ${training_data_dir}/data.csv --mod
 # ${python_cmd} &> offline_training_output.txt
 ${python_cmd}
 
-cp offline_training_output.txt "${final_model_dir}/output.txt"
-echo "Copied output to ${final_model_dir}/output.txt"
+# cp offline_training_output.txt "${final_model_dir}/output.txt"
+# echo "Copied output to ${final_model_dir}/output.txt"
 
 echo "${python_cmd}" > "${final_model_dir}/python_command.txt"
 echo "* Script complete. Logs copied to ${final_model_dir}"
-echo "* Output log copied to ${final_model_dir}/output.txt"

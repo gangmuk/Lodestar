@@ -209,8 +209,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     # all_pods = list(all_pods_set) # BUG: NON-DETERMINISTIC ORDERING.  set-to-list conversion can produce different orderings. It affects the computation in _optimized_process_pod_features in encoding.py. This all_pods is returned in this function -> preprocess.main ->  encoding.encode_for_inference/encode_for_train -> encoding.prepare_for_encoding -> LLMRoutingDataProcessor.pod_ids = all_pods -> encoding._optimized_process_pod_features, for pod_idx, pod_id in enumerate(self.pod_ids): feature arrangement depends on the order of all_pods
     # NOTE: Always sort the pod list... maybe it should have never used the set or dictionary when maintaining pods
     all_pods = list(all_pods_set)
-    all_pods = sorted(list(all_pods_set))
-    logger.info(f"Identified {len(all_pods)} pods: {all_pods}")
+    sorted_all_pod_ids = sorted(list(all_pods_set))
+    logger.info(f"Identified {len(sorted_all_pod_ids)} pods: {sorted_all_pod_ids}")
 
     logger.debug(f"Original dataset shape: {parsed_df.shape}")
     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
@@ -353,7 +353,7 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
 
     # Pre-create pod_gpu_models and pod features structure
     if INCLUDE_GPU_IN_FEATURE:
-        pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in all_pods}
+        pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in sorted_all_pod_ids}
     
     # Vectorized processing using pandas operations
     logger.info("Processing records in vectorized manner...")
@@ -385,7 +385,7 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
-    for pod_id in all_pods:
+    for pod_id in sorted_all_pod_ids:
         # Vectorized extraction for each pod across all rows
         base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
         base_data[f"{pod_id}-inflight_requests"] = [data.get(pod_id, 0) for data in all_inflight]
@@ -501,7 +501,7 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'preprocess.preprocess_dataset_slo_update_overhead': slo_update_overhead*1000,
     }
     
-    return processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary
+    return processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary
 
 
 # Optimized version - just replace your existing parse_log_message function with this
@@ -558,8 +558,8 @@ def parse_log_message(log_message):
     else:
         return pd.DataFrame(), []
 
-def preprocess_single_row_fast(df, RL_MODEL_HYPERPARAMETERS):
-    row = df.iloc[0].to_dict()
+def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
+    row = parsed_df.iloc[0].to_dict()
     if not row.get('podMetricsLastSecond'):
         logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
         logger.error(f"Row data: {row}")
@@ -592,11 +592,19 @@ def preprocess_single_row_fast(df, RL_MODEL_HYPERPARAMETERS):
     waiting = row['vllmNumRequestsWaiting']
     prefill = row['numPrefillTokensForAllPods']
     decode = row['numDecodeTokensForAllPods']
-    
-    # Build pod features directly
     pod_metrics = row['podMetricsLastSecond']
-    all_pod_ips = sorted(list(pod_metrics.keys()))
-    for pod_id in all_pod_ips:
+    ## I am weirdly using podMetricsLastSecond to get pod ids...
+    sorted_all_pod_ids = sorted(list(pod_metrics.keys()))
+    temp_sorted_all_pod_ids = sorted(list(set(list(kv_cache.keys()) +
+                                    list(inflight.keys()) +
+                                    list(gpu_cache.keys()) +
+                                    list(cpu_cache.keys()) +
+                                    list(running.keys()) +
+                                    list(waiting.keys()))))
+    assert len(temp_sorted_all_pod_ids) == len(sorted_all_pod_ids)
+    for i in range(len(temp_sorted_all_pod_ids)):
+        assert temp_sorted_all_pod_ids[i] == sorted_all_pod_ids[i], f"Mismatch at index {i}: {temp_sorted_all_pod_ids[i]} != {sorted_all_pod_ids[i]}"
+    for pod_id in sorted_all_pod_ids:
         pod_prefix = f"{pod_id}"
         if INCLUDE_GPU_IN_FEATURE:
             if RL_MODEL_HYPERPARAMETERS and 'pod_gpu_mapping' in RL_MODEL_HYPERPARAMETERS:
@@ -633,19 +641,16 @@ def preprocess_single_row_fast(df, RL_MODEL_HYPERPARAMETERS):
     processed_df = pd.DataFrame([base_features])
     preprocess_dataset_overhead_summary = {}
     
-    return processed_df, all_pod_ips, preprocess_dataset_overhead_summary
+    return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
 
 
 def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS):
     if input_file == None and (log_message == "" or log_message is None):
         logger.error("Error: Both input_file and log_message are empty or None.")
         assert False
-        # exit()
     if input_file is not None and log_message != "":
         logger.error("Error: Both input_file and log_message are provided. Please provide only one.")
         assert False
-        # exit()
-    
     if input_file is not None:  # Training path
         parsed_df, json_columns = parse_log_file(input_file)
     else:  # Inference path
@@ -685,12 +690,12 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         logger.error(f"Log message: {log_message}")
         assert False
     if len(parsed_df) == 1 and input_file is None:
-        processed_df, all_pods, _ = preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS)
+        processed_df, sorted_all_pod_ids, _ = preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS)
     else:
         # Existing batch processing for training
         # REMOVED: No need for parse_json_columns since JSON is already parsed
         # df = parse_json_columns(df, json_columns)
-        processed_df, mapping_info, all_pods, _ = preprocess_dataset(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+        processed_df, mapping_info, sorted_all_pod_ids, _ = preprocess_dataset(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
     mapping_info_write_start_time = time.time()
     output_file = None
     if input_file is not None:
@@ -736,4 +741,4 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
             assert False
 
     preprocess_dataset_overhead_summary = {}
-    return processed_df, output_file, all_pods, preprocess_dataset_overhead_summary
+    return processed_df, output_file, sorted_all_pod_ids, preprocess_dataset_overhead_summary

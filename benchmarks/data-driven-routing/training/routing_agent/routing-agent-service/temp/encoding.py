@@ -62,7 +62,7 @@ class LLMRoutingDataProcessor:
         self.pod_features = []
         self.numeric_request_features = []
         self.categorical_request_features = []
-        self.pod_ids = []
+        self.sorted_all_pod_ids = []
         
         # Key metrics for positional encoding
         self.key_metric_names = [
@@ -93,8 +93,8 @@ class LLMRoutingDataProcessor:
         pod_data = defaultdict(dict)
         
         logger.info(f"df.columns: {df.columns}")
-        self.pod_ids = all_pods
-        logger.info(f"Found pod IDs from selected_pod column: {self.pod_ids}")
+        self.sorted_all_pod_ids = all_pods
+        logger.info(f"Found pod IDs from selected_pod column: {self.sorted_all_pod_ids}")
 
         # OPTIMIZATION: Pre-filter pod columns and create mapping
         pod_feature_columns = [col for col in df.columns if col.startswith('pod_')]
@@ -113,16 +113,16 @@ class LLMRoutingDataProcessor:
         self.pod_features = sorted(unique_features)
         
         # OPTIMIZATION: Build pod_data using vectorized operations
-        pod_id_set = set(self.pod_ids)
+        pod_id_set = set(self.sorted_all_pod_ids)
         for col, pod_id, feature in pod_col_info:
             if pod_id in pod_id_set:
                 pod_data[pod_id][feature] = df[col]
             else:
-                logger.error(f"Pod ID {pod_id} not found in self.pod_ids {self.pod_ids}, col: {col}")
+                logger.error(f"Pod ID {pod_id} not found in self.sorted_all_pod_ids {self.sorted_all_pod_ids}, col: {col}")
                 assert False
         
         # Validation (kept same logic)
-        for pod_id in self.pod_ids:
+        for pod_id in self.sorted_all_pod_ids:
             if pod_id not in pod_data:
                 logger.error(f"Pod ID {pod_id} not found in pod_data")
                 assert False
@@ -145,7 +145,7 @@ class LLMRoutingDataProcessor:
         exclude_patterns = ['reward', 'action', 'slo_satisfied', 'normalized']
         
         # OPTIMIZATION: Use set operations for faster filtering
-        pod_prefixes = set(f"pod_{pod_id}" for pod_id in self.pod_ids)
+        pod_prefixes = set(f"pod_{pod_id}" for pod_id in self.sorted_all_pod_ids)
         
         candidate_request_features = [
             col for col in df.columns 
@@ -190,12 +190,12 @@ class LLMRoutingDataProcessor:
 
     def encode_pod_ids(self, df):
         """Create encoders for pod IDs - OPTIMIZED."""
-        if self.pod_ids:
+        if self.sorted_all_pod_ids:
             # OPTIMIZATION: Pre-convert to numpy array
-            pod_ids_array = np.array(self.pod_ids).reshape(-1, 1)
+            sorted_all_pod_ids_np_array = np.array(self.sorted_all_pod_ids).reshape(-1, 1)
             self.pod_encoder = OneHotEncoder(sparse_output=False)
-            self.pod_encoder.fit(pod_ids_array)
-            
+            self.pod_encoder.fit(sorted_all_pod_ids_np_array)
+
             if 'selected_pod' in df.columns:
                 # OPTIMIZATION: Use unique() only once
                 selected_pods = df['selected_pod'].dropna().unique()
@@ -432,7 +432,7 @@ class LLMRoutingDataProcessor:
             'decode_tokens', # index 6 ← This is your 5.4486e+04 value
             'kv_hit_ratio' # index 7
         ]
-        n_pods = len(self.pod_ids)
+        n_pods = len(self.sorted_all_pod_ids)
         n_numeric = len(ALL_NUMERIC_FEATURES)
         
         # Calculate total feature dimensions including GPU one-hot encoding
@@ -446,7 +446,7 @@ class LLMRoutingDataProcessor:
 
         if INCLUDE_GPU_IN_FEATURE:
             gpu_encoded_per_pod = {}
-            for pod_id in self.pod_ids:
+            for pod_id in self.sorted_all_pod_ids:
                 if pod_id not in HYPERPARAMETERS['pod_gpu_id_mapping']:
                     logger.error(f"CRITICAL: Pod {pod_id} not found in pod_gpu_id_mapping!")
                     logger.error(f"Available pods: {list(HYPERPARAMETERS['pod_gpu_id_mapping'].keys())}")
@@ -462,7 +462,7 @@ class LLMRoutingDataProcessor:
         ## THIS IS WHERE THE BUG MANIFESTS:
         ## The all_pods order determines how features are arranged in tensors
         # Extract all features into single array
-        for pod_idx, pod_id in enumerate(self.pod_ids):
+        for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
             if pod_id in pod_data:
                 pod_features = pod_data[pod_id]
                 
@@ -602,11 +602,11 @@ class LLMRoutingDataProcessor:
         
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
         
-    def prepare_for_encoding(self, processed_df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS):
-        pod_data = self._ultra_fast_extract_pod_columns(processed_df, all_pods)
+    def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS):
+        pod_data = self._ultra_fast_extract_pod_columns(processed_df, sorted_all_pod_ids)
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
-        self.pod_ids = all_pods
+        self.sorted_all_pod_ids = sorted_all_pod_ids
         
         # STEP 3: SKIP encode_pod_ids for inference
         encode_pod_ids_start = time.time()
@@ -666,14 +666,14 @@ class LLMRoutingDataProcessor:
             'interaction_features': interaction_features,
             'timestamps': np.zeros(n_samples),
             'feature_timing': feature_timing,
-            'pod_ids': self.pod_ids,
+            'pod_ids': self.sorted_all_pod_ids,
             'actions': actions,
             'rewards': rewards,
             'ttft_rewards': ttft_rewards,
             'tpot_rewards': tpot_rewards,
             'feature_stats': getattr(self, 'feature_stats', {}),
             'pod_features_list': self.pod_features,
-            'feature_indices_map': per_pod_feature_indices[self.pod_ids[0]] if per_pod_feature_indices and self.pod_ids else {},
+            'feature_indices_map': per_pod_feature_indices[self.sorted_all_pod_ids[0]] if per_pod_feature_indices and self.sorted_all_pod_ids else {},
             'numeric_request_features': self.numeric_request_features,
             'categorical_request_features': self.categorical_request_features,
             'encoders': {'pod_encoder': None, 'selected_pod_encoder': None, 'categorical_encoders': {}}
@@ -730,12 +730,12 @@ class LLMRoutingDataProcessor:
 
 
     def _ultra_fast_process_pod_features(self, pod_data, n_samples):
-        n_pods = len(self.pod_ids)
+        n_pods = len(self.sorted_all_pod_ids)
         if not pod_data:
             # Return minimal defaults
             default_shape = (n_samples, n_pods, 1)
             zeros = np.zeros(default_shape, dtype=np.float32)
-            return zeros, zeros, zeros, zeros, {pod_id: {} for pod_id in self.pod_ids}
+            return zeros, zeros, zeros, zeros, {pod_id: {} for pod_id in self.sorted_all_pod_ids}
         
         # OPTIMIZATION 1: Pre-filter features (avoid repeated checks)
         numeric_features = [f for f in self.pod_features if f not in ['kv_hit_ratio', 'gpu_model']]
@@ -744,7 +744,7 @@ class LLMRoutingDataProcessor:
         if n_numeric == 0:
             # Handle edge case fast
             kv_arrays = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
-            for pod_idx, pod_id in enumerate(self.pod_ids):
+            for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
                 if 'kv_hit_ratio' in pod_data.get(pod_id, {}):
                     kv_arrays[:, pod_idx, 0] = pod_data[pod_id]['kv_hit_ratio'].fillna(0).values
             return kv_arrays, kv_arrays, kv_arrays, kv_arrays, {}
@@ -754,7 +754,7 @@ class LLMRoutingDataProcessor:
         kv_arrays = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
         
         # OPTIMIZATION 3: Vectorized extraction using pre-built pod mapping
-        pod_indices = {pod_id: idx for idx, pod_id in enumerate(self.pod_ids)}
+        pod_indices = {pod_id: idx for idx, pod_id in enumerate(self.sorted_all_pod_ids)}
         
         # OPTIMIZATION 4: Process all features in single pass per pod
         for pod_id, pod_idx in pod_indices.items():
@@ -812,7 +812,7 @@ class LLMRoutingDataProcessor:
         
         # OPTIMIZATION 8: Fast feature indices building
         reference_indices = {feature: i for i, feature in enumerate(numeric_features)}
-        per_pod_indices = {pod_id: reference_indices for pod_id in self.pod_ids}
+        per_pod_indices = {pod_id: reference_indices for pod_id in self.sorted_all_pod_ids}
         
         return pod_features_array, kv_arrays, pod_features_norm, kv_hit_norm, per_pod_indices
 
@@ -828,7 +828,7 @@ class LLMRoutingDataProcessor:
         
         # Direct extraction without validation
         if 'selected_pod' in df.columns:
-            pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.pod_ids)}
+            pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.sorted_all_pod_ids)}
             selected_pods = df['selected_pod'].values
             for i, pod in enumerate(selected_pods):
                 if pd.notna(pod):
@@ -862,10 +862,10 @@ class LLMRoutingDataProcessor:
                 continue
             # elif isinstance(data, np.ndarray):
             #     np.save(os.path.join(output_dir, f"{key}.npy"), data)
-            elif isinstance(data, list) or isinstance(data, dict):
-                # with open(os.path.join(output_dir, f"{key}.pkl"), 'wb') as f:
-                with open(f"{key}.pkl", 'wb') as f:
-                    pickle.dump(data, f)
+            # elif isinstance(data, list) or isinstance(data, dict):
+            #     # with open(os.path.join(output_dir, f"{key}.pkl"), 'wb') as f:
+            #     with open(f"{key}.pkl", 'wb') as f:
+            #         pickle.dump(data, f)
         
         # Save encoders
         encoders = processed_data.get('encoders', {})
@@ -1156,11 +1156,11 @@ def encode_for_train(all_pods, processed_df, output_dir, request_features_train,
     return train_path
 
 
-def encode_for_inference(all_pods, processed_df, request_features_train, HYPERPARAMETERS):
+def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS):
     prepare_for_encoding_start = time.time()
     processor = LLMRoutingDataProcessor(output_dir="temp_inference")
     overhead_summary = {}
-    processed_data = processor.prepare_for_encoding(processed_df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS)
+    processed_data = processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
     prepare_for_encoding_overhead = time.time() - prepare_for_encoding_start
     post_process_start_time = time.time()
     tensor_data = {}
