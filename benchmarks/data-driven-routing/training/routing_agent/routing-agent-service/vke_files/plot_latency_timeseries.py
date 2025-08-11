@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from matplotlib.gridspec import GridSpec
 import matplotlib.ticker as ticker
 import pandas as pd
-import seaborn as sns
+# import seaborn as sns
 import re
 import json
 from logger import logger
@@ -481,7 +481,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     
     # TTFT/TPOT/E2E distributions - now in separate plots (ax6, ax7, ax8)
     # Distribution for TTFT (ax6)
-    sns.kdeplot(df['ttft'], ax=ax6, fill=True, alpha=0.7, color='blue')
+    ax6.hist(df['ttft'], bins=30, density=True, alpha=0.7, color='blue', edgecolor='black')
     ax6.set_xlabel('Time (ms)', fontsize=12)
     ax6.set_ylabel('Density', fontsize=12, fontweight='bold')
     ax6.set_title('TTFT Distribution', fontsize=14, fontweight='bold', pad=10)
@@ -494,7 +494,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
             fontsize=10, backgroundcolor='white', alpha=0.9)
     
     # TPOT Distribution (ax7)
-    sns.kdeplot(df['avg_tpot'], ax=ax7, fill=True, alpha=0.7, color='green')
+    ax7.hist(df['avg_tpot'], bins=30, density=True, alpha=0.7, color='green', edgecolor='black')
     ax7.set_xlabel('Time (ms)', fontsize=12)
     ax7.set_ylabel('Density', fontsize=12, fontweight='bold')
     ax7.set_title('TPOT Distribution', fontsize=14, fontweight='bold', pad=10)
@@ -507,7 +507,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
             fontsize=10, backgroundcolor='white', alpha=0.9)
     
     # E2E Distribution (ax8) - now full width
-    sns.kdeplot(df['e2e'], ax=ax8, fill=True, alpha=0.7, color='purple')
+    ax8.hist(df['e2e'], bins=30, density=True, alpha=0.7, color='purple', edgecolor='black')
     ax8.set_xlabel('Time (ms)', fontsize=12)
     ax8.set_ylabel('Density', fontsize=12, fontweight='bold')
     ax8.set_title('E2E Duration Distribution', fontsize=14, fontweight='bold', pad=10)
@@ -639,9 +639,9 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     
     # Save files
-    plt.savefig("latency_metrics_analysis.png", dpi=300, bbox_inches='tight')
     plt_fn = f"{log_dir}/latency_metrics_analysis.pdf"
     plt.savefig(plt_fn, bbox_inches='tight')
+    print(f"* Saving plot to: {plt_fn}")
     
     return fig, plt_fn
 
@@ -674,14 +674,9 @@ if __name__ == "__main__":
     # Create and save the enhanced plot
     fig, output_file = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot)
     
-    print(f"** plot saved to: {output_file}")
-    
     # Print summary statistics
     df = pd.DataFrame(data)
     logger.debug("\nSummary Statistics:")
     logger.debug(f"TTFT - Min: {df['ttft'].min()} ms, Max: {df['ttft'].max()} ms, Avg: {df['ttft'].mean():.2f} ms")
     logger.debug(f"TPOT - Min: {df['avg_tpot'].min()} ms, Max: {df['avg_tpot'].max()} ms, Avg: {df['avg_tpot'].mean():.2f} ms")
     logger.debug(f"E2E  - Min: {df['e2e'].min()} ms, Max: {df['e2e'].max()} ms, Avg: {df['e2e'].mean():.2f} ms")
-    
-    # Show the plot
-    plt.show()

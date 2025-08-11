@@ -1,0 +1,739 @@
+#!/usr/bin/env python3
+
+# preprocess.py
+
+import pandas as pd
+import numpy as np
+import json
+import ast
+from sklearn.preprocessing import StandardScaler
+import os
+from datetime import datetime
+import argparse
+import sys
+import time
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+import utils.utils as utils
+# INCLUDE_GPU_IN_FEATURE = True
+
+def parse_json_columns(df, json_columns):
+        for col in json_columns:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+        return df
+
+def parse_log_file(file_path):
+    data = []
+    with open(file_path, 'r') as file:
+        for line in file:
+            # Check if this is a metrics line
+            if "latency_metrics" not in line:
+                logger.error(f"Invalid line. {line}")
+                assert False
+            if "**@" in line:
+                line = line.split("**@latency_metrics@")[1]
+            parts = line.split('@')
+            row = {}
+            json_columns = list()
+            column_names = list()
+            for i in range(0, len(parts), 2):
+                if i + 1 >= len(parts):
+                    break
+                column_name = parts[i]
+                column_names.append(column_name)
+                value = parts[i+1]
+                if value.startswith('{') and value.endswith('}'):
+                    try:
+                        # NEW: Fix escaped quotes issue - replace \" with " before parsing
+                        fixed_value = value.replace('\\"', '"')
+                        json_columns.append(column_name)
+                        row[column_name] = json.loads(fixed_value)
+                    except Exception as e:
+                        logger.error(f"Error decoding JSON, column: {column_name}, value: {value}")
+                        logger.error(f"Error: {e}")
+                        # Since we can't parse it, store as string to avoid losing data
+                        row[column_name] = value
+                else:
+                    try:
+                        row[column_name] = int(value)
+                    except ValueError:
+                        try:
+                            row[column_name] = float(value)
+                        except ValueError:
+                            row[column_name] = value
+            data.append(row)
+    parsed_df = pd.DataFrame(data, columns=column_names)
+    if len(parsed_df) == 0:
+        logger.error("No data found in the log file.")
+        assert False
+    return parsed_df, json_columns
+
+# def normalize_time(df):
+#     first_request_start_time = df['request_start_time'].min()
+#     df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
+#     df['normalized_end_time'] = df['request_end_time'] - first_request_start_time
+#     df['normalized_start_time'] /= 1_000_000
+#     df['normalized_end_time'] /= 1_000_000
+    
+    
+#     if 'log_window_start_time' in df.columns:
+#         df['log_window_start_time'] = df['log_window_start_time'] - first_request_start_time
+#         df['log_window_start_time'] /= 1_000_000
+#     if 'log_window_end_time' in df.columns:
+#         df['log_window_end_time'] = df['log_window_end_time'] - first_request_start_time
+#         df['log_window_end_time'] /= 1_000_000
+
+#     df.loc[:, 'normalized_start_time'] = df['normalized_start_time'] - df['normalized_start_time'].min()
+#     df.loc[:, 'normalized_end_time'] = df['normalized_end_time'] - df['normalized_start_time'].min()
+#     df = df.sort_values(by='normalized_start_time', ascending=True)
+#     df['time_bucket'] = df['normalized_start_time'].astype(int)
+#     df = df[['normalized_start_time', 'time_bucket', 'normalized_end_time'] + [col for col in df.columns if col != 'normalized_start_time' and col != 'normalized_end_time' and col != 'time_bucket']]
+#     df.reset_index(drop=True, inplace=True)
+#     return df
+
+def safe_parse_json(json_str):
+    """Safely parse Python dictionary-like strings or JSON strings"""
+    # If already a dictionary, return as is
+    if isinstance(json_str, dict):
+        return json_str
+    if pd.isna(json_str) or not json_str:
+        logger.error(f"ERROR: Empty or NaN JSON string: {str(json_str)}...")
+        assert False
+    try:
+        # Try standard JSON parsing
+        return json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        try:
+            # Try replacing single quotes with double quotes
+            if isinstance(json_str, str):
+                return json.loads(json_str.replace("'", '"'))
+            else:
+                logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
+                assert False
+        except (json.JSONDecodeError, TypeError):
+            try:
+                # Try using ast.literal_eval for Python dict literals
+                if isinstance(json_str, str):
+                    return ast.literal_eval(json_str)
+                else:
+                    logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
+                    assert False
+            except (SyntaxError, ValueError, TypeError):
+                logger.error(f"ERROR: Could not parse JSON: {str(json_str)}...")
+                assert False
+
+def calculate_ttft_reward(row, ttft_slo):
+    try:
+        ttft = float(row['ttft'])
+        
+        if ttft <= 0:
+            return 0.5  # Maximum reward for perfect performance
+        elif ttft <= ttft_slo:
+            # Linear scaling from 0.5 (best) to 0.1 (at threshold)
+            return 0.5 - (0.4 * ttft / ttft_slo)
+        else:
+            # Negative reward scaling with how much it exceeds threshold
+            excess_factor = min(1.0, (ttft - ttft_slo) / ttft_slo)
+            return -0.1 - (0.4 * excess_factor)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return -0.5  # Default penalty for invalid data
+
+def calculate_tpot_reward(row, avg_tpot_slo):
+    try:
+        avg_tpot = float(row['avg_tpot'])
+        
+        if avg_tpot <= 0:
+            return -0.5  # Penalize invalid values
+        elif avg_tpot <= avg_tpot_slo:
+            # Linear scaling from 0.5 (best) to 0.1 (at threshold)
+            return 0.1 + (0.4 * (1 - avg_tpot / avg_tpot_slo))
+        else:
+            # Negative reward scaling with how much it exceeds threshold
+            excess_factor = min(1.0, (avg_tpot - avg_tpot_slo) / avg_tpot_slo)
+            return -0.1 - (0.4 * excess_factor)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return -0.5  # Default penalty for invalid data
+
+def extract_key_pod_metrics(pod_metrics, pod_id):
+    """Extract the most relevant metrics for a pod from the pod metrics"""
+    if pod_id not in pod_metrics:
+        logger.error(f"Error: Pod ID {pod_id} not found in pod metrics.")
+        assert False
+    return {
+        'last_second_avg_ttft_ms': pod_metrics[pod_id]['last_second_avg_ttft_ms'],
+        'last_second_avg_tpot_ms': pod_metrics[pod_id]['last_second_avg_tpot_ms'],
+        'last_second_p99_ttft_ms': pod_metrics[pod_id]['last_second_p99_ttft_ms'],
+        'last_second_p99_tpot_ms': pod_metrics[pod_id]['last_second_p99_tpot_ms'],
+        'last_second_total_requests': pod_metrics[pod_id]['last_second_total_requests'],
+        'last_second_total_tokens': pod_metrics[pod_id]['last_second_total_tokens'],
+        'last_second_total_decode_tokens': pod_metrics[pod_id]['last_second_total_decode_tokens'],
+        'last_second_total_prefill_tokens': pod_metrics[pod_id]['last_second_total_prefill_tokens'],
+    }
+
+
+## new
+def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETERS):
+    # Pre-parse all JSON columns once to avoid repeated parsing
+    logger.info("Pre-parsing JSON columns...")
+    json_columns = [
+        'allPodsKvCacheHitRatios', 
+        'numInflightRequestsAllPods', 
+        'vllmGPUKVCacheUsage', 
+        'vllmCPUKVCacheUsage', 
+        'vllmNumRequestsRunning', 
+        'vllmNumRequestsWaiting', 
+        'podMetricsLastSecond', 
+        'numPrefillTokensForAllPods', 
+        'numDecodeTokensForAllPods',
+    ]
+    
+    json_parse_start_time = time.time()
+    for col in json_columns:
+        if col in parsed_df.columns:
+            sample_val = parsed_df[col].iloc[0]
+            if isinstance(sample_val, str):
+                parsed_df[col] = parsed_df[col].apply(safe_parse_json)
+    json_parse_overhead = time.time() - json_parse_start_time
+
+    # Collect all unique pod IDs in a single pass
+    all_pods_set = set()
+    logger.info("Collecting all unique pod IDs across the dataset...")
+    
+    # Vectorized approach - get all unique pods from all relevant columns at once
+    for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'podMetricsLastSecond']:
+        if col in parsed_df.columns:
+            for data in parsed_df[col]:
+                if data:
+                    all_pods_set.update(data.keys())
+    
+    # all_pods = list(all_pods_set) # BUG: NON-DETERMINISTIC ORDERING.  set-to-list conversion can produce different orderings. It affects the computation in _optimized_process_pod_features in encoding.py. This all_pods is returned in this function -> preprocess.main ->  encoding.encode_for_inference/encode_for_train -> encoding.prepare_for_encoding -> LLMRoutingDataProcessor.pod_ids = all_pods -> encoding._optimized_process_pod_features, for pod_idx, pod_id in enumerate(self.pod_ids): feature arrangement depends on the order of all_pods
+    # NOTE: Always sort the pod list... maybe it should have never used the set or dictionary when maintaining pods
+    all_pods = list(all_pods_set)
+    all_pods = sorted(list(all_pods_set))
+    logger.info(f"Identified {len(all_pods)} pods: {all_pods}")
+
+    logger.debug(f"Original dataset shape: {parsed_df.shape}")
+    logger.debug(f"Columns: {parsed_df.columns.tolist()}")
+    
+    expected_columns = [
+        'requestID', 
+        'selectedpod', 
+        'ttft', 
+        'avg_tpot', 
+        'total_decode_time', 
+        'e2e',
+        'numInputTokens', 
+        'numOutputTokens', 
+        'numTotalTokens',
+        'allPodsKvCacheHitRatios', 
+        'numInflightRequestsAllPods',
+        'vllmGPUKVCacheUsage', 
+        'vllmCPUKVCacheUsage',
+        'vllmNumRequestsRunning', 
+        'vllmNumRequestsWaiting',
+        'podMetricsLastSecond', 
+        'numPrefillTokensForAllPods',
+        'numDecodeTokensForAllPods',
+        # 'GPU_model',
+    ]
+
+    expected_last_second_pod_metrics_keys = [
+        'last_second_avg_ttft_ms', 
+        'last_second_min_ttft_ms', 
+        'last_second_max_ttft_ms', 
+        'last_second_p50_ttft_ms', 
+        'last_second_p90_ttft_ms', 
+        'last_second_p95_ttft_ms', 
+        'last_second_p99_ttft_ms', 
+        'last_second_ttft_samples', 
+        'last_second_avg_tpot_ms', 
+        'last_second_min_tpot_ms', 
+        'last_second_max_tpot_ms', 
+        'last_second_p50_tpot_ms', 
+        'last_second_p90_tpot_ms', 
+        'last_second_p95_tpot_ms', 
+        'last_second_p99_tpot_ms', 
+        'last_second_tpot_samples', 
+        'last_second_total_requests', 
+        'last_second_total_decode_tokens', 
+        'last_second_total_prefill_tokens', 
+        'last_second_total_tokens',
+    ]
+
+    column_check_start_time = time.time()
+
+    if INCLUDE_GPU_IN_FEATURE:
+        parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].map(RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'])
+        unmapped_pods = parsed_df[parsed_df['gpu_model_encoded'].isna()]['selectedpod'].unique()
+        if len(unmapped_pods) > 0:
+            logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
+            unmapped_pods_gpu_models = parsed_df[parsed_df['selectedpod'].isin(unmapped_pods)]['gpu_model_encoded'].unique()
+            logger.error(f"Unmapped GPU models: {unmapped_pods_gpu_models}")
+            assert False
+        parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
+    
+    # Check for missing expected columns
+    missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
+    if missing_columns:
+        logger.error(f"Error: Missing expected columns: {missing_columns}")
+        assert False
+    
+    # Check for unknown columns
+    unknown_columns = [col for col in parsed_df.columns if col not in expected_columns]
+    if unknown_columns:
+        logger.warning(f"Warning: Unused columns: {unknown_columns}")
+
+    # Filter out rows with empty 'podMetricsLastSecond' - vectorized approach
+    valid_mask = parsed_df['podMetricsLastSecond'].notna()
+    
+    # Additional filtering for empty dictionaries - vectorized
+    # non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: x and len(x) > 0 if isinstance(x, dict) else False)
+
+    non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: isinstance(x, dict) and len(x) > 0)
+    
+    num_filter = len(parsed_df) - non_empty_mask.sum()
+    logger.info(f"Filtered out {num_filter} rows with empty podMetricsLastSecond.")
+    
+    parsed_df = parsed_df[valid_mask & non_empty_mask].copy()
+    column_check_overhead = time.time() - column_check_start_time # 0-4ms
+
+    podmetrics_parse_start_time = time.time()
+    # Process first row to check podMetricsLastSecond structure (same as before)
+    if 'podMetricsLastSecond' in parsed_df.columns and len(parsed_df) > 0:
+        first_row = parsed_df.iloc[0]
+        logger.warning(f"WARNING: We are using the first row only to check podMetricsLastSecond structure")
+        pod_metrics = first_row['podMetricsLastSecond']  # Already parsed
+        logger.debug(f"features in pod_metrics: {pod_metrics.keys()}")
+        try:
+            logger.debug(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            logger.error(f"first_row['podMetricsLastSecond']: {first_row['podMetricsLastSecond']}")
+            logger.error(f"pod_metrics: {pod_metrics}")
+            logger.error(f"first_row: {first_row}")
+            assert False
+        if pod_metrics:
+            # Check structure for each pod
+            for pod_id, metrics in pod_metrics.items():
+                logger.debug(f"metrics: {metrics}")
+                # Check for missing expected keys
+                missing_keys = [key for key in expected_last_second_pod_metrics_keys if key not in metrics]
+                if missing_keys:
+                    logger.error(f"Error: Missing expected keys in podMetricsLastSecond for pod {pod_id}: {missing_keys}")
+                    assert False
+                
+                # Check for unknown keys
+                unknown_keys = [key for key in metrics.keys() if key not in expected_last_second_pod_metrics_keys]
+                if unknown_keys:
+                    logger.error(f"Error: Found unknown keys in podMetricsLastSecond for pod {pod_id}: {unknown_keys}")
+                    assert False
+    else:
+        logger.error("Error: podMetricsLastSecond column not found in the DataFrame.")
+        assert False
+    podmetrics_parse_overhead = time.time() - podmetrics_parse_start_time # 0-1ms
+
+
+    numeric_conversion_start_time = time.time()
+    # Convert string columns to appropriate types - vectorized
+    numeric_columns = [
+        'ttft', 
+        'avg_tpot', 
+        'total_decode_time', 
+        'e2e', 
+        'numInputTokens', 
+        'numOutputTokens', 
+        'numTotalTokens',
+    ]
+    
+    for col in numeric_columns:
+        if col in parsed_df.columns:
+            parsed_df[col] = pd.to_numeric(parsed_df[col], errors='coerce')
+    numeric_conversion_overhead = time.time() - numeric_conversion_start_time # 0-1ms
+    
+
+    # Pre-create pod_gpu_models and pod features structure
+    if INCLUDE_GPU_IN_FEATURE:
+        pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in all_pods}
+    
+    # Vectorized processing using pandas operations
+    logger.info("Processing records in vectorized manner...")
+    
+    get_value_start_time = time.time()
+    # Extract base features
+    base_data = {
+        'request_id': parsed_df['requestID'].values,
+        'selected_pod': parsed_df['selectedpod'].values,
+        'input_tokens': parsed_df['numInputTokens'].values,
+        'output_tokens': parsed_df['numOutputTokens'].values,
+        'total_tokens': parsed_df['numTotalTokens'].values,
+        'ttft': parsed_df['ttft'].values,
+        'avg_tpot': parsed_df['avg_tpot'].values,
+        'e2e_latency': parsed_df['e2e'].values,
+    }
+    if INCLUDE_GPU_IN_FEATURE:
+       base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
+    
+    # Pre-extract all JSON data to avoid repeated parsing
+    all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values
+    all_inflight = parsed_df['numInflightRequestsAllPods'].values  
+    all_gpu_cache = parsed_df['vllmGPUKVCacheUsage'].values
+    all_cpu_cache = parsed_df['vllmCPUKVCacheUsage'].values
+    all_running = parsed_df['vllmNumRequestsRunning'].values
+    all_waiting = parsed_df['vllmNumRequestsWaiting'].values
+    all_prefill = parsed_df['numPrefillTokensForAllPods'].values
+    all_decode = parsed_df['numDecodeTokensForAllPods'].values
+    all_pod_metrics = parsed_df['podMetricsLastSecond'].values
+    
+    # Process pod features for all rows at once
+    for pod_id in all_pods:
+        # Vectorized extraction for each pod across all rows
+        base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
+        base_data[f"{pod_id}-inflight_requests"] = [data.get(pod_id, 0) for data in all_inflight]
+        base_data[f"{pod_id}-gpu_kv_cache"] = [data.get(pod_id, 0) for data in all_gpu_cache]
+        base_data[f"{pod_id}-cpu_kv_cache"] = [data.get(pod_id, 0) for data in all_cpu_cache]
+        base_data[f"{pod_id}-running_requests"] = [data.get(pod_id, 0) for data in all_running]
+        base_data[f"{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
+        base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
+        base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
+        if INCLUDE_GPU_IN_FEATURE:
+            base_data[f"{pod_id}-gpu_model"] = ["NVIDIA-L20"] * len(parsed_df)
+        
+        # Extract key metrics for this pod across all rows
+        for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
+                          'last_second_p99_tpot_ms', 'last_second_total_requests', 'last_second_total_tokens',
+                          'last_second_total_decode_tokens', 'last_second_total_prefill_tokens']:
+            base_data[f"{pod_id}-{metric_key}"] = [
+                metrics.get(pod_id, {}).get(metric_key, 0) for metrics in all_pod_metrics
+            ]
+    get_value_overhead = time.time() - get_value_start_time # 0ms
+
+    # Pre-calculate all derived values before DataFrame creation
+    num_rows = len(base_data['request_id'])
+
+    pod_index_start_time = time.time()
+    # Map pod IDs to integer indices for the action space - do this early with numpy arrays
+    unique_pods = np.unique(base_data['selected_pod'])
+    pod_to_index = {str(pod): idx for idx, pod in enumerate(unique_pods)}
+    index_to_pod = {int(idx): str(pod) for pod, idx in pod_to_index.items()}
+
+    # Pre-calculate all derived columns as numpy arrays (much faster than pandas operations)
+    selected_pods_array = np.array(base_data['selected_pod'])
+    action_values = np.array([pod_to_index[str(pod)] for pod in selected_pods_array])
+
+    ttft_values = np.array(base_data['ttft'], dtype=np.float64)
+    tpot_values = np.array(base_data['avg_tpot'], dtype=np.float64)
+    pod_index_overhead = time.time() - pod_index_start_time
+
+    # Vectorized reward calculations using numpy (faster than pandas)
+    reward_calc_start_time = time.time()
+    ttft_rewards = np.where(
+        ttft_values <= 0, 
+        0.5,  # Maximum reward for perfect performance
+        np.where(
+            ttft_values <= ttft_slo,
+            0.5 - (0.4 * ttft_values / ttft_slo),  # Linear scaling
+            -0.1 - (0.4 * np.minimum(1.0, (ttft_values - ttft_slo) / ttft_slo))  # Negative reward
+        )
+    )
+
+    tpot_rewards = np.where(
+        tpot_values <= 0,
+        -0.5,  # Penalize invalid values
+        np.where(
+            tpot_values <= avg_tpot_slo,
+            0.1 + (0.4 * (1 - tpot_values / avg_tpot_slo)),  # Linear scaling
+            -0.1 - (0.4 * np.minimum(1.0, (tpot_values - avg_tpot_slo) / avg_tpot_slo))  # Negative reward
+        )
+    )
+    reward_calc_overhead = time.time() - reward_calc_start_time
+
+    slo_update_start_time = time.time()
+    # Add all the computed columns to base_data before DataFrame creation
+    base_data.update({
+        'action': action_values,
+        'avg_tpot_slo_satisfied': tpot_values <= avg_tpot_slo,
+        'avg_ttft_slo_satisfied': ttft_values <= ttft_slo,
+        'ttft_reward': ttft_rewards,
+        'tpot_reward': tpot_rewards,
+        'reward': ttft_rewards + tpot_rewards,
+    })
+    slo_update_overhead = time.time() - slo_update_start_time
+
+    # Create DataFrame only once with all data
+    create_df_start_time = time.time()
+    processed_df = pd.DataFrame(base_data)
+    create_df_overhead = time.time() - create_df_start_time
+
+
+    # Replace fillna(0) with a more targeted approach since most values should already be handled
+    # Only fill NaN values in specific columns that might have them
+    nan_columns = processed_df.columns[processed_df.isnull().any()].tolist()
+    if nan_columns:
+        processed_df[nan_columns] = processed_df[nan_columns].fillna(0)
+
+    # Save mapping information
+    mapping_info = {
+        'pod_to_index': pod_to_index,
+        'index_to_pod': index_to_pod,
+    }
+    if INCLUDE_GPU_IN_FEATURE:
+        mapping_info['pod_gpu_models'] = pod_gpu_models
+
+    logger.debug(f"Processed dataset shape: {processed_df.shape}")
+    logger.debug(f"Processed columns: {processed_df.columns[:10].tolist()}...")
+
+    if INCLUDE_GPU_IN_FEATURE:
+        logger.debug("\nPod GPU model mapping:")
+        for pod_id, gpu_model in pod_gpu_models.items():
+            logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
+
+    ##################################################################
+
+    preprocess_dataset_overhead_summary = {
+        'preprocess.preprocess_dataset_json_parse_overhead': json_parse_overhead*1000,
+        'preprocess.preprocess_dataset_column_check_overhead': column_check_overhead*1000,
+        'preprocess.preprocess_dataset_podmetrics_parse_overhead': podmetrics_parse_overhead*1000,
+        'preprocess.preprocess_dataset_numeric_conversion_overhead': numeric_conversion_overhead*1000,
+        'preprocess.preprocess_dataset_get_value_overhead': get_value_overhead*1000,
+        'preprocess.preprocess_dataset_create_df_overhead': create_df_overhead*1000,
+        'preprocess.preprocess_dataset_pod_index_overhead': pod_index_overhead*1000,
+        'preprocess.preprocess_dataset_reward_calc_overhead': reward_calc_overhead*1000,
+        'preprocess.preprocess_dataset_slo_update_overhead': slo_update_overhead*1000,
+    }
+    
+    return processed_df, mapping_info, all_pods, preprocess_dataset_overhead_summary
+
+
+# Optimized version - just replace your existing parse_log_message function with this
+def parse_log_message(log_message):
+    # Fast check without string operations
+    if "latency_metrics" not in log_message:
+        logger.error(f"Invalid line. {log_message}")
+        return pd.DataFrame(), []
+    # Find start position more efficiently
+    start_idx = log_message.find("latency_metrics@") + 16
+    if start_idx == 15:  # find returned -1
+        return pd.DataFrame(), []
+    # Split only the relevant part
+    parts = log_message[start_idx:].split('@')
+    row = {}
+    json_columns = []
+    # Process pairs directly
+    i = 0
+    while i < len(parts) - 1:
+        key = parts[i]
+        if key == "numInputTokens":
+            logger.info(f"")
+        value = parts[i + 1]
+        # Fast JSON detection and parsing
+        if value and value[0] == '{' and value[-1] == '}':
+            try:
+                # Only fix quotes if needed
+                if '\\"' in value:
+                    value = value.replace('\\"', '"')
+                row[key] = json.loads(value)
+                json_columns.append(key)
+            except Exception as e:
+                logger.error(f"Error decoding JSON, column: {key}, value: {value}")
+                logger.error(f"Error: {e}")
+                row[key] = value
+        else:
+            # Fast type conversion with better float detection
+            if value.isdigit():
+                row[key] = int(value)
+            elif value.replace('.', '').replace('-', '').isdigit() and value.count('.') == 1:
+                # Only convert to float if there's exactly one decimal point
+                row[key] = float(value)
+            else:
+                row[key] = value
+        i += 2
+    # Create DataFrame only if we have data
+    if row:
+        pd_df_start_time = time.time()
+        df = pd.DataFrame([row])
+        pd_df_overhead = time.time() - pd_df_start_time
+        logger.debug(f"pd_df_overhead: {pd_df_overhead*1000}ms")
+
+        return df, json_columns
+    else:
+        return pd.DataFrame(), []
+
+def preprocess_single_row_fast(df, RL_MODEL_HYPERPARAMETERS):
+    row = df.iloc[0].to_dict()
+    if not row.get('podMetricsLastSecond'):
+        logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
+        logger.error(f"Row data: {row}")
+        assert False
+    
+    base_features = {
+        'request_id': row['requestID'],
+        'selected_pod': row['selectedpod'],
+        'input_tokens': row['numInputTokens'],
+        'output_tokens': row['numOutputTokens'],
+        'total_tokens': row['numTotalTokens'],
+        'ttft': row['ttft'],
+        'avg_tpot': row['avg_tpot'],
+        'e2e_latency': row['e2e'],
+    }
+    if INCLUDE_GPU_IN_FEATURE:
+        
+        selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][row['selectedpod']]
+        
+        gpu_model_encoded = RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
+        
+        base_features['gpu_model_encoded'] = gpu_model_encoded
+    
+    # Extract metrics directly without repeated dictionary lookups
+    kv_cache = row['allPodsKvCacheHitRatios']
+    inflight = row['numInflightRequestsAllPods']
+    gpu_cache = row['vllmGPUKVCacheUsage']
+    cpu_cache = row['vllmCPUKVCacheUsage']
+    running = row['vllmNumRequestsRunning']
+    waiting = row['vllmNumRequestsWaiting']
+    prefill = row['numPrefillTokensForAllPods']
+    decode = row['numDecodeTokensForAllPods']
+    
+    # Build pod features directly
+    pod_metrics = row['podMetricsLastSecond']
+    all_pod_ips = sorted(list(pod_metrics.keys()))
+    for pod_id in all_pod_ips:
+        pod_prefix = f"{pod_id}"
+        if INCLUDE_GPU_IN_FEATURE:
+            if RL_MODEL_HYPERPARAMETERS and 'pod_gpu_mapping' in RL_MODEL_HYPERPARAMETERS:
+                if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
+                    logger.error(f"Error: Pod ID {pod_id} not found in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:{RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']}")
+                    assert False
+                gpu_model = RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id]
+            else:
+                assert False
+                
+        # Direct assignment without intermediate dictionaries
+        base_features[f"{pod_prefix}-kv_hit_ratio"] = kv_cache.get(pod_id, 0)
+        base_features[f"{pod_prefix}-inflight_requests"] = inflight.get(pod_id, 0)
+        base_features[f"{pod_prefix}-gpu_kv_cache"] = gpu_cache.get(pod_id, 0)
+        base_features[f"{pod_prefix}-cpu_kv_cache"] = cpu_cache.get(pod_id, 0)
+        base_features[f"{pod_prefix}-running_requests"] = running.get(pod_id, 0)
+        base_features[f"{pod_prefix}-waiting_requests"] = waiting.get(pod_id, 0)
+        base_features[f"{pod_prefix}-prefill_tokens"] = prefill.get(pod_id, 0)
+        base_features[f"{pod_prefix}-decode_tokens"] = decode.get(pod_id, 0)
+        if INCLUDE_GPU_IN_FEATURE:
+            base_features[f"{pod_prefix}-gpu_model"] = gpu_model
+        
+        # Pod metrics
+        pod_metrics_for_pod = pod_metrics.get(pod_id, {})
+        base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
+        base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
+        base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
+        base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
+        base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
+        base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
+        base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
+        base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
+    
+    processed_df = pd.DataFrame([base_features])
+    preprocess_dataset_overhead_summary = {}
+    
+    return processed_df, all_pod_ips, preprocess_dataset_overhead_summary
+
+
+def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS):
+    if input_file == None and (log_message == "" or log_message is None):
+        logger.error("Error: Both input_file and log_message are empty or None.")
+        assert False
+        # exit()
+    if input_file is not None and log_message != "":
+        logger.error("Error: Both input_file and log_message are provided. Please provide only one.")
+        assert False
+        # exit()
+    
+    if input_file is not None:  # Training path
+        parsed_df, json_columns = parse_log_file(input_file)
+    else:  # Inference path
+        ################################################
+        label_selector = "model.aibrix.ai/name=llama-3-8b-instruct"
+        if 'running_pods' not in RL_MODEL_HYPERPARAMETERS:
+            RL_MODEL_HYPERPARAMETERS['running_pods'] = utils.get_running_pods_by_label(label_selector)
+
+        if 'all_pod_ips_from_running_pods' not in RL_MODEL_HYPERPARAMETERS:
+            RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'] = utils.fetch_running_pod_ips(RL_MODEL_HYPERPARAMETERS['running_pods'])
+            print(f"all_pod_ips_from_running_pods: {RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods']}")
+
+        unique_pod_ips = sorted(RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'])
+
+        if 'pod_ip_to_generalpodid' not in RL_MODEL_HYPERPARAMETERS:
+            pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(unique_pod_ips)
+            RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+
+        if 'generalpodid_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS:
+            generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(RL_MODEL_HYPERPARAMETERS['running_pods'], pod_ip_to_generalpodid)
+            RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+
+        if 'pod_ip_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS or 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
+            pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
+            RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+            RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+        
+        logger.info(f"pod_ip_to_generalpodid: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid']}")
+        logger.info(f"generalpodid_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']}")
+        logger.info(f"pod_ip_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model']}")
+        logger.info(f"pod_ip_to_gpu_model_encoded: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
+        ################################################
+        
+        parsed_df, json_columns = parse_log_message(log_message)
+    if len(parsed_df) == 0:
+        logger.error("No data found after parsing JSON columns.")
+        logger.error(f"Log message: {log_message}")
+        assert False
+    if len(parsed_df) == 1 and input_file is None:
+        processed_df, all_pods, _ = preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS)
+    else:
+        # Existing batch processing for training
+        # REMOVED: No need for parse_json_columns since JSON is already parsed
+        # df = parse_json_columns(df, json_columns)
+        processed_df, mapping_info, all_pods, _ = preprocess_dataset(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+    mapping_info_write_start_time = time.time()
+    output_file = None
+    if input_file is not None:
+        try:
+            input_dir = os.path.dirname(input_file)
+            # Save mapping information
+            output_file = os.path.join(input_dir, "processed_dataset.csv")
+            mapping_file = output_file.replace('.csv', '_mapping.json')
+            if not os.path.exists(mapping_file):
+                with open(mapping_file, 'w') as f:
+                    try:
+                        json.dump(mapping_info, f, indent=2)
+                        logger.info("JSON serialization successful")
+                    except TypeError as e:
+                        logger.error(f"JSON serialization failed: {e}")
+                        # Try to identify the problematic part by serializing each part separately
+                        logger.info("Trying to identify the problematic part:")
+                        try:
+                            json.dumps(mapping_info['pod_to_index'])
+                            logger.info("pod_to_index serialization: OK")
+                        except TypeError as e:
+                            logger.error(f"pod_to_index serialization failed: {e}")
+                        
+                        try:
+                            json.dumps(mapping_info['index_to_pod'])
+                            logger.info("index_to_pod serialization: OK")
+                        except TypeError as e:
+                            logger.error(f"index_to_pod serialization failed: {e}")
+                        if INCLUDE_GPU_IN_FEATURE:
+                            try:
+                                json.dumps(mapping_info['pod_gpu_models'])
+                                logger.info("pod_gpu_models serialization: OK")
+                            except TypeError as e:
+                                logger.error(f"pod_gpu_models serialization failed: {e}")
+                        raise
+                
+            logger.info(f"Mapping information saved to {mapping_file}")
+            logger.info("\nPod mapping (for action space):")
+            for pod, idx in mapping_info['pod_to_index'].items():
+                logger.info(f"  Pod {pod} -> Action {idx}")
+        except Exception as e:
+            logger.error(f"Error processing dataset: {e}")
+            assert False
+
+    preprocess_dataset_overhead_summary = {}
+    return processed_df, output_file, all_pods, preprocess_dataset_overhead_summary
