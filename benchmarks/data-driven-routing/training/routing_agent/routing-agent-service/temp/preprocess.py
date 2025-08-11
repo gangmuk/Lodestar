@@ -68,29 +68,6 @@ def parse_log_file(file_path):
         assert False
     return parsed_df, json_columns
 
-# def normalize_time(df):
-#     first_request_start_time = df['request_start_time'].min()
-#     df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
-#     df['normalized_end_time'] = df['request_end_time'] - first_request_start_time
-#     df['normalized_start_time'] /= 1_000_000
-#     df['normalized_end_time'] /= 1_000_000
-    
-    
-#     if 'log_window_start_time' in df.columns:
-#         df['log_window_start_time'] = df['log_window_start_time'] - first_request_start_time
-#         df['log_window_start_time'] /= 1_000_000
-#     if 'log_window_end_time' in df.columns:
-#         df['log_window_end_time'] = df['log_window_end_time'] - first_request_start_time
-#         df['log_window_end_time'] /= 1_000_000
-
-#     df.loc[:, 'normalized_start_time'] = df['normalized_start_time'] - df['normalized_start_time'].min()
-#     df.loc[:, 'normalized_end_time'] = df['normalized_end_time'] - df['normalized_start_time'].min()
-#     df = df.sort_values(by='normalized_start_time', ascending=True)
-#     df['time_bucket'] = df['normalized_start_time'].astype(int)
-#     df = df[['normalized_start_time', 'time_bucket', 'normalized_end_time'] + [col for col in df.columns if col != 'normalized_start_time' and col != 'normalized_end_time' and col != 'time_bucket']]
-#     df.reset_index(drop=True, inplace=True)
-#     return df
-
 def safe_parse_json(json_str):
     """Safely parse Python dictionary-like strings or JSON strings"""
     # If already a dictionary, return as is
@@ -100,27 +77,13 @@ def safe_parse_json(json_str):
         logger.error(f"ERROR: Empty or NaN JSON string: {str(json_str)}...")
         assert False
     try:
-        # Try standard JSON parsing
         return json.loads(json_str)
     except (json.JSONDecodeError, TypeError):
-        try:
-            # Try replacing single quotes with double quotes
-            if isinstance(json_str, str):
-                return json.loads(json_str.replace("'", '"'))
-            else:
-                logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
-                assert False
-        except (json.JSONDecodeError, TypeError):
-            try:
-                # Try using ast.literal_eval for Python dict literals
-                if isinstance(json_str, str):
-                    return ast.literal_eval(json_str)
-                else:
-                    logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
-                    assert False
-            except (SyntaxError, ValueError, TypeError):
-                logger.error(f"ERROR: Could not parse JSON: {str(json_str)}...")
-                assert False
+        if isinstance(json_str, str):
+            return json.loads(json_str.replace("'", '"'))
+        else:
+            logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
+            assert False
 
 def calculate_ttft_reward(row, ttft_slo):
     try:
@@ -208,13 +171,11 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     
     # all_pods = list(all_pods_set) # BUG: NON-DETERMINISTIC ORDERING.  set-to-list conversion can produce different orderings. It affects the computation in _optimized_process_pod_features in encoding.py. This all_pods is returned in this function -> preprocess.main ->  encoding.encode_for_inference/encode_for_train -> encoding.prepare_for_encoding -> LLMRoutingDataProcessor.pod_ids = all_pods -> encoding._optimized_process_pod_features, for pod_idx, pod_id in enumerate(self.pod_ids): feature arrangement depends on the order of all_pods
     # NOTE: Always sort the pod list... maybe it should have never used the set or dictionary when maintaining pods
-    all_pods = list(all_pods_set)
+    # all_pods = list(all_pods_set) # IT was BUG
     sorted_all_pod_ids = sorted(list(all_pods_set))
     logger.info(f"Identified {len(sorted_all_pod_ids)} pods: {sorted_all_pod_ids}")
-
     logger.debug(f"Original dataset shape: {parsed_df.shape}")
     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
-    
     expected_columns = [
         'requestID', 
         'selectedpod', 

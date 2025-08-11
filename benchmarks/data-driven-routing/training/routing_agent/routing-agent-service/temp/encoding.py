@@ -30,6 +30,7 @@ import argparse
 from datetime import datetime
 import time
 from logger import logger, INCLUDE_GPU_IN_FEATURE
+import json
 # INCLUDE_GPU_IN_FEATURE = True
 
 
@@ -82,56 +83,13 @@ class LLMRoutingDataProcessor:
         # Encoders
         self.pod_encoder = None
         self.selected_pod_encoder = None
+        
+        # Used for _validate_tensor_compatibility
+        self._reference_tensor_data = None
 
         if INCLUDE_GPU_IN_FEATURE:
             self.gpu_models = set()
             self.num_gpu_types = 0
-
-
-    def extract_pod_columns(self, df, all_pods):
-        """Extract pod-related columns and organize by pod ID and feature type - OPTIMIZED."""
-        pod_data = defaultdict(dict)
-        
-        logger.info(f"df.columns: {df.columns}")
-        self.sorted_all_pod_ids = all_pods
-        logger.info(f"Found pod IDs from selected_pod column: {self.sorted_all_pod_ids}")
-
-        # OPTIMIZATION: Pre-filter pod columns and create mapping
-        pod_feature_columns = [col for col in df.columns if col.startswith('pod_')]
-        
-        # OPTIMIZATION: Vectorized column parsing instead of loop
-        pod_col_info = []
-        for col in pod_feature_columns:
-            parts = col.split('-')
-            assert len(parts) == 2, f"Unexpected column format: {col}"
-            # pod_id = parts[0].replace('pod_', '')
-            feature = parts[1]
-            pod_col_info.append((col, pod_id, feature))
-        
-        # OPTIMIZATION: Build feature list once
-        unique_features = list(set(info[2] for info in pod_col_info))
-        self.pod_features = sorted(unique_features)
-        
-        # OPTIMIZATION: Build pod_data using vectorized operations
-        pod_id_set = set(self.sorted_all_pod_ids)
-        for col, pod_id, feature in pod_col_info:
-            if pod_id in pod_id_set:
-                pod_data[pod_id][feature] = df[col]
-            else:
-                logger.error(f"Pod ID {pod_id} not found in self.sorted_all_pod_ids {self.sorted_all_pod_ids}, col: {col}")
-                assert False
-        
-        # Validation (kept same logic)
-        for pod_id in self.sorted_all_pod_ids:
-            if pod_id not in pod_data:
-                logger.error(f"Pod ID {pod_id} not found in pod_data")
-                assert False
-            if len(pod_data[pod_id]) != len(self.pod_features):
-                logger.error(f"Pod ID {pod_id} has {len(pod_data[pod_id])} features, expected {len(self.pod_features)}")
-                assert False
-
-        logger.info(f"pod_data contains {len(pod_data)} pods and total of {sum(len(features) for features in pod_data.values())} features")
-        return pod_data
 
 
     def analyze_request_features(self, df, request_features_train, request_features_reward):
@@ -603,10 +561,11 @@ class LLMRoutingDataProcessor:
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
         
     def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS):
+        
+        self.sorted_all_pod_ids = sorted_all_pod_ids
         pod_data = self._ultra_fast_extract_pod_columns(processed_df, sorted_all_pod_ids)
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
-        self.sorted_all_pod_ids = sorted_all_pod_ids
         
         # STEP 3: SKIP encode_pod_ids for inference
         encode_pod_ids_start = time.time()
@@ -682,25 +641,24 @@ class LLMRoutingDataProcessor:
         return processed_data
 
 
-    def _ultra_fast_extract_pod_columns(self, processed_df, all_pods):
+    def _ultra_fast_extract_pod_columns(self, processed_df, sorted_all_pod_ids):
         pod_data = {}
-        all_pods_set = set(all_pods)
         for col in processed_df.columns:
             if col.startswith('pod_') and '-' in col:
                 logger.info(f"Processing column: {col}")
                 pod_id, feature = col.split('-', 1)
                 # pod_id = pod_id.replace('pod_', '')
-                if pod_id in all_pods_set:
+                if pod_id in sorted_all_pod_ids:
                     if pod_id not in pod_data:
                         pod_data[pod_id] = {}
                     pod_data[pod_id][feature] = processed_df[col]
                 else:
-                    logger.error(f"Pod ID {pod_id} not found in all_pods {all_pods_set}, column: {col}")
+                    logger.error(f"Pod ID {pod_id} not found in sorted_all_pod_ids: {sorted_all_pod_ids}, column: {col}")
                     exit()
         if not pod_data:
             logger.error("No pod data found in the DataFrame")
             logger.error(f"processed_df: {processed_df}")
-            logger.error(f"Expected pod IDs: {all_pods_set}")
+            logger.error(f"Expected pod IDs: {sorted_all_pod_ids}")
             logger.error(f"Extracted pod data: {pod_data}")
             processed_df.to_csv('debug_processed_df.csv', index=False)
             exit(1)
@@ -844,45 +802,11 @@ class LLMRoutingDataProcessor:
         return actions, rewards, ttft_rewards, tpot_rewards
 
     def save_processed_data(self, processed_data):
-        """Save the processed data to disk.
-        
-        Args:
-            processed_data: Dictionary with preprocessed data
-            prefix: Prefix for output files (e.g., 'train', 'val', 'test')
-        """
-        # Create a timestamped output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = f"{self.output_dir}"
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Save each component
-        for key, data in processed_data.items():
-            if key == 'encoders':
-                # Save encoders separately
-                continue
-            # elif isinstance(data, np.ndarray):
-            #     np.save(os.path.join(output_dir, f"{key}.npy"), data)
-            # elif isinstance(data, list) or isinstance(data, dict):
-            #     # with open(os.path.join(output_dir, f"{key}.pkl"), 'wb') as f:
-            #     with open(f"{key}.pkl", 'wb') as f:
-            #         pickle.dump(data, f)
-        
-        # Save encoders
-        encoders = processed_data.get('encoders', {})
-        with open(os.path.join(output_dir, "encoders.pkl"), 'wb') as f:
-            pickle.dump(encoders, f)
-            
-        # Save scaler objects
-        with open(os.path.join(output_dir, "scalers.pkl"), 'wb') as f:
-            scalers = {
-                'pod_feature_scaler': self.pod_feature_scaler,
-                'request_feature_scaler': self.request_feature_scaler,
-                'kv_hit_scaler': self.kv_hit_scaler
-            }
-
-            pickle.dump(scalers, f)
            
-        # Create a PyTorch-ready dataset with all enhanced features
+        # Create a PyTorch tensor dataset
         tensor_data = {
             # Basic tensors
             'pod_features': torch.FloatTensor(processed_data['pod_features']),
@@ -910,15 +834,22 @@ class LLMRoutingDataProcessor:
         if 'tpot_rewards' in processed_data and processed_data['tpot_rewards'] is not None:
             tensor_data['tpot_rewards'] = torch.FloatTensor(processed_data['tpot_rewards'])
             
-        # Save tensor dataset
+        # global_tensor_path = "global_tensor_dataset.pt"
+        # self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
         torch.save(tensor_data, os.path.join(output_dir, "tensor_dataset.pt"))
+        
+        if hasattr(self, '_reference_tensor_data') and self._reference_tensor_data is not None:
+            if self._validate_tensor_compatibility(self._reference_tensor_data, tensor_data):
+                logger.debug("✅ Tensor data compatible with reference batch")
+            else:
+                logger.warning("⚠️ Tensor data incompatible with reference batch")
+        else:
+            # Store first batch as reference for future validations
+            self._reference_tensor_data = {k: v.clone() if isinstance(v, torch.Tensor) else v 
+                                        for k, v in tensor_data.items()}
+            logger.debug("📝 Stored reference tensor data for future validation")
 
-        global_tensor_path = "global_tensor_dataset.pt"
-        # Append to global tensor dataset if requested
-        self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
 
-        # Save a metadata JSON with shapes and statistics
-        import json
         metadata = {
             'dataset_size': len(processed_data['actions']),
             'num_pods': len(processed_data['pod_ids']),
@@ -946,71 +877,63 @@ class LLMRoutingDataProcessor:
             }
         }
         
-        # with open(os.path.join(output_dir, "metadata.json"), 'w') as f:
-        with open("metadata.json", 'w') as f:
+        with open(os.path.join(output_dir, "metadata.json"), 'w') as f:
+        # with open("metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
         
         logger.info(f"Saved processed data to {output_dir}")
-        
-        # Return the output directory for reference
         return output_dir
     
-    def _append_to_global_tensor_dataset(self, new_tensor_data, global_tensor_path):
-        """Append new tensor data to the global tensor dataset file.
-        
-        Args:
-            new_tensor_data: Dictionary of new tensors to append
-            global_tensor_path: Path to the global tensor dataset file
-        """
-        try:
-            # Check if global dataset already exists
-            if os.path.exists(global_tensor_path):
-                logger.info(f"Loading existing global tensor dataset from {global_tensor_path}")
+    # def _append_to_global_tensor_dataset(self, new_tensor_data, global_tensor_path):
+    #     try:
+    #         # Check if global dataset already exists
+    #         if os.path.exists(global_tensor_path):
+    #             logger.info(f"Loading existing global tensor dataset from {global_tensor_path}")
                 
-                # Load existing data
-                existing_data = torch.load(global_tensor_path, map_location='cpu')
+    #             # Load existing data
+    #             existing_data = torch.load(global_tensor_path, map_location='cpu')
                 
-                # # Validate compatibility
-                if not self._validate_tensor_compatibility(existing_data, new_tensor_data):
-                    logger.error("New tensor data incompatible with existing global dataset")
-                    return
+    #             # # Validate compatibility
+    #             if not self._validate_tensor_compatibility(existing_data, new_tensor_data):
+    #                 logger.error("New tensor data incompatible with existing global dataset")
+    #                 return
                 
-                # Concatenate tensors
-                merged_data = {}
-                for key in existing_data.keys():
-                    if key in new_tensor_data:
-                        if isinstance(existing_data[key], torch.Tensor) and isinstance(new_tensor_data[key], torch.Tensor):
-                            # Concatenate along batch dimension (dim=0)
-                            merged_data[key] = torch.cat([existing_data[key], new_tensor_data[key]], dim=0)
-                            logger.debug(f"Concatenated {key}: {existing_data[key].shape[0]} + {new_tensor_data[key].shape[0]} = {merged_data[key].shape[0]}")
-                        else:
-                            # For non-tensors, keep the existing value or update if needed
-                            merged_data[key] = existing_data[key]
-                    else:
-                        # Keep existing data for keys not in new data
-                        merged_data[key] = existing_data[key]
+    #             # Concatenate tensors
+    #             merged_data = {}
+    #             for key in existing_data.keys():
+    #                 if key in new_tensor_data:
+    #                     if isinstance(existing_data[key], torch.Tensor) and isinstance(new_tensor_data[key], torch.Tensor):
+    #                         # Concatenate along batch dimension (dim=0)
+    #                         merged_data[key] = torch.cat([existing_data[key], new_tensor_data[key]], dim=0)
+    #                         logger.debug(f"Concatenated {key}: {existing_data[key].shape[0]} + {new_tensor_data[key].shape[0]} = {merged_data[key].shape[0]}")
+    #                     else:
+    #                         # For non-tensors, keep the existing value or update if needed
+    #                         merged_data[key] = existing_data[key]
+    #                 else:
+    #                     # Keep existing data for keys not in new data
+    #                     merged_data[key] = existing_data[key]
                 
-                # Add any new keys from new_tensor_data that weren't in existing_data
-                for key in new_tensor_data.keys():
-                    if key not in merged_data:
-                        logger.warning(f"New key {key} found in new data, adding to global dataset")
-                        merged_data[key] = new_tensor_data[key]
+    #             # Add any new keys from new_tensor_data that weren't in existing_data
+    #             for key in new_tensor_data.keys():
+    #                 if key not in merged_data:
+    #                     logger.warning(f"New key {key} found in new data, adding to global dataset")
+    #                     merged_data[key] = new_tensor_data[key]
                 
-            else:
-                logger.info(f"Creating new global tensor dataset at {global_tensor_path}")
-                merged_data = new_tensor_data.copy()
+    #         else:
+    #             logger.info(f"Creating new global tensor dataset at {global_tensor_path}")
+    #             merged_data = new_tensor_data.copy()
             
-            # Save the merged dataset
-            torch.save(merged_data, global_tensor_path)
+    #         # Save the merged dataset
+    #         torch.save(merged_data, global_tensor_path)
             
-            # Log the final sizes
-            total_samples = merged_data['actions'].shape[0] if 'actions' in merged_data else 0
-            new_samples = new_tensor_data['actions'].shape[0] if 'actions' in new_tensor_data else 0
-            logger.info(f"Successfully appended {new_samples} samples to global dataset. Total samples: {total_samples}")
+    #         # Log the final sizes
+    #         total_samples = merged_data['actions'].shape[0] if 'actions' in merged_data else 0
+    #         new_samples = new_tensor_data['actions'].shape[0] if 'actions' in new_tensor_data else 0
+    #         logger.info(f"Successfully appended {new_samples} samples to global dataset. Total samples: {total_samples}")
             
-        except Exception as e:
-            logger.error(f"Failed to append to global tensor dataset: {e}")
-            # Don't raise the exception to avoid breaking the main processing
+    #     except Exception as e:
+    #         logger.error(f"Failed to append to global tensor dataset: {e}")
+    #         # Don't raise the exception to avoid breaking the main processing
 
     def _validate_tensor_compatibility(self, existing_data, new_data):
         """Validate that new tensor data is compatible with existing data for concatenation.
@@ -1117,34 +1040,31 @@ class LLMRoutingDataProcessor:
             return None, None
 
 
-def encode_for_train(all_pods, processed_df, output_dir, request_features_train, HYPERPARAMETERS):
-    """Main function to process LLM routing data."""
-    logger.debug(f"columns: {list(processed_df.columns)}")
+def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_features_train, HYPERPARAMETERS):
     if len(processed_df) > 0:
         logger.info("First row selected_pod value: " + str(processed_df.iloc[0].get('selected_pod', 'N/A')))
     # Check if data contains the expected column pattern
     pod_cols = [c for c in processed_df.columns if 'pod_' in c or '-pod' in c]
     if not pod_cols:
         logger.warning("No columns with 'pod_' prefix or '-pod' pattern found")
-    # Check if 'selected_pod' column contains valid pod IDs
-    if 'selected_pod' in processed_df.columns:
-        pod_values = processed_df['selected_pod'].dropna().unique()
-        logger.info(f"Unique selected_pod values: {pod_values}")
+
+    assert processed_df['selected_pod'].iloc[0] in sorted_all_pod_ids
+
     # Basic data quality checks
     logger.info("Performing data quality checks...")
-    missing_pct = processed_df.isnull().mean() * 100
-    high_missing = missing_pct[missing_pct > 20].index.tolist()
+    missing_col_pct = processed_df.isnull().mean() * 100
+    high_missing = missing_col_pct[missing_col_pct > 20].index.tolist()
     if high_missing:
-        logger.warning(f"Columns with >20% missing values: {len(high_missing)} columns")
-    processor = LLMRoutingDataProcessor(output_dir=output_dir)
-    logger.info("Data already normalized in routing_agent_service.py, proceeding with encoding...")
+        logger.error(f"Columns with >20% missing values: {len(high_missing)} columns")
+        assert False
+        
     logger.info("Processing training data...")
+    data_processor = LLMRoutingDataProcessor(output_dir=output_dir)
     overhead_summary = {}
-    train_processed = processor.prepare_for_encoding(processed_df, all_pods, request_features_train, overhead_summary, HYPERPARAMETERS)
-    train_path = processor.save_processed_data(train_processed)
+    train_processed = data_processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
+    train_path = data_processor.save_processed_data(train_processed)
     logger.info("Data processing complete!")
     logger.info(f"Training data: {train_path}")
-    # Print dataset shape information
     logger.info(f"Dataset shapes:")
     logger.info(f"  pod_features: {train_processed['pod_features'].shape}")
     logger.info(f"  pod_features_with_staleness: {train_processed['pod_features_with_staleness'].shape}")
