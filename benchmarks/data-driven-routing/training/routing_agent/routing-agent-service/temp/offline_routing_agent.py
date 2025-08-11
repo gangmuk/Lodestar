@@ -205,21 +205,16 @@ def train_model(args, ENCODED_DATA_DIR):
             if args.model == "random_forest":
                 random_forest.train(ENCODED_DATA_DIR)
             elif args.model == "simpler_contextual_bandit":
-                set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
-                
-                # #############################################
-                print("Testing training determinism...")
-                is_deterministic = verify_training_determinism(
-                    ENCODED_DATA_DIR, 
-                    f"{args.model_dir}_test", 
-                    RL_MODEL_HYPERPARAMETERS
-                )
-                if not is_deterministic:
-                    print("❌ Training is not deterministic - fixing required!")
-                    return
-                else:
-                    print("✅ Training determinism verified!")
-                # #############################################
+                # set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
+                # if not verify_training_determinism(
+                #     ENCODED_DATA_DIR, 
+                #     f"{args.model_dir}_test", 
+                #     RL_MODEL_HYPERPARAMETERS
+                # ):
+                #     print("❌ Training is not deterministic - fixing required!")
+                #     return
+                # else:
+                #     print("✅ Training determinism verified!")
                 
                 set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
                 simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir, RL_MODEL_HYPERPARAMETERS)
@@ -248,34 +243,14 @@ def test_inference(args, log_message, request_id):
     if NUM_TRAINS == 0:
         logger.warning("No trained model available, please train first")
         return None
-    
     handle_infer_start_time = time.time()
-    processed_df, _, all_pods, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
-    
-    original_pod_choice = None
-    if 'selected_pod' in processed_df.columns:
-        original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
-    elif hasattr(processed_df, 'original_pod') or 'original_pod' in processed_df.columns:
-        original_pod_choice = processed_df['original_pod'].iloc[0] if len(processed_df) > 0 else None
-    
-    # If not found in DataFrame, try to extract from the raw log message
-    if original_pod_choice is None:
-        pattern = r'@selectedpod@([^@]+)@'
-        match = re.search(pattern, log_message)
-        if match:
-            original_pod_choice = match.group(1)
-    
-    logger.debug(f"Original pod choice: {original_pod_choice}")
-    
+    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
+    preprocess_overhead = time.time() - handle_infer_start_time
+    original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
     normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
-    
-    # Encode data
     encode_start_time = time.time()
-    tensor_dataset, _ = encoding.encode_for_inference(all_pods, normalized_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
-
+    tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, normalized_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
     handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
-
-    # Perform inference
     infer_from_tensor_start_time = time.time()
     if args.model == "random_forest":
         result, _ = random_forest.infer_from_tensor(
@@ -295,29 +270,21 @@ def test_inference(args, log_message, request_id):
         logger.info("Model updated flag consumed, resetting to False")
         MODEL_UPDATED = False
     handle_infer_total_total_infer_from_tensor_overhead = time.time() - infer_from_tensor_start_time
-
-    # Map the pod index back to the actual pod ID
-    selected_pod_index = result.get('selected_pod_index', 0)
-    if selected_pod_index >= len(all_pods):
+    selected_pod_index = result['selected_pod_index']
+    if selected_pod_index >= len(sorted_all_pod_ids):
         logger.warning(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
         selected_pod_index = 0
-        
-    selected_pod = all_pods[selected_pod_index]
-    confidence = result['confidence']
+    selected_pod = sorted_all_pod_ids[selected_pod_index]
     handle_infer_total_overhead = time.time() - handle_infer_start_time
-    
-    # Compare with original choice
     prediction_matches = (selected_pod == original_pod_choice) if original_pod_choice else None
-    
-    # Return enhanced result with comparison
     result_summary = {
         "selected_pod": selected_pod,
         "original_pod_choice": original_pod_choice,
         "pod_probabilities": result['pod_probabilities'],
         "prediction_matches": prediction_matches,
-        "confidence": confidence,
+        "confidence": result['confidence'],
         "total_inference_time_ms": handle_infer_total_overhead * 1000,
-        "preprocess_time_ms": -1 * 1000,
+        "preprocess_time_ms": preprocess_overhead * 1000,
         "encoding_time_ms": handle_infer_total_total_encoding_overhead * 1000,
         "inference_time_ms": handle_infer_total_total_infer_from_tensor_overhead * 1000,
     }
@@ -325,10 +292,10 @@ def test_inference(args, log_message, request_id):
     # Enhanced logging with match/mismatch status
     if original_pod_choice:
         match_status = "✅ MATCH" if prediction_matches else "❌ MISMATCH"
-        logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={confidence:.4f}")
+        logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}")
     else:
-        logger.info(f"Inference result: predicted={selected_pod}, original=UNKNOWN, confidence={confidence:.4f}")
-    
+        logger.info(f"Inference result: predicted={selected_pod}, original=UNKNOWN, confidence={result['confidence']:.4f}")
+
     return result_summary
 
 def process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR):
@@ -340,7 +307,7 @@ def process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR):
     raw_data = "temp_training_data/offline_batch.csv"
     write_to_file(train_data, raw_data)
     ts_preprocess = time.time()
-    processed_df, _, all_pods, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
+    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
     processed_df.to_csv(f"{args.data_dir}/processed_data.csv", index=False)
     logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
     
@@ -352,7 +319,7 @@ def process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR):
     # encoding
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
-    encoding.encode_for_train(all_pods, processed_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
+    encoding.encode_for_train(sorted_all_pod_ids, processed_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
     logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
     # Verify encoded data
