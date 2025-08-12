@@ -239,11 +239,12 @@ func init() {
 
 // RouteResponse is received from the routing agent
 type RouteResponse struct {
-	RequestID   string  `json:"request_id"`
-	SelectedPod string  `json:"selected_pod"`
-	Confidence  float64 `json:"confidence"`
-	NumTrains   int     `json:"num_trains"`
-	NumFlush    int     `json:"num_flush"`
+	RequestID               string  `json:"request_id"`
+	SelectedPod             string  `json:"selected_pod"`
+	SelectedPodGeneralPodId string  `json:"selected_pod_generalpodid"`
+	Confidence              float64 `json:"confidence"`
+	NumTrains               int     `json:"num_trains"`
+	NumFlush                int     `json:"num_flush"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -323,11 +324,13 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// }
 
 	if len(readyPods) == 0 {
+		klog.Errorf("requestID: %s, No ready pods available for routing", ctx.RequestID)
 		return "", fmt.Errorf("no ready pods available")
 	}
 
 	if len(readyPods) == 1 {
 		ctx.SetTargetPod(readyPods[0])
+		klog.Warningf("requestID: %s, Only one ready pod available, using it as target pod: %s", ctx.RequestID, readyPods[0].Status.PodIP)
 		return ctx.TargetAddress(), nil
 	}
 
@@ -387,6 +390,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
 		jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
 		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s`
+		// logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s`
 		log = fmt.Sprintf(
 			logFormat,
 			ctx.RequestID,
@@ -410,30 +414,34 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
 
-	klog.V(5).Infof("/infer: %s", log)
+	// klog.V(5).Infof("/infer: %s", log)
+	klog.Infof("/infer: %s", log)
+
 	reqBody, err := json.Marshal(log)
 	if err != nil {
 		klog.Errorf("Failed to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)
-		// ctx.SetTargetPod(targetPod)
-		// return ctx.TargetAddress(), nil
 	}
 	request_prepare_overhead := time.Since(route_start_time).Milliseconds()
+
 	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
 	req, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 	if reqErr != nil {
 		klog.Errorf("Failed to create request: %v, requestID: %s", reqErr, ctx.RequestID)
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)
-		// ctx.SetTargetPod(targetPod)
-		// return ctx.TargetAddress(), nil
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	////////////////////////////////////////////////////////////////////
+	/////////////////// Send HTTP Request to RL Agent //////////////////
+	////////////////////////////////////////////////////////////////////
+	klog.Infof("Sending request to RL agent: %s, requestID: %s", url, ctx.RequestID)
 	resp, sendErr := httpClientForRLAgent.Do(req)
+	/////////////////////////////////////////////////////////////////////
+
 	if sendErr != nil {
 		klog.Errorf("Request failed!!: %v, requestID: %s", sendErr, ctx.RequestID)
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)
-		// ctx.SetTargetPod(targetPod)
-		// return ctx.TargetAddress(), nil
 	} else {
 		if resp.StatusCode != http.StatusOK {
 			klog.Errorf("Failed, Received non-200 response: %s, requestID: %s", resp.Status, ctx.RequestID)
@@ -442,8 +450,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		if readErr != nil {
 			klog.Errorf("Failed to read response body: %v, requestID: %s", readErr, ctx.RequestID)
 			targetPod, _ = r.fallbackRouting(ctx, readyPods)
-			// ctx.SetTargetPod(targetPod)
-			// return ctx.TargetAddress(), nil
 		} else {
 			response_process_start := time.Now()
 			// body: {"confidence":0.4398832619190216,"request_id":"10","selected_pod":"10.0.1.30"}
@@ -451,21 +457,20 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			if err := json.Unmarshal(body, &routeResponse); err != nil {
 				klog.Errorf("Failed to unmarshal response body: %v, requestID: %s", err, ctx.RequestID)
 				targetPod, _ = r.fallbackRouting(ctx, readyPods)
-				// ctx.SetTargetPod(targetPod)
-				// return ctx.TargetAddress(), nil
 			}
 			resp.Body.Close()
-			if targetPod == nil {
+			if targetPod == nil { // NOTE: This means that RL agent infer was successful and it will use RL agent's selected pod later in this code.
+
+				////////////////////////////////////////////////////////
+				//////////////////// RL selected pod ///////////////////
+				////////////////////////////////////////////////////////
 				targetPod = GetPod(routeResponse.SelectedPod, readyPods)
+
+				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
 				if targetPod == nil {
 					klog.Errorf("Failed, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
 					targetPod, _ = r.fallbackRouting(ctx, readyPods)
-					// ctx.SetTargetPod(targetPod)
-					// return ctx.TargetAddress(), nil
 				}
-				klog.Infof("anyway RL inference http success, requestID: %s", ctx.RequestID)
-				/////////////////////////////////////////////////////////////
-
 				if ctx.SubAlgorithm == "random" {
 					klog.Infof("random rouiting, request_id: %s", ctx.RequestID)
 					targetPod, _ = selectRandomPod(readyPods, rand.Intn)
@@ -490,7 +495,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						}
 					}
 				} else {
-					klog.Infof("Unknown sub-algorithm: %s, Use rl-agent!, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
+					klog.Infof("Unknown sub-algorithm: %s, means rl-routing. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				}
 
 				if routeResponse.NumTrains > utils.GetNumTrains() {
@@ -524,7 +529,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						formattedResponseBody)
 				} else {
 					//// short log
-					klog.Infof("RL router, requestID: %s, Route end_to_end_overhead %dms, targetPod: %s", ctx.RequestID, end_to_end_overhead, targetPod.Status.PodIP)
+					klog.Infof("RL router, requestID: %s, SelectedPod: %s SelectedPodGeneralPodId: %s, Route end_to_end_overhead %dms", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead)
 				}
 			}
 		}

@@ -1,0 +1,11 @@
+removed old ones
+    pod_gpu_mapping
+    pod_gpu_id_mapping
+    GPU_MAP
+    NUM_GPU_TYPES
+        
+new ones
+    pod_ip_to_gpu_model
+    pod_ip_to_generalpodid
+    pod_ip_to_gpu_model
+    pod_ip_to_gpu_model_encoded

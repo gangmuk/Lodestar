@@ -28,8 +28,7 @@ port=8888
 iterations=1
 
 input_workload_dirs=(
-    # "workload/three_requests"
-
+    # "workload/ten_requests"
     # "workload/p4096_s1024_rps10_spp_20_ndp_100-shortversion"
     "workload/p4096_s1024_rps10_spp_20_ndp_100-half"
     # "workload/p4096_s1024_rps10_spp_20_ndp_100"
@@ -50,8 +49,9 @@ input_workload_dirs=(
 delimiter="+"
 
 # final_model_dir="./final_model-seems_almost_random"
-final_model_dir="./final_model-rl_dataset-all_normalized"
+# final_model_dir="./final_model-rl_dataset-all_normalized"
 # final_model_dir="./final_model-working-model"
+final_model_dir="./final_model-new"
 
 routing_configs=(
     "rl-online-router${delimiter}none"
@@ -89,28 +89,32 @@ for online_learning in false; do
 
 
                 # ##################################################################################
-                # python3 update_k8s_env.py --env TTFT_SLO=${TTFT_SLO} --env AVG_TPOT_SLO=${AVG_TPOT_SLO} --env MODEL=simpler_contextual_bandit --env ENABLE_ONLINE_LEARNING=${online_learning} --deployment routing-agent-service --namespace default
-                # start_time=$(date +%s)
+                python3 update_k8s_env.py --env TTFT_SLO=${TTFT_SLO} --env AVG_TPOT_SLO=${AVG_TPOT_SLO} --env MODEL=simpler_contextual_bandit --env ENABLE_ONLINE_LEARNING=${online_learning} --deployment routing-agent-service --namespace default
+                start_time=$(date +%s)
                 
-                # kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
-                # kubectl rollout restart deployment routing-agent-service -n default
+                kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
+                kubectl rollout restart deployment routing-agent-service -n default
 
-                # if [ ! -d "${final_model_dir}" ]; then
-                #     echo "Final model directory does not exist: ${final_model_dir}"
-                #     exit 1
-                # fi
-                # python ../ship_all.py 0 ${final_model_dir}
+                if [ ! -d "${final_model_dir}" ]; then
+                    echo "Final model directory does not exist: ${final_model_dir}"
+                    exit 1
+                fi
+                python ship_all.py 0 ${final_model_dir}
                 ##################################################################################
 
 
                 sleep 3 && python3 check_ready.py && sleep 3
 
+                ###################################################33
                 if [ "${subAlgorithm}" == "none" ]; then
                     output_dir="${workload_dir}/${config}-onlinelearning_${online_learning}"
                 else
                     output_dir="${workload_dir}/${config}"
                 fi
-                # if output_dir exist, rename
+                ###################################################33
+                # output_dir="./output"
+                ###################################################33
+                
                 if [ -d "${output_dir}" ]; then
                     timestamp=$(date +%Y%m%d-%H%M%S)
                     output_dir="${output_dir}-${timestamp}"

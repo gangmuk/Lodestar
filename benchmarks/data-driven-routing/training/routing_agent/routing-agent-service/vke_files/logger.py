@@ -1,6 +1,9 @@
 import logging
 import os
 
+INCLUDE_GPU_IN_FEATURE = False
+
+
 # Configure logging
 def setup_logging():
     logging_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -9,10 +12,11 @@ def setup_logging():
     # print function name as well
     logging.basicConfig(
         level=logging_level,
-        format="%(asctime)s - %(levelname)s - %(filename)s - %(funcName)s - %(message)s",
+        # format="%(asctime)s - %(levelname)s - %(filename)s - %(funcName)s:%(lineno)d - %(message)s",
+        format="%(filename)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("llm_router.log")
+            # logging.FileHandler("llm_router.log")
         ]
     )
 

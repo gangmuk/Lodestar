@@ -158,12 +158,35 @@ def calculate_performance_metrics(df):
     
     return metrics
 
+def normalize_time(df):
+    first_request_start_time = df['request_start_time'].min()
+    df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
+    df['normalized_end_time'] = df['request_end_time'] - first_request_start_time
+    df['normalized_start_time'] /= 1_000_000
+    df['normalized_end_time'] /= 1_000_000
+    
+    
+    if 'log_window_start_time' in df.columns:
+        df['log_window_start_time'] = df['log_window_start_time'] - first_request_start_time
+        df['log_window_start_time'] /= 1_000_000
+    if 'log_window_end_time' in df.columns:
+        df['log_window_end_time'] = df['log_window_end_time'] - first_request_start_time
+        df['log_window_end_time'] /= 1_000_000
+
+    df.loc[:, 'normalized_start_time'] = df['normalized_start_time'] - df['normalized_start_time'].min()
+    df.loc[:, 'normalized_end_time'] = df['normalized_end_time'] - df['normalized_start_time'].min()
+    df = df.sort_values(by='normalized_start_time', ascending=True)
+    df['time_bucket'] = df['normalized_start_time'].astype(int)
+    df = df[['normalized_start_time', 'time_bucket', 'normalized_end_time'] + [col for col in df.columns if col != 'normalized_start_time' and col != 'normalized_end_time' and col != 'time_bucket']]
+    df.reset_index(drop=True, inplace=True)
+    return df
+
 def process_log_file(file_path, warmup_seconds, cut_last_seconds):
     """Process a single log file and return its performance metrics AND the processed DataFrame."""
     print(f"Processing {file_path}...")
     df, json_columns = preprocess.parse_log_file(file_path)
     df = preprocess.parse_json_columns(df, json_columns)
-    df = preprocess.normalize_time(df)
+    df = normalize_time(df)
     df = analyze_llm_inference_logs(df)
     
     # Filter out warm-up period (first 30 seconds)
