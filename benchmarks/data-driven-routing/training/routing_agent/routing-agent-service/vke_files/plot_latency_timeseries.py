@@ -9,7 +9,7 @@ import pandas as pd
 # import seaborn as sns
 import re
 import json
-from logger import logger
+# from logger import logger
 
 def parse_log_file(filename):
     with open(filename, 'r') as file:
@@ -36,23 +36,23 @@ def parse_log_file(filename):
                 if item.get('start_time') is not None:
                     item['relative_time'] = (item['start_time'] - base_time) / 1000000
                 else:
-                    logger.error(f"Missing start_time in entry: {item}")
-                    logger.error(f"data: {data}")
+                    print(f"Error: Missing start_time in entry: {item}")
+                    print(f"Error: data: {data}")
                     assert False
                 # if item.get('end_time'):
                 if item.get('end_time') is not None:
                     item['relative_end_time'] = (item['end_time'] - base_time) / 1000000
                     item['duration'] = (item['end_time'] - item['start_time']) / 1000000
                 else:
-                    logger.error(f"Missing end_time in entry: {item}")
-                    logger.error(f"data: {data}")
+                    print(f"Error: Missing end_time in entry: {item}")
+                    print(f"Error: data: {data}")
                     assert False
         else:
-            logger.error("No valid start times found in the data.")
-            logger.error(f"data: {data}")
+            print("Error: No valid start times found in the data.")
+            print(f"Error: data: {data}")
             assert False
     else:
-        logger.error("No valid entries found in the log file.")
+        print("Error: No valid entries found in the log file.")
         assert False
     
     print(f"Parsed {len(data)} entries")
@@ -623,11 +623,6 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
             ax.grid(True, linestyle='--', alpha=0.3)
     
     # Add reward statistics to the summary print
-    logger.debug(f"Reward Statistics (SLO: TTFT≤{slo_ttft}ms, TPOT≤{slo_tpot}ms):")
-    logger.debug(f"TTFT Reward - Min: {df['ttft_reward'].min():.3f}, Max: {df['ttft_reward'].max():.3f}, Avg: {df['ttft_reward'].mean():.3f}")
-    logger.debug(f"TPOT Reward - Min: {df['tpot_reward'].min():.3f}, Max: {df['tpot_reward'].max():.3f}, Avg: {df['tpot_reward'].mean():.3f}")
-    logger.debug(f"Total Reward - Min: {df['total_reward'].min():.3f}, Max: {df['total_reward'].max():.3f}, Avg: {df['total_reward'].mean():.3f}")
-    logger.debug(f"SLO Satisfaction:")
     print(f"TTFT: {slo_stats['ttft_satisfied']}/{slo_stats['total_requests']} ({slo_stats['ttft_satisfaction_rate']:.1f}%)")
     print(f"TPOT: {slo_stats['tpot_satisfied']}/{slo_stats['total_requests']} ({slo_stats['tpot_satisfaction_rate']:.1f}%)")
     print(f"Both: {slo_stats['both_satisfied']}/{slo_stats['total_requests']} ({slo_stats['both_satisfaction_rate']:.1f}%)")
@@ -666,7 +661,7 @@ if __name__ == "__main__":
     data = parse_log_file(log_file)
     
     if not data:
-        logger.error(f"No valid latency metrics found in {log_file}. Please check the file format.")
+        print(f"Error: No valid latency metrics found in {log_file}. Please check the file format.")
         assert False
     
     print(f"Found {len(data)} log entries with latency metrics")
@@ -676,7 +671,7 @@ if __name__ == "__main__":
     
     # Print summary statistics
     df = pd.DataFrame(data)
-    logger.debug("\nSummary Statistics:")
-    logger.debug(f"TTFT - Min: {df['ttft'].min()} ms, Max: {df['ttft'].max()} ms, Avg: {df['ttft'].mean():.2f} ms")
-    logger.debug(f"TPOT - Min: {df['avg_tpot'].min()} ms, Max: {df['avg_tpot'].max()} ms, Avg: {df['avg_tpot'].mean():.2f} ms")
-    logger.debug(f"E2E  - Min: {df['e2e'].min()} ms, Max: {df['e2e'].max()} ms, Avg: {df['e2e'].mean():.2f} ms")
+    print("\nSummary Statistics:")
+    print(f"TTFT - Min: {df['ttft'].min()} ms, Max: {df['ttft'].max()} ms, Avg: {df['ttft'].mean():.2f} ms")
+    print(f"TPOT - Min: {df['avg_tpot'].min()} ms, Max: {df['avg_tpot'].max()} ms, Avg: {df['avg_tpot'].mean():.2f} ms")
+    print(f"E2E  - Min: {df['e2e'].min()} ms, Max: {df['e2e'].max()} ms, Avg: {df['e2e'].mean():.2f} ms")

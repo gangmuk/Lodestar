@@ -2,7 +2,7 @@ import sys
 import os
 import subprocess
 from typing import Tuple, Optional
-from logger import logger
+# from logger import logger
 
 def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: str, container: Optional[str] = None) -> bool:
     """
@@ -25,17 +25,17 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
                '--selector=app=' + deployment, 
                '-o=jsonpath={.items[0].metadata.name}']
         
-        logger.debug(f"Running command: {' '.join(cmd)}")
+        # logger.debug(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         pod_name = result.stdout.strip()
         
         # If pod not found with app label, try listing all pods
         if not pod_name:
-            logger.error("Pod not found with app label, listing all pods in namespace")
             list_cmd = ['kubectl', 'get', 'pods', '-n', namespace]
             list_result = subprocess.run(list_cmd, capture_output=True, text=True)
-            logger.info(f"Available pods:\n{list_result.stdout}")
+            print("Error: Pod not found with app label, listing all pods in namespace")
+            print(f"Error: Available pods:\n{list_result.stdout}")
             
             # Try getting pod by deployment name prefix
             pod_cmd = ['kubectl', 'get', 'pods', 
@@ -52,8 +52,6 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
         if not pod_name:
             return False, f"No pods found for deployment '{deployment}' in namespace '{namespace}'"
         
-        logger.debug(f"Found pod: {pod_name}")
-        
         # Get container name if not specified
         if not container:
             container_cmd = ['kubectl', 'get', 'pod', pod_name, 
@@ -61,8 +59,7 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
                             '-o=jsonpath={.spec.containers[0].name}']
             container_result = subprocess.run(container_cmd, capture_output=True, text=True)
             container = container_result.stdout.strip()
-            logger.debug(f"Using container: {container}")
-        
+
         # Determine if source is local or in pod
         is_src_local = not src.startswith('/') or os.path.exists(src)
         
@@ -76,7 +73,7 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
             
             check_result = subprocess.run(check_cmd, capture_output=True, text=True)
             if check_result.stdout.strip() != "exists":
-                logger.error(f"Source path '{src}' does not exist in the pod")
+                print(f"Error: Source path '{src}' does not exist in the pod")
                 return False
             
             # Now check if it's a directory
@@ -87,15 +84,13 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
             
             check_dir_result = subprocess.run(check_dir_cmd, capture_output=True, text=True)
             is_src_dir = check_dir_result.stdout.strip() == "directory"
-            logger.debug(f"Source in pod is a {'directory' if is_src_dir else 'file'}: {src}")
         else:
             # Local source
             if not os.path.exists(src):
-                logger.error(f"Source path '{src}' does not exist locally")
+                print(f"Error: Source path '{src}' does not exist locally")
                 return False
             
             is_src_dir = os.path.isdir(src)
-            logger.debug(f"Source locally is a {'directory' if is_src_dir else 'file'}: {src}")
         
         # Ensure destination directory exists for pod-to-local transfers
         if not is_src_local:
@@ -130,21 +125,20 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
                 
                 mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
                 if mkdir_result.returncode != 0:
-                    logger.error(f"Warning: Could not create destination directory in pod: {mkdir_result.stderr}")
+                    print(f"Warning: Could not create destination directory in pod: {mkdir_result.stderr}")
         else:
             # Pod to local
             src_with_pod = f"{namespace}/{pod_name}:{src}"
             cp_cmd.extend([src_with_pod, dst])
         
-        logger.debug(f"Running copy command: {' '.join(cp_cmd)}")
         cp_result = subprocess.run(cp_cmd, capture_output=True, text=True)
         
         if cp_result.returncode != 0:
             # Check for specific error messages
             if "No such file or directory" in cp_result.stderr:
-                logger.error(f"Copy failed: Source path '{src}' does not exist")
+                print(f"Error: Copy failed: Source path '{src}' does not exist")
                 return False
-            logger.error(f"Copy command failed: {cp_result.stderr}")
+            print(f"Error: Copy command failed: {cp_result.stderr}")
             return False
             
         if is_src_dir:
@@ -156,20 +150,20 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
             
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode('utf-8') if e.stderr else str(e)
-        logger.error(f"!!! ERROR !!! Command failed: {error_msg}")
+        print(f"ERROR, Command failed: {error_msg}")
         return False
     except Exception as e:
-        logger.error(f"!!! ERROR !!!: {str(e)}")
+        print(f"ERROR, Command failed: {str(e)}")
         return False
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
-        logger.info("Usage: python kubectl_cp.py <src> <dst> <deployment> <namespace> [container]")
-        logger.info("  <src>: Source file/directory path (local or in pod)")
-        logger.info("  <dst>: Destination file/directory path")
-        logger.info("  <deployment>: Kubernetes deployment name")
-        logger.info("  <namespace>: Kubernetes namespace")
-        logger.info("  [container]: Optional container name (defaults to first container)")
+        print("Usage: python kubectl_cp.py <src> <dst> <deployment> <namespace> [container]")
+        print("  <src>: Source file/directory path (local or in pod)")
+        print("  <dst>: Destination file/directory path")
+        print("  <deployment>: Kubernetes deployment name")
+        print("  <namespace>: Kubernetes namespace")
+        print("  [container]: Optional container name (defaults to first container)")
         sys.exit(1)
     
     src = sys.argv[1]
@@ -178,5 +172,4 @@ if __name__ == "__main__":
     namespace = sys.argv[4]
     container = sys.argv[5] if len(sys.argv) > 5 else None
     
-    logger.debug(f"Copying from {src} to {dst} in deployment {deployment} in namespace {namespace}")
     success = kubectl_cp_from_pod_to_host(src, dst, deployment, namespace, container)
