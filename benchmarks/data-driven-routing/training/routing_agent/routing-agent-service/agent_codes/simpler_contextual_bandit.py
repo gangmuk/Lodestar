@@ -34,7 +34,7 @@ class FixedPolicyNetwork(nn.Module):
     """
     Fixed architecture that preserves pod structure
     """
-    def __init__(self, state_dim, action_dim, hidden_dim, custom_weight_initialization):
+    def __init__(self, state_dim, action_dim, hidden_dim, weight_initialization):
         super().__init__()
         
         self.state_dim = state_dim
@@ -70,10 +70,13 @@ class FixedPolicyNetwork(nn.Module):
         logger.info(f"  Pod scorer outputs 1 score per pod")
 
         # Initialize weights. This is not necessary though.
-        if custom_weight_initialization:
-            # self._initialize_weights()
+        if weight_initialization == 'static':
             self._static_weight_initialization()
-            
+        elif weight_initialization == 'kaiming':
+            self._kaiming_initialize_weights()
+        elif weight_initialization == 'xavier':
+            self._xavier_initialize_weights()
+
     def _static_weight_initialization(self):
         """Simple static weight initialization - just set a fixed seed before initialization"""
         
@@ -116,7 +119,7 @@ class FixedPolicyNetwork(nn.Module):
         
         logger.info("✅ Weight initialization complete, random state restored")
     
-    def _initialize_weights(self):
+    def _kaiming_initialize_weights(self):
         """initialization with kaiming_uniform_, layer-specific strategies"""
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
@@ -141,26 +144,26 @@ class FixedPolicyNetwork(nn.Module):
                                                 nonlinearity='relu')
                     torch.nn.init.constant_(module.bias, 0.01)
 
-    # def _initialize_weights(self):
-    #     """Xavier/Glorot initialization with layer-specific strategies"""
-    #     for name, module in self.named_modules():
-    #         if isinstance(module, nn.Linear):
-    #             # Get layer position info
-    #             is_output_layer = (module.out_features == 1)
-    #             is_first_layer = ('0' in name)  # First layer in sequential
+    def _xavier_initialize_weights(self):
+        """Xavier/Glorot initialization with layer-specific strategies"""
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                # Get layer position info
+                is_output_layer = (module.out_features == 1)
+                is_first_layer = ('0' in name)  # First layer in sequential
                 
-    #             if is_output_layer:
-    #                 # Output layer: smaller weights for stability
-    #                 torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
-    #                 torch.nn.init.constant_(module.bias, 0.0)
-    #             elif is_first_layer:
-    #                 # First layer: slightly smaller to prevent saturation
-    #                 torch.nn.init.xavier_uniform_(module.weight, gain=0.8)
-    #                 torch.nn.init.constant_(module.bias, 0.01)
-    #             else:
-    #                 # Hidden layers: standard Xavier initialization
-    #                 torch.nn.init.xavier_uniform_(module.weight, gain=1.0)
-    #                 torch.nn.init.constant_(module.bias, 0.01)
+                if is_output_layer:
+                    # Output layer: smaller weights for stability
+                    torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
+                    torch.nn.init.constant_(module.bias, 0.0)
+                elif is_first_layer:
+                    # First layer: slightly smaller to prevent saturation
+                    torch.nn.init.xavier_uniform_(module.weight, gain=0.8)
+                    torch.nn.init.constant_(module.bias, 0.01)
+                else:
+                    # Hidden layers: standard Xavier initialization
+                    torch.nn.init.xavier_uniform_(module.weight, gain=1.0)
+                    torch.nn.init.constant_(module.bias, 0.01)
 
     def forward(self, pod_features, kv_hit_ratios, request_features, return_attention=False):
         batch_size = pod_features.shape[0]
@@ -241,7 +244,7 @@ class SimplifiedContextualBandit:
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.policy = FixedPolicyNetwork(state_dim, action_dim,  self.hyperparameters['hidden_dim'],  self.hyperparameters['custom_weight_initialization']).to(device)
+        self.policy = FixedPolicyNetwork(state_dim, action_dim,  self.hyperparameters['hidden_dim'],  self.hyperparameters['weight_initialization']).to(device)
 
         if HYPERPARAMETERS.get('deterministic_training', False):
             optim_seed = HYPERPARAMETERS['training_seed'] + 1000  # Different from model seed
@@ -250,7 +253,7 @@ class SimplifiedContextualBandit:
         
 
         # Optimizer with weight decay for regularization
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['lr'], weight_decay= self.hyperparameters['weight_decay'])
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['learning_rate'], weight_decay= self.hyperparameters['weight_decay'])
         
         # Learning rate scheduler
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
@@ -1757,7 +1760,7 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
 
 
 # main entry point
-def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
+def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learning):
     global final_model_dir
     final_model_dir = model_output_dir
     os.makedirs(final_model_dir, exist_ok=True)
@@ -1814,17 +1817,22 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
         try:
             agent.load(final_model_dir)
             logger.info(f"Successfully loaded pretrained model from {final_model_dir} for online learning")
+            ################################################
             # Adjust learning rate for online learning (typically lower)
-            online_lr = HYPERPARAMETERS['lr'] * 0.1  # 10x lower learning rate
+            if is_online_learning:
+                original_learning_rate = HYPERPARAMETERS['learning_rate']
+                HYPERPARAMETERS['learning_rate'] *= 0.1  # 10x lower learning rate
+                logger.info(f"Adjusted learning rate from {original_learning_rate} to {HYPERPARAMETERS['learning_rate']} for online learning")
             for param_group in agent.optimizer.param_groups:
-                param_group['lr'] = online_lr
-            logger.info(f"Adjusted learning rate to {online_lr} for online learning")
+                param_group['lr'] = HYPERPARAMETERS['learning_rate']
         except Exception as e:
             logger.error(f"Error loading pretrained model: {e}")
             logger.info("Starting training from scratch")
 
-    # Use fewer epochs for online learning
-    HYPERPARAMETERS['training_epochs'] = max(5, HYPERPARAMETERS['training_epochs'] // 4)
+    HYPERPARAMETERS['training_epochs'] = HYPERPARAMETERS['training_epochs']
+    ## Use fewer epochs for online learning
+    if is_online_learning:
+        HYPERPARAMETERS['training_epochs'] = max(5, HYPERPARAMETERS['training_epochs'] // 4)
     logger.info(f"Online learning mode: reduced epochs to {HYPERPARAMETERS['training_epochs']}, exploration to {HYPERPARAMETERS['exploration_rate']}")
     
     # Update agent's exploration rate

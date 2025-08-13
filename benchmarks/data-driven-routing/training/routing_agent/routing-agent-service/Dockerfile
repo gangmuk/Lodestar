@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
 COPY requirements.txt .
-COPY *.py .
+COPY agent_codes/*.py .
 COPY start.sh .
 # COPY final_model final_model
-COPY vke_files/final_model final_model
+COPY vke_files/final_model-new final_model
 COPY Dockerfile /app/Dockerfile
 
 RUN pip install -r requirements.txt
