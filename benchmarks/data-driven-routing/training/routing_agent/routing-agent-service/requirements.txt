@@ -23,3 +23,5 @@ flask>=2.0.0
 # flask-cors>=3.0.10
 
 apscheduler>=3.9.1
+
+psutil

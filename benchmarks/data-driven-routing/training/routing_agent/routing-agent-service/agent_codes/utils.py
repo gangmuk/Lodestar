@@ -18,6 +18,9 @@ import pytz
 from typing import List, Dict, Any
 from kubernetes.config import ConfigException
 import hashlib
+import traceback
+import psutil
+import socket
 
 
 def set_all_seeds(seed=42):
@@ -53,10 +56,9 @@ def replace_pod_ip_with_generalpodid(data_input):
         if not all_pod_ips_from_training_data:
             logger.error(f"No pod IPs found in data file {data_input}")
             assert False
-        
-        logger.info(f"🔍 Deterministic pod IP order: {all_pod_ips_from_training_data}")
+        logger.info(f"Deterministic pod IP order: {all_pod_ips_from_training_data}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_training_data)
-        logger.info(f"🔍 Deterministic mapping: {pod_ip_to_generalpodid}")
+        logger.info(f"Deterministic mapping: {pod_ip_to_generalpodid}")
         
         with open(data_input, 'r') as f:
             content = f.read()
@@ -78,9 +80,9 @@ def replace_pod_ip_with_generalpodid(data_input):
             assert False
         
         all_pod_ips_from_log = sorted(list(pod_ips))
-        logger.info(f"🔍 Deterministic pod IP order from log: {all_pod_ips_from_log}")
+        logger.info(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_log)
-        logger.info(f"🔍 Deterministic mapping: {pod_ip_to_generalpodid}")
+        logger.info(f"Deterministic mapping: {pod_ip_to_generalpodid}")
         
         content = data_input
         for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
@@ -632,3 +634,153 @@ def write_to_file(log_data, output_path):
             return fallback_path
         else:
             raise e
+        
+        
+def get_process_using_port(port):
+    """Find the process ID using a specific port"""
+    try:
+        # Method 1: Using psutil (more reliable)
+        for conn in psutil.net_connections():
+            if conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                try:
+                    process = psutil.Process(conn.pid)
+                    return conn.pid, process.name()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+    except Exception as e:
+        logger.warning(f"psutil method failed: {e}, trying alternative method")
+    
+    try:
+        # Method 2: Using lsof command (fallback)
+        result = subprocess.run(['lsof', '-t', f'-i:{port}'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            pid = int(result.stdout.strip().split('\n')[0])
+            try:
+                process = psutil.Process(pid)
+                return pid, process.name()
+            except:
+                return pid, "unknown"
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    try:
+        # Method 3: Using netstat (another fallback)
+        result = subprocess.run(['netstat', '-tlnp'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if f':{port} ' in line and 'LISTEN' in line:
+                    parts = line.split()
+                    if len(parts) > 6 and '/' in parts[6]:
+                        pid_program = parts[6].split('/')
+                        if pid_program[0].isdigit():
+                            return int(pid_program[0]), pid_program[1] if len(pid_program) > 1 else "unknown"
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    return None, None
+
+
+def kill_process_using_port(port, force=False):
+    """Kill the process using a specific port"""
+    pid, process_name = get_process_using_port(port)
+    
+    if not pid:
+        logger.info(f"No process found using port {port}")
+        return True
+    
+    logger.info(f"Found process {process_name} (PID: {pid}) using port {port}")
+    
+    try:
+        process = psutil.Process(pid)
+        logger.info(f"Attempting to terminate process {process_name} (PID: {pid})")
+        
+        if not force:
+            # Try graceful termination first
+            process.terminate()
+            
+            # Wait up to 5 seconds for graceful termination
+            try:
+                process.wait(timeout=5)
+                logger.info(f"Process {process_name} (PID: {pid}) terminated gracefully")
+                return True
+            except psutil.TimeoutExpired:
+                logger.warning(f"Process {process_name} (PID: {pid}) did not terminate gracefully, forcing kill")
+        
+        # Force kill if graceful termination failed or force=True
+        process.kill()
+        
+        # Wait up to 3 seconds for force kill
+        try:
+            process.wait(timeout=3)
+            logger.info(f"Process {process_name} (PID: {pid}) force killed successfully")
+            return True
+        except psutil.TimeoutExpired:
+            logger.error(f"Failed to kill process {process_name} (PID: {pid})")
+            return False
+            
+    except psutil.NoSuchProcess:
+        logger.info(f"Process {pid} no longer exists")
+        return True
+    except psutil.AccessDenied:
+        logger.error(f"Access denied when trying to kill process {pid}. Try running with sudo/admin privileges")
+        return False
+    except Exception as e:
+        logger.error(f"Error killing process {pid}: {e}")
+        return False
+    
+def is_port_in_use(port):
+    """Check if a port is already in use"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('0.0.0.0', port))
+            return False
+        except OSError:
+            return True
+
+def ensure_port_available(port, max_attempts=3):
+    """Ensure port is available by killing any process using it if necessary"""
+    logger.info(f"Ensuring port {port} is available...")
+    
+    for attempt in range(max_attempts):
+        if not is_port_in_use(port):
+            logger.info(f"Port {port} is available")
+            return True
+        
+        logger.info(f"Port {port} is in use (attempt {attempt + 1}/{max_attempts})")
+        
+        # Kill the process using the port
+        success = kill_process_using_port(port, force=(attempt > 0))
+        
+        if success:
+            # Wait a moment for the port to be released
+            time.sleep(2)
+            
+            # Check if port is now available
+            if not is_port_in_use(port):
+                logger.info(f"Port {port} is now available after killing previous process")
+                return True
+        
+        # If we're not on the last attempt, wait before trying again
+        if attempt < max_attempts - 1:
+            logger.info(f"Waiting 3 seconds before next attempt...")
+            time.sleep(3)
+    
+    logger.error(f"Failed to make port {port} available after {max_attempts} attempts")
+    return False
+
+def wait_for_port_available(port, max_wait=30):
+    """Wait for port to become available (original function, kept for compatibility)"""
+    logger.info(f"Checking if port {port} is available...")
+    
+    start_time = time.time()
+    while is_port_in_use(port):
+        if time.time() - start_time > max_wait:
+            logger.error(f"Port {port} is still in use after {max_wait} seconds")
+            return False
+        logger.info(f"Port {port} is in use, waiting...")
+        time.sleep(1)
+    
+    logger.info(f"Port {port} is now available")
+    return True

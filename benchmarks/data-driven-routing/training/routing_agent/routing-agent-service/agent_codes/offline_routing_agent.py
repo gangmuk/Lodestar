@@ -32,22 +32,22 @@ RL_MODEL_HYPERPARAMETERS = {
     'model_type': 'simplified',
     'hidden_dim': 32, # 256,
     'batch_size': 32,
-    'lr': 0.01, # 0.001
-    'weight_decay': 0.0001,
-    
-    'exploration_rate': 0.0,
-    'explore': False,
-    
-    'training_epochs': 10, # 5,
-    'max_updates_per_epoch': 100, # 1000000000
-    'eval_interval': 10,
-    'custom_weight_initialization': True,
-    'entropy_bonus_factor': 0.01,
+    'learning_rate': 0.01, # 0.01, 0.005
+    'training_epochs': 5, # 5,
     'learning_every_x_iter': 5,
+    'weight_decay': 0.0001,
+    'max_updates_per_epoch': 1000, # 1000000000
+    'exploration_rate': 0.1, # 0.1
+    'explore': True,
+    'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
+    
+    
+    'eval_interval': 10,
+    'entropy_bonus_factor': 0.01,
     'per_learn_reward_normalization': False,
     'normalization': {
         "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
-        "REWARD_AMPLIFICATION_DEGREE": 2.0,
+        "REWARD_AMPLIFICATION_DEGREE": 1.0,
         "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
         "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
         "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
@@ -107,7 +107,7 @@ def read_csv_data(log_file):
         print(f"Error reading file {log_file}: {e}")
         return None
 
-def train_model(args, ENCODED_DATA_DIR):
+def train_model(args, ENCODED_DATA_DIR, is_online_learning):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA 
     if TRAINING_DATA_UPDATED and TOTAL_NUM_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
@@ -117,7 +117,7 @@ def train_model(args, ENCODED_DATA_DIR):
                 random_forest.train(ENCODED_DATA_DIR)
             elif args.model == "simpler_contextual_bandit":
                 utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir, RL_MODEL_HYPERPARAMETERS)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
             else:
                 logger.error(f"Unknown model type: {args.model}")
                 assert False
@@ -183,7 +183,7 @@ def test_inference(args, log_message, request_id):
     
     
     encode_start_time = time.time()
-    tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, normalized_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
+    tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
     handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
     infer_from_tensor_start_time = time.time()
     if args.model == "random_forest":
@@ -358,12 +358,14 @@ def main():
         logger.error(f"Data file {args.data_file} not found")
         assert False
     
-    replaced_data_file = utils.replace_pod_ip_with_generalpodid(args.data_file)
+    if 'replaced' not in args.data_file:
+        logger.info(f"Data file {args.data_file} contains raw pod IPs, replacing with GeneralPodID")
+        args.data_file = utils.replace_pod_ip_with_generalpodid(args.data_file)
     all_data = {}
-    if os.path.isfile(replaced_data_file):
-        data_dir = os.path.dirname(replaced_data_file)
-        logger.info(f"data_file is a file: {replaced_data_file}")
-        all_data = read_csv_data(replaced_data_file)
+    if os.path.isfile(args.data_file):
+        data_dir = os.path.dirname(args.data_file)
+        logger.info(f"data_file is a file: {args.data_file}")
+        all_data = read_csv_data(args.data_file)
     # elif os.path.isdir(args.data_file):
     #     data_dir = args.data_file
     #     logger.info(f"data_file is a directory: {args.data_file}")
@@ -379,7 +381,7 @@ def main():
     #                         new_key = f"{os.path.basename(root)}_{key}"
     #                         all_data[new_key] = value
     else:
-        logger.error(f"args.data_file must be a file It is a directory or the path does not exist. args.data_file: {replaced_data_file}")
+        logger.error(f"args.data_file must be a file It is a directory or the path does not exist. args.data_file: {args.data_file}")
         assert False
 
     if all_data is None or len(all_data) == 0:
@@ -421,7 +423,9 @@ def main():
     stats_instance.write_stats_to_file(feature_normalization_stats_file)
     
     model_and_data_analysis_helper.diagnose_training_data_issues(ENCODED_DATA_DIR)
-    train_model(args, ENCODED_DATA_DIR)
+    
+    is_online_learning = False
+    train_model(args, ENCODED_DATA_DIR, is_online_learning)
 
     # NEW: Behavior Analysis (before regular testing)
     if args.analyze_behavior and test_data and len(test_data) > 0:

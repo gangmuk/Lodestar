@@ -300,7 +300,8 @@ def online_train_routine():
         logger.info(f"online_train_routine, train! Starting {NUM_TRAINS}th online training iteration")
         try:
             if MODEL == "simpler_contextual_bandit":
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
+                is_online_learning = True
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, RL_MODEL_HYPERPARAMETERS, is_online_learning)
             # elif MODEL == "contextual_bandit":
             #     contextual_bandit.train(ENCODED_DATA_DIR)
             else:
@@ -496,34 +497,17 @@ def init():
     for feature_name, stats in stats_instance.feature_stats.items():
         logger.info(f"stats_instance, {feature_name}: count={stats.count}, mean={stats.mean}, std={stats.std}")
         
-def is_port_in_use(port):
-    """Check if a port is already in use"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(('0.0.0.0', port))
-            return False
-        except OSError:
-            return True
-
-def wait_for_port_available(port, max_wait=30):
-    """Wait for port to become available"""
-    logger.info(f"Checking if port {port} is available...")
-    
-    start_time = time.time()
-    while is_port_in_use(port):
-        if time.time() - start_time > max_wait:
-            logger.error(f"Port {port} is still in use after {max_wait} seconds")
-            return False
-        logger.info(f"Port {port} is in use, waiting...")
-        time.sleep(1)
-    
-    logger.info(f"Port {port} is now available")
-    return True
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
     atexit.register(graceful_shutdown)
+    
+    
+    port = int(os.environ.get("PORT", 8080))
+    if not utils.wait_for_port_available(port, max_wait=60):
+        logger.error(f"Cannot start Flask app - port {port} is not available")
+        sys.exit(1)
     
     init()
 
@@ -536,10 +520,7 @@ if __name__ == "__main__":
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
     
-    port = int(os.environ.get("PORT", 8080))
-    if not wait_for_port_available(port, max_wait=60):
-        logger.error(f"Cannot start Flask app - port {port} is not available")
-        sys.exit(1)
+    
     
     # NEW CODE: Add error handling around app.run()
     try:
@@ -549,7 +530,7 @@ if __name__ == "__main__":
         if "Address already in use" in str(e):
             logger.error(f"Port {port} is still in use. Trying to wait and retry...")
             time.sleep(5)
-            if wait_for_port_available(port, max_wait=30):
+            if utils.wait_for_port_available(port, max_wait=30):
                 app.run(host="0.0.0.0", port=port, debug=False)
             else:
                 logger.error("Failed to start Flask app - port conflict persists")
