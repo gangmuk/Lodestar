@@ -22,11 +22,12 @@ import (
 )
 
 var (
+	enableFlush                = utils.LoadEnvInt("ENABLE_FLUSH", 0)
+	flushPeriod                = time.Duration(utils.LoadEnvInt("FLUSH_PERIOD", 10)) * time.Second
+	minNumLogMessagesToFlush   = utils.LoadEnvInt("MIN_NUM_LOG_MESSAGES_TO_FLUSH", 100)
 	flushed                    = false
 	trained                    = false
 	received_the_first_request = false
-	flushPeriod                = 10 * time.Second
-	minNumLogMessagesToFlush   = utils.LoadEnvInt("MIN_NUM_LOG_MESSAGES_TO_FLUSH", 100)
 	allPodIPs                  = []string{}
 	fake_request_id            = 0
 	numFlush                   = 0
@@ -234,7 +235,12 @@ func FlushLogMessageToRLAgent() {
 
 func init() {
 	RegisterDelayedConstructor("rl-online-router", NewRLOnlineRouter)
-	FlushLogMessageToRLAgent()
+	klog.Infof("enableFlush: %d", enableFlush)
+	klog.Infof("flushPeriod: %d", flushPeriod)
+	klog.Infof("minNumLogMessagesToFlush: %d", minNumLogMessagesToFlush)
+	if enableFlush == 1 {
+		FlushLogMessageToRLAgent()
+	}
 }
 
 // RouteResponse is received from the routing agent
@@ -294,8 +300,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	input_tokens := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
 
 	var prefixHashes []uint64
-	var matchedPods map[string]int
-	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens, ctx.Model, readyPodsMap)
+	var podIPsWithMatchingRatios map[string]int
+	podIPsWithMatchingRatios, prefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens, ctx.Model, readyPodsMap)
 
 	numInputTokens := utils.GetNumPrefillTokensForRequest(ctx.RequestID)
 
@@ -306,15 +312,17 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	numTotalTokens := numInputTokens + numOutputTokens
 	klog.Infof("requestID: %s, numInputTokens: %d, numOutputTokens: %d(hardcoded), numTotalTokens: %d", ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens)
 
-	if len(matchedPods) == 0 {
-		klog.Infof("requestID: %s, No found matchedpods. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
+	if len(podIPsWithMatchingRatios) == 0 {
+		klog.Infof("requestID: %s, No found prefix matched pods. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
 		for _, pod := range readyPods {
-			matchedPods[pod.Status.PodIP] = 0
-			// matchedPods[pod.Name] = 0
+			podIPsWithMatchingRatios[pod.Status.PodIP] = 0
+			// podIPsWithMatchingRatios[pod.Name] = 0
 		}
+	} else {
+		klog.Infof("requestID: %s, Found prefix matched pods: %v", ctx.RequestID, podIPsWithMatchingRatios)
 	}
-	klog.Infof("requestID: %s, StoreKVCacheHitRatio, matchedPods: %v", ctx.RequestID, matchedPods)
-	utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
+	klog.Infof("requestID: %s, StoreKVCacheHitRatio, podIPsWithMatchingRatios: %v", ctx.RequestID, podIPsWithMatchingRatios)
+	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
 
 	// if !flushed {
 	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
@@ -413,10 +421,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		log = utils.GenerateLogMessages(allPodIPs, numLogs)[0]
 	}
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
-
-	// klog.V(5).Infof("/infer: %s", log)
-	klog.Infof("/infer: %s", log)
-
 	reqBody, err := json.Marshal(log)
 	if err != nil {
 		klog.Errorf("Failed to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
@@ -472,26 +476,50 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod, _ = r.fallbackRouting(ctx, readyPods)
 				}
 				if ctx.SubAlgorithm == "random" {
-					klog.Infof("random rouiting, request_id: %s", ctx.RequestID)
+					klog.Infof("random routing, request_id: %s", ctx.RequestID)
 					targetPod, _ = selectRandomPod(readyPods, rand.Intn)
-				} else if ctx.SubAlgorithm == "prefix-cache" {
+				} else if ctx.SubAlgorithm == "prefix-cache-1" {
 					var isLoadImbalanced bool
 					targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
 					if !isLoadImbalanced {
-						if len(matchedPods) > 0 {
-							targetPod = getTargetPodFromMatchedPodsByPodIP(r.cache, readyPods, matchedPods)
+						if len(podIPsWithMatchingRatios) > 0 {
+							targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
 							if targetPod == nil {
-								klog.Errorf("No suitable pod found in matchedPods for prefix routing, requestID: %s", ctx.RequestID)
+								klog.Errorf("prefix-cache-1, No pod found in podIPsWithMatchingRatios for prefix routing, requestID: %s", ctx.RequestID)
 							} else {
-								klog.Infof("Successful prefix routing found matchedpod, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+								klog.Infof("prefix-cache-1, prefix routing, request_id: %s, targetPod: %s, podIPsWithMatchingRatios: %v", ctx.RequestID, targetPod.Status.PodIP, podIPsWithMatchingRatios)
 							}
 						}
+					} else {
+						klog.Infof("prefix-cache-1, load balancing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
-					if len(matchedPods) == 0 || targetPod == nil {
-						klog.Infof("prefix routing - least request count routing, request_id: %s", ctx.RequestID)
+					if len(podIPsWithMatchingRatios) == 0 || targetPod == nil {
+						klog.Infof("prefix-cache-1, least request count routing, request_id: %s", ctx.RequestID)
 						targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 						if targetPod == nil {
-							klog.Errorf("No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+							klog.Errorf("prefix-cache-1, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+						}
+					}
+				} else if ctx.SubAlgorithm == "prefix-cache-2" {
+					var isLoadImbalanced bool
+					targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
+					if !isLoadImbalanced {
+						if len(podIPsWithMatchingRatios) > 0 {
+							targetPod = routePrefixRatio(r.cache, readyPods, podIPsWithMatchingRatios)
+							if targetPod == nil {
+								klog.Errorf("prefix-cache-2, No pod found in podIPsWithMatchingRatios for prefix routing, requestID: %s", ctx.RequestID)
+							} else {
+								klog.Infof("prefix-cache-2, prefix routing, request_id: %s, targetPod: %s, podIPsWithMatchingRatios: %v", ctx.RequestID, targetPod.Status.PodIP, podIPsWithMatchingRatios)
+							}
+						}
+					} else {
+						klog.Infof("prefix-cache-2, load balancing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+					}
+					if len(podIPsWithMatchingRatios) == 0 || targetPod == nil {
+						klog.Infof("prefix-cache-2, least request count routing, request_id: %s", ctx.RequestID)
+						targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
+						if targetPod == nil {
+							klog.Errorf("prefix-cache-2, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 						}
 					}
 				} else {

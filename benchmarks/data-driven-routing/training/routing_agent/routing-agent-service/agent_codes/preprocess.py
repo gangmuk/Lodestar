@@ -85,38 +85,6 @@ def safe_parse_json(json_str):
             logger.error(f"ERROR: Invalid JSON string: {str(json_str)}...")
             assert False
 
-def calculate_ttft_reward(row, ttft_slo):
-    try:
-        ttft = float(row['ttft'])
-        
-        if ttft <= 0:
-            return 0.5  # Maximum reward for perfect performance
-        elif ttft <= ttft_slo:
-            # Linear scaling from 0.5 (best) to 0.1 (at threshold)
-            return 0.5 - (0.4 * ttft / ttft_slo)
-        else:
-            # Negative reward scaling with how much it exceeds threshold
-            excess_factor = min(1.0, (ttft - ttft_slo) / ttft_slo)
-            return -0.1 - (0.4 * excess_factor)
-    except (ValueError, TypeError, ZeroDivisionError):
-        return -0.5  # Default penalty for invalid data
-
-def calculate_tpot_reward(row, avg_tpot_slo):
-    try:
-        avg_tpot = float(row['avg_tpot'])
-        
-        if avg_tpot <= 0:
-            return -0.5  # Penalize invalid values
-        elif avg_tpot <= avg_tpot_slo:
-            # Linear scaling from 0.5 (best) to 0.1 (at threshold)
-            return 0.1 + (0.4 * (1 - avg_tpot / avg_tpot_slo))
-        else:
-            # Negative reward scaling with how much it exceeds threshold
-            excess_factor = min(1.0, (avg_tpot - avg_tpot_slo) / avg_tpot_slo)
-            return -0.1 - (0.4 * excess_factor)
-    except (ValueError, TypeError, ZeroDivisionError):
-        return -0.5  # Default penalty for invalid data
-
 def extract_key_pod_metrics(pod_metrics, pod_id):
     """Extract the most relevant metrics for a pod from the pod metrics"""
     if pod_id not in pod_metrics:
@@ -133,6 +101,31 @@ def extract_key_pod_metrics(pod_metrics, pod_id):
         'last_second_total_prefill_tokens': pod_metrics[pod_id]['last_second_total_prefill_tokens'],
     }
 
+def calculate_ttft_tpot_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo):
+        ttft_rewards = np.where(
+            ttft_values <= 0, 
+            0.5,  # Maximum reward for perfect performance
+            np.where(
+                ttft_values <= ttft_slo,
+                0.5 - (0.4 * ttft_values / ttft_slo),  # Linear scaling
+                -0.1 - (0.4 * np.minimum(1.0, (ttft_values - ttft_slo) / ttft_slo))  # Negative reward
+            )
+        )
+
+        tpot_rewards = np.where(
+            tpot_values <= 0,
+            -0.5,  # Penalize invalid values
+            np.where(
+                tpot_values <= avg_tpot_slo,
+                0.1 + (0.4 * (1 - tpot_values / avg_tpot_slo)),  # Linear scaling
+                -0.1 - (0.4 * np.minimum(1.0, (tpot_values - avg_tpot_slo) / avg_tpot_slo))  # Negative reward
+            )
+        )
+        return {
+            'ttft_rewards': ttft_rewards,
+            'tpot_rewards': tpot_rewards,
+            'combined_rewards': ttft_rewards + tpot_rewards,
+        }
 
 ## new
 def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETERS):
@@ -198,28 +191,6 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         # 'GPU_model',
     ]
 
-    expected_last_second_pod_metrics_keys = [
-        'last_second_avg_ttft_ms', 
-        'last_second_min_ttft_ms', 
-        'last_second_max_ttft_ms', 
-        'last_second_p50_ttft_ms', 
-        'last_second_p90_ttft_ms', 
-        'last_second_p95_ttft_ms', 
-        'last_second_p99_ttft_ms', 
-        'last_second_ttft_samples', 
-        'last_second_avg_tpot_ms', 
-        'last_second_min_tpot_ms', 
-        'last_second_max_tpot_ms', 
-        'last_second_p50_tpot_ms', 
-        'last_second_p90_tpot_ms', 
-        'last_second_p95_tpot_ms', 
-        'last_second_p99_tpot_ms', 
-        'last_second_tpot_samples', 
-        'last_second_total_requests', 
-        'last_second_total_decode_tokens', 
-        'last_second_total_prefill_tokens', 
-        'last_second_total_tokens',
-    ]
 
     column_check_start_time = time.time()
 
@@ -244,55 +215,71 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     if unknown_columns:
         logger.warning(f"Warning: Unused columns: {unknown_columns}")
 
+    ## deprecating podMetricsLastSecond features
+    # expected_last_second_pod_metrics_keys = [
+    #     'last_second_avg_ttft_ms', 
+    #     'last_second_min_ttft_ms', 
+    #     'last_second_max_ttft_ms', 
+    #     'last_second_p50_ttft_ms', 
+    #     'last_second_p90_ttft_ms', 
+    #     'last_second_p95_ttft_ms', 
+    #     'last_second_p99_ttft_ms', 
+    #     'last_second_ttft_samples', 
+    #     'last_second_avg_tpot_ms', 
+    #     'last_second_min_tpot_ms', 
+    #     'last_second_max_tpot_ms', 
+    #     'last_second_p50_tpot_ms', 
+    #     'last_second_p90_tpot_ms', 
+    #     'last_second_p95_tpot_ms', 
+    #     'last_second_p99_tpot_ms', 
+    #     'last_second_tpot_samples', 
+    #     'last_second_total_requests', 
+    #     'last_second_total_decode_tokens', 
+    #     'last_second_total_prefill_tokens', 
+    #     'last_second_total_tokens',
+    # ]
     # Filter out rows with empty 'podMetricsLastSecond' - vectorized approach
-    valid_mask = parsed_df['podMetricsLastSecond'].notna()
-    
-    # Additional filtering for empty dictionaries - vectorized
-    # non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: x and len(x) > 0 if isinstance(x, dict) else False)
-
-    non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: isinstance(x, dict) and len(x) > 0)
-    
-    num_filter = len(parsed_df) - non_empty_mask.sum()
-    logger.info(f"Filtered out {num_filter} rows with empty podMetricsLastSecond.")
-    
-    parsed_df = parsed_df[valid_mask & non_empty_mask].copy()
-    column_check_overhead = time.time() - column_check_start_time # 0-4ms
-
-    podmetrics_parse_start_time = time.time()
-    # Process first row to check podMetricsLastSecond structure (same as before)
-    if 'podMetricsLastSecond' in parsed_df.columns and len(parsed_df) > 0:
-        first_row = parsed_df.iloc[0]
-        logger.warning(f"WARNING: We are using the first row only to check podMetricsLastSecond structure")
-        pod_metrics = first_row['podMetricsLastSecond']  # Already parsed
-        logger.debug(f"features in pod_metrics: {pod_metrics.keys()}")
-        try:
-            logger.debug(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            logger.error(f"first_row['podMetricsLastSecond']: {first_row['podMetricsLastSecond']}")
-            logger.error(f"pod_metrics: {pod_metrics}")
-            logger.error(f"first_row: {first_row}")
-            assert False
-        if pod_metrics:
-            # Check structure for each pod
-            for pod_id, metrics in pod_metrics.items():
-                logger.debug(f"metrics: {metrics}")
-                # Check for missing expected keys
-                missing_keys = [key for key in expected_last_second_pod_metrics_keys if key not in metrics]
-                if missing_keys:
-                    logger.error(f"Error: Missing expected keys in podMetricsLastSecond for pod {pod_id}: {missing_keys}")
-                    assert False
+    # valid_mask = parsed_df['podMetricsLastSecond'].notna()
+    # non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: isinstance(x, dict) and len(x) > 0)
+    # parsed_df = parsed_df[valid_mask & non_empty_mask].copy()
+    # num_filter = len(parsed_df) - non_empty_mask.sum()
+    # logger.info(f"Filtered out {num_filter} rows with empty podMetricsLastSecond.")
+    # podmetrics_parse_start_time = time.time()
+    # # Process first row to check podMetricsLastSecond structure (same as before)
+    # if 'podMetricsLastSecond' in parsed_df.columns and len(parsed_df) > 0:
+    #     first_row = parsed_df.iloc[0]
+    #     logger.warning(f"WARNING: We are using the first row only to check podMetricsLastSecond structure")
+    #     pod_metrics = first_row['podMetricsLastSecond']  # Already parsed
+    #     logger.debug(f"features in pod_metrics: {pod_metrics.keys()}")
+    #     try:
+    #         logger.debug(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
+    #     except Exception as e:
+    #         logger.error(f"Error: {e}")
+    #         logger.error(f"first_row['podMetricsLastSecond']: {first_row['podMetricsLastSecond']}")
+    #         logger.error(f"pod_metrics: {pod_metrics}")
+    #         logger.error(f"first_row: {first_row}")
+    #         assert False
+            
+    #     if pod_metrics:
+    #         # Check structure for each pod
+    #         for pod_id, metrics in pod_metrics.items():
+    #             logger.debug(f"metrics: {metrics}")
+    #             # Check for missing expected keys
+    #             missing_keys = [key for key in expected_last_second_pod_metrics_keys if key not in metrics]
+    #             if missing_keys:
+    #                 logger.error(f"Error: Missing expected keys in podMetricsLastSecond for pod {pod_id}: {missing_keys}")
+    #                 assert False
                 
-                # Check for unknown keys
-                unknown_keys = [key for key in metrics.keys() if key not in expected_last_second_pod_metrics_keys]
-                if unknown_keys:
-                    logger.error(f"Error: Found unknown keys in podMetricsLastSecond for pod {pod_id}: {unknown_keys}")
-                    assert False
-    else:
-        logger.error("Error: podMetricsLastSecond column not found in the DataFrame.")
-        assert False
-    podmetrics_parse_overhead = time.time() - podmetrics_parse_start_time # 0-1ms
-
+    #             # Check for unknown keys
+    #             unknown_keys = [key for key in metrics.keys() if key not in expected_last_second_pod_metrics_keys]
+    #             if unknown_keys:
+    #                 logger.error(f"Error: Found unknown keys in podMetricsLastSecond for pod {pod_id}: {unknown_keys}")
+    #                 assert False
+    # else:
+    #     logger.error("Error: podMetricsLastSecond column not found in the DataFrame.")
+    #     assert False
+    # podmetrics_parse_overhead = time.time() - podmetrics_parse_start_time # 0-1ms
+    
 
     numeric_conversion_start_time = time.time()
     # Convert string columns to appropriate types - vectorized
@@ -359,13 +346,13 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         if INCLUDE_GPU_IN_FEATURE:
             base_data[f"{pod_id}-gpu_model"] = ["NVIDIA-L20"] * len(parsed_df)
         
-        # Extract key metrics for this pod across all rows
-        for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
-                          'last_second_p99_tpot_ms', 'last_second_total_requests', 'last_second_total_tokens',
-                          'last_second_total_decode_tokens', 'last_second_total_prefill_tokens']:
-            base_data[f"{pod_id}-{metric_key}"] = [
-                metrics.get(pod_id, {}).get(metric_key, 0) for metrics in all_pod_metrics
-            ]
+        # # Extract key metrics for this pod across all rows
+        # for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
+        #                   'last_second_p99_tpot_ms', 'last_second_total_requests', 'last_second_total_tokens',
+        #                   'last_second_total_decode_tokens', 'last_second_total_prefill_tokens']:
+        #     base_data[f"{pod_id}-{metric_key}"] = [
+        #         metrics.get(pod_id, {}).get(metric_key, 0) for metrics in all_pod_metrics
+        #     ]
     get_value_overhead = time.time() - get_value_start_time # 0ms
 
     # Pre-calculate all derived values before DataFrame creation
@@ -384,31 +371,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     ttft_values = np.array(base_data['ttft'], dtype=np.float64)
     tpot_values = np.array(base_data['avg_tpot'], dtype=np.float64)
     pod_index_overhead = time.time() - pod_index_start_time
+    ttft_rewards, tpot_rewards, combined_rewards = calculate_ttft_tpot_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
 
-    # Vectorized reward calculations using numpy (faster than pandas)
-    reward_calc_start_time = time.time()
-    ttft_rewards = np.where(
-        ttft_values <= 0, 
-        0.5,  # Maximum reward for perfect performance
-        np.where(
-            ttft_values <= ttft_slo,
-            0.5 - (0.4 * ttft_values / ttft_slo),  # Linear scaling
-            -0.1 - (0.4 * np.minimum(1.0, (ttft_values - ttft_slo) / ttft_slo))  # Negative reward
-        )
-    )
-
-    tpot_rewards = np.where(
-        tpot_values <= 0,
-        -0.5,  # Penalize invalid values
-        np.where(
-            tpot_values <= avg_tpot_slo,
-            0.1 + (0.4 * (1 - tpot_values / avg_tpot_slo)),  # Linear scaling
-            -0.1 - (0.4 * np.minimum(1.0, (tpot_values - avg_tpot_slo) / avg_tpot_slo))  # Negative reward
-        )
-    )
-    reward_calc_overhead = time.time() - reward_calc_start_time
-
-    slo_update_start_time = time.time()
     # Add all the computed columns to base_data before DataFrame creation
     base_data.update({
         'action': action_values,
@@ -416,9 +380,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'avg_ttft_slo_satisfied': ttft_values <= ttft_slo,
         'ttft_reward': ttft_rewards,
         'tpot_reward': tpot_rewards,
-        'reward': ttft_rewards + tpot_rewards,
+        'reward': combined_rewards,
     })
-    slo_update_overhead = time.time() - slo_update_start_time
 
     # Create DataFrame only once with all data
     create_df_start_time = time.time()
@@ -452,14 +415,14 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
 
     preprocess_dataset_overhead_summary = {
         'preprocess.preprocess_dataset_json_parse_overhead': json_parse_overhead*1000,
-        'preprocess.preprocess_dataset_column_check_overhead': column_check_overhead*1000,
-        'preprocess.preprocess_dataset_podmetrics_parse_overhead': podmetrics_parse_overhead*1000,
+        'preprocess.preprocess_dataset_column_check_overhead': -1*1000,
+        'preprocess.preprocess_dataset_podmetrics_parse_overhead': -1*1000,
         'preprocess.preprocess_dataset_numeric_conversion_overhead': numeric_conversion_overhead*1000,
         'preprocess.preprocess_dataset_get_value_overhead': get_value_overhead*1000,
         'preprocess.preprocess_dataset_create_df_overhead': create_df_overhead*1000,
         'preprocess.preprocess_dataset_pod_index_overhead': pod_index_overhead*1000,
-        'preprocess.preprocess_dataset_reward_calc_overhead': reward_calc_overhead*1000,
-        'preprocess.preprocess_dataset_slo_update_overhead': slo_update_overhead*1000,
+        'preprocess.preprocess_dataset_reward_calc_overhead': -1*1000,
+        'preprocess.preprocess_dataset_slo_update_overhead': -1*1000,
     }
     
     return processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary
@@ -520,10 +483,12 @@ def parse_log_message(log_message):
 
 def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
     row = parsed_df.iloc[0].to_dict()
-    if not row.get('podMetricsLastSecond'):
-        logger.error("Error: podMetricsLastSecond is missing or empty in the row data.")
-        logger.error(f"Row data: {row}")
-        assert False
+
+    ## deprecating podMetricsLastSecond features
+    # if not row.get('podMetricsLastSecond'):
+    #     logger.warning("Error: podMetricsLastSecond is missing or empty in the row data.")
+    #     logger.warning(f"Row data: {row}")
+    #     # assert False
     
     base_features = {
         'request_id': row['requestID'],
@@ -552,18 +517,16 @@ def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
     waiting = row['vllmNumRequestsWaiting']
     prefill = row['numPrefillTokensForAllPods']
     decode = row['numDecodeTokensForAllPods']
-    pod_metrics = row['podMetricsLastSecond']
-    ## I am weirdly using podMetricsLastSecond to get pod ids...
-    sorted_all_pod_ids = sorted(list(pod_metrics.keys()))
-    temp_sorted_all_pod_ids = sorted(list(set(list(kv_cache.keys()) +
+    sorted_all_pod_ids = sorted(list(set(list(kv_cache.keys()) +
                                     list(inflight.keys()) +
                                     list(gpu_cache.keys()) +
                                     list(cpu_cache.keys()) +
                                     list(running.keys()) +
                                     list(waiting.keys()))))
-    assert len(temp_sorted_all_pod_ids) == len(sorted_all_pod_ids)
-    for i in range(len(temp_sorted_all_pod_ids)):
-        assert temp_sorted_all_pod_ids[i] == sorted_all_pod_ids[i], f"Mismatch at index {i}: {temp_sorted_all_pod_ids[i]} != {sorted_all_pod_ids[i]}"
+    if not sorted_all_pod_ids:
+        logger.error("Error: No pod IDs found in the row data.")
+        logger.error(f"Row data: {row}")
+        assert False
     for pod_id in sorted_all_pod_ids:
         pod_prefix = f"{pod_id}"
         if INCLUDE_GPU_IN_FEATURE:
@@ -587,16 +550,16 @@ def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
         if INCLUDE_GPU_IN_FEATURE:
             base_features[f"{pod_prefix}-gpu_model"] = gpu_model
         
-        # Pod metrics
-        pod_metrics_for_pod = pod_metrics.get(pod_id, {})
-        base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
-        base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
-        base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
-        base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
-        base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
-        base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
-        base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
-        base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
+        ## deprecating podMetricsLastSecond features
+        # pod_metrics_for_pod = pod_metrics.get(pod_id, {})
+        # base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
+        # base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
+        # base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
+        # base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
+        # base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
+        # base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
+        # base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
+        # base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
     
     processed_df = pd.DataFrame([base_features])
     preprocess_dataset_overhead_summary = {}
@@ -638,18 +601,18 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
             RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
             RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
         
-        logger.info(f"pod_ip_to_generalpodid: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid']}")
-        logger.info(f"generalpodid_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']}")
-        logger.info(f"pod_ip_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model']}")
-        logger.info(f"pod_ip_to_gpu_model_encoded: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
+        logger.debug(f"pod_ip_to_generalpodid: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid']}")
+        logger.debug(f"generalpodid_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']}")
+        logger.debug(f"pod_ip_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model']}")
+        logger.debug(f"pod_ip_to_gpu_model_encoded: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
         ################################################
         
         parsed_df, _ = parse_log_message(log_message)
-        logger.info(f"======================================")
-        logger.info(f"parsed_df: {parsed_df.to_csv(index=False, header=True)}")
-        logger.info(f"======================================")
-        logger.info(f"log_message: {log_message}")
-        logger.info(f"======================================")
+        logger.debug(f"======================================")
+        logger.debug(f"parsed_df: {parsed_df.to_csv(index=False, header=True)}")
+        logger.debug(f"======================================")
+        logger.debug(f"log_message: {log_message}")
+        logger.debug(f"======================================")
     if len(parsed_df) == 0:
         logger.error("No data found after parsing JSON columns.")
         logger.error(f"Log message: {log_message}")

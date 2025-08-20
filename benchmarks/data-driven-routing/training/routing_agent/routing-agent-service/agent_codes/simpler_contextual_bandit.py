@@ -223,12 +223,12 @@ class FixedPolicyNetwork(nn.Module):
         actions = (1 - explore_mask) * greedy_actions + explore_mask * random_actions
         log_probs = torch.log(torch.gather(action_probs, 1, actions.unsqueeze(1)).squeeze(1) + 1e-10)
         
-        logger.info(f"explore_mask: {explore_mask.cpu().numpy()}")
-        logger.info(f"greedy_actions: {greedy_actions.cpu().numpy()}")
-        logger.info(f"random_actions: {random_actions.cpu().numpy()}")
-        logger.info(f"actions: {actions.cpu().numpy()}")
-        logger.info(f"action_probs: {action_probs.cpu().numpy()}")
-        logger.info(f"log_probs: {log_probs.cpu().numpy()}")
+        logger.debug(f"explore_mask: {explore_mask.cpu().numpy()}")
+        logger.debug(f"greedy_actions: {greedy_actions.cpu().numpy()}")
+        logger.debug(f"random_actions: {random_actions.cpu().numpy()}")
+        logger.debug(f"actions: {actions.cpu().numpy()}")
+        logger.debug(f"action_probs: {action_probs.cpu().numpy()}")
+        logger.debug(f"log_probs: {log_probs.cpu().numpy()}")
         
         return actions, log_probs
 

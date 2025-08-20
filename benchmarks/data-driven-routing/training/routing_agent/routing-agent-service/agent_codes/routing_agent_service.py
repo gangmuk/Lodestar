@@ -50,15 +50,18 @@ NUM_TRAINS = 0
 MODEL_UPDATED = True
 TRAINING_DATA_UPDATED = False
 LOCK_TRAINING_DATA = threading.Lock()
-ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
-MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
-TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
-AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
 first_request_starting_time = None
 stats_instance = None 
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 MIN_NUM_TRAINING_DATA = 500  # Minimum number of training data required to trigger training
+
+ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
+MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
+TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
+AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
+ONLINE_NORMALIZATION_DURING_FLUSH = int(os.getenv("ONLINE_NORMALIZATION_DURING_FLUSH", 0))
+
 
 logger.info(f"TTFT_SLO: {TTFT_SLO}")
 logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
@@ -91,8 +94,9 @@ def handle_flush():
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
         # if ENABLE_ONLINE_LEARNING:
-        processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-        stats_instance.write_stats_to_file(feature_normalization_stats_file)
+        if ONLINE_NORMALIZATION_DURING_FLUSH:
+            processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+            stats_instance.write_stats_to_file(feature_normalization_stats_file)
 
         # Encode preprocessed data
         ts_encode = time.time()
@@ -195,19 +199,19 @@ def handle_infer():
 
         ## new way
         normalizable_features, non_normalizable_features = feature_normalization._get_normalizable_features(processed_df)
-        logger.info(f"normalizable_features: {normalizable_features}")
-        logger.info(f"non_normalizable_features: {non_normalizable_features}")
+        logger.debug(f"normalizable_features: {normalizable_features}")
+        logger.debug(f"non_normalizable_features: {non_normalizable_features}")
         if stats_instance.count == 0:
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
         for feature in normalizable_features:
             
             stats = stats_instance.feature_stats[feature]
-            logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+            logger.debug(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
             
             feature_normalization._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
             
-            logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+            logger.debug(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
             
             
             if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
@@ -476,11 +480,11 @@ def init():
 
         pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
         
-        logger.info(f"sorted_running_pod_ips: {sorted_running_pod_ips}")
+        logger.debug(f"sorted_running_pod_ips: {sorted_running_pod_ips}")
         logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
-        logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
-        logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
-        logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
+        logger.debug(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
+        logger.debug(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
+        logger.debug(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
 
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
@@ -505,9 +509,11 @@ if __name__ == "__main__":
     
     
     port = int(os.environ.get("PORT", 8080))
-    if not utils.wait_for_port_available(port, max_wait=60):
+    if not utils.wait_for_port_available(port, max_wait=5):
         logger.error(f"Cannot start Flask app - port {port} is not available")
         sys.exit(1)
+        
+    logger.info(f"Port {port} is available, starting Flask app properly!")
     
     init()
 
