@@ -193,7 +193,8 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 	return targetPod
 }
 
-func getTargetPodFromMatchedPodsByPodIP(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+// func getTargetPodFromMatchedPodsByPodIP(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod 
+func routePrefixRatioAndLoad(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
 	var targetPodIP string
 	requestCount := []float64{}
 
@@ -221,18 +222,71 @@ func getTargetPodFromMatchedPodsByPodIP(cache cache.Cache, readyPods []*v1.Pod, 
 	})
 
 	// select targetpod with highest %prefixmatch and request_count within stddev
+	'''
+	pods: [pod_1, pod_2, pod_3, pod_4]
+	number of requests: [7, 4, 25, 15]
+	prefix matching ratio: [0.2, 0.4, 0.8, 0.6]
+	sorted pods: [pod_3, pod_4, pod_2, pod_1]
+
+	Mean = (7 + 4 + 25 + 15) / 4 = 12.75
+	Std Dev = 6.1
+	Threshold = 12.75 + 6.1 = 18.85
+
+	pod_3 request count: 25 > 18.85
+	skip pod_3 even if it has the highest prefix matching ratio
+	pod_2 request count: 4 <= 18.85
+	select pod_2 as target pod
+	'''
+	var idx int
+	idx = 0
 	for _, podIP := range podIPs {
 		reqCnt := float64(podRequestCount[podIP])
 		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
 			targetPodIP = podIP
 			break
 		}
+		klog.Infof("routePrefixRatioAndLoad, podIP(%s) has high prefix matching ratio but too overloaded. prefix matching ratio: %f, request_count: %d, avg_request_count: %d, std_request_count: %f", podIP, matchedPods[podIP], reqCnt, meanRequestCount, stdDevRequestCount)
+		idx++
 	}
-	klog.Infof("getTargetPodFromMatchedPodsByPodIP, matched_pods: %v, mean: %f, stddev: %f, target_pod: %s, targetPodIP: %s", matchedPods, meanRequestCount, stdDevRequestCount, targetPodIP, podIPs)
+	klog.Infof("routePrefixRatioAndLoad, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %f, request_count: %d", targetPodIP, idx, matchedPods[targetPodIP], podRequestCount[targetPodIP])
 	// iterate readyPods and log
-	for _, pod := range readyPods {
-		klog.Infof("readyPods, pod: %s, request_count: %d", pod.Name, podRequestCount[pod.Name])
+	targetPod, _ := utils.FilterPodByIP(targetPodIP, readyPods)
+	if targetPod == nil {
+		klog.Warningf("No target pod found for matched pods: %v", matchedPods)
 	}
+	return targetPod
+}
+
+
+func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+	var targetPodIP string
+	requestCount := []float64{}
+
+	podRequestCount := getRequestCounts(cache, readyPods)
+	for _, cnt := range podRequestCount {
+		requestCount = append(requestCount, float64(cnt))
+	}
+
+	podIPs := []string{}
+	for podIP := range matchedPods {
+		podIPs = append(podIPs, podIP)
+	}
+	rand.Shuffle(len(podIPs), func(i, j int) {
+		podIPs[i], podIPs[j] = podIPs[j], podIPs[i]
+	})
+
+	// sort pods with decreasing %perfixmatch AND for same %prefixmatch sort by increasing request count
+	sort.SliceStable(podIPs, func(i, j int) bool {
+		if matchedPods[podIPs[i]] == matchedPods[podIPs[j]] {
+			return podRequestCount[podIPs[i]] < podRequestCount[podIPs[j]]
+		}
+		return matchedPods[podIPs[i]] > matchedPods[podIPs[j]]
+	})
+
+	targetPodIP := podIPs[0]
+
+	klog.Infof("routePrefixRatio, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %f, request_count: %d", targetPodIP, 0, matchedPods[targetPodIP], podRequestCount[targetPodIP])
+	// iterate readyPods and log
 	targetPod, _ := utils.FilterPodByIP(targetPodIP, readyPods)
 	if targetPod == nil {
 		klog.Warningf("No target pod found for matched pods: %v", matchedPods)

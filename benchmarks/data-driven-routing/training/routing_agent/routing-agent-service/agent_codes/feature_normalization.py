@@ -249,7 +249,7 @@ def _normalize_single_feature(processed_df, feature, stats_instance, is_training
         prev_mean = processed_df[feature].values.mean()
         
         stats_instance.feature_stats[feature].update_stats_incrementally(feature_data)
-        print(f"Updated stats for {feature}: count={stats_instance.feature_stats[feature].count}, mean={stats_instance.feature_stats[feature].mean}, std={stats_instance.feature_stats[feature].std}, var={stats_instance.feature_stats[feature].sum_sq_diff}")
+        logger.debug(f"Updated stats for {feature}: count={stats_instance.feature_stats[feature].count}, mean={stats_instance.feature_stats[feature].mean}, std={stats_instance.feature_stats[feature].std}, var={stats_instance.feature_stats[feature].sum_sq_diff}")
         
         
         # Verify computed std is valid
@@ -285,7 +285,7 @@ def _normalize_single_feature(processed_df, feature, stats_instance, is_training
             
         # Check if this was a constant feature during training
         if hasattr(stats_instance.feature_stats[feature], 'std') and np.allclose(stats_instance.feature_stats[feature].std, 0):
-            logger.warning(f"{log_prefix}{feature} was constant during training (value={stats_instance.feature_stats[feature].mean}) - skipping normalization")
+            logger.debug(f"{log_prefix}{feature} was constant during training (value={stats_instance.feature_stats[feature].mean}) - skipping normalization")
             return  # Don't normalize constant features
         
         # Add this line:

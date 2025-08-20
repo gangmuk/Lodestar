@@ -14,14 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create a symlink for python
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+
 COPY requirements.txt .
 COPY agent_codes/*.py .
 COPY start.sh .
 # COPY final_model final_model
-COPY vke_files/final_model-new final_model
+# COPY vke_files/final_model-new final_model
+COPY training_data/p4096_s1024_rps20/rl+random/final_model final_model
 COPY Dockerfile /app/Dockerfile
 
-RUN pip install -r requirements.txt
+RUN pip install -r --no-cache-dir requirements.txt
 RUN chmod +x /app/start.sh
 
 ENV PORT=8080

@@ -28,4 +28,4 @@ elif [ "$target" == "local" ]; then
     kubectl rollout restart deploy aibrix-gateway-plugins -n aibrix-system
 fi
 
-# kubectl rollout restart deploy routing-agent-service
+kubectl rollout restart deploy routing-agent-service
