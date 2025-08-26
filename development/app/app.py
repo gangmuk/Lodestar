@@ -249,7 +249,7 @@ def completion():
             "system_fingerprint": "fp_44709d6fcb",
             "choices": [
                 {
-                    "text": f"This is simulated message from {model}! The input message was {prompt}",
+                    "text": f"This is simulated message from {model}!",
                     "index": 0,
                     "logprobs": None,
                     "finish_reason": "length"

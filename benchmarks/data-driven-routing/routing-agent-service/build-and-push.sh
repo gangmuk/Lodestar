@@ -9,37 +9,28 @@ fi
 
 # docker buildx build --platform ${platform} --no-cache -t aibrix/gangmuk-routing-agent:${tag} .
 
-if [ "$build" == "remote" ]; then
-    dockerfile=Dockerfile
+if [ "$build" == "vke" ]; then
     tag=latest-linux
-    docker buildx build --platform linux/amd64 -f ${dockerfile} -t aibrix/gangmuk-routing-agent:${tag} .
+    docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
     docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     # kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
-elif [ "$build" == "local" ]; then
-    dockerfile=Dockerfile
-    tag=latest-mac
-    docker build --platform linux/arm64 -f ${dockerfile} -t aibrix/gangmuk-routing-agent:${tag} .
-
-    ## load image to kind cluster
-    # kind load docker-image aibrix/gangmuk-routing-agent:${tag}
-
-    ## create local docker registry and connect it to kind
-    # docker tag aibrix/gangmuk-routing-agent:${tag} localhost:5001/aibrix/gangmuk-routing-agent:${tag}
-    # docker push localhost:5001/aibrix/gangmuk-routing-agent:${tag}
-
-    ## use dockerhub...
-    docker tag aibrix/gangmuk-routing-agent:${tag} gangmuk/gangmuk-routing-agent:${tag}
-    docker push gangmuk/gangmuk-routing-agent:${tag}
-
-    kubectl set image deployment/routing-agent-service routing-agent=gangmuk/gangmuk-routing-agent:${tag}
-
-    kubectl patch deployment routing-agent-service -p '{"spec":{"template":{"spec":{"containers":[{"name":"routing-agent","imagePullPolicy":"Always"}]}}}}'
-
-    kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR="model.aibrix.ai/name=llama2-7b"
-
-    kubectl rollout restart deploy routing-agent-service
 else
-    echo "Invalid build. Use 'remote' or 'local'."
-    exit 1
+    if [ "$build" == "local-linux" ]; then
+        tag=latest-linux
+    elif [ "$build" == "local-mac" ]; then
+        tag=latest-mac
+    else
+        echo "Unknown build type. Defaulting to latest-mac."
+        exit
+    fi
+    POD_LABEL_SELECTOR="model.aibrix.ai/name=llama2-7b"
+    # you don't need to use platform and buildx since docker will build based on the current machine type automatically.
+    docker build -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    docker tag aibrix/gangmuk-routing-agent:${tag} gangmuk/gangmuk-routing-agent:${tag}
+    docker push gangmuk/gangmuk-routing-agent:${tag} # push to dockerhub
+    kubectl set image deployment/routing-agent-service routing-agent=gangmuk/gangmuk-routing-agent:${tag}
+    kubectl patch deployment routing-agent-service -p '{"spec":{"template":{"spec":{"containers":[{"name":"routing-agent","imagePullPolicy":"Always"}]}}}}'
+    kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR}
+    kubectl rollout restart deploy routing-agent-service
 fi
