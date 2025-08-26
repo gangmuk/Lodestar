@@ -315,12 +315,12 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// predict output!
 	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
 	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
-	numOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
+	expectedNumOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
 	if !exist {
-		klog.Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, numOutputTokens)
+		klog.Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, expectedNumOutputTokens)
 	}
 
-	numTotalTokens := numInputTokens + numOutputTokens
+	numTotalTokens := numInputTokens + expectedNumOutputTokens
 
 	for _, pod := range readyPods {
 		if _, ok := podIPsWithMatchingRatios[pod.Status.PodIP]; !ok {
@@ -331,7 +331,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
 
-	klog.Infof("requestID: %s, numInputTokens: %d, numOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
+	klog.Infof("requestID: %s, numInputTokens: %d, expectedNumOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, expectedNumOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
 
 	// if !flushed {
 	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
@@ -406,14 +406,13 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 		podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
 		jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
-		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s`
-		// logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s`
+		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@expectedNumOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s`
 		log = fmt.Sprintf(
 			logFormat,
 			ctx.RequestID,
 			time.Now().UnixMicro(),
 			numInputTokens,
-			numOutputTokens,
+			expectedNumOutputTokens,
 			numTotalTokens,
 			jsonStrings["allPodsKvCacheHitRatios"],
 			jsonStrings["numInflightRequestsAllPods"],

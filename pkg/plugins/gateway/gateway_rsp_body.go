@@ -634,7 +634,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
 	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
 
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -652,7 +652,6 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["vllmCPUKVCacheUsage"],
 		jsonStrings["vllmNumRequestsRunning"],
 		jsonStrings["vllmNumRequestWaiting"],
-		jsonStrings["podMetricsLastSecond"],
 		jsonStrings["numPrefillTokensForAllPods"],
 		jsonStrings["numDecodeTokensForAllPods"],
 		utils.GetNumTrains(),
@@ -660,6 +659,33 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		exploration,
 		explorationEnabled,
 	)
+
+	// logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
+	// 	routerCtx.RequestID,
+	// 	normalized_request_start_time,
+	// 	normalized_request_end_time,
+	// 	selectedPodIP,
+	// 	ttftMs,
+	// 	avgTpotMs,
+	// 	totalGenerationTimeMs,
+	// 	end_to_end_latency_in_ms,
+	// 	numInputTokens,
+	// 	numOutputTokens,
+	// 	numTotalTokens,
+	// 	jsonStrings["allPodsKvCacheHitRatios"],
+	// 	jsonStrings["numInflightRequestsAllPods"],
+	// 	jsonStrings["vllmGPUKVCacheUsage"],
+	// 	jsonStrings["vllmCPUKVCacheUsage"],
+	// 	jsonStrings["vllmNumRequestsRunning"],
+	// 	jsonStrings["vllmNumRequestWaiting"],
+	// 	jsonStrings["podMetricsLastSecond"],
+	// 	jsonStrings["numPrefillTokensForAllPods"],
+	// 	jsonStrings["numDecodeTokensForAllPods"],
+	// 	utils.GetNumTrains(),
+	// 	utils.GetNumFlush(),
+	// 	exploration,
+	// 	explorationEnabled,
+	// )
 	klog.Infof("%s", logMessage)
 	return headers, logMessage
 }
