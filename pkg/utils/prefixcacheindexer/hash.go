@@ -69,6 +69,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 	return instance
 }
 
+// // original version
 // MatchPrefix matches the input token prefix's if already cached
 // returns map[podname]%prefixmatch along with all prefix hashes
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
@@ -76,6 +77,14 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map
 	return c.seqSearchPrefix(prefixHashes, model, readyPods)
 }
 
+// // gangmuk version returning matchedHashes
+func (c *PrefixHashTable) MatchPrefix_returning_matchedprefixes(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64, []uint64) {
+	allPrefixHashes := getPrefixHashes(c.seed, tokens)
+	podMatches, matchedPrefixHashes := c.seqSearchPrefix_returning_matchedprefixes(allPrefixHashes, model, readyPods)
+	return podMatches, matchedPrefixHashes, allPrefixHashes
+}
+
+// Original version
 func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -92,7 +101,31 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 			break
 		}
 	}
+	klog.Infof("prefixMatchPods: %v, prefixHashes: %v", prefixMatchPods, prefixHashes)
 	return prefixMatchPods, prefixHashes
+}
+
+// Gangmuk version:
+func (c *PrefixHashTable) seqSearchPrefix_returning_matchedprefixes(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	prefixMatchPods := map[string]int{}
+	matchedHashes := []uint64{}
+
+	for i := 0; i < len(prefixHashes); i++ {
+		prefixHash := prefixHashes[i]
+		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+
+		block, ok := c.store.Get(prefixHash)
+		if !ok || len(block.modelToPods[model]) == 0 ||
+			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
+			break
+		}
+		matchedHashes = append(matchedHashes, prefixHash)
+	}
+
+	return prefixMatchPods, matchedHashes
 }
 
 // AddPrefix add prefix hashes for input tokens
@@ -146,6 +179,10 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 	prefixHashes := []uint64{}
+	if len(tokens) < prefixCacheBlockSize {
+		klog.Infof("total token length(%d) is < prefixCacheBlockSize(%d). prefixhashing will not happpen...", len(tokens), prefixCacheBlockSize)
+		return prefixHashes
+	}
 	digest := xxhash.NewWithSeed(seed)
 	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
 		end := i + prefixCacheBlockSize

@@ -249,7 +249,7 @@ def completion():
             "system_fingerprint": "fp_44709d6fcb",
             "choices": [
                 {
-                    "text": f"This is simulated message from {model}!",
+                    "text": f"This is simulated message from {model}! The input message was {prompt}",
                     "index": 0,
                     "logprobs": None,
                     "finish_reason": "length"
@@ -304,6 +304,8 @@ def chat_completions():
             latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
         # Simulated response
+        
+        
         response = {
             "id": "chatcmpl-abc123",
             "object": "chat.completion",
@@ -319,7 +321,7 @@ def chat_completions():
                 {
                     "message": {
                         "role": "assistant",
-                        "content": f"\n\nThis is simulated message from {model}!"
+                        "content": f"\n\nThis is simulated message from {model}! The input message was {messages}"
                     },
                     "logprobs": None,
                     "finish_reason": "stop",

@@ -1,0 +1,49 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"gateway.envoyproxy.io/v1alpha1","kind":"EnvoyExtensionPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"aibrix-gateway-plugin","app.kubernetes.io/managed-by":"kubectl","app.kubernetes.io/name":"aibrix","app.kubernetes.io/version":"nightly"},"name":"aibrix-gateway-plugins-extension-policy","namespace":"aibrix-system"},"spec":{"extProc":[{"backendRefs":[{"name":"aibrix-gateway-plugins","port":50052}],"messageTimeout":"60s","processingMode":{"request":{"body":"Buffered"},"response":{"body":"Streamed"}}}],"targetRef":{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"aibrix-reserved-router"}}}
+  creationTimestamp: "2025-08-20T14:42:04Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/component: aibrix-gateway-plugin
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+  name: aibrix-gateway-plugins-extension-policy
+  namespace: aibrix-system
+  resourceVersion: "48814"
+  uid: 8b3a2c30-52a4-4e42-8ada-0f486e3daf54
+spec:
+  extProc:
+  - backendRefs:
+    - group: ""
+      kind: Service
+      name: aibrix-gateway-plugins
+      port: 50052
+    messageTimeout: 60s
+    processingMode:
+      request:
+        body: Buffered
+      response:
+        body: Streamed
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router
+status:
+  ancestors:
+  - ancestorRef:
+      group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+      namespace: aibrix-system
+    conditions:
+    - lastTransitionTime: "2025-08-20T20:53:06Z"
+      message: 'Wasm: wasm cache is not initialized.'
+      observedGeneration: 1
+      reason: Invalid
+      status: "False"
+      type: Accepted
+    controllerName: gateway.envoyproxy.io/gatewayclass-controller

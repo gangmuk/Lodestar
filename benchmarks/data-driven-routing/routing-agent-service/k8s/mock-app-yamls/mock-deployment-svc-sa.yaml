@@ -1,0 +1,158 @@
+# Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mocked-app-sa
+  namespace: default
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    adapter.model.aibrix.ai/enabled: "true"
+    model.aibrix.ai/name: llama2-7b
+    model.aibrix.ai/port: "8000"
+  name: mock-app
+  namespace: default
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      app: mock-app
+      model.aibrix.ai/name: llama2-7b
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 100%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        app: mock-app
+        model.aibrix.ai/name: llama2-7b
+    spec:
+      containers:
+      - command:
+        - python3
+        - app.py
+        env:
+        - name: DEPLOYMENT_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.labels['app']
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        image: aibrix/vllm-mock:nightly
+        imagePullPolicy: IfNotPresent
+        name: llm-engine
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"  # Added memory limit
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      - command:
+        - aibrix_runtime
+        - --port
+        - "8080"
+        env:
+        - name: INFERENCE_ENGINE
+          value: vllm
+        - name: INFERENCE_ENGINE_ENDPOINT
+          value: http://localhost:8000
+        image: aibrix/runtime:nightly
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 3
+          periodSeconds: 2
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: aibrix-runtime
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"  # Added resource limits
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: mocked-app-sa
+      serviceAccountName: mocked-app-sa
+      terminationGracePeriodSeconds: 5
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8000"
+    prometheus.io/scrape: "true"
+  labels:
+    prometheus-discovery: "true"
+  name: llama2-7b
+  namespace: default
+spec:
+  ports:
+  - name: llm-engine
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  - name: aibrix-runtime
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    model.aibrix.ai/name: llama2-7b
+    app: mock-app  # Added app selector for specificity
+  type: ClusterIP  # Changed from NodePort to ClusterIP

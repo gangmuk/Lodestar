@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "4"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"aibrix-controller-manager","app.kubernetes.io/managed-by":"kubectl","app.kubernetes.io/name":"aibrix","app.kubernetes.io/version":"nightly","control-plane":"controller-manager"},"name":"aibrix-controller-manager","namespace":"aibrix-system"},"spec":{"replicas":1,"selector":{"matchLabels":{"control-plane":"controller-manager"}},"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/default-container":"manager"},"labels":{"control-plane":"controller-manager"}},"spec":{"containers":[{"args":["--leader-elect","--health-probe-bind-address=:8081","--metrics-bind-address=:8080","--enable-runtime-sidecar"],"command":["/manager"],"env":[{"name":"AIBRIX_GATEWAY_TIMEOUT_SECONDS","value":"120"}],"image":"aibrix/controller-manager:v0.4.1","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/healthz","port":8081},"initialDelaySeconds":15,"periodSeconds":20},"name":"manager","ports":[{"containerPort":9443,"name":"webhook-server","protocol":"TCP"}],"readinessProbe":{"httpGet":{"path":"/readyz","port":8081},"initialDelaySeconds":5,"periodSeconds":10},"resources":{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},"volumeMounts":[{"mountPath":"/tmp/k8s-webhook-server/serving-certs","name":"cert","readOnly":true}]}],"securityContext":{"runAsNonRoot":true},"serviceAccountName":"aibrix-controller-manager","terminationGracePeriodSeconds":10,"volumes":[{"name":"cert","secret":{"defaultMode":420,"secretName":"aibrix-webhook-server-cert"}}]}}}}
+  creationTimestamp: "2025-08-20T14:42:03Z"
+  generation: 4
+  labels:
+    app.kubernetes.io/component: aibrix-controller-manager
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+    control-plane: controller-manager
+  name: aibrix-controller-manager
+  namespace: aibrix-system
+  resourceVersion: "61538"
+  uid: d8074cca-0d03-4640-9513-11716fc62f77
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        kubectl.kubernetes.io/restartedAt: "2025-08-20T18:07:22-05:00"
+      creationTimestamp: null
+      labels:
+        control-plane: controller-manager
+    spec:
+      containers:
+      - args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --enable-runtime-sidecar
+        command:
+        - /manager
+        env:
+        - name: AIBRIX_GATEWAY_TIMEOUT_SECONDS
+          value: "120"
+        image: aibrix/controller-manager:v0.4.1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: manager
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        runAsNonRoot: true
+      serviceAccount: aibrix-controller-manager
+      serviceAccountName: aibrix-controller-manager
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: aibrix-webhook-server-cert
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2025-08-20T14:42:03Z"
+    lastUpdateTime: "2025-08-20T23:07:32Z"
+    message: ReplicaSet "aibrix-controller-manager-dcc69b6d7" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  - lastTransitionTime: "2025-08-20T23:33:26Z"
+    lastUpdateTime: "2025-08-20T23:33:26Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  observedGeneration: 4
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1
