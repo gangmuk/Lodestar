@@ -25,6 +25,7 @@ var (
 	enableFlush                = utils.LoadEnvInt("ENABLE_FLUSH", 0)
 	flushPeriod                = time.Duration(utils.LoadEnvInt("FLUSH_PERIOD", 10)) * time.Second
 	minNumLogMessagesToFlush   = utils.LoadEnvInt("MIN_NUM_LOG_MESSAGES_TO_FLUSH", 100)
+	useRealRequest             = utils.LoadEnvInt("useRealRequest", 1)
 	flushed                    = false
 	trained                    = false
 	received_the_first_request = false
@@ -84,7 +85,7 @@ func NewRLOnlineRouter() (types.Router, error) {
 
 // // flush real request log collected
 func FlushLogMessageToRLAgent() {
-	if utils.UseRealRequest == "true" {
+	if useRealRequest == 1 {
 		klog.Infof("flushing real request log to RL agent")
 		done := make(chan struct{})
 		go func() {
@@ -251,6 +252,8 @@ type RouteResponse struct {
 	Confidence              float64 `json:"confidence"`
 	NumTrains               int     `json:"num_trains"`
 	NumFlush                int     `json:"num_flush"`
+	Exploration             int     `json:"exploration"`
+	ExplorationEnabled      int     `json:"exploration_enabled"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -297,32 +300,38 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	// input_tokens := utils.GetPrefillTokensForRequest(ctx.RequestID) // word tokenizer by default
 	// utils.CleanupPrefillTokensForRequest(ctx.RequestID)
-	input_tokens := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
+	input_tokens_in_bytearray := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
+	input_message, _ := utils.GetRawMessageForRequest(ctx.RequestID)
 
-	var prefixHashes []uint64
 	var podIPsWithMatchingRatios map[string]int
-	podIPsWithMatchingRatios, prefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens, ctx.Model, readyPodsMap)
+	var allPrefixHashes []uint64
+	var matchedPrefixHashes []uint64
 
+	// podIPsWithMatchingRatios, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
+
+	podIPsWithMatchingRatios, matchedPrefixHashes, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix_returning_matchedprefixes(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
 	numInputTokens := utils.GetNumPrefillTokensForRequest(ctx.RequestID)
 
 	// predict output!
-	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, prefixHashes)
-	numOutputTokens, _ := utils.GetNumOutputTokensForPrefixHashes(prefixHashes)
+	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
+	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
+	numOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
+	if !exist {
+		klog.Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, numOutputTokens)
+	}
 
 	numTotalTokens := numInputTokens + numOutputTokens
-	klog.Infof("requestID: %s, numInputTokens: %d, numOutputTokens: %d(hardcoded), numTotalTokens: %d", ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens)
 
-	if len(podIPsWithMatchingRatios) == 0 {
-		klog.Infof("requestID: %s, No found prefix matched pods. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
-		for _, pod := range readyPods {
+	for _, pod := range readyPods {
+		if _, ok := podIPsWithMatchingRatios[pod.Status.PodIP]; !ok {
+			// klog.Infof("requestID: %s, No found prefix matched pods. Filled all readypods with 0 kv cache hit ratio", ctx.RequestID)
 			podIPsWithMatchingRatios[pod.Status.PodIP] = 0
 			// podIPsWithMatchingRatios[pod.Name] = 0
 		}
-	} else {
-		klog.Infof("requestID: %s, Found prefix matched pods: %v", ctx.RequestID, podIPsWithMatchingRatios)
 	}
-	klog.Infof("requestID: %s, StoreKVCacheHitRatio, podIPsWithMatchingRatios: %v", ctx.RequestID, podIPsWithMatchingRatios)
 	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
+
+	klog.Infof("requestID: %s, numInputTokens: %d, numOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, numOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
 
 	// if !flushed {
 	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
@@ -532,6 +541,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				if routeResponse.NumFlush > utils.GetNumFlush() {
 					utils.SetNumFlush(routeResponse.NumFlush)
 				}
+				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
 
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
 				print_long_log := false
@@ -563,9 +573,11 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 	}
 
-	if len(prefixHashes) > 0 {
+	if len(allPrefixHashes) > 0 {
 		klog.Infof("Adding prefix hashes to cache. pod: %s", targetPod.Status.PodIP)
-		r.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Status.PodIP)
+		r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
+	} else {
+		klog.Infof("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
 	}
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil

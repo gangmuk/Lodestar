@@ -1,0 +1,48 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"gateway.envoyproxy.io/v1alpha1","kind":"EnvoyExtensionPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"aibrix-gateway-plugin","app.kubernetes.io/managed-by":"kubectl","app.kubernetes.io/name":"aibrix","app.kubernetes.io/version":"nightly"},"name":"aibrix-gateway-plugins-extension-policy","namespace":"aibrix-system"},"spec":{"extProc":[{"backendRefs":[{"name":"aibrix-gateway-plugins","port":50052}],"messageTimeout":"5s","processingMode":{"request":{"body":"Buffered"},"response":{"body":"Streamed"}}}],"targetRef":{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"aibrix-reserved-router"}}}
+  creationTimestamp: "2025-07-21T18:18:02Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/component: aibrix-gateway-plugin
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+  name: aibrix-gateway-plugins-extension-policy
+  namespace: aibrix-system
+  resourceVersion: "269713588"
+  uid: dc0b848a-96ce-40b3-b4d9-c7313724c332
+spec:
+  extProc:
+  - backendRefs:
+    - group: ""
+      kind: Service
+      name: aibrix-gateway-plugins
+      port: 50052
+    messageTimeout: 5s
+    processingMode:
+      request:
+        body: Buffered
+      response:
+        body: Streamed
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router
+status:
+  ancestors:
+  - ancestorRef:
+      group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+      namespace: aibrix-system
+    conditions:
+    - lastTransitionTime: "2025-07-21T18:38:57Z"
+      message: Policy has been accepted.
+      reason: Accepted
+      status: "True"
+      type: Accepted
+    controllerName: gateway.envoyproxy.io/gatewayclass-controller

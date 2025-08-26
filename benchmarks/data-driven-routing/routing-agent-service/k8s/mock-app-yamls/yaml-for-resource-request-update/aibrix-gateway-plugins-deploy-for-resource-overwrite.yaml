@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: aibrix-gateway-plugin
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+  name: aibrix-gateway-plugins
+  namespace: aibrix-system
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: gateway-plugins
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: gateway-plugins
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+            weight: 100
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - gateway-plugins
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - env:
+        - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+          value: "false"
+        - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
+          value: character
+        - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+          value: "128"
+        - name: AIBRIX_PREFIX_CACHE_BLOCK_NUMBER
+          value: "200000"
+        - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
+          value: "16"
+        - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
+          value: "2"
+        - name: REDIS_HOST
+          value: aibrix-redis-master
+        - name: REDIS_PORT
+          value: "6379"
+        - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+          value: "50"
+        - name: AIBRIX_PREFILL_REQUEST_TIMEOUT
+          value: "60"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        # image: aibrix/gateway-plugins:v0.4.1
+        image: aibrix/gateway-plugins:gangmuk-20250415-gatewaylog-00572df
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          grpc:
+            port: 50052
+            service: ""
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: gateway-plugin
+        ports:
+        - containerPort: 50052
+          name: gateway
+          protocol: TCP
+        - containerPort: 6060
+          name: profiling
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          grpc:
+            port: 50052
+            service: ""
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 128Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do
+          echo waiting for service aibrix-redis-master; sleep 2; done
+        image: busybox:stable
+        imagePullPolicy: IfNotPresent
+        name: init-c
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: aibrix-gateway-plugins
+      serviceAccountName: aibrix-gateway-plugins
+      terminationGracePeriodSeconds: 30

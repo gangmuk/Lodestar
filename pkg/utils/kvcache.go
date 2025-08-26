@@ -30,6 +30,7 @@ const (
 	MetricNumRequestsRunning = "num_requests_running"
 	MetricNumRequestsWaiting = "num_requests_waiting"
 	PodPort                  = 8000 // Same as in the metrics code
+	DefaultNumOutputTokens   = 128
 )
 
 type TimingResult struct {
@@ -87,7 +88,7 @@ func SendRequestWithTiming(
 
 	if reqErr != nil {
 		result.Error = reqErr
-		klog.Errorf("requestID: %s - Failed to create request: %v", requestID, reqErr)
+		klog.Errorf("Error, requestID: %s - Failed to create request: %v", requestID, reqErr)
 		result.TotalTime = -1
 		return nil, result, reqErr
 	}
@@ -188,7 +189,7 @@ func SendRequestWithTiming(
 
 	if sendErr != nil {
 		result.Error = sendErr
-		klog.Errorf("requestID: %s - Failed to send request: %v", requestID, sendErr)
+		klog.Errorf("Error, requestID: %s - Failed to send request: %v", requestID, sendErr)
 		result.TotalTime = -1
 		return nil, result, sendErr
 	}
@@ -207,7 +208,7 @@ func SendRequestWithTiming(
 
 	if readErr != nil {
 		result.Error = readErr
-		klog.Errorf("requestID: %s - Failed to read response: %v", requestID, readErr)
+		klog.Errorf("Error, requestID: %s - Failed to read response: %v", requestID, readErr)
 		result.TotalTime = -1
 		return nil, result, readErr
 	}
@@ -612,6 +613,8 @@ func NewPodMetricsTracker(windowSize time.Duration) *PodMetricsTracker {
 
 var NumTrains int
 var NumFlush int
+var Exploration = make(map[string]int)
+var ExplorationEnabled = make(map[string]int)
 
 var (
 	UseRealRequest                = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
@@ -817,6 +820,25 @@ func SetNumFlush(numFlush int) {
 	NumFlush = numFlush
 }
 
+func SetExploration(exploration int, explorationEnabled int, requestID string) {
+	Exploration[requestID] = exploration
+	ExplorationEnabled[requestID] = explorationEnabled
+	klog.Infof("SetExploration, requestID: %s, exploration: %d, explorationEnabled: %d", requestID, exploration, explorationEnabled)
+}
+
+func GetExploration(requestID string) (int, int) {
+	if val, ok := Exploration[requestID]; ok {
+		return val, ExplorationEnabled[requestID]
+	}
+	klog.Errorf("Error, Failed GetExploration for request ID: %s, not found, returning -1", requestID)
+	return -1, -1
+}
+
+func CleanupExploration(requestID string) {
+	delete(Exploration, requestID)
+	delete(ExplorationEnabled, requestID)
+}
+
 func GetNumFlush() int {
 	return NumFlush
 }
@@ -854,7 +876,7 @@ func CleanupAllRequestLogMessage() {
 // 		RequestToNumTrains[requestID] = numTrains
 // 		klog.V(5).Infof("SetRequestToNumTrains for requestID %s to %d", requestID, numTrains)
 // 	} else {
-// 		klog.Errorf("Request ID %s already exists in RequestToNumTrains", requestID)
+// 		klog.Errorf("Error, Request ID %s already exists in RequestToNumTrains", requestID)
 // 	}
 // }
 
@@ -864,7 +886,7 @@ func CleanupAllRequestLogMessage() {
 
 // 	numTrains, exists := RequestToNumTrains[requestID]
 // 	if !exists {
-// 		klog.Errorf("Failed GetRequestToNumTrains for request ID: %s, not found", requestID)
+// 		klog.Errorf("Error, Failed GetRequestToNumTrains for request ID: %s, not found", requestID)
 // 		return -1
 // 	}
 // 	klog.V(5).Infof("GetRequestToNumTrains for requestID %s: %d", requestID, numTrains)
@@ -903,7 +925,7 @@ func DeletePodFromRegistry(podIP string) {
 		delete(RunningPodRegistry, podIP)
 		klog.Infof("Deleted pod with IP %s from registry", podIP)
 	} else {
-		klog.Errorf("Failed to delete pod with IP %s, not found in registry", podIP)
+		klog.Errorf("Error, Failed to delete pod with IP %s, not found in registry", podIP)
 	}
 }
 
@@ -925,7 +947,7 @@ func AddRequestLogMessage(requestID string, logMessage string) {
 	if _, exists := RequestToLogMessage[requestID]; !exists {
 		RequestToLogMessage[requestID] = logMessage
 	} else {
-		klog.Errorf("Request ID %s already exists in RequestToLogMessage", requestID)
+		klog.Errorf("Error, Request ID %s already exists in RequestToLogMessage", requestID)
 	}
 }
 
@@ -937,7 +959,7 @@ func DeleteRequestLogMessage(requestID string) {
 		delete(RequestToLogMessage, requestID)
 		klog.Infof("Deleted log message for request ID: %s", requestID)
 	} else {
-		klog.Errorf("Failed to delete log message for request ID: %s, not found", requestID)
+		klog.Errorf("Error, Failed to delete log message for request ID: %s, not found", requestID)
 	}
 }
 
@@ -947,7 +969,7 @@ func GetRequestLogMessage(requestID string) (string, bool) {
 
 	logMessage, exists := RequestToLogMessage[requestID]
 	if !exists {
-		klog.Errorf("Failed GetRequestLogMessage, Request ID %s not found in RequestToLogMessage", requestID)
+		klog.Errorf("Error, Failed GetRequestLogMessage, Request ID %s not found in RequestToLogMessage", requestID)
 		return "", false
 	}
 	return logMessage, true
@@ -959,9 +981,9 @@ func CleanupRequestLogMessage(requestID string) {
 
 	if _, exists := RequestToLogMessage[requestID]; exists {
 		delete(RequestToLogMessage, requestID)
-		klog.Infof("CleanupRequestLogMessage, Deleted log message for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupRequestLogMessage, Deleted log message for request ID: %s", requestID)
 	} else {
-		klog.Errorf("Failed CleanupRequestLogMessage, No log message found for request ID: %s", requestID)
+		klog.Errorf("Error, Failed CleanupRequestLogMessage, No log message found for request ID: %s", requestID)
 	}
 }
 
@@ -998,9 +1020,9 @@ func CleanupRequestPodMetrics(requestID string) {
 
 	if _, exists := requestToPodMetrics[requestID]; exists {
 		delete(requestToPodMetrics, requestID)
-		klog.Infof("CleanupRequestPodMetrics, Deleted metrics for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupRequestPodMetrics, Deleted metrics for request ID: %s", requestID)
 	} else {
-		klog.Errorf("CleanupRequestPodMetrics, No metrics found for request ID: %s", requestID)
+		klog.Errorf("Error, CleanupRequestPodMetrics, No metrics found for request ID: %s", requestID)
 	}
 }
 
@@ -1031,9 +1053,9 @@ func CleanupPrefillTokensForRequest(requestID string) {
 	defer requestToPrefillTokensMutex.Unlock()
 	if _, exists := requestToPrefillTokens[requestID]; exists {
 		delete(requestToPrefillTokens, requestID)
-		klog.Infof("CleanupPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
 	} else {
-		klog.Errorf("CleanupPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
+		klog.Errorf("Error, CleanupPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
 	}
 }
 
@@ -1046,22 +1068,22 @@ func SetByteArrayPrefillTokensForRequest(requestID string, prefillTokens []byte)
 	defer requestToByteArrayPrefillTokensMutex.Unlock()
 
 	if _, ok := requestToByteArrayPrefillTokens[requestID]; ok {
-		klog.Errorf("SetByteArrayPrefillTokensForRequest, Request ID %s already exists in requestToByteArrayPrefillTokens", requestID)
+		klog.Errorf("Error, SetByteArrayPrefillTokensForRequest, Request ID %s already exists in requestToByteArrayPrefillTokens", requestID)
 		return
 	}
 
 	requestToByteArrayPrefillTokens[requestID] = prefillTokens
-	klog.Infof("SetByteArrayPrefillTokensForRequest, Set prefill tokens for request ID %s", requestID)
+	klog.V(5).Infof("SetByteArrayPrefillTokensForRequest, Set prefill tokens for request ID %s", requestID)
 }
 
 func GetByteArrayPrefillTokensForRequest(requestID string) []byte { // Change return type from []int to []byte
 	requestToByteArrayPrefillTokensMutex.RLock()
 	defer requestToByteArrayPrefillTokensMutex.RUnlock()
 	if _, ok := requestToByteArrayPrefillTokens[requestID]; !ok {
-		klog.Errorf("GetByteArrayPrefillTokensForRequest, Request ID %s not found in requestToByteArrayPrefillTokens", requestID)
+		klog.Errorf("Error, GetByteArrayPrefillTokensForRequest, Request ID %s not found in requestToByteArrayPrefillTokens", requestID)
 		return nil
 	}
-	klog.Infof("GetByteArrayPrefillTokensForRequest, Retrieved prefill tokens for request ID %s", requestID)
+	klog.V(5).Infof("GetByteArrayPrefillTokensForRequest, Retrieved prefill tokens for request ID %s", requestID)
 	return requestToByteArrayPrefillTokens[requestID]
 }
 
@@ -1070,9 +1092,9 @@ func CleanupByteArrayPrefillTokensForRequest(requestID string) {
 	defer requestToByteArrayPrefillTokensMutex.Unlock()
 	if _, exists := requestToByteArrayPrefillTokens[requestID]; exists {
 		delete(requestToByteArrayPrefillTokens, requestID)
-		klog.Infof("CleanupByteArrayPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupByteArrayPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
 	} else {
-		klog.Errorf("CleanupByteArrayPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
+		klog.Errorf("Error, CleanupByteArrayPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
 	}
 }
 
@@ -1093,7 +1115,7 @@ func StoreKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
 	if _, exists := requestAllPodsKVCache[requestID]; !exists {
 		requestAllPodsKVCache[requestID] = allPodsRatios
 	} else {
-		klog.Errorf("requestID: %s, already exists in requestAllPodsKVCache", requestID)
+		klog.Errorf("Error, requestID: %s, already exists in requestAllPodsKVCache", requestID)
 	}
 	klog.Infof("StoreKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
 }
@@ -1109,7 +1131,7 @@ func GetAllPodsKVCacheHitRatios(requestID string) map[string]int {
 		}
 		return result
 	}
-	klog.Errorf("requestID: %s, not found in requestAllPodsKVCache", requestID)
+	klog.Errorf("Error, requestID: %s, not found in requestAllPodsKVCache", requestID)
 	return make(map[string]int)
 }
 
@@ -1123,7 +1145,7 @@ func StoreRequestToPodIP(requestID string, podIP string) {
 	requestToPodIPMutex.Lock()
 	defer requestToPodIPMutex.Unlock()
 	if _, exists := requestToPodIP[requestID]; exists {
-		klog.Errorf("requestID already exists in requestToPodIP: %s", requestID)
+		klog.Errorf("Error, requestID already exists in requestToPodIP: %s", requestID)
 	}
 	requestToPodIP[requestID] = podIP
 }
@@ -1133,7 +1155,7 @@ func GetPodIPForRequest(requestID string) (string, bool) {
 	defer requestToPodIPMutex.RUnlock()
 	podIP, exists := requestToPodIP[requestID]
 	if !exists {
-		klog.Errorf("requestID not found in requestToPodIP: %s", requestID)
+		klog.Errorf("Error, requestID not found in requestToPodIP: %s", requestID)
 		return "", false
 	}
 	return podIP, exists
@@ -1146,12 +1168,12 @@ func SetNumPrefillTokensForRequest(requestID string, numTokens int) {
 		requestToNumPrefillTokens[requestID] = 0
 	}
 	requestToNumPrefillTokens[requestID] += numTokens
-	klog.V(5).Infof("TokenCount, Increment prefill tokens for request %s: by %d, %d", requestID, numTokens, requestToNumPrefillTokens[requestID])
+	klog.V(5).Infof("TokenCount, Increment prefill tokens for request %s: by %d, total num prefill tokens: %d", requestID, numTokens, requestToNumPrefillTokens[requestID])
 }
 
 // ///////////////////////
 // // 1. reqeustID -> hash of prefix
-func hash_prefixhashes(prefixHashes []uint64) uint64 {
+func HashPrefixHashes(prefixHashes []uint64) uint64 {
 	h := fnv.New64a()
 	for _, hash := range prefixHashes {
 		binary.Write(h, binary.LittleEndian, hash)
@@ -1159,76 +1181,68 @@ func hash_prefixhashes(prefixHashes []uint64) uint64 {
 	return h.Sum64()
 }
 
-func SetHashOfPrefixHashesForRequest(requestID string, prefixHashes []uint64) {
+func SetHashOfPrefixHashesForRequest(requestID string, hash uint64) {
 	requestToHashOfPrefixHashesMutex.Lock()
 	defer requestToHashOfPrefixHashesMutex.Unlock()
 
 	if _, exists := requestToHashOfPrefixHashes[requestID]; exists {
-		klog.Errorf("SetHashOfPrefixHashesForRequest, Request ID %s already exists in requestToHashOfPrefixHashes", requestID)
+		klog.Errorf("Error, SetHashOfPrefixHashesForRequest, Request ID %s already exists in requestToHashOfPrefixHashes", requestID)
 		return
 	}
-
-	hash := hash_prefixhashes(prefixHashes)
 	requestToHashOfPrefixHashes[requestID] = hash
-	klog.V(5).Infof("SetHashOfPrefixHashesForRequest, Set hash for request ID %s: %d", requestID, hash)
+	klog.Infof("SetHashOfPrefixHashesForRequest, Set hash for request ID %s: %d", requestID, hash)
 }
+
 func GetHashOfPrefixHashesForRequest(requestID string) (uint64, bool) {
 	requestToHashOfPrefixHashesMutex.RLock()
 	defer requestToHashOfPrefixHashesMutex.RUnlock()
 
 	hash, exists := requestToHashOfPrefixHashes[requestID]
 	if !exists {
-		klog.Errorf("GetHashOfPrefixHashesForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
+		klog.Errorf("Error, GetHashOfPrefixHashesForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
 		return 0, false
 	}
-	klog.V(5).Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
+	klog.Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
 	return hash, true
 }
+
 func CleanupHashOfPrefixHashesForRequest(requestID string) {
 	requestToHashOfPrefixHashesMutex.Lock()
 	defer requestToHashOfPrefixHashesMutex.Unlock()
 
 	if _, exists := requestToHashOfPrefixHashes[requestID]; exists {
 		delete(requestToHashOfPrefixHashes, requestID)
-		klog.Infof("CleanupHashOfPrefixHashesForRequest, Deleted hash for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupHashOfPrefixHashesForRequest, Deleted hash for request ID: %s", requestID)
 	} else {
-		klog.Errorf("CleanupHashOfPrefixHashesForRequest, No hash found for request ID: %s", requestID)
+		klog.Errorf("Error, CleanupHashOfPrefixHashesForRequest, No hash found for request ID: %s", requestID)
 	}
 }
 
 /////////////////////////
 
 // 2. hash of prefix -> num output tokens
-func GetNumOutputTokensForPrefixHashes(prefixHashes []uint64) (int, bool) {
-	hash_of_prefixHashes := hash_prefixhashes(prefixHashes)
+func GetNumOutputTokensForPrefix(hash_of_prefixHashes uint64) (int, bool) {
 	hashToNumOutputTokensMutex.RLock()
 	defer hashToNumOutputTokensMutex.RUnlock()
 	numOutputTokens, exists := hashToNumOutputTokens[hash_of_prefixHashes]
 	if !exists {
-		klog.Warningf("GetNumOutputTokensForPrefixHashes, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
-		return 128, false
+		klog.Warningf("GetNumOutputTokensForPrefix, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
+		return DefaultNumOutputTokens, false
 	}
-	klog.V(5).Infof("GetNumOutputTokensForPrefixHashes, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)
+	klog.Infof("GetNumOutputTokensForPrefix, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)
 	return numOutputTokens, true
 }
 
-func SetNumOutputTokensForRequest(requestID string, numOutputTokens int) {
-	hash_of_prefixHashes, exists := GetHashOfPrefixHashesForRequest(requestID)
-	if !exists {
-		klog.Errorf("SetNumOutputTokensForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
-		return
-	}
+func SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes uint64, numOutputTokens int) {
 	hashToNumOutputTokensMutex.Lock()
 	defer hashToNumOutputTokensMutex.Unlock()
-	if _, exists := hashToNumOutputTokens[hash_of_prefixHashes]; exists {
-		klog.Errorf("SetNumOutputTokensForRequest, Hash %d already exists in hashToNumOutputTokens", hash_of_prefixHashes)
+	if val, exists := hashToNumOutputTokens[hash_of_prefixHashes]; exists {
+		klog.Infof("SetNumOutputTokensForHashOfPrefix, Hash %d already exists in hashToNumOutputTokens, cached numOutputTokens: %d", hash_of_prefixHashes, val)
 		return
 	}
 	hashToNumOutputTokens[hash_of_prefixHashes] = numOutputTokens
-	klog.V(5).Infof("SetNumOutputTokensForRequest, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
+	klog.Infof("SetNumOutputTokensForHashOfPrefix, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
 }
-
-//////////////////
 
 func GetNumPrefillTokensForRequest(requestID string) int {
 	requestToNumPrefillTokensMutex.RLock()
@@ -1243,7 +1257,7 @@ func SetRawMessageForRequest(requestID string, rawMessage string) {
 	requestToRawMessageMutex.Lock()
 	defer requestToRawMessageMutex.Unlock()
 	if _, exists := requestToRawMessage[requestID]; exists {
-		klog.Errorf("Request ID %s already exists in requestToRawMessage", requestID)
+		klog.Errorf("Error, Request ID %s already exists in requestToRawMessage", requestID)
 		return
 	}
 	requestToRawMessage[requestID] = rawMessage
@@ -1255,7 +1269,7 @@ func GetRawMessageForRequest(requestID string) (string, bool) {
 
 	rawMessage, exists := requestToRawMessage[requestID]
 	if !exists {
-		klog.Errorf("Failed GetRawMessageForRequest, Request ID %s not found in requestToRawMessage", requestID)
+		klog.Errorf("Error, Failed GetRawMessageForRequest, Request ID %s not found in requestToRawMessage", requestID)
 		return "", false
 	}
 	return rawMessage, true
@@ -1266,9 +1280,9 @@ func CleanupRawMessageForRequest(requestID string) {
 
 	if _, exists := requestToRawMessage[requestID]; exists {
 		delete(requestToRawMessage, requestID)
-		klog.Infof("CleanupRawMessageForRequest, Deleted raw message for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupRawMessageForRequest, Deleted raw message for request ID: %s", requestID)
 	} else {
-		klog.Errorf("CleanupRawMessageForRequest, No raw message found for request ID: %s", requestID)
+		klog.Errorf("Error, CleanupRawMessageForRequest, No raw message found for request ID: %s", requestID)
 	}
 }
 
@@ -1290,17 +1304,17 @@ func DecrementNumInflightForPod(requestID string, podIP string) {
 	defer PodInflightMutex.Unlock()
 	// podIP, exists := GetPodIPForRequest(requestID)
 	// if !exists {
-	// 	klog.Errorf("Pod name not found for request ID: %s", requestID)
+	// 	klog.Errorf("Error, Pod name not found for request ID: %s", requestID)
 	// 	return
 	// }
 	if _, ok := podInflightRequests[podIP]; !ok {
-		klog.Errorf("Pod name not found in podInflightRequests: %s", podIP)
+		klog.Errorf("Error, Pod name not found in podInflightRequests: %s", podIP)
 		return
 	}
 
 	podInflightRequests[podIP]--
 	if podInflightRequests[podIP] < 0 {
-		klog.Errorf("podInflightRequests[%s]: %d is negative!", podIP, podInflightRequests[podIP])
+		klog.Errorf("Error, podInflightRequests[%s]: %d is negative!", podIP, podInflightRequests[podIP])
 	}
 	klog.V(5).Infof("Decremented inflight requests for pod %s: %d", podIP, podInflightRequests[podIP])
 }
@@ -1316,7 +1330,7 @@ func StoreInflightRequestsForTheRequest(requestID string) {
 	requestInflightMutex.Lock()
 	defer requestInflightMutex.Unlock()
 	if _, exists := requestInflight[requestID]; exists {
-		klog.Errorf("requestID already exists in requestInflight: %s", requestID)
+		klog.Errorf("Error, requestID already exists in requestInflight: %s", requestID)
 		return
 	}
 	requestInflight[requestID] = make(map[string]int)
@@ -1369,18 +1383,18 @@ func DecrementNumPrefillTokensForPod(podIP string, numTokens int) int {
 	podTotalPrefillTokensMutex.Lock()
 	defer podTotalPrefillTokensMutex.Unlock()
 	if _, ok := podTotalPrefillTokens[podIP]; !ok {
-		klog.Errorf("Pod name not found in podTotalPrefillTokens: %s", podIP)
+		klog.Errorf("Error, Pod name not found in podTotalPrefillTokens: %s", podIP)
 		return -1
 	}
 	if podTotalPrefillTokens[podIP] < numTokens {
-		klog.Errorf("podTotalPrefillTokens[%s]: %d is less than numTokens: %d", podIP, podTotalPrefillTokens[podIP], numTokens)
+		klog.Errorf("Error, podTotalPrefillTokens[%s]: %d is less than numTokens: %d", podIP, podTotalPrefillTokens[podIP], numTokens)
 		return -1
 	}
 	old_numTokens := podTotalPrefillTokens[podIP]
 	podTotalPrefillTokens[podIP] -= numTokens
 	klog.V(5).Infof("TokenCount, Decremented prefill tokens for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, podTotalPrefillTokens[podIP])
 	if podTotalPrefillTokens[podIP] < 0 {
-		klog.Errorf("podTotalPrefillTokens[%s]: %d is negative!", podIP, podTotalPrefillTokens[podIP])
+		klog.Errorf("Error, podTotalPrefillTokens[%s]: %d is negative!", podIP, podTotalPrefillTokens[podIP])
 	}
 	return podTotalPrefillTokens[podIP]
 }
@@ -1406,12 +1420,12 @@ func DecrementNumTotalTokensForPod(podIP string, numTokens int) int {
 	podToTotalTokensMutex.Lock()
 	defer podToTotalTokensMutex.Unlock()
 	if _, ok := podToTotalTokens[podIP]; !ok {
-		klog.Errorf("Pod name not found in podToTotalTokens: %s", podIP)
+		klog.Errorf("Error, Pod name not found in podToTotalTokens: %s", podIP)
 		return -1
 	}
 	podToTotalTokens[podIP] -= numTokens
 	if podToTotalTokens[podIP] < 0 {
-		klog.Errorf("podToTotalTokens[%s]: %d is negative!", podIP, podToTotalTokens[podIP])
+		klog.Errorf("Error, podToTotalTokens[%s]: %d is negative!", podIP, podToTotalTokens[podIP])
 	}
 	klog.V(5).Infof("TokenCount, Decremented total tokens for pod %s: %d", podIP, podToTotalTokens[podIP])
 	return podToTotalTokens[podIP]
@@ -1456,13 +1470,13 @@ func DecrementNumDecodeTokensForPod(podIP string, numTokens int) int {
 	podTotalDecodeTokensMutex.Lock()
 	defer podTotalDecodeTokensMutex.Unlock()
 	if _, ok := podTotalDecodeTokens[podIP]; !ok {
-		klog.Errorf("Pod name not found in podTotalDecodeTokens: %s", podIP)
+		klog.Errorf("Error, Pod name not found in podTotalDecodeTokens: %s", podIP)
 		return -1
 	}
 	old_numTokens := podTotalDecodeTokens[podIP]
 	podTotalDecodeTokens[podIP] -= numTokens
 	if podTotalDecodeTokens[podIP] < 0 {
-		klog.Errorf("DecrementNumDecodeTokensForPod ,podTotalDecodeTokens[%s]: %d is negative!", podIP, podTotalDecodeTokens[podIP])
+		klog.Errorf("Error, DecrementNumDecodeTokensForPod ,podTotalDecodeTokens[%s]: %d is negative!", podIP, podTotalDecodeTokens[podIP])
 	}
 	klog.V(5).Infof("TokenCount, Decremented decode tokens for pod %s by %d, from %d to %d", podIP, numTokens, old_numTokens, podTotalDecodeTokens[podIP])
 	return podTotalDecodeTokens[podIP]
@@ -1497,7 +1511,7 @@ func CleanupNumDecodeTokensForRequest(requestID string) {
 	if _, ok := requestToNumDecodeTokens[requestID]; ok {
 		delete(requestToNumDecodeTokens, requestID)
 	} else {
-		klog.Errorf("requestToNumDecodeTokens not found for request ID %s", requestID)
+		klog.Errorf("Error, requestToNumDecodeTokens not found for request ID %s", requestID)
 	}
 }
 
@@ -1507,7 +1521,7 @@ func CleanupNumPrefillTokensForRequest(requestID string) {
 	if _, ok := requestToNumPrefillTokens[requestID]; ok {
 		delete(requestToNumPrefillTokens, requestID)
 	} else {
-		klog.Errorf("requestToNumPrefillTokens not found for request ID %s", requestID)
+		klog.Errorf("Error, requestToNumPrefillTokens not found for request ID %s", requestID)
 	}
 }
 
@@ -1561,7 +1575,7 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 	}
 
 	if !exists {
-		klog.Errorf("Metric %s not found for pod %s", metricName, pod.Status.PodIP)
+		klog.Errorf("Error, Metric %s not found for pod %s", metricName, pod.Status.PodIP)
 		metricMutex.Lock()
 		if _, ok := metricStorage[requestID]; !ok {
 			metricStorage[requestID] = make(map[string]float64)
@@ -1574,7 +1588,7 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 	for _, familyMetric := range metricFamily.Metric {
 		metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
 		if err != nil {
-			klog.Errorf("Failed to parse metric %s from pod %s: %v", metricName, pod.Status.PodIP, err)
+			klog.Errorf("Error, Failed to parse metric %s from pod %s: %v", metricName, pod.Status.PodIP, err)
 			continue
 		}
 
@@ -1673,7 +1687,7 @@ func CleanupvLLMGPUKVCacheUsage(requestID string) {
 	if _, ok := vllmGPUKVCacheUsage[requestID]; ok {
 		delete(vllmGPUKVCacheUsage, requestID)
 	} else {
-		klog.Errorf("vLLM GPU KV cache usage not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM GPU KV cache usage not found for request ID %s", requestID)
 	}
 }
 
@@ -1683,7 +1697,7 @@ func CleanupvLLMCPUKVCacheUsage(requestID string) {
 	if _, ok := vllmCPUKVCacheUsage[requestID]; ok {
 		delete(vllmCPUKVCacheUsage, requestID)
 	} else {
-		klog.Errorf("vLLM CPU KV cache usage not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM CPU KV cache usage not found for request ID %s", requestID)
 	}
 }
 
@@ -1693,7 +1707,7 @@ func CleanupvLLMNumRequestsRunning(requestID string) {
 	if _, ok := vllmNumRequestsRunning[requestID]; ok {
 		delete(vllmNumRequestsRunning, requestID)
 	} else {
-		klog.Errorf("vLLM Num requests running not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM Num requests running not found for request ID %s", requestID)
 	}
 }
 
@@ -1703,7 +1717,7 @@ func CleanupvLLMNumRequestsWaiting(requestID string) {
 	if _, ok := vllmNumRequestsWaiting[requestID]; ok {
 		delete(vllmNumRequestsWaiting, requestID)
 	} else {
-		klog.Errorf("vLLM Num requests waiting not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM Num requests waiting not found for request ID %s", requestID)
 	}
 }
 
@@ -1713,7 +1727,7 @@ func GetKVCacheHitRatioForPod(requestID string, podIP string) (int, bool) {
 	defer requestAllPodsKVCacheMutex.RUnlock()
 	ratios, exists := requestAllPodsKVCache[requestID]
 	if !exists {
-		klog.Errorf("KV cache hit ratios not found for request ID %s", requestID)
+		klog.Errorf("Error, KV cache hit ratios not found for request ID %s", requestID)
 		return 0, false
 	}
 	val, exists := ratios[podIP]
@@ -1726,7 +1740,7 @@ func GetVLLMGPUKVCacheUsageForPod(requestID string, podIP string) (float64, bool
 	defer vllmGPUKVCacheUsageMutex.RUnlock()
 	usage, exists := vllmGPUKVCacheUsage[requestID]
 	if !exists {
-		klog.Errorf("vLLM GPU KV cache usage not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM GPU KV cache usage not found for request ID %s", requestID)
 		return 0, false
 	}
 	val, exists := usage[podIP]
@@ -1739,7 +1753,7 @@ func GetVLLMCPUKVCacheUsageForPod(requestID string, podIP string) (float64, bool
 	defer vllmCPUKVCacheUsageMutex.RUnlock()
 	usage, exists := vllmCPUKVCacheUsage[requestID]
 	if !exists {
-		klog.Errorf("vLLM CPU KV cache usage not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM CPU KV cache usage not found for request ID %s", requestID)
 		return 0, false
 	}
 	val, exists := usage[podIP]
@@ -1752,7 +1766,7 @@ func GetVLLMNumRequestsRunningForPod(requestID string, podIP string) (float64, b
 	defer vllmNumRequestsRunningMutex.RUnlock()
 	requests, exists := vllmNumRequestsRunning[requestID]
 	if !exists {
-		klog.Errorf("vLLM Num requests running not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM Num requests running not found for request ID %s", requestID)
 		return 0, false
 	}
 	val, exists := requests[podIP]
@@ -1765,7 +1779,7 @@ func GetVLLMNumRequestsWaitingForPod(requestID string, podIP string) (float64, b
 	defer vllmNumRequestsWaitingMutex.RUnlock()
 	requests, exists := vllmNumRequestsWaiting[requestID]
 	if !exists {
-		klog.Errorf("vLLM Num requests waiting not found for request ID %s", requestID)
+		klog.Errorf("Error, vLLM Num requests waiting not found for request ID %s", requestID)
 		return 0, false
 	}
 	val, exists := requests[podIP]

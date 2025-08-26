@@ -1,0 +1,30 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  annotations:
+  labels:
+    app.kubernetes.io/component: aibrix-gateway-plugin
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+  name: aibrix-reserved-router
+  namespace: aibrix-system
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: aibrix-eg
+  rules:
+  - backendRefs:
+    - group: ""
+      kind: Service
+      name: aibrix-gateway-plugins
+      port: 50052
+      weight: 1
+    matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    - path:
+        type: PathPrefix
+        value: /v1/completions

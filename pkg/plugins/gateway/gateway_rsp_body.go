@@ -238,6 +238,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 						Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
 					}}},
 					msg), complete
+			} else {
+				if len(res.Choices) > 0 && res.Choices[0].Message.Content != "" {
+					klog.Infof("CONFIRMATION - RequestID: %s, Generated text (%d tokens): %s",
+						routerCtx.RequestID, usage.CompletionTokens, res.Choices[0].Message.Content)
+				}
 			}
 			usage = res.Usage
 		}
@@ -246,7 +251,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			ret := utils.DecrementNumDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
 			klog.V(5).Infof("DecrementNumDecodeTokensForPod(%s) by %d, %d", routerCtx.TargetAddressWithoutPort(), timing.totalTokenCount, ret)
 
-			utils.SetNumOutputTokensForRequest(routerCtx.RequestID, int(usage.CompletionTokens))
+			klog.Infof("numOutputTokens(usage.CompletionTokens): %d", usage.CompletionTokens)
+			hash_of_prefixHashes, _ := utils.GetHashOfPrefixHashesForRequest(routerCtx.RequestID)
+			utils.SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes, int(usage.CompletionTokens))
 
 			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 			if utils.UseRealRequest == "true" {
@@ -264,7 +271,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupRawMessageForRequest(routerCtx.RequestID)
 			utils.CleanupByteArrayPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupHashOfPrefixHashesForRequest(routerCtx.RequestID)
-
+			utils.CleanupExploration(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
@@ -625,7 +632,9 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	}
 	normalized_request_start_time := timing.startTime.UnixMicro() - utils.FirstRequestStartTime
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d",
+	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
+
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -648,10 +657,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["numDecodeTokensForAllPods"],
 		utils.GetNumTrains(),
 		utils.GetNumFlush(),
+		exploration,
+		explorationEnabled,
 	)
-
 	klog.Infof("%s", logMessage)
-
 	return headers, logMessage
 }
 

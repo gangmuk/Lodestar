@@ -1,0 +1,66 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  labels:
+    app.kubernetes.io/component: aibrix-gateway-plugin
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+  name: aibrix-custom-proxy-config
+  namespace: aibrix-system
+spec:
+  logging:
+    level:
+      default: warn
+  provider:
+    kubernetes:
+      envoyDeployment:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                  - image: envoyproxy/envoy:v1.33.2
+                    name: envoy
+                    resources:
+                      limits:
+                        cpu: 1
+                        memory: 4Gi
+                      requests:
+                        cpu: 0.5
+                        memory: 128Mi
+                  - image: envoyproxy/gateway:v1.2.8
+                    name: shutdown-manager
+        pod:
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - preference:
+                  matchExpressions:
+                  - key: nvidia.com/gpu.present
+                    operator: NotIn
+                    values:
+                    - "true"
+                weight: 100
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                      - envoy
+                  topologyKey: kubernetes.io/hostname
+                weight: 100
+        replicas: 1
+        strategy:
+          rollingUpdate:
+            maxSurge: 1
+            maxUnavailable: 1
+          type: RollingUpdate
+      envoyPDB:
+        minAvailable: 1
+    type: Kubernetes
