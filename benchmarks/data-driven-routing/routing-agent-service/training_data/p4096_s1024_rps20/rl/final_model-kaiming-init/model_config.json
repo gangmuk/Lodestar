@@ -1,0 +1,52 @@
+{
+    "model_type": "simplified",
+    "hidden_dim": 32,
+    "batch_size": 32,
+    "learning_rate": 0.01,
+    "training_epochs": 5,
+    "learning_every_x_iter": 5,
+    "weight_decay": 0.0001,
+    "max_updates_per_epoch": 1000,
+    "exploration_rate": 0.1,
+    "explore": true,
+    "weight_initialization": "kaiming",
+    "eval_interval": 10,
+    "entropy_bonus_factor": 0.01,
+    "per_learn_reward_normalization": false,
+    "normalization": {
+        "SIGNAL_AMPLIFICATION_DEGREE": 1.0,
+        "REWARD_AMPLIFICATION_DEGREE": 1.0,
+        "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+        "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+        "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+        "FEATURES_NORMALIZED": "{'pod_0004-gpu_kv_cache', 'pod_0006-last_second_total_requests', 'pod_0002-last_second_p99_tpot_ms', 'pod_0005-running_requests', 'pod_0002-last_second_total_prefill_tokens', 'pod_0000-last_second_avg_ttft_ms', 'pod_0002-running_requests', 'pod_0006-kv_hit_ratio', 'pod_0002-prefill_tokens', 'pod_0002-waiting_requests', 'pod_0002-last_second_total_requests', 'pod_0005-last_second_avg_ttft_ms', 'pod_0006-inflight_requests', 'pod_0006-last_second_avg_ttft_ms', 'pod_0005-last_second_total_decode_tokens', 'pod_0000-running_requests', 'pod_0006-last_second_p99_tpot_ms', 'pod_0000-last_second_total_tokens', 'pod_0001-prefill_tokens', 'pod_0004-last_second_total_requests', 'pod_0002-last_second_total_decode_tokens', 'pod_0000-last_second_total_prefill_tokens', 'pod_0004-last_second_total_prefill_tokens', 'pod_0001-last_second_total_tokens', 'pod_0003-last_second_total_tokens', 'pod_0002-last_second_avg_tpot_ms', 'pod_0003-last_second_total_prefill_tokens', 'pod_0006-decode_tokens', 'pod_0006-last_second_total_tokens', 'pod_0005-last_second_total_requests', 'pod_0005-decode_tokens', 'total_tokens', 'pod_0001-last_second_total_prefill_tokens', 'pod_0002-decode_tokens', 'pod_0000-kv_hit_ratio', 'pod_0001-waiting_requests', 'pod_0005-last_second_total_tokens', 'pod_0003-gpu_kv_cache', 'pod_0001-decode_tokens', 'pod_0004-last_second_p99_ttft_ms', 'pod_0005-last_second_total_prefill_tokens', 'pod_0006-prefill_tokens', 'pod_0001-last_second_total_decode_tokens', 'pod_0003-decode_tokens', 'pod_0006-running_requests', 'pod_0001-inflight_requests', 'pod_0001-kv_hit_ratio', 'pod_0004-decode_tokens', 'pod_0003-inflight_requests', 'pod_0003-kv_hit_ratio', 'pod_0001-last_second_p99_ttft_ms', 'pod_0005-last_second_avg_tpot_ms', 'pod_0004-inflight_requests', 'pod_0006-waiting_requests', 'pod_0004-running_requests', 'pod_0001-gpu_kv_cache', 'pod_0003-last_second_p99_tpot_ms', 'pod_0006-last_second_total_prefill_tokens', 'pod_0005-gpu_kv_cache', 'pod_0003-running_requests', 'pod_0001-last_second_avg_tpot_ms', 'pod_0002-last_second_total_tokens', 'pod_0000-last_second_total_decode_tokens', 'input_tokens', 'pod_0003-last_second_p99_ttft_ms', 'pod_0002-gpu_kv_cache', 'pod_0001-running_requests', 'pod_0005-last_second_p99_ttft_ms', 'pod_0001-last_second_total_requests', 'pod_0000-prefill_tokens', 'pod_0000-last_second_total_requests', 'pod_0002-last_second_avg_ttft_ms', 'pod_0000-last_second_p99_tpot_ms', 'pod_0003-last_second_avg_tpot_ms', 'pod_0005-last_second_p99_tpot_ms', 'pod_0003-last_second_total_requests', 'pod_0005-inflight_requests', 'pod_0005-prefill_tokens', 'pod_0002-inflight_requests', 'pod_0006-last_second_total_decode_tokens', 'pod_0006-last_second_avg_tpot_ms', 'pod_0000-decode_tokens', 'pod_0001-last_second_p99_tpot_ms', 'pod_0004-last_second_p99_tpot_ms', 'pod_0005-kv_hit_ratio', 'pod_0000-last_second_avg_tpot_ms', 'pod_0004-prefill_tokens', 'pod_0004-last_second_avg_ttft_ms', 'pod_0004-kv_hit_ratio', 'pod_0004-last_second_total_tokens', 'pod_0000-inflight_requests', 'pod_0004-last_second_total_decode_tokens', 'pod_0006-gpu_kv_cache', 'pod_0000-waiting_requests', 'pod_0004-waiting_requests', 'pod_0002-last_second_p99_ttft_ms', 'pod_0003-waiting_requests', 'pod_0003-prefill_tokens', 'pod_0000-last_second_p99_ttft_ms', 'pod_0001-last_second_avg_ttft_ms', 'pod_0005-waiting_requests', 'pod_0003-last_second_avg_ttft_ms', 'pod_0004-last_second_avg_tpot_ms', 'pod_0002-kv_hit_ratio', 'pod_0000-gpu_kv_cache', 'pod_0006-last_second_p99_ttft_ms', 'pod_0003-last_second_total_decode_tokens'}",
+        "NUM_FEATURES_NORMALIZED": 107,
+        "FEATURE_AMPLIFICATION": false,
+        "FEATURES_AMPLIFIED": "set()",
+        "NUM_FEATURES_AMPLIFIED": 0
+    },
+    "dataset_analysis": {
+        "total_samples": 1599,
+        "imbalance_ratio": 2.196078470458162,
+        "reward_gap": 0.4356602057814598,
+        "reward_distribution": {
+            "mean": 0.3932026763047491,
+            "std": 0.12631806895994055,
+            "min": 0.11620119959115982,
+            "p10": 0.27311424911022186,
+            "p20": 0.377805233001709,
+            "p30": 0.37805208563804626,
+            "p40": 0.3950335264205933,
+            "p50": 0.4203822612762451,
+            "p60": 0.4260191202163696,
+            "p70": 0.4394895255565643,
+            "p80": 0.46862702369689946,
+            "p90": 0.5077482759952545,
+            "p99": 0.5474500924348831,
+            "max": 0.5518614053726196
+        },
+        "action_distribution": "tensor([336, 256, 203, 244, 153, 235, 172])"
+    },
+    "deterministic_training": true,
+    "training_seed": 42
+}
