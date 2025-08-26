@@ -5,39 +5,30 @@ build=$1
 
 if [ -z "$build" ]; then
     echo "build argument is empty"
-    echo "Usage: ./build-gateway.sh <local|remote>"
+    echo "Usage: ./build-gateway.sh <vke|local-mac|local-linux>"
     echo "exiting..."
     exit 1
 fi
 
-if [ "$build" == "remote" ]; then
-    ## Remote push
-    # build
-    # make docker-build-gateway-plugins-amd64 # Use it when you build it on a mac but for intel server (vke).
+# if build is none of vke, local-mac, local linux, exit
+
+
+if [ "$build" == "vke" ]; then
     tag=latest-linux-gangmuk
-
     docker buildx build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
-
-    # tag
     docker tag aibrix/gateway-plugins:nightly aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
-
-    # push
     docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
 else
-    tag=latest-mac
-    ## for local docker registry only
-    make docker-build-gateway-plugins
+    if [ "$build" == "local-linux" ]; then
+        tag=latest-linux
+    elif [ "$build" == "local-mac" ]; then
+        tag=latest-mac
+    fi
+    make docker-build-gateway-plugins # it will build based on the current machine's type
     docker tag aibrix/gateway-plugins:nightly gangmuk/gateway-plugins:${tag}
-    docker push gangmuk/gateway-plugins:${tag}
-
-    ## load image to kind cluster
-    # kind load docker-image aibrix/gateway-plugins:${tag}
-
-    ## use dockerhub...
+    docker push gangmuk/gateway-plugins:${tag} # dockerhub
     kubectl set image deployment/aibrix-gateway-plugins gateway-plugin=gangmuk/gateway-plugins:${tag} -n aibrix-system
-
     kubectl patch deployment aibrix-gateway-plugins -n aibrix-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"gateway-plugin","imagePullPolicy":"Always"}]}}}}'
-
     kubectl rollout restart deployment/aibrix-gateway-plugins -n aibrix-system
 fi
 
