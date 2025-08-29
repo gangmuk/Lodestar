@@ -240,8 +240,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 					msg), complete
 			} else {
 				if len(res.Choices) > 0 && res.Choices[0].Message.Content != "" {
-					klog.Infof("CONFIRMATION - RequestID: %s, Generated text (%d tokens): %s",
-						routerCtx.RequestID, usage.CompletionTokens, res.Choices[0].Message.Content)
+					klog.V(5).Infof("CONFIRMATION - RequestID: %s, Generated text (%d tokens): %s", routerCtx.RequestID, usage.CompletionTokens, res.Choices[0].Message.Content)
 				}
 			}
 			usage = res.Usage

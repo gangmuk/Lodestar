@@ -383,48 +383,48 @@ func (t *PodMetricsTracker) AddPodMetric(podIP string, metric PodMetric) {
 	t.cleanupOldMetrics(podIP, time.Now())
 }
 
-// GetAverages calculates the average TTFT and TPOT for all pods over the window
-func (t *PodMetricsTracker) GetAverages() map[string]map[string]float64 {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
+// // GetAverages calculates the average TTFT and TPOT for all pods over the window
+// func (t *PodMetricsTracker) GetAverages() map[string]map[string]float64 {
+// 	t.mutex.RLock()
+// 	defer t.mutex.RUnlock()
 
-	now := time.Now()
-	cutoff := now.Add(-t.WindowSize)
-	result := make(map[string]map[string]float64)
+// 	now := time.Now()
+// 	cutoff := now.Add(-t.WindowSize)
+// 	result := make(map[string]map[string]float64)
 
-	for podIP, metrics := range t.podMetrics {
-		var ttftSum, tpotSum int64
-		var ttftCount, tpotCount int
+// 	for podIP, metrics := range t.podMetrics {
+// 		var ttftSum, tpotSum int64
+// 		var ttftCount, tpotCount int
 
-		// Calculate sums of valid metrics
-		for _, m := range metrics {
-			if m.Timestamp.After(cutoff) {
-				if m.TTFT > 0 {
-					ttftSum += m.TTFT
-					ttftCount++
-				}
-				if m.TPOT > 0 {
-					tpotSum += m.TPOT
-					tpotCount++
-				}
-			}
-		}
+// 		// Calculate sums of valid metrics
+// 		for _, m := range metrics {
+// 			if m.Timestamp.After(cutoff) {
+// 				if m.TTFT > 0 {
+// 					ttftSum += m.TTFT
+// 					ttftCount++
+// 				}
+// 				if m.TPOT > 0 {
+// 					tpotSum += m.TPOT
+// 					tpotCount++
+// 				}
+// 			}
+// 		}
 
-		// Calculate averages
-		podAvg := make(map[string]float64)
-		if ttftCount > 0 {
-			podAvg["avg_ttft"] = float64(ttftSum) / float64(ttftCount)
-		}
-		if tpotCount > 0 {
-			podAvg["avg_tpot"] = float64(tpotSum) / float64(tpotCount)
-		}
-		podAvg["sample_count"] = float64(len(metrics))
+// 		// Calculate averages
+// 		podAvg := make(map[string]float64)
+// 		if ttftCount > 0 {
+// 			podAvg["avg_ttft"] = float64(ttftSum) / float64(ttftCount)
+// 		}
+// 		if tpotCount > 0 {
+// 			podAvg["avg_tpot"] = float64(tpotSum) / float64(tpotCount)
+// 		}
+// 		podAvg["sample_count"] = float64(len(metrics))
 
-		result[podIP] = podAvg
-	}
+// 		result[podIP] = podAvg
+// 	}
 
-	return result
-}
+// 	return result
+// }
 
 func (t *PodMetricsTracker) CleanupAllMetrics() {
 	t.mutex.Lock()
@@ -615,6 +615,8 @@ var NumTrains int
 var NumFlush int
 var Exploration = make(map[string]int)
 var ExplorationEnabled = make(map[string]int)
+var ExplorationMutex sync.RWMutex
+var ExplorationEnabledMutex sync.RWMutex
 
 var (
 	UseRealRequest                = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
@@ -821,12 +823,20 @@ func SetNumFlush(numFlush int) {
 }
 
 func SetExploration(exploration int, explorationEnabled int, requestID string) {
+	ExplorationMutex.Lock()
+	defer ExplorationMutex.Unlock()
+	ExplorationEnabledMutex.Lock()
+	defer ExplorationEnabledMutex.Unlock()
 	Exploration[requestID] = exploration
 	ExplorationEnabled[requestID] = explorationEnabled
 	klog.Infof("SetExploration, requestID: %s, exploration: %d, explorationEnabled: %d", requestID, exploration, explorationEnabled)
 }
 
 func GetExploration(requestID string) (int, int) {
+	ExplorationMutex.RLock()
+	defer ExplorationMutex.RUnlock()
+	ExplorationEnabledMutex.RLock()
+	defer ExplorationEnabledMutex.RUnlock()
 	if val, ok := Exploration[requestID]; ok {
 		return val, ExplorationEnabled[requestID]
 	}
@@ -835,6 +845,10 @@ func GetExploration(requestID string) (int, int) {
 }
 
 func CleanupExploration(requestID string) {
+	ExplorationMutex.Lock()
+	defer ExplorationMutex.Unlock()
+	ExplorationEnabledMutex.Lock()
+	defer ExplorationEnabledMutex.Unlock()
 	delete(Exploration, requestID)
 	delete(ExplorationEnabled, requestID)
 }
@@ -1237,8 +1251,7 @@ func SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes uint64, numOutputTok
 	hashToNumOutputTokensMutex.Lock()
 	defer hashToNumOutputTokensMutex.Unlock()
 	if val, exists := hashToNumOutputTokens[hash_of_prefixHashes]; exists {
-		klog.Infof("SetNumOutputTokensForHashOfPrefix, Hash %d already exists in hashToNumOutputTokens, cached numOutputTokens: %d", hash_of_prefixHashes, val)
-		return
+		klog.Infof("SetNumOutputTokensForHashOfPrefix, Hash %d already exists in hashToNumOutputTokens, overwrite numOutputTokens from %d to %d", hash_of_prefixHashes, val, numOutputTokens)
 	}
 	hashToNumOutputTokens[hash_of_prefixHashes] = numOutputTokens
 	klog.Infof("SetNumOutputTokensForHashOfPrefix, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
