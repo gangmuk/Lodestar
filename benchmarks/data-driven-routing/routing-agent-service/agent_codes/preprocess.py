@@ -101,7 +101,7 @@ def extract_key_pod_metrics(pod_metrics, pod_id):
         'last_second_total_prefill_tokens': pod_metrics[pod_id]['last_second_total_prefill_tokens'],
     }
 
-def calculate_ttft_tpot_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo):
+def calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo):
         ttft_rewards = np.where(
             ttft_values <= 0, 
             0.5,  # Maximum reward for perfect performance
@@ -126,82 +126,90 @@ def calculate_ttft_tpot_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_t
             'tpot_rewards': tpot_rewards,
             'combined_rewards': ttft_rewards + tpot_rewards,
         }
-    
 
-def calculate_ttft_tpot_rewards_improved(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, 
-                            enable_exceptional_bonus=True, enable_adaptive_scaling=False):
+
+def calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo):
     """
-    Simplified improved reward function focusing on core performance.
-    
-    Key improvements over your current function:
-    1. Larger reward range for stronger learning signals
-    2. Logarithmic scaling for smoother gradients
-    3. Better edge case handling
-    4. Configurable business priorities (TTFT vs TPOT)
-    5. Optional exceptional performance bonus
-    6. Optional adaptive reward scaling
+    expressible TTFT range: 0-5000ms, 
+    expressible TPOT: 0-200ms, 
+    ttft reward range: -1.7 ~ 0.5
+    ttft reward range: -1.3 ~ 0.5
+    combined reward range: -3.0 ~ 1.0
     """
-    
-    # Configuration - you can tune these
-    TTFT_WEIGHT = 0.6  # TTFT slightly more important than TPOT
-    TPOT_WEIGHT = 0.4
-    REWARD_SCALE = 3.0  # Amplify rewards for stronger learning signals
-    MIN_VALID_LATENCY = 1.0  # Minimum realistic latency (ms)
-    
-    # Handle edge cases - ensure no zero/negative latencies
-    ttft_values = np.maximum(ttft_values, MIN_VALID_LATENCY)
-    tpot_values = np.maximum(tpot_values, MIN_VALID_LATENCY)
-    
-    # Normalize values by their SLOs
-    ttft_normalized = ttft_values / ttft_slo
-    tpot_normalized = tpot_values / avg_tpot_slo
-    
-    # TTFT reward component (logarithmic scaling within SLO, exponential penalty beyond)
     ttft_rewards = np.where(
-        ttft_normalized <= 1.0,
-        # Within SLO: logarithmic reward (gives 1.0 for perfect, ~0.0 at SLO)
-        1.0 - np.log(ttft_normalized + 0.01) / np.log(1.01),  # Small epsilon to avoid log(0)
-        # Beyond SLO: exponential penalty (gets more negative as performance degrades)
-        -np.power(ttft_normalized - 1.0, 1.5)
-    )
-    
-    # TPOT reward component (same structure)
-    tpot_rewards = np.where(
-        tpot_normalized <= 1.0,
-        # Within SLO: logarithmic reward
-        1.0 - np.log(tpot_normalized + 0.01) / np.log(1.01),
-        # Beyond SLO: exponential penalty
-        -np.power(tpot_normalized - 1.0, 1.5)
-    )
-    
-    # Weighted combination
-    combined_reward = (TTFT_WEIGHT * ttft_rewards + TPOT_WEIGHT * tpot_rewards)
-    
-    # Apply scaling for stronger learning signals
-    final_rewards = combined_reward * REWARD_SCALE
-    
-    # Optional: Exceptional performance bonus (both metrics in top 50% of SLO)
-    if enable_exceptional_bonus:
-        exceptional_bonus = np.where(
-            (ttft_normalized < 0.5) & (tpot_normalized < 0.5),
-            REWARD_SCALE * 0.3,  # 30% bonus for exceptional performance
-            0
+        ttft_values <= 0, 
+        0.5,  # Maximum reward for perfect performance
+        np.where(
+            ttft_values <= ttft_slo,
+            0.5 - (0.4 * ttft_values / ttft_slo),  # Linear scaling
+            # CHANGE: 1.0 -> 4.0 for TTFT to cover 0-5000ms (5x SLO)
+            -0.1 - (0.4 * np.minimum(4.0, (ttft_values - ttft_slo) / ttft_slo))  # Extended penalty
         )
-        final_rewards += exceptional_bonus
+    )
+
+    tpot_rewards = np.where(
+        tpot_values <= 0,
+        -0.5,  # Penalize invalid values
+        np.where(
+            tpot_values <= avg_tpot_slo,
+            0.1 + (0.4 * (1 - tpot_values / avg_tpot_slo)),  # Linear scaling
+            # CHANGE: 1.0 -> 3.0 for TPOT to cover 0-200ms (4x SLO)  
+            -0.1 - (0.4 * np.minimum(3.0, (tpot_values - avg_tpot_slo) / avg_tpot_slo))  # Extended penalty
+        )
+    )
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards, 
+        'combined_rewards': ttft_rewards + tpot_rewards,
+    }
     
-    # Optional: Adaptive scaling based on performance variance
-    if enable_adaptive_scaling:
-        # Scale rewards more when there's high variance (early training)
-        # Scale less when variance is low (later training, more consistent)
-        performance_variance = np.var(ttft_normalized) + np.var(tpot_normalized)
-        adaptive_multiplier = 1.0 + min(2.0, performance_variance)  # Cap at 3x scaling
-        final_rewards *= adaptive_multiplier
+def calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo):
+    """
+    Maximum performance reward function with steeper optimization gradient within the good performance region
+    
+    Expressible ranges:
+    - TTFT: 0-5000ms 
+    - TPOT: 0-200ms
+    
+    Reward ranges:
+    - TTFT: -1.7 to +2.1 (range: 3.8)
+    - TPOT: -1.3 to +1.7 (range: 3.0)  
+    - Combined: -3.0 to +3.8
+    
+    This creates strong incentives for optimal performance while maintaining
+    harsh penalties for SLO violations.
+    """
+    
+    ttft_rewards = np.where(
+        ttft_values <= 0, 
+        2.1,  # Maximum reward for perfect TTFT
+        np.where(
+            ttft_values <= ttft_slo,
+            # Balanced positive scaling: 0.5 to 2.1 (matches penalty range of 1.6)
+            0.5 + (1.6 * (1 - ttft_values / ttft_slo)),  
+            # Extended harsh penalty: -0.1 to -1.7
+            -0.1 - (0.4 * np.minimum(4.0, (ttft_values - ttft_slo) / ttft_slo))
+        )
+    )
+
+    tpot_rewards = np.where(
+        tpot_values <= 0,
+        -0.5,  # Still penalize invalid values
+        np.where(
+            tpot_values <= avg_tpot_slo,
+            # Balanced positive scaling: 0.5 to 1.7 (matches penalty range of 1.2)  
+            0.5 + (1.2 * (1 - tpot_values / avg_tpot_slo)),
+            # Extended harsh penalty: -0.1 to -1.3
+            -0.1 - (0.4 * np.minimum(3.0, (tpot_values - avg_tpot_slo) / avg_tpot_slo))
+        )
+    )
     
     return {
-        'ttft_rewards': ttft_rewards * TTFT_WEIGHT * REWARD_SCALE,
-        'tpot_rewards': tpot_rewards * TPOT_WEIGHT * REWARD_SCALE,
-        'combined_rewards': final_rewards,
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards, 
+        'combined_rewards': ttft_rewards + tpot_rewards,
     }
+
 
 ## new
 def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETERS):
@@ -447,9 +455,16 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     ttft_values = np.array(base_data['ttft'], dtype=np.float64)
     tpot_values = np.array(base_data['avg_tpot'], dtype=np.float64)
     pod_index_overhead = time.time() - pod_index_start_time
-    # ttft_rewards, tpot_rewards, combined_rewards = calculate_ttft_tpot_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
-    ttft_rewards, tpot_rewards, combined_rewards = calculate_ttft_tpot_rewards_improved(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
-
+    if RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple":
+        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+    elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple_extended":
+        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+    elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "piecewise_linear_steeper_gradient":
+        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+    else:
+        logger.error(f"Unknown reward function: {RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION']}")
+        assert False
+        
     # Add all the computed columns to base_data before DataFrame creation
     base_data.update({
         'action': action_values,
@@ -644,7 +659,9 @@ def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
     return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
 
 
-def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS):
+def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, label_selector):
+    preprocess_dataset_overhead_summary = {}
+    main_start_time = time.time()
     if input_file == None and (log_message == "" or log_message is None):
         logger.error("Error: Both input_file and log_message are empty or None.")
         assert False
@@ -655,7 +672,6 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         parsed_df, json_columns = parse_log_file(input_file)
     else:  # Inference path
         ################################################
-        label_selector = "model.aibrix.ai/name=llama-3-8b-instruct"
         if 'running_pods' not in RL_MODEL_HYPERPARAMETERS:
             RL_MODEL_HYPERPARAMETERS['running_pods'] = utils.get_running_pods_by_label(label_selector)
 
@@ -663,7 +679,9 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
             RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'] = utils.fetch_running_pod_ips(RL_MODEL_HYPERPARAMETERS['running_pods'])
             print(f"all_pod_ips_from_running_pods: {RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods']}")
 
+        sort_start_time = time.time()
         unique_pod_ips = sorted(RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'])
+        preprocess_dataset_overhead_summary["sort_unique_pod_ips"] = time.time() - sort_start_time
 
         if 'pod_ip_to_generalpodid' not in RL_MODEL_HYPERPARAMETERS:
             pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(unique_pod_ips)
@@ -684,7 +702,11 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         logger.debug(f"pod_ip_to_gpu_model_encoded: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
         ################################################
         
+        preprocess_dataset_overhead_summary["init"] = time.time() - main_start_time
+        
+        parse_start_time = time.time()
         parsed_df, _ = parse_log_message(log_message)
+        preprocess_dataset_overhead_summary["parse_log_message"] = time.time() - parse_start_time
         logger.debug(f"======================================")
         logger.debug(f"parsed_df: {parsed_df.to_csv(index=False, header=True)}")
         logger.debug(f"======================================")
@@ -695,7 +717,9 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         logger.error(f"Log message: {log_message}")
         assert False
     if len(parsed_df) == 1 and input_file is None:
+        preprocess_single_row_fast_start_time = time.time()
         processed_df, sorted_all_pod_ids, _ = preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS)
+        preprocess_dataset_overhead_summary["preprocess_single_row_fast"] = time.time() - preprocess_single_row_fast_start_time
     else:
         # Existing batch processing for training
         # REMOVED: No need for parse_json_columns since JSON is already parsed
@@ -744,6 +768,5 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         except Exception as e:
             logger.error(f"Error processing dataset: {e}")
             assert False
-
-    preprocess_dataset_overhead_summary = {}
+    preprocess_dataset_overhead_summary["mapping_info_write"] = time.time() - mapping_info_write_start_time
     return processed_df, output_file, sorted_all_pod_ids, preprocess_dataset_overhead_summary

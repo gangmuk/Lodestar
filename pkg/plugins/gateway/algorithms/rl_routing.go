@@ -254,6 +254,7 @@ type RouteResponse struct {
 	NumFlush                int     `json:"num_flush"`
 	Exploration             int     `json:"exploration"`
 	ExplorationEnabled      int     `json:"exploration_enabled"`
+	OverheadLog             string  `json:"overhead_log"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -301,7 +302,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// input_tokens := utils.GetPrefillTokensForRequest(ctx.RequestID) // word tokenizer by default
 	// utils.CleanupPrefillTokensForRequest(ctx.RequestID)
 	input_tokens_in_bytearray := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
-	input_message, _ := utils.GetRawMessageForRequest(ctx.RequestID)
+	// input_message, _ := utils.GetRawMessageForRequest(ctx.RequestID)
 
 	var podIPsWithMatchingRatios map[string]int
 	var allPrefixHashes []uint64
@@ -331,7 +332,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
 
-	klog.Infof("requestID: %s, numInputTokens: %d, expectedNumOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, expectedNumOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
+	// klog.Infof("requestID: %s, numInputTokens: %d, expectedNumOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, expectedNumOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
 
 	// if !flushed {
 	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
@@ -463,21 +464,20 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			klog.Errorf("Failed to read response body: %v, requestID: %s", readErr, ctx.RequestID)
 			targetPod, _ = r.fallbackRouting(ctx, readyPods)
 		} else {
-			response_process_start := time.Now()
 			// body: {"confidence":0.4398832619190216,"request_id":"10","selected_pod":"10.0.1.30"}
 			var routeResponse RouteResponse
+			unmarshal_start := time.Now()
 			if err := json.Unmarshal(body, &routeResponse); err != nil {
 				klog.Errorf("Failed to unmarshal response body: %v, requestID: %s", err, ctx.RequestID)
 				targetPod, _ = r.fallbackRouting(ctx, readyPods)
 			}
 			resp.Body.Close()
+			unmarshal_overhead := time.Since(unmarshal_start).Milliseconds()
 			if targetPod == nil { // NOTE: This means that RL agent infer was successful and it will use RL agent's selected pod later in this code.
-
-				////////////////////////////////////////////////////////
-				//////////////////// RL selected pod ///////////////////
-				////////////////////////////////////////////////////////
+				// RL selected pod
+				getpod_start := time.Now()
 				targetPod = GetPod(routeResponse.SelectedPod, readyPods)
-
+				getpod_overhead := time.Since(getpod_start).Milliseconds()
 				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
 				if targetPod == nil {
 					klog.Errorf("Failed, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
@@ -533,7 +533,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				} else {
 					klog.Infof("Unknown sub-algorithm: %s, means rl-routing. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				}
-
+				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {
 					utils.SetNumTrains(routeResponse.NumTrains)
 				}
@@ -541,33 +541,9 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					utils.SetNumFlush(routeResponse.NumFlush)
 				}
 				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
-
+				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
-				print_long_log := false
-				if print_long_log {
-					// long log with all overhead summary
-					response_process_overhead := time.Since(response_process_start).Milliseconds()
-					formattedResponseBody := formatJSONResponse(ctx.RequestID, body)
-					klog.Infof("RL router, selected podIP: %s, \n"+
-						"requestID: %s, Route end_to_end_overhead %dms, \n"+
-						// "requestID: %s, infer_http_request took %dms, \n"+
-						// "requestID: %s, tokenizer_overhead: %dms, \n"+
-						"requestID: %s, log_construction_overhead: %dms, \n"+
-						"requestID: %s, request_prepare_overhead: %dms, \n"+
-						"requestID: %s, response_process_overhead: %dms, \n"+
-						"ResponseBody: \n%s",
-						targetPod.Status.PodIP,
-						ctx.RequestID, end_to_end_overhead,
-						// ctx.RequestID, infer_overhead,
-						// ctx.RequestID, tokenizer_overhead,
-						ctx.RequestID, log_construction_overhead,
-						ctx.RequestID, request_prepare_overhead,
-						ctx.RequestID, response_process_overhead, // 1ms
-						formattedResponseBody)
-				} else {
-					//// short log
-					klog.Infof("RL router, requestID: %s, SelectedPod: %s SelectedPodGeneralPodId: %s, Route end_to_end_overhead %dms", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead)
-				}
+				klog.Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
 			}
 		}
 	}
