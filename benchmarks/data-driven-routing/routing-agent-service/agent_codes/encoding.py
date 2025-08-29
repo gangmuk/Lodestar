@@ -541,75 +541,76 @@ class LLMRoutingDataProcessor:
         
         build_feature_overhead = time.time() - build_feature_start_time
         
-        logger.info(f"FINAL TENSOR ANALYSIS:")
-        logger.info(f"pod_features_array shape: {pod_features_array.shape}")
-        logger.info(f"First pod features: {pod_features_array[0, 0, :]}")
-        logger.info(f"Second pod features: {pod_features_array[0, 1, :]}")
+        logger.debug(f"FINAL TENSOR ANALYSIS:")
+        logger.debug(f"pod_features_array shape: {pod_features_array.shape}")
+        logger.debug(f"First pod features: {pod_features_array[0, 0, :]}")
+        logger.debug(f"Second pod features: {pod_features_array[0, 1, :]}")
         if INCLUDE_GPU_IN_FEATURE:
-            logger.info(f"Are all pod GPU features identical?")
+            logger.debug(f"Are all pod GPU features identical?")
             for i in range(min(3, pod_features_array.shape[1])):
                 gpu_start_idx = len(kept_pod_features) - self.num_gpu_types
                 gpu_features = pod_features_array[0, i, gpu_start_idx:]
-                logger.info(f"  Pod {i} GPU features: {gpu_features}")
-        logger.info(f"Final feature composition:")
-        logger.info(f"  pod_features_array shape: {pod_features_array.shape}")
-        logger.info(f"  kept_pod_features: {kept_pod_features}")
-        logger.info(f"  kv_hit_norm shape: {kv_hit_norm.shape}")
+                logger.debug(f"  Pod {i} GPU features: {gpu_features}")
+        logger.debug(f"Final feature composition:")
+        logger.debug(f"  pod_features_array shape: {pod_features_array.shape}")
+        logger.debug(f"  kept_pod_features: {kept_pod_features}")
+        logger.debug(f"  kv_hit_norm shape: {kv_hit_norm.shape}")
         if INCLUDE_GPU_IN_FEATURE:
-            logger.info(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
+            logger.debug(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
         
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
-        
+    
+    
+    ## this is slow
     def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS):
-        
+        overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
+        extract_pod_columns_start = time.time()
         pod_data = self._ultra_fast_extract_pod_columns(processed_df, sorted_all_pod_ids)
+        overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
-        
-        # STEP 3: SKIP encode_pod_ids for inference
-        encode_pod_ids_start = time.time()
-        # Set minimal required attributes without building encoders
         self.pod_encoder = None
         self.selected_pod_encoder = None
-        encode_pod_ids_overhead = time.time() - encode_pod_ids_start
         
-        # STEP 4: MINIMAL feature timing
         classify_feature_timing_start = time.time()
-        # Build feature list fast
         pod_feature_columns = [col for col in processed_df.columns if col.startswith('pod_')]
         unique_features = list(set(col.split('-')[1] for col in pod_feature_columns if '-' in col))
         self.pod_features = sorted(unique_features)
         feature_timing = {f: 'historical' if 'last_second' in f else 'current' for f in self.pod_features}
-        classify_feature_timing_overhead = time.time() - classify_feature_timing_start
+        overhead_summary['classify_feature_timing'] = time.time() - classify_feature_timing_start
         
         # STEP 5: FAST request feature
         n_samples = len(processed_df)
-        request_features, request_numeric_features_overhead = self.extract_request_features(processed_df, request_features_train, n_samples)
+        extract_request_feature_start = time.time()
+        request_features, _ = self.extract_request_features(processed_df, request_features_train, n_samples)
+        overhead_summary['extract_request_feature'] = time.time() - extract_request_feature_start
 
         # STEP 7: ULTRA-OPTIMIZED pod processing
+        process_pod_feature_start = time.time()
         pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary, HYPERPARAMETERS)
+        overhead_summary['process_pod_feature'] = time.time() - process_pod_feature_start
 
         # STEP 8: actions/rewards (continues as normal)
+        extract_actions_start = time.time()
         actions, rewards, ttft_rewards, tpot_rewards = self.extract_actions_rewards(processed_df, n_samples)
+        overhead_summary['extract_actions'] = time.time() - extract_actions_start
 
-        # STEP 9: SKIP combining
-        
         # STEP 10: MINIMAL positional encoding
+        positional_encoding_start = time.time()
         positional_encodings = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
-        
-        # STEP 11: MINIMAL staleness
         staleness_features = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
         pod_features_with_staleness = np.concatenate([pod_features_array, staleness_features], axis=2)
-        logger.info(f"pod_features_array.shape: {pod_features_array.shape}")
-        logger.info(f"staleness_features.shape: {staleness_features.shape}")
-        logger.info(f"pod_features_with_staleness.shape: {pod_features_with_staleness.shape}")
-        
-        # STEP 12: MINIMAL cross attention
+        logger.debug(f"pod_features_array.shape: {pod_features_array.shape}")
+        logger.debug(f"staleness_features.shape: {staleness_features.shape}")
+        logger.debug(f"pod_features_with_staleness.shape: {pod_features_with_staleness.shape}")
         cross_attention_inputs = {'query': pod_features_with_staleness, 'key_value': kv_hit_norm}
+        overhead_summary['positional_encoding'] = time.time() - positional_encoding_start
         
         # STEP 13: FAST interaction features
+        interaction_features_start = time.time()
         interaction_features = np.broadcast_to(request_features[:, np.newaxis, :], (n_samples, pod_features_array.shape[1], request_features.shape[1])).copy()
+        overhead_summary['interaction_features'] = time.time() - interaction_features_start
 
         processed_data = {
             'pod_features': pod_features_array,
@@ -638,7 +639,7 @@ class LLMRoutingDataProcessor:
             'encoders': {'pod_encoder': None, 'selected_pod_encoder': None, 'categorical_encoders': {}}
         }
         
-        return processed_data
+        return processed_data, overhead_summary
 
 
     def _ultra_fast_extract_pod_columns(self, processed_df, sorted_all_pod_ids):
@@ -1060,7 +1061,7 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
     logger.info("Processing training data...")
     data_processor = LLMRoutingDataProcessor(output_dir=output_dir)
     overhead_summary = {}
-    train_processed = data_processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
+    train_processed, _ = data_processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
     train_path = data_processor.save_processed_data(train_processed)
     logger.info("Data processing complete!")
     logger.info(f"Training data: {train_path}")
@@ -1079,8 +1080,11 @@ def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_trai
     prepare_for_encoding_start = time.time()
     processor = LLMRoutingDataProcessor(output_dir="temp_inference")
     overhead_summary = {}
-    processed_data = processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
-    prepare_for_encoding_overhead = time.time() - prepare_for_encoding_start
+    processed_data, prepare_for_encoding_overhead_summary = processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
+    overhead_summary['prepare_for_encoding'] = time.time() - prepare_for_encoding_start
+    for key, val in prepare_for_encoding_overhead_summary.items():
+        overhead_summary[f"prepare_for_encoding.{key}"] = val
+    
     post_process_start_time = time.time()
     tensor_data = {}
     tensor_data['pod_features'] = torch.from_numpy(processed_data['pod_features']).float()
@@ -1098,13 +1102,11 @@ def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_trai
     tpot_rewards = processed_data.get('tpot_rewards')
     if tpot_rewards is not None:
         tensor_data['tpot_rewards'] = torch.from_numpy(tpot_rewards).float()
-    post_process_overhead = time.time() - post_process_start_time
+    overhead_summary['post_process'] = time.time() - post_process_start_time
+    
     # # Optional tensors
     # if processed_data['interaction_features'] is not None:
     #     tensor_data['interaction_features'] = torch.from_numpy(processed_data['interaction_features']).float()
         
-    overhead_summary['encoding.encode_for_inference.mask_overhead'] = 0
-    overhead_summary['encoding.encode_for_inference.prepare_for_encoding_overhead'] = prepare_for_encoding_overhead * 1000
-    overhead_summary['encoding.encode_for_inference.post_process_overhead'] = post_process_overhead * 1000
-
+    overhead_summary['end_to_end'] = time.time() - prepare_for_encoding_start
     return tensor_data, overhead_summary

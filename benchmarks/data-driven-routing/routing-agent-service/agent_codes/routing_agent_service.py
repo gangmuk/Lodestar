@@ -39,7 +39,6 @@ from logger import logger, INCLUDE_GPU_IN_FEATURE
 app = Flask(__name__)
 
 
-RL_MODEL_HYPERPARAMETERS = None
 hyperparameter_file_path = '/app/final_model/model_config.json'
 
 NUM_FLUSH = 0
@@ -56,15 +55,18 @@ TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 MIN_NUM_TRAINING_DATA = 500  # Minimum number of training data required to trigger training
 
-ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
+POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
 MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
 TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
 AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
+ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
 ONLINE_NORMALIZATION_DURING_FLUSH = int(os.getenv("ONLINE_NORMALIZATION_DURING_FLUSH", 0))
-POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
+EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
+REWARD_FUNCTION = os.getenv("REWARD_FUNCTION", "linear_simple")
 
-logger.info(f"TTFT_SLO: {TTFT_SLO}")
-logger.info(f"AVG_TPOT_SLO: {AVG_TPOT_SLO}")
+RL_MODEL_HYPERPARAMETERS = None
+
+
 
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
@@ -90,7 +92,7 @@ def handle_flush():
         
         replaced_data_path = utils.replace_pod_ip_with_generalpodid(raw_data_path)
         ts_preprocess = time.time()
-        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
         # if ENABLE_ONLINE_LEARNING:
@@ -121,11 +123,10 @@ def handle_flush():
 @app.route("/infer", methods=["POST"])
 def handle_infer():
     global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS
-    
+    handle_infer_overhead_summary = {}
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
         logger.info(f"First request starting time set to {first_request_starting_time}")
-    
     # if NUM_TRAINS == 0:
     #     logger.warning("No trained model available, please call /flush to train first")
     #     return jsonify({"error": "No trained model available, please call /flush to train first"}), 503
@@ -133,7 +134,7 @@ def handle_infer():
     handle_infer_start_time = time.time()
     try:
         # Get the log message as a string from the request body
-        prep_start_time = time.time()
+        request_prepare_start_time = time.time()
         log_data = request.json
         if isinstance(log_data, str):
             log_message = log_data
@@ -149,9 +150,10 @@ def handle_infer():
 
         # Extract request ID for logging purposes
         request_id = "default"  # or extract from log_message
+        replace_podid_start_time = time.time()
         log_message = utils.replace_pod_ip_with_generalpodid(log_message)
         # logger.info(f"log_message_with_replaced_pod_id: {log_message}")
-        
+        handle_infer_overhead_summary["replace_podid_overhead"] = time.time() - replace_podid_start_time
         parts = log_message.split("requestID@")
         if len(parts) > 1:
             request_id_parts = parts[1].split("@")
@@ -159,23 +161,20 @@ def handle_infer():
                 request_id = request_id_parts[0]
         else:
             logger.warning("No request ID found in log message, using default 'default'")
-        handle_infer_total_prep_overhead = time.time() - prep_start_time
-
+        handle_infer_overhead_summary["request_prepare"] = time.time() - request_prepare_start_time
+        
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
-        processed_df, _, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+        processed_df, _, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
         logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
-        
-        handle_infer_total_total_preprocess_overhead = time.time() - preprocess_start_time
+        handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
-        get_stat_start_time = time.time()
+        normalize_start = time.time()
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
             assert False
         if stats_instance.count == 0:
             logger.warning(f"Stats instance count is 0, no data available for normalization")
-
-        #====================================================
         non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
         features_must_exist_in_stats_instance = []
         for feature in processed_df.columns:
@@ -189,14 +188,6 @@ def handle_infer():
                 logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
                 logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
-        
-        # stats = stats_instance.feature_stats[feature]
-        # mean_val = stats.mean.item()
-        # std_val = stats.std.item()
-        # logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={mean_val:.2f}, std={std_val:.2f}")
-
-
-
         ## new way
         normalizable_features, non_normalizable_features = feature_normalization._get_normalizable_features(processed_df)
         logger.debug(f"normalizable_features: {normalizable_features}")
@@ -205,15 +196,10 @@ def handle_infer():
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
         for feature in normalizable_features:
-            
             stats = stats_instance.feature_stats[feature]
             logger.debug(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-            
             feature_normalization._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
-            
             logger.debug(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-            
-            
             if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
                 if feature in processed_df.columns:
                     processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
@@ -221,17 +207,14 @@ def handle_infer():
                 else:
                     logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
                     assert False
-        
         ## old way
         # processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
-        
-        #===================================================
-        handle_infer_total_get_stat_overhead = time.time() - get_stat_start_time
+        handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
 
-        # Encode data (normalization already done)
+        ## Encode data (normalization already done)
         encode_start_time = time.time()
         tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
-        handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
+        handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
         if MODEL == "simpler_contextual_bandit":
@@ -242,25 +225,37 @@ def handle_infer():
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
             MODEL_UPDATED = False
-        handle_infer_total_total_infer_from_tensor_overhead = time.time() - infer_from_tensor_start_time
+        handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
+        
+        
+        remaining_work_start = time.time()
         result["requestID"] = request_id
         result["num_trains"] = NUM_TRAINS
         result["request_timestamp"] = time.time() - first_request_starting_time
         logger.info(f"Inference result: {result}")
         
-        handle_infer_total_wrapup_start_time = time.time()
         # Map the pod index back to the actual pod ID
         selected_pod_index = result['selected_pod_index']
         if selected_pod_index >= len(sorted_all_pod_ids):
             logger.error(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
             assert False
-            
         selected_pod_generalpodid = sorted_all_pod_ids[selected_pod_index]
         selected_pod_ip = RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'][selected_pod_generalpodid]
-        handle_infer_total_wrapup_overhead = time.time() - handle_infer_total_wrapup_start_time
-        handle_infer_total_overhead = time.time() - handle_infer_start_time
+            
+        logger.info(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
         
-        # Return the result
+        handle_infer_overhead_summary['remaining_work'] = time.time() - remaining_work_start
+        handle_infer_overhead_summary["end_to_end"] = time.time() - handle_infer_start_time
+        
+        overhead_log = "oh"
+        for key, value in handle_infer_overhead_summary.items():
+            overhead_log += f", handle_infer_{key}: {value*1000:.0f}ms"
+        for key, value in encode_for_inference_overhead_summary.items():
+            overhead_log += f", encode_{key}: {value*1000:.0f}ms"
+        for key, value in preprocess_dataset_overhead_summary.items():
+            overhead_log += f", preprocess_{key}: {value*1000:.0f}ms"
+        for key, value in infer_from_tensor_overhead_summary.items():
+            overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
@@ -269,25 +264,10 @@ def handle_infer():
             "selected_pod_generalpodid": selected_pod_generalpodid,
             "confidence": result['confidence'],
             "exploration": result['explore_mask'],
-            "exploration_enabled": 1 if RL_MODEL_HYPERPARAMETERS['exploration_rate'] > 0 else 0,
+            "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
-            # "* handle_infer_total_prep_overhead": handle_infer_total_prep_overhead*1000,
-            # "* handle_infer_total_total_preprocess_overhead": handle_infer_total_total_preprocess_overhead*1000,
-            # "* handle_infer_total_get_stat_overhead": handle_infer_total_get_stat_overhead*1000,
-            # "* handle_infer_total_total_encoding_overhead": handle_infer_total_total_encoding_overhead*1000,
-            # "* handle_infer_total_wrapup_overhead": handle_infer_total_wrapup_overhead*1000,
-            # "* handle_infer_total_total_infer_from_tensor_overhead": handle_infer_total_total_infer_from_tensor_overhead*1000,
-            # "* handle_infer_total_overhead": handle_infer_total_overhead*1000,
+            "overhead_log": overhead_log,
         }
-
-        for key, value in encode_for_inference_overhead_summary.items():
-            response[key] = value
-        for key, value in preprocess_dataset_overhead_summary.items():
-            response[key] = value
-        for key, value in infer_from_tensor_overhead_summary.items():
-            response[key] = value
-
-        logger.info(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
         return jsonify(response), 200
         
     except Exception as e:
@@ -325,44 +305,40 @@ def online_train_routine():
         logger.info(f"online_train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
 
 
-def load_rl_hyperparameters(file_path):
+def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
     if not os.path.exists(file_path):
         logger.error(f"Hyperparameter file {file_path} does not exist")
         assert False
     with open(file_path, 'r') as f:
         data = json.load(f)
-    
-    rl_model_hyperparameters = {}
     for key, value in data.items():
         if key == 'normalization':
             # Handle nested normalization parameters
-            rl_model_hyperparameters[key] = {}
+            RL_MODEL_HYPERPARAMETERS[key] = {}
             for sub_key, sub_value in value.items():
                 if sub_key == 'FEATURES_NORMALIZED':
                     # Convert string representation of set to actual set
                     if sub_value and sub_value != "set()":
-                        rl_model_hyperparameters[key][sub_key] = ast.literal_eval(sub_value)
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
                     else:
-                        rl_model_hyperparameters[key][sub_key] = set()
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
                 elif sub_key == 'FEATURES_AMPLIFIED':
                     # Convert string representation of set to actual set
                     if sub_value and sub_value != "set()":
-                        rl_model_hyperparameters[key][sub_key] = ast.literal_eval(sub_value)
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
                     else:
-                        rl_model_hyperparameters[key][sub_key] = set()
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
                 else:
-                    rl_model_hyperparameters[key][sub_key] = sub_value
+                    RL_MODEL_HYPERPARAMETERS[key][sub_key] = sub_value
         else:
-            rl_model_hyperparameters[key] = value
+            RL_MODEL_HYPERPARAMETERS[key] = value
 
-    for key, value in rl_model_hyperparameters.items():
+    for key, value in RL_MODEL_HYPERPARAMETERS.items():
         if key == 'normalization':
             for sub_key, sub_value in value.items():
-                logger.info(f"{key}.{sub_key}: {sub_value}")
+                logger.info(f"load_rl_hyperparameters, {key}.{sub_key}: {sub_value}")
         else:
-            logger.info(f"{key}: {value}")
-
-    return rl_model_hyperparameters
+            logger.info(f"load_rl_hyperparameters, {key}: {value}")
 
 
 def fetch_pod_gpu_mapping():
@@ -460,9 +436,15 @@ def graceful_shutdown(sig=None, frame=None):
 def init():
     global RL_MODEL_HYPERPARAMETERS, stats_instance
     if RL_MODEL_HYPERPARAMETERS is None:
+        RL_MODEL_HYPERPARAMETERS = {}
+        RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = REWARD_FUNCTION
+        RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = TTFT_SLO
+        RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = AVG_TPOT_SLO
+        RL_MODEL_HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
+        RL_MODEL_HYPERPARAMETERS['ONLINE_NORMALIZATION_DURING_FLUSH'] = ONLINE_NORMALIZATION_DURING_FLUSH
+        RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         logger.info("Loading RL hyperparameters from model_config.json")
-        RL_MODEL_HYPERPARAMETERS = load_rl_hyperparameters(hyperparameter_file_path)
-        
+        load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
         # Test permissions first
         logger.info("Testing Kubernetes API permissions...")
         if not test_kubernetes_permissions():

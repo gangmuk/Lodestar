@@ -2015,6 +2015,10 @@ _cached_metadata = None
 
 def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     global final_model_dir, _cached_agent, _cached_agent_config
+    overhead_summary = {}
+    infer_start_time = time.time()
+    
+    tensor_transfer_start = time.time()
     try:
         pod_features = tensor_data['pod_features_with_staleness'].to(device)
         kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
@@ -2022,7 +2026,10 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     except KeyError as e:
         logger.error(f"Missing key in tensor_data: {e}")
         raise ValueError(f"Missing key in tensor_data: {e}")
+    overhead_summary['tensor_transfer'] = time.time() - tensor_transfer_start
     
+    
+    get_agent_start = time.time()
     # Ensure batch format
     if len(pod_features.shape) == 2:
         pod_features = pod_features.unsqueeze(0)
@@ -2033,22 +2040,23 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
 
     # Get or create agent
     agent = _get_or_create_agent(pod_features, kv_hit_ratios, request_features, model_updated, HYPERPARAMETERS)
+    overhead_summary['get_agent'] = time.time() - get_agent_start
     
-    # Optional detailed logging
-    _log_inference_details(pod_features, kv_hit_ratios, request_features, agent, request_id)
+    # # Optional detailed logging
+    # _log_inference_details(pod_features, kv_hit_ratios, request_features, agent, request_id)
     
-    # Core inference
-    infer_start_time = time.time()
+    inference_start = time.time()
     agent.policy.eval()
     with torch.no_grad():
         action_probs = agent.policy(pod_features, kv_hit_ratios, request_features)
-        
         # ADD DEBUGGING
-        logger.info(f"🔍 Request {request_id}:")
-        logger.info(f"  Raw probabilities: {action_probs[0].cpu().numpy()}")
-        logger.info(f"  Exploration rate: {HYPERPARAMETERS['exploration_rate']}")
-        logger.info(f"  Explore flag: {HYPERPARAMETERS['explore']}")
+        logger.debug(f"Request {request_id}:")
+        logger.debug(f"  Raw probabilities: {action_probs[0].cpu().numpy()}")
+        logger.debug(f"  Exploration rate: {HYPERPARAMETERS['exploration_rate']}")
+        logger.debug(f"  Explore flag: {HYPERPARAMETERS['explore']}")
+        overhead_summary['inference'] = time.time() - inference_start
         
+        result_formatting_start = time.time()
         # Check for uniform probabilities (model collapse)
         prob_std = action_probs[0].std().item()
         if prob_std < 0.01:  # Very small standard deviation = uniform
@@ -2063,9 +2071,6 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
             explore_mask = torch.zeros(1, dtype=torch.long, device=action_probs.device)
         
         confidence = action_probs[0, selected_action].item()
-
-    total_inference_time = time.time() - infer_start_time
-    
     # Return result
     result = {
         'selected_pod_index': selected_action,
@@ -2073,16 +2078,10 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
         'pod_probabilities': action_probs[0].cpu().numpy().tolist(),
         'explore_mask': explore_mask.cpu().numpy().tolist()[0] 
     }
-
     assert len(explore_mask.cpu().numpy().tolist()) == 1
-
-    timing_info = {
-        'total_inference_time_ms': total_inference_time * 1000,
-        'agent_cache_hit': hasattr(_get_or_create_agent, '_last_cache_hit'),
-        'model_updated': model_updated
-    }
-    
-    return result, timing_info
+    overhead_summary['result_formatting'] = time.time() - result_formatting_start
+    overhead_summary['total_inference'] = time.time() - infer_start_time
+    return result, overhead_summary
 
 def _get_or_create_agent(pod_features, kv_hit_ratios, request_features, 
                         model_updated, HYPERPARAMETERS):
