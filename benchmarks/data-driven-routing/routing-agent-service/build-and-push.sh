@@ -10,7 +10,7 @@ fi
 # docker buildx build --platform ${platform} --no-cache -t aibrix/gangmuk-routing-agent:${tag} .
 
 if [ "$build" == "vke" ]; then
-    tag=latest-linux
+    tag=latest-vke-gangmuk
     docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
     docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
