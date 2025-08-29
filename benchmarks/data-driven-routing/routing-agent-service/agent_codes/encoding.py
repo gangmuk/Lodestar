@@ -797,8 +797,16 @@ class LLMRoutingDataProcessor:
         # Direct column extraction
         for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards)]:
             if col in df.columns:
-                target[:] = df[col].fillna(0).values.astype(np.float32)
-        
+                try:
+                    target[:] = df[col].fillna(0).values.astype(np.float32)
+                except Exception as e:
+                    the_first_row = df.iloc[0]
+                    logger.error(f"df.columns: {df.columns}")
+                    logger.error(f"the_first_row: {the_first_row}")
+                    logger.error(f"the_first_row[{col}]: {the_first_row[col]}")
+                    logger.error(f"Error processing column {col}: {e}")
+                    exit(1)
+
         return actions, rewards, ttft_rewards, tpot_rewards
 
     def save_processed_data(self, processed_data):

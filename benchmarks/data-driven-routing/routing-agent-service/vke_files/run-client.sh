@@ -29,8 +29,25 @@ input_workload_dirs=(
     # "workload/p8096_s2048_rps10"
     # "workload/p8096_s2048_rps15"
 
+    ## # not enough load to stress
+    # "workload/SharingRatio77%-p512_s64_rps20_spp_20_ndp20-p1024_s128_rps10_spp_20_ndp20-p2048_s512_rps5_spp_20_ndp20-p4096_s1024_rps5_spp_20_ndp20" 
+
+    ## not enough load to stress
+    # "workload/SharingRatio77%-p512_s64_rps20_spp_20_ndp20-p1024_s128_rps10_spp_20_ndp20-p2048_s512_rps10_spp_20_ndp20-p4096_s1024_rps10_spp_20_ndp20"
+
+    ## the system breaks after the first half of the experiment
+    # "workload/SharingRatio78%-p512_s64_rps20_spp_30_ndp20-p1024_s128_rps20_spp_30_ndp20-p2048_s512_rps20_spp_30_ndp20-p4096_s1024_rps20_spp_30_ndp20"
+
+    ## the first half cut of the above. It works.
+    # "workload/SharingRatio78%-p512_s64_rps20_spp_30_ndp20-p1024_s128_rps20_spp_30_ndp20-p2048_s512_rps20_spp_30_ndp20-p4096_s1024_rps20_spp_30_ndp20-half"
+    
+    ## sort of working, but there is no big difference between rl and prefix-cache-1
+    # "workload/SharingRatio80%-p512_s64_rps20_spp_20_ndp10-p1024_s128_rps20_spp_20_ndp10-p2048_s512_rps20_spp_20_ndp10-p4096_s1024_rps20_spp_20_ndp10-p8192_s1024_rps5_spp_20_ndp10"
+
     # "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50"
-    "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
+
+    ## challenging one!
+    # "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
 
     # "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80"
     # "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
@@ -39,7 +56,9 @@ input_workload_dirs=(
     # "workload/SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80-half"
 
     # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80"
-    # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
+
+    ## works well.
+    "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
 
     # "workload/p4096_s1024_rps10_spp_20_ndp_100"
     # "workload/p4096_s1024_rps10_spp_10_ndp200"
@@ -59,9 +78,9 @@ fi
 
 routing_configs=(
     "rl-online-router${delimiter}none"
-    # "rl-online-router${delimiter}prefix-cache-1"
-    # "rl-online-router${delimiter}prefix-cache-2"
-    # "rl-online-router${delimiter}random"
+    "rl-online-router${delimiter}prefix-cache-1"
+    "rl-online-router${delimiter}prefix-cache-2"
+    "rl-online-router${delimiter}random"
 
     # # "latency-prediction-based${delimiter}none"
     # "prefix-cache-and-load${delimiter}none"
@@ -72,10 +91,12 @@ routing_configs=(
 
 TTFT_SLO=1000
 AVG_TPOT_SLO=50
+EXPLORATION_ENABLED=0
 MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
 ENABLE_FLUSH=0
 flushPeriod=10 # seconds
 ONLINE_NORMALIZATION_DURING_FLUSH=0
+REWARD_FUNCTION="linear_simple" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient"
 
 # for ENABLE_ONLINE_LEARNING in true false; do
 for ENABLE_ONLINE_LEARNING in false; do
@@ -97,30 +118,36 @@ for ENABLE_ONLINE_LEARNING in false; do
 
             ## Env var for routing-agent-service deployment
             python3 update_k8s_env.py \
-                    --env TTFT_SLO=${TTFT_SLO} \
-                    --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
-                    --env MODEL=simpler_contextual_bandit \
-                    --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
-                    --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH} \
                     --deployment routing-agent-service \
                     --namespace default \
-                    --container routing-agent
+                    --container routing-agent \
+                    --env TTFT_SLO=${TTFT_SLO} \
+                    --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
+                    --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
+                    --env MODEL=simpler_contextual_bandit \
+                    --env REWARD_FUNCTION=${REWARD_FUNCTION} \
+                    --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
+                    --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
 
             ## Env var for aibrix-gateway-plugins deployment
             python3 update_k8s_env.py \
-                    --env ENABLE_FLUSH=${ENABLE_FLUSH} \
-                    --env FLUSH_PERIOD=${flushPeriod} \
-                    --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH} \
                     --deployment aibrix-gateway-plugins \
                     --namespace aibrix-system \
-                    --container gateway-plugin
+                    --container gateway-plugin \
+                    --env ENABLE_FLUSH=${ENABLE_FLUSH} \
+                    --env FLUSH_PERIOD=${flushPeriod} \
+                    --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
 
             start_time=$(date +%s)
             
             kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
             kubectl rollout restart deployment routing-agent-service -n default
-            python ship_all.py 0 ${final_model_dir}
-            sleep 10
+
+
+            # python ship_all.py 0 ${final_model_dir}
+            # sleep 10
+
+
             #################################################
             ## Send load from vke node ##
             #################################################

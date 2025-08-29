@@ -335,8 +335,8 @@ def normalize_features_for_training(processed_df, stats_instance: PerFeatureRunn
                     amplified_count += 1
                     logger.info(f"📈 Amplified critical feature: {feature} by {stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']}%, min: {processed_df[feature].min()}, max: {processed_df[feature].max()}, mean: {processed_df[feature].mean()}")
     
-    # Apply reward amplification
-    processed_df = try_reward_amplification(processed_df, stats_instance.CONFIG)
+    # # Apply reward amplification
+    # processed_df = try_reward_amplification(processed_df, stats_instance.CONFIG)
     
     logger.info(f"✅ FEATURE PROCESSING COMPLETE:")
     return processed_df

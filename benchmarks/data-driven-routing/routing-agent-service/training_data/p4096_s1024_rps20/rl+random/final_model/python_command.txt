@@ -1,1 +1,1 @@
-python3 offline_routing_agent.py training_data/p4096_s1024_rps20/rl+random/data_replaced.csv --model simpler_contextual_bandit --analyze_behavior --ttft_slo 1000 --avg_tpot_slo 50
+python3 offline_routing_agent.py ../training_data/p4096_s1024_rps20/rl+random/data_replaced.csv --model simpler_contextual_bandit --analyze_behavior --ttft_slo 1000 --avg_tpot_slo 50

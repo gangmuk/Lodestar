@@ -5,8 +5,9 @@ set -e
 # data_file="../training_data/p4096_s1024_rps20/random/data.csv"
 # data_file="../training_data/p4096_s1024_rps20/rl/data.csv"
 # data_file="../training_data/p4096_s1024_rps20/data.csv"
-# data_file="../training_data/p4096_s1024_rps20/rl+random/data_replaced.csv"
-data_file="../training_data/mix/sharing71%-random_2-data.csv"
+data_file="../training_data/p4096_s1024_rps20/rl+random/data_replaced.csv"
+# data_file="../training_data/mix/sharing71%-random_2-data.csv"
+# data_file="../training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/data.csv"
 
 if [ ! -f "${data_file}" ]; then
     echo "Data file does not exist: ${data_file}"
@@ -33,4 +34,4 @@ ${python_cmd} 2>&1 | tee "${final_model_dir}/output.txt"
 
 echo "${python_cmd}" > "${final_model_dir}/python_command.txt"
 echo "* Script complete. Logs copied to ${final_model_dir}"
-echo "* model training analysis ${final_model_dir}/comprehenisve_training_metrics.pdf"
+echo "* model training analysis ${final_model_dir}/comprehensive_training_metrics.pdf"

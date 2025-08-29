@@ -240,12 +240,19 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     logger.info("Collecting all unique pod IDs across the dataset...")
     
     # Vectorized approach - get all unique pods from all relevant columns at once
-    for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'podMetricsLastSecond']:
+    # for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'podMetricsLastSecond']:
+    for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods']:
         if col in parsed_df.columns:
             for data in parsed_df[col]:
                 if data:
+                    if type(data) is not dict:
+                        print(f"type(data): {type(data)}")
+                        print(f"data: {data}")
+                        print(f"parsed_df[{col}]: {parsed_df[col]}")
+                        assert False
                     all_pods_set.update(data.keys())
-    
+                    
+
     # all_pods = list(all_pods_set) # BUG: NON-DETERMINISTIC ORDERING.  set-to-list conversion can produce different orderings. It affects the computation in _optimized_process_pod_features in encoding.py. This all_pods is returned in this function -> preprocess.main ->  encoding.encode_for_inference/encode_for_train -> encoding.prepare_for_encoding -> LLMRoutingDataProcessor.pod_ids = all_pods -> encoding._optimized_process_pod_features, for pod_idx, pod_id in enumerate(self.pod_ids): feature arrangement depends on the order of all_pods
     # NOTE: Always sort the pod list... maybe it should have never used the set or dictionary when maintaining pods
     # all_pods = list(all_pods_set) # IT was BUG
@@ -279,14 +286,13 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     column_check_start_time = time.time()
 
     if INCLUDE_GPU_IN_FEATURE:
-        parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].map(RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'])
-        unmapped_pods = parsed_df[parsed_df['gpu_model_encoded'].isna()]['selectedpod'].unique()
-        if len(unmapped_pods) > 0:
-            logger.error(f"CRITICAL: Found unmapped GPU models for pods: {unmapped_pods}")
-            unmapped_pods_gpu_models = parsed_df[parsed_df['selectedpod'].isin(unmapped_pods)]['gpu_model_encoded'].unique()
-            logger.error(f"Unmapped GPU models: {unmapped_pods_gpu_models}")
-            assert False
+        def get_gpu_model_encoded(selected_pod):
+            selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
+            return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
+        
+        parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].apply(get_gpu_model_encoded)
         parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
+
     
     # Check for missing expected columns
     missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
@@ -382,11 +388,6 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
             parsed_df[col] = pd.to_numeric(parsed_df[col], errors='coerce')
     numeric_conversion_overhead = time.time() - numeric_conversion_start_time # 0-1ms
     
-
-    # Pre-create pod_gpu_models and pod features structure
-    if INCLUDE_GPU_IN_FEATURE:
-        pod_gpu_models = {pod_id: "NVIDIA-L20" for pod_id in sorted_all_pod_ids}
-    
     # Vectorized processing using pandas operations
     logger.info("Processing records in vectorized manner...")
     
@@ -403,7 +404,12 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'e2e_latency': parsed_df['e2e'].values,
     }
     if INCLUDE_GPU_IN_FEATURE:
-       base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
+        base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
+        # Fix 2: Use proper GPU mapping instead of hardcoding
+        if 'pod_gpu_mapping' not in RL_MODEL_HYPERPARAMETERS:
+            logger.error("Error: pod_gpu_mapping not found in RL_MODEL_HYPERPARAMETERS")
+            assert False
+        pod_gpu_models = {pod_id: RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id] for pod_id in sorted_all_pod_ids}
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values
@@ -428,7 +434,11 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
         base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
         if INCLUDE_GPU_IN_FEATURE:
-            base_data[f"{pod_id}-gpu_model"] = ["NVIDIA-L20"] * len(parsed_df)
+            if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
+                logger.error(f"Error: Pod ID {pod_id} not found in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']")
+                assert False
+            gpu_model = RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id]
+            base_data[f"{pod_id}-gpu_model"] = [gpu_model] * len(parsed_df)
         
         # # Extract key metrics for this pod across all rows
         # for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
@@ -470,14 +480,15 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'action': action_values,
         'avg_tpot_slo_satisfied': tpot_values <= avg_tpot_slo,
         'avg_ttft_slo_satisfied': ttft_values <= ttft_slo,
-        'ttft_reward': ttft_rewards,
-        'tpot_reward': tpot_rewards,
-        'reward': combined_rewards,
+        'ttft_reward': reward['ttft_rewards'],
+        'tpot_reward': reward['tpot_rewards'],
+        'reward': reward['combined_rewards'],
     })
 
     # Create DataFrame only once with all data
     create_df_start_time = time.time()
     processed_df = pd.DataFrame(base_data)
+    processed_df.to_csv("debug_processed_df.csv")
     create_df_overhead = time.time() - create_df_start_time
 
 
