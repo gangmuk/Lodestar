@@ -14,7 +14,7 @@ fi
 
 
 if [ "$build" == "vke" ]; then
-    tag=latest-linux-gangmuk
+    tag=latest-vke-gangmuk
     docker buildx build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
     docker tag aibrix/gateway-plugins:nightly aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
     docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
@@ -31,5 +31,3 @@ else
     kubectl patch deployment aibrix-gateway-plugins -n aibrix-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"gateway-plugin","imagePullPolicy":"Always"}]}}}}'
     kubectl rollout restart deployment/aibrix-gateway-plugins -n aibrix-system
 fi
-
-kubectl rollout restart deploy aibrix-gateway-plugins -n aibrix-system

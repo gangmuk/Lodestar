@@ -17,6 +17,7 @@ kubectl apply -f ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routin
 
 ## Building aibrix-gateway-plugin
 ##  ~/projects/aibrix-gangmuk/build-gateway.sh <build>
+## Allocate more than 8 cores for limits field
 
 ## Building routing agent service
 ##  ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/build-and-push.sh <build>
