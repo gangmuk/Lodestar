@@ -224,11 +224,11 @@ def test_inference(args, log_message, request_id):
     }
     
     # Enhanced logging with match/mismatch status
-    if original_pod_choice:
-        match_status = "✅ MATCH" if prediction_matches else "❌ MISMATCH"
-        logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}")
+    if prediction_matches:
+        match_status = "original routing == model routing"
     else:
-        logger.info(f"Inference result: predicted={selected_pod}, original=UNKNOWN, confidence={result['confidence']:.4f}")
+        match_status = "original routing != model routing"
+    logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}")
 
     return result_summary
 
