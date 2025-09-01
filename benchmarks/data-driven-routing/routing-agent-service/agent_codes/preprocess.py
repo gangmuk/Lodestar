@@ -610,111 +610,43 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
     if input_file is not None:  # Training path
         parsed_df, json_columns = parse_log_file(input_file)
     else:  # Inference path
-        ################################################
         if 'running_pods' not in RL_MODEL_HYPERPARAMETERS:
             RL_MODEL_HYPERPARAMETERS['running_pods'] = utils.get_running_pods_by_label(label_selector)
-
         if 'all_pod_ips_from_running_pods' not in RL_MODEL_HYPERPARAMETERS:
             RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'] = utils.fetch_running_pod_ips(RL_MODEL_HYPERPARAMETERS['running_pods'])
-            print(f"all_pod_ips_from_running_pods: {RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods']}")
-
         sort_start_time = time.time()
         unique_pod_ips = sorted(RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'])
         preprocess_dataset_overhead_summary["sort_unique_pod_ips"] = time.time() - sort_start_time
-
         if 'pod_ip_to_generalpodid' not in RL_MODEL_HYPERPARAMETERS:
             pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(unique_pod_ips)
             RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-
         if 'generalpodid_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS:
             generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(RL_MODEL_HYPERPARAMETERS['running_pods'], pod_ip_to_generalpodid)
             RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
-
         if 'pod_ip_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS or 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
             pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
             RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
             RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-        
-        logger.debug(f"pod_ip_to_generalpodid: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid']}")
-        logger.debug(f"generalpodid_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']}")
-        logger.debug(f"pod_ip_to_gpu_model: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model']}")
-        logger.debug(f"pod_ip_to_gpu_model_encoded: {RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
-        ################################################
-        
         preprocess_dataset_overhead_summary["init"] = time.time() - main_start_time
-        
         parse_start_time = time.time()
         parsed_df, _ = parse_log_message(log_message)
         preprocess_dataset_overhead_summary["parse_log_message"] = time.time() - parse_start_time
-        logger.debug(f"======================================")
-        logger.debug(f"parsed_df: {parsed_df.to_csv(index=False, header=True)}")
-        logger.debug(f"======================================")
-        logger.debug(f"log_message: {log_message}")
-        logger.debug(f"======================================")
     if len(parsed_df) == 0:
         logger.error("No data found after parsing JSON columns.")
         logger.error(f"Log message: {log_message}")
         assert False
+    
     # Unified preprocessing for both single row (inference) and batch (training)
     sorted_all_pod_ids = utils.get_sorted_all_pod_ids('batch_dataframe', parsed_df)
-    
     if len(parsed_df) == 1 and input_file is None:
         # Inference mode: single row, no training-specific features needed
         preprocess_start_time = time.time()
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(
-            parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=False
-        )
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=False)
         preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
         mapping_info = None  # No mapping info needed for inference
     else:
         # Training mode: batch processing with full features
         preprocess_start_time = time.time()
-        processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(
-            parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True
-        )
+        processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True)
         preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
-    mapping_info_write_start_time = time.time()
-    output_file = None
-    if input_file is not None and mapping_info is not None:
-        try:
-            input_dir = os.path.dirname(input_file)
-            # Save mapping information
-            output_file = os.path.join(input_dir, "processed_dataset.csv")
-            mapping_file = output_file.replace('.csv', '_mapping.json')
-            if not os.path.exists(mapping_file):
-                with open(mapping_file, 'w') as f:
-                    try:
-                        json.dump(mapping_info, f, indent=2)
-                        logger.info("JSON serialization successful")
-                    except TypeError as e:
-                        logger.error(f"JSON serialization failed: {e}")
-                        # Try to identify the problematic part by serializing each part separately
-                        logger.info("Trying to identify the problematic part:")
-                        try:
-                            json.dumps(mapping_info['pod_to_index'])
-                            logger.info("pod_to_index serialization: OK")
-                        except TypeError as e:
-                            logger.error(f"pod_to_index serialization failed: {e}")
-                        
-                        try:
-                            json.dumps(mapping_info['index_to_pod'])
-                            logger.info("index_to_pod serialization: OK")
-                        except TypeError as e:
-                            logger.error(f"index_to_pod serialization failed: {e}")
-                        if INCLUDE_GPU_IN_FEATURE:
-                            try:
-                                json.dumps(mapping_info['pod_gpu_models'])
-                                logger.info("pod_gpu_models serialization: OK")
-                            except TypeError as e:
-                                logger.error(f"pod_gpu_models serialization failed: {e}")
-                        raise
-                
-            logger.info(f"Mapping information saved to {mapping_file}")
-            logger.info("\nPod mapping (for action space):")
-            for pod, idx in mapping_info['pod_to_index'].items():
-                logger.info(f"  Pod {pod} -> Action {idx}")
-        except Exception as e:
-            logger.error(f"Error processing dataset: {e}")
-            assert False
-    preprocess_dataset_overhead_summary["mapping_info_write"] = time.time() - mapping_info_write_start_time
-    return processed_df, output_file, sorted_all_pod_ids, preprocess_dataset_overhead_summary
+    return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
