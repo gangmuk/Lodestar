@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
 from pathlib import Path
+import os
 
 class CSVTrainingAnalyzer:
     def __init__(self, csv_file):
@@ -254,13 +255,9 @@ class CSVTrainingAnalyzer:
                 axes[2,2].grid(True)
         
         plt.tight_layout()
-        
-        if output_dir:
-            plot_file = output_dir / 'training_analysis.png'
-            plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-            print(f"📈 Plots saved to: {plot_file}")
-        else:
-            plt.show()
+        plot_file = output_dir / 'training_analysis.pdf'
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        print(f"** Plots saved to: {plot_file}")
     
     def generate_report(self):
         """Generate comprehensive training report"""
@@ -279,16 +276,15 @@ def main():
     parser = argparse.ArgumentParser(description='Analyze detailed CSV training logs')
     parser.add_argument('csv_file', help='Path to training_metrics.csv file')
     parser.add_argument('--plots', action='store_true', help='Generate plots')
-    parser.add_argument('--output-dir', help='Output directory for plots')
     
     args = parser.parse_args()
     
     analyzer = CSVTrainingAnalyzer(args.csv_file)
     analyzer.generate_report()
-    
-    if args.plots:
-        analyzer.generate_plots(args.output_dir)
+    output_dir = os.path.dirname(args.csv_file)
+    analyzer.generate_plots(output_dir)
 
 if __name__ == "__main__":
     main()
+
 
