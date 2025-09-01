@@ -31,6 +31,7 @@ from datetime import datetime
 import time
 from logger import logger, INCLUDE_GPU_IN_FEATURE
 import json
+from functools import lru_cache
 # INCLUDE_GPU_IN_FEATURE = True
 
 
@@ -371,11 +372,94 @@ class LLMRoutingDataProcessor:
         
         return shuffled_pod_features, shuffled_kv_hit_ratios
 
+    def _single_row_process_pod_features(self, pod_data, overhead_summary, HYPERPARAMETERS):
+        """Optimized processing for single-row inference (n_samples=1)."""
+        vectorized_extraction_start_time = time.time()
+        
+        # Feature definitions (same as batch version)
+        ALL_NUMERIC_FEATURES = [
+            'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache',
+            'running_requests', 'waiting_requests', 'prefill_tokens', 
+            'decode_tokens', 'kv_hit_ratio'
+        ]
+        
+        # CRITICAL FIX: Exclude kv_hit_ratio from pod features (same as batch processing)
+        POD_NUMERIC_FEATURES = [f for f in ALL_NUMERIC_FEATURES if f != 'kv_hit_ratio']
+        n_pods = len(self.sorted_all_pod_ids)
+        n_pod_numeric = len(POD_NUMERIC_FEATURES)  # Exclude kv_hit_ratio
+        
+        # Calculate feature dimensions (for pod features only, not including kv_hit_ratio)
+        if INCLUDE_GPU_IN_FEATURE:
+            gpu_onehot_dim = self.num_gpu_types
+            total_feature_dim = n_pod_numeric + gpu_onehot_dim
+        else:
+            total_feature_dim = n_pod_numeric
+        
+        # OPTIMIZATION: Use 2D array instead of 3D for single row
+        pod_features_2d = np.zeros((n_pods, total_feature_dim), dtype=np.float32)
+        kv_hit_ratios_1d = np.zeros(n_pods, dtype=np.float32)
+        
+        # GPU encoding setup
+        if INCLUDE_GPU_IN_FEATURE:
+            gpu_encoded_per_pod = {}
+            for pod_id in self.sorted_all_pod_ids:
+                if pod_id not in HYPERPARAMETERS['pod_gpu_id_mapping']:
+                    logger.error(f"CRITICAL: Pod {pod_id} not found in pod_gpu_id_mapping!")
+                    assert False, f"Unknown GPU model for pod {pod_id}"
+                gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
+                if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
+                    logger.error(f"CRITICAL: Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
+                    assert False, f"Invalid GPU model ID {gpu_model_id}"
+                gpu_encoded_per_pod[pod_id] = gpu_model_id
+        
+        # Direct value extraction for single row (no array indexing)
+        for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
+            if pod_id in pod_data:
+                pod_features = pod_data[pod_id]
+                
+                # Extract pod numeric features (excluding kv_hit_ratio) 
+                for feat_idx, feature_name in enumerate(POD_NUMERIC_FEATURES):
+                    if feature_name in pod_features:
+                        value = pod_features[feature_name].iloc[0] if hasattr(pod_features[feature_name], 'iloc') else pod_features[feature_name]
+                        pod_features_2d[pod_idx, feat_idx] = value
+                
+                # Extract kv_hit_ratio separately (not included in pod features)
+                if 'kv_hit_ratio' in pod_features:
+                    kv_value = pod_features['kv_hit_ratio'].iloc[0] if hasattr(pod_features['kv_hit_ratio'], 'iloc') else pod_features['kv_hit_ratio']
+                    kv_hit_ratios_1d[pod_idx] = kv_value
+                
+                # GPU one-hot encoding
+                if INCLUDE_GPU_IN_FEATURE:
+                    gpu_model_id = gpu_encoded_per_pod[pod_id]
+                    gpu_onehot = np.zeros(gpu_onehot_dim)
+                    gpu_onehot[gpu_model_id] = 1
+                    pod_features_2d[pod_idx, n_numeric:] = gpu_onehot
+        
+        vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
+        overhead_summary['vectorized_extraction'] = vectorized_extraction_overhead
+        
+        # Convert back to 3D format expected by caller (reshape 2D -> 3D with batch dimension 1)
+        pod_features_3d = pod_features_2d.reshape(1, n_pods, total_feature_dim)
+        # CRITICAL FIX: KV hit ratios must be [1, n_pods, 1] not [1, n_pods]
+        kv_hit_ratios_3d = kv_hit_ratios_1d.reshape(1, n_pods, 1)
+        
+        # Create per-pod feature indices (using pod features only, excluding kv_hit_ratio)
+        per_pod_feature_indices = {}
+        for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
+            per_pod_feature_indices[pod_id] = {feature: idx for idx, feature in enumerate(POD_NUMERIC_FEATURES)}
+        
+
+        
+        return pod_features_3d, kv_hit_ratios_3d, kv_hit_ratios_3d, per_pod_feature_indices
 
     def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary, HYPERPARAMETERS):
         if not pod_data:
             logger.error("No pod data in expected format")
             assert False
+        
+        # OPTIMIZATION 3: Single-row fast path for inference
+        if n_samples == 1:
+            return self._single_row_process_pod_features(pod_data, overhead_summary, HYPERPARAMETERS)
         
         vectorized_extraction_start_time = time.time()
         
@@ -558,6 +642,8 @@ class LLMRoutingDataProcessor:
         if INCLUDE_GPU_IN_FEATURE:
             logger.debug(f"  GPU features included in pod_features: {[f for f in kept_pod_features if 'gpu_model' in f]}")
         
+
+
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
     
     
@@ -609,7 +695,15 @@ class LLMRoutingDataProcessor:
         
         # STEP 13: FAST interaction features
         interaction_features_start = time.time()
-        interaction_features = np.broadcast_to(request_features[:, np.newaxis, :], (n_samples, pod_features_array.shape[1], request_features.shape[1])).copy()
+        # OPTIMIZATION: Simplified interaction features for single row
+        if n_samples == 1:
+            # Direct creation without broadcast for single row (more efficient)
+            n_pods = pod_features_array.shape[1]
+            n_request_features = request_features.shape[1]
+            interaction_features = np.tile(request_features[0], (n_pods, 1)).reshape(1, n_pods, n_request_features)
+        else:
+            # Original broadcast approach for batch processing
+            interaction_features = np.broadcast_to(request_features[:, np.newaxis, :], (n_samples, pod_features_array.shape[1], request_features.shape[1])).copy()
         overhead_summary['interaction_features'] = time.time() - interaction_features_start
 
         processed_data = {
@@ -771,6 +865,8 @@ class LLMRoutingDataProcessor:
         # OPTIMIZATION 8: Fast feature indices building
         reference_indices = {feature: i for i, feature in enumerate(numeric_features)}
         per_pod_indices = {pod_id: reference_indices for pod_id in self.sorted_all_pod_ids}
+        
+
         
         return pod_features_array, kv_arrays, pod_features_norm, kv_hit_norm, per_pod_indices
 
@@ -1084,9 +1180,20 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
     return train_path
 
 
+# Global cached processor instance for inference performance
+_cached_processor = None
+
+def get_cached_processor():
+    """Get or create a cached processor instance for inference."""
+    global _cached_processor
+    if _cached_processor is None:
+        _cached_processor = LLMRoutingDataProcessor(output_dir="temp_inference")
+    return _cached_processor
+
 def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS):
     prepare_for_encoding_start = time.time()
-    processor = LLMRoutingDataProcessor(output_dir="temp_inference")
+    # OPTIMIZATION 1: Use cached processor instance instead of creating new one
+    processor = get_cached_processor()
     overhead_summary = {}
     processed_data, prepare_for_encoding_overhead_summary = processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
     overhead_summary['prepare_for_encoding'] = time.time() - prepare_for_encoding_start
@@ -1094,22 +1201,37 @@ def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_trai
         overhead_summary[f"prepare_for_encoding.{key}"] = val
     
     post_process_start_time = time.time()
+    
+    # OPTIMIZATION 2: Batch tensor conversion for better performance
     tensor_data = {}
-    tensor_data['pod_features'] = torch.from_numpy(processed_data['pod_features']).float()
-    tensor_data['kv_hit_ratios'] = torch.from_numpy(processed_data['kv_hit_ratios']).float()
-    tensor_data['request_features'] = torch.from_numpy(processed_data['request_features']).float()
-    tensor_data['actions'] = torch.from_numpy(processed_data['actions']).long()
-    tensor_data['rewards'] = torch.from_numpy(processed_data['rewards']).float()
-    tensor_data['positional_encodings'] = torch.from_numpy(processed_data['positional_encodings']).float()
-    tensor_data['pod_features_with_staleness'] = torch.from_numpy(processed_data['pod_features_with_staleness']).float()
-    tensor_data['query'] = torch.from_numpy(processed_data['cross_attention_inputs']['query']).float()
-    tensor_data['key_value'] = torch.from_numpy(processed_data['cross_attention_inputs']['key_value']).float()
+    
+    # Define conversion mappings for batch processing
+    float_conversions = {
+        'pod_features': processed_data['pod_features'],
+        'kv_hit_ratios': processed_data['kv_hit_ratios'],
+        'request_features': processed_data['request_features'],
+        'rewards': processed_data['rewards'],
+        'positional_encodings': processed_data['positional_encodings'],
+        'pod_features_with_staleness': processed_data['pod_features_with_staleness'],
+        'query': processed_data['cross_attention_inputs']['query'],
+        'key_value': processed_data['cross_attention_inputs']['key_value']
+    }
+    
+    # Optional float tensors
     ttft_rewards = processed_data.get('ttft_rewards')
     if ttft_rewards is not None:
-        tensor_data['ttft_rewards'] = torch.from_numpy(ttft_rewards).float()
+        float_conversions['ttft_rewards'] = ttft_rewards
     tpot_rewards = processed_data.get('tpot_rewards')
     if tpot_rewards is not None:
-        tensor_data['tpot_rewards'] = torch.from_numpy(tpot_rewards).float()
+        float_conversions['tpot_rewards'] = tpot_rewards
+    
+    # Batch convert float tensors
+    for key, array in float_conversions.items():
+        tensor_data[key] = torch.from_numpy(array).float()
+    
+    # Convert long tensors separately
+    tensor_data['actions'] = torch.from_numpy(processed_data['actions']).long()
+    
     overhead_summary['post_process'] = time.time() - post_process_start_time
     
     # # Optional tensors

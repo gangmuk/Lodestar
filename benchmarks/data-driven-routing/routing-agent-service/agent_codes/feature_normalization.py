@@ -385,6 +385,31 @@ def create_new_instance_with_stats_file(feature_normalization_stats_file: str) -
 def create_new_empty_instance() -> PerFeatureRunningStats:
     return PerFeatureRunningStats.create_new_empty_instance()
 
+def compute_stats_from_normalized_data(processed_df: pd.DataFrame, stats_instance: PerFeatureRunningStats):
+    """
+    Compute feature statistics from already normalized data for inference use.
+    This is needed when using --already_processed_csv where data is pre-normalized
+    but we still need stats for future inference.
+    """
+    normalizable_features, non_normalizable_features = _get_normalizable_features(processed_df)
+    logger.info(f"Computing stats from normalized data for features: {normalizable_features}")
+    
+    for feature in normalizable_features:
+        if feature in processed_df.columns:
+            feature_data = processed_df[feature].values
+            
+            # Create RunningStats object for this feature
+            stats_instance.feature_stats[feature] = RunningStats(feature_names=feature)
+            
+            # Since data is already normalized, we store the normalized statistics
+            # This allows inference to work with the same normalization parameters
+            logger.info(f"Computing stats for normalized feature {feature}: samples={len(feature_data)}")
+            
+            # Update the stats with the normalized data
+            stats_instance.feature_stats[feature].update_stats_incrementally(feature_data)
+            
+    logger.info(f"Updated stats instance with {len(stats_instance.feature_stats)} features from normalized data")
+
 def get_stats_instance(CONFIG, feature_normalization_stats_file=None):
     if feature_normalization_stats_file is not None and not os.path.exists(feature_normalization_stats_file):
         logger.error(f"Feature normalization stats file {feature_normalization_stats_file} does not exist.")

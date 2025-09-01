@@ -1,30 +1,22 @@
 # offline_routing_agent.py
 
-from flask import json
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Any, Union
 import os
-import logging
 import time
-import sys
 import encoding
 import simpler_contextual_bandit
 import preprocess
-import pickle
 import threading
 import argparse
 import random_forest
 import torch
 import feature_normalization
 import model_and_data_analysis_helper
-from logger import logger, INCLUDE_GPU_IN_FEATURE
-from kubernetes import client, config
 import shutil
 import re
 import utils as utils
 import random
-
+from logger import logger, INCLUDE_GPU_IN_FEATURE
+import pandas as pd
 
 utils.set_all_seeds(42)
 
@@ -60,13 +52,14 @@ RL_MODEL_HYPERPARAMETERS = {
     'dataset_analysis': None,
     'deterministic_training': True,
     'training_seed': 42,
+    'REWARD_FUNCTION': 'linear_simple',
 }
 
 # Global variables (simplified for offline use)
 NUM_TRAINS = 0
 MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
-
+POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
 TOTAL_NUM_DATA = 0
 MIN_NUM_TRAINING_DATA = 500
 LOCK_TRAINING_DATA = threading.Lock()
@@ -107,25 +100,19 @@ def read_csv_data(log_file):
         print(f"Error reading file {log_file}: {e}")
         return None
 
-def train_model(args, ENCODED_DATA_DIR, is_online_learning):
+def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir, training_data_filename=None):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA 
     if TRAINING_DATA_UPDATED and TOTAL_NUM_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
         logger.info(f"Starting {NUM_TRAINS}th training of routing agent")
         try:
-            if args.model == "random_forest":
-                random_forest.train(ENCODED_DATA_DIR)
-            elif args.model == "simpler_contextual_bandit":
-                utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, args.model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
-            else:
-                logger.error(f"Unknown model type: {args.model}")
-                assert False
+            utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
+            saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
             MODEL_UPDATED = True
             TRAINING_DATA_UPDATED = False
             NUM_TRAINS += 1
             logger.info(f"Successfully completed {NUM_TRAINS-1}th training of routing agent, took {time.time() - training_start_time} seconds")
-            return True
+            return saved_plot_path
         except Exception as e:
             import traceback
             error_traceback = traceback.format_exc()
@@ -137,18 +124,59 @@ def train_model(args, ENCODED_DATA_DIR, is_online_learning):
         assert False
 
 
-def test_inference(args, log_message, request_id):
-    global NUM_TRAINS, MODEL_UPDATED, stats_instance
+def test_inference(args, log_message, request_id, final_model_dir):
+    global NUM_TRAINS, MODEL_UPDATED, stats_instance, RL_MODEL_HYPERPARAMETERS
     utils.set_all_seeds(42)
     if NUM_TRAINS == 0:
         logger.warning("No trained model available, please train first")
         return None
+    
+    # CRITICAL FIX: Load hyperparameters from trained model to match training configuration
+    # This ensures inference uses the EXACT same hyperparameters as training
+    config_path = f"{final_model_dir}/model_config.json"
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            import json
+            model_config = json.load(f)
+        # Update RL_MODEL_HYPERPARAMETERS with values from the trained model
+        RL_MODEL_HYPERPARAMETERS.update(model_config)
+        logger.info(f"Updated hyperparameters from trained model: {config_path}")
+    else:
+        logger.warning(f"Model config not found at {config_path}, using static hyperparameters")
+    
     handle_infer_start_time = time.time()
-    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
+    
+    # CRITICAL FIX: Use exactly the same preprocessing as routing_agent_service.py for consistency
+    # Step 1: Replace pod IPs with generalpodid format (pod_0000, pod_0001, etc.) if needed
+    # This converts IP-based columns to pod_xxxx- format that encoding expects
+    pod_ips = utils.extract_pod_ips_from_content(log_message)
+    if pod_ips:
+        log_message = utils.replace_pod_ip_with_generalpodid(log_message)
+        logger.info(f"Replaced {len(pod_ips)} pod IPs with generalpodid format")
+    else:
+        logger.info("No pod IPs found in log message - likely already in pod_xxxx format")
+    
+    # Step 2: Preprocess using the same path as production
+    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+    
     preprocess_overhead = time.time() - handle_infer_start_time
     original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
     
-    
+    # CRITICAL FIX: Add the same feature validation as routing_agent_service.py
+    # This excludes last_second_* features that cause dimension mismatch
+    non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
+    features_must_exist_in_stats_instance = []
+    for feature in processed_df.columns:
+        # NOTE: ignoring last_second_* features (same as routing_agent_service.py)
+        if "last_second_" not in feature and feature not in non_interest:
+            features_must_exist_in_stats_instance.append(feature)
+    for feature in features_must_exist_in_stats_instance:
+        if feature not in stats_instance.feature_stats:
+            logger.error(f"Feature {feature} not found in stats_instance")
+            logger.error(f"processed_df.columns: {list(processed_df.columns)}")
+            logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
+            logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+            assert False
     
     ## new way
     normalizable_features, non_normalizable_features = feature_normalization._get_normalizable_features(processed_df)
@@ -158,15 +186,10 @@ def test_inference(args, log_message, request_id):
         logger.error(f"request_id,{request_id},No normalization statistics available for inference")
         assert False
     for feature in normalizable_features:
-        
         stats = stats_instance.feature_stats[feature]
         logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-        
         feature_normalization._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
-        
         logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-        
-        
         if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
             if feature in processed_df.columns:
                 processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
@@ -174,13 +197,31 @@ def test_inference(args, log_message, request_id):
             else:
                 logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
                 assert False
-                
+
     ## old way
     # normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
     
-    
-    
-    
+    # CRITICAL FIX: Add missing hyperparameters that routing_agent_service.py includes
+    # These affect how encode_for_inference processes the data and may fix the dimension mismatch
+    if 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
+        # Create dummy mappings for offline inference (same as production would have)
+        pod_ip_to_generalpodid = {pod_id: pod_id for pod_id in sorted_all_pod_ids}  # Identity mapping for offline
+        generalpodid_to_pod_ip = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
+        
+        # Create simple GPU model mappings (alternating between two model types)
+        pod_ip_to_gpu_model = {pod_id: f"model_type_{i % 2}" for i, pod_id in enumerate(sorted_all_pod_ids)}
+        pod_ip_to_gpu_model_encoded = {pod_id: i % 2 for i, pod_id in enumerate(sorted_all_pod_ids)}
+        generalpodid_to_gpu_model = pod_ip_to_gpu_model  # Same for offline
+        
+        # Add all missing hyperparameters that routing_agent_service.py adds
+        RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+        RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+        RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_all_pod_ids
+        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+        RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+        
+        logger.info(f"Added missing hyperparameters for offline inference: {len(sorted_all_pod_ids)} pods")
     
     encode_start_time = time.time()
     tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
@@ -191,7 +232,7 @@ def test_inference(args, log_message, request_id):
             tensor_data=tensor_dataset, 
             exploration_enabled=True, 
             exploration_rate=RL_MODEL_HYPERPARAMETERS['exploration_rate'], 
-            model_updated=MODEL_UPDATED
+            model_updated=MODEL_UPDATED,
     )
     elif args.model == "simpler_contextual_bandit":
         result, _ = simpler_contextual_bandit.infer_from_tensor(
@@ -199,6 +240,7 @@ def test_inference(args, log_message, request_id):
             request_id=request_id,
             model_updated=MODEL_UPDATED,
             HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
+            final_model_dir=args.final_model_dir,
         )
     if MODEL_UPDATED:
         logger.info("Model updated flag consumed, resetting to False")
@@ -232,24 +274,41 @@ def test_inference(args, log_message, request_id):
 
     return result_summary
 
-def process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR):
+def process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DATA_DIR, already_processed_df=None):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
     flush_start_time = time.time()
-    logger.info(f"Processing training data with {len(train_data)} entries")
-    if not os.path.exists("temp_training_data"):
-        os.mkdir("temp_training_data")
-    raw_data = "temp_training_data/offline_batch.csv"
-    utils.write_to_file(train_data, raw_data)
-    ts_preprocess = time.time()
-    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS)
-    processed_df.to_csv(f"{args.data_dir}/processed_data.csv", index=False)
-    logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-    
-    # update_stats_incrementally is called inside normalize_features_for_training
-    processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-    # processed_df = feature_normalization.try_reward_amplification(processed_df)
-    processed_df.to_csv(f"{args.data_dir}/normalized_data.csv", index=False)
-    
+    if not train_data and already_processed_df is None:
+        logger.error("None of training data provided. We need either train_data or already_processed_df.")
+        assert False
+    if train_data is not None:
+        logger.info(f"Processing training data with {len(train_data)} entries")
+        if not os.path.exists("temp_training_data"):
+            os.mkdir("temp_training_data")
+        raw_data = "temp_training_data/offline_batch.csv"
+        utils.write_to_file(train_data, raw_data)
+        
+        ts_preprocess = time.time()
+        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+        processed_df.to_csv(f"{data_dir}/processed_data.csv", index=False)
+        logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
+        
+        # update_stats_incrementally is called inside normalize_features_for_training
+        processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
+        # processed_df = feature_normalization.try_reward_amplification(processed_df)
+        processed_df.to_csv(f"{data_dir}/processed_and_normalized_data.csv", index=False)
+    else:
+        if len(already_processed_df) != 0:
+            processed_df = already_processed_df
+            # Extract sorted_all_pod_ids from the already processed dataframe column names
+            sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', processed_df.columns.tolist())
+            
+            # BUGFIX: When using already processed data, we need to compute stats for inference
+            # The data is already normalized, so we compute stats from the normalized data
+            logger.info("Computing feature statistics from already processed/normalized data for inference")
+            feature_normalization.compute_stats_from_normalized_data(processed_df, stats_instance)
+        else:
+            logger.error("We are using already_processed_df but already_processed_df is empty. Check already_processed_csv file.")
+            assert False
     # encoding
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
@@ -264,8 +323,9 @@ def process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR):
     elif os.path.exists(train_tensor_path):
         logger.info(f"✓ Found tensor dataset at: {train_tensor_path}")
     TRAINING_DATA_UPDATED = True
-    TOTAL_NUM_DATA += len(train_data)
-    logger.info(f"Successfully processed {len(train_data)} log messages, took {time.time() - flush_start_time} seconds")
+    data_count = len(train_data) if train_data is not None else len(processed_df)
+    TOTAL_NUM_DATA += data_count
+    logger.info(f"Successfully processed {data_count} log messages, took {time.time() - flush_start_time} seconds")
     return True
 
 
@@ -296,11 +356,11 @@ def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMET
     # Train model twice with same settings
     logger.info("Training model #1...")
     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
+    saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
     
     logger.info("Training model #2...")
     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
+    saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
     
     # Compare final model weights
     model1_path = f"{model_output_dir}_test1/policy.pth"
@@ -347,61 +407,62 @@ def main():
     global stats_instance
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('data_file', help='CSV file containing log messages for training')
+    parser.add_argument('--already_processed_csv', type=str, default=None, help='CSV file containing processed log messages for training')
     parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
     parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
     parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
     parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
+    
+    parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
+    
     args = parser.parse_args()
-    if not os.path.exists(args.data_file):
-        logger.error(f"Data file {args.data_file} not found")
-        assert False
     
-    if 'replaced' not in args.data_file:
-        logger.info(f"Data file {args.data_file} contains raw pod IPs, replacing with GeneralPodID")
-        args.data_file = utils.replace_pod_ip_with_generalpodid(args.data_file)
-    all_data = {}
-    if os.path.isfile(args.data_file):
-        data_dir = os.path.dirname(args.data_file)
-        logger.info(f"data_file is a file: {args.data_file}")
-        all_data = read_csv_data(args.data_file)
-    # elif os.path.isdir(args.data_file):
-    #     data_dir = args.data_file
-    #     logger.info(f"data_file is a directory: {args.data_file}")
-    #     for root, dirs, files in os.walk(args.data_file):
-    #         for file in files:
-    #             if file == "data.csv":
-    #                 file_path = os.path.join(root, file)
-    #                 logger.info(f"Found data.csv at: {file_path}")
-    #                 data = read_csv_data(file_path)
-    #                 if data:
-    #                     # Merge data dictionaries with unique keys
-    #                     for key, value in data.items():
-    #                         new_key = f"{os.path.basename(root)}_{key}"
-    #                         all_data[new_key] = value
+    if args.already_processed_csv and args.already_processed_csv != "none":
+        if not os.path.exists(args.already_processed_csv):
+            logger.error(f"Already processed CSV file {args.already_processed_csv} not found")
+            assert False
+        data_dir = os.path.dirname(args.already_processed_csv)
+        train_data = None
+        test_data = None
     else:
-        logger.error(f"args.data_file must be a file It is a directory or the path does not exist. args.data_file: {args.data_file}")
-        assert False
+        if not os.path.exists(args.data_file):
+            logger.error(f"Data file {args.data_file} not found")
+            assert False
+        data_dir = os.path.dirname(args.data_file)
+        if 'replaced' not in args.data_file:
+            logger.info(f"Data file {args.data_file} contains raw pod IPs, replacing with GeneralPodID")
+            args.data_file = utils.replace_pod_ip_with_generalpodid(args.data_file)
+            
+        all_data = {}
+        if os.path.isfile(args.data_file):
+            data_dir = os.path.dirname(args.data_file)
+            logger.info(f"data_file is a file: {args.data_file}")
+            all_data = read_csv_data(args.data_file)
 
-    if all_data is None or len(all_data) == 0:
-        logger.error("Failed to read data or no valid log messages found")
-        return
+        if all_data is None or len(all_data) == 0:
+            logger.error("Failed to read data or no valid log messages found")
+            return
+        
+        train_messages, test_messages = ensure_deterministic_data_split(all_data, args.split_ratio)
+        test_messages = test_messages[:10]
+        train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
+        def extract_request_id(log_message):
+            match = re.search(r'@requestID@([^@]+)@', log_message)
+            return match.group(1) if match else None
+        
+        test_data = []
+        for msg in test_messages:
+            test_data.append({"request_id": extract_request_id(msg), "message": msg})
+
+    feature_normalization_stats_file = f"{args.final_model_dir}/feature_normalization_statistics.csv"
     
-    train_messages, test_messages = ensure_deterministic_data_split(all_data, args.split_ratio)
-    test_messages = test_messages[:10]
-    
-    args.data_dir = data_dir
-    args.model_dir = f"{data_dir}/final_model"
-    os.makedirs(args.model_dir, exist_ok=True)
-    train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
-    def extract_request_id(log_message):
-        match = re.search(r'@requestID@([^@]+)@', log_message)
-        return match.group(1) if match else None
-    # test_data = {f"request_{i}": msg for i, msg in enumerate(test_messages)}
-    test_data = []
-    for msg in test_messages:
-        test_data.append({"request_id": extract_request_id(msg), "message": msg})
+    if stats_instance is not None:
+        logger.error("Using existing stats instance for normalization")
+        assert False
+        
+    stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], None)
 
     ENCODED_DATA_DIR = "encoded_data"
     if not os.path.exists(ENCODED_DATA_DIR):
@@ -410,22 +471,23 @@ def main():
         shutil.rmtree(ENCODED_DATA_DIR)
         os.makedirs(ENCODED_DATA_DIR)
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
-    feature_normalization_stats_file = f"{args.model_dir}/feature_normalization_statistics.csv"
-    
-    if stats_instance is not None:
-        logger.error("Using existing stats instance for normalization")
-        assert False
-        
-    stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], None)
-    
-    process_training_data(args, train_data, stats_instance, ENCODED_DATA_DIR)
-    
+    already_processed_df = pd.read_csv(args.already_processed_csv) if args.already_processed_csv and args.already_processed_csv != "none" else None
+    process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DATA_DIR, already_processed_df)
+
     stats_instance.write_stats_to_file(feature_normalization_stats_file)
     
     model_and_data_analysis_helper.diagnose_training_data_issues(ENCODED_DATA_DIR)
     
+    # Pass training data filename for model directory naming without modifying hyperparameters
+    training_data_filename = None
+    if args.data_file:
+        training_data_filename = os.path.basename(args.data_file).replace('.csv', '')
+    elif args.already_processed_csv:
+        training_data_filename = os.path.basename(args.already_processed_csv).replace('.csv', '')
+    
     is_online_learning = False
-    train_model(args, ENCODED_DATA_DIR, is_online_learning)
+        
+    saved_plot_path = train_model(ENCODED_DATA_DIR, is_online_learning, args.final_model_dir, training_data_filename)
 
     # NEW: Behavior Analysis (before regular testing)
     if args.analyze_behavior and test_data and len(test_data) > 0:
@@ -449,7 +511,7 @@ def main():
         for td in test_data:
             log_message = td['message']
             request_id = td['request_id']
-            result = test_inference(args, log_message, request_id)
+            result = test_inference(args, log_message, request_id, args.final_model_dir)
             selected_pod_list.append(result['selected_pod'])
             message_list.append(log_message)
             
@@ -490,6 +552,10 @@ def main():
         # if unknown_original_count > 0:
         #     logger.info(f"  - Unknown original: {unknown_original_count}")
         # logger.info("=" * 60)
-
+        
+        
+    print(f"** saved_plot_path: {saved_plot_path}")
+    print(f"** final_model_dir: {args.final_model_dir}")
+    
 if __name__ == "__main__":
     main()

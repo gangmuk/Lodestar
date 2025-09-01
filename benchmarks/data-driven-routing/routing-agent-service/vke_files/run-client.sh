@@ -47,7 +47,7 @@ input_workload_dirs=(
     # "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50"
 
     ## challenging one!
-    # "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
+    "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
 
     # "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80"
     # "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
@@ -58,7 +58,7 @@ input_workload_dirs=(
     # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80"
 
     ## works well.
-    "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
+    # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
 
     # "workload/p4096_s1024_rps10_spp_20_ndp_100"
     # "workload/p4096_s1024_rps10_spp_10_ndp200"
@@ -77,10 +77,10 @@ if [ ! -d "${final_model_dir}" ]; then
 fi
 
 routing_configs=(
-    "rl-online-router${delimiter}none"
+    # "rl-online-router${delimiter}none"
     "rl-online-router${delimiter}prefix-cache-1"
-    "rl-online-router${delimiter}prefix-cache-2"
-    "rl-online-router${delimiter}random"
+    # "rl-online-router${delimiter}prefix-cache-2"
+    # "rl-online-router${delimiter}random"
 
     # # "latency-prediction-based${delimiter}none"
     # "prefix-cache-and-load${delimiter}none"
@@ -103,10 +103,10 @@ for ENABLE_ONLINE_LEARNING in false; do
 # for ENABLE_ONLINE_LEARNING in true; do
     for workload_dir in "${input_workload_dirs[@]}"; do
         workload_path="${workload_dir}/workload.jsonl"
-        if [ ! -f "${workload_path}" ]; then
-            echo "Workload file ${workload_path} does not exist. Exiting."
-            exit 1
-        fi
+        # if [ ! -f "${workload_path}" ]; then
+        #     echo "Workload file ${workload_path} does not exist. Exiting."
+        #     exit 1
+        # fi
         for config in "${routing_configs[@]}"; do
             routing="${config%%${delimiter}*}"
             subAlgorithm="${config#*${delimiter}}"
@@ -116,32 +116,29 @@ for ENABLE_ONLINE_LEARNING in false; do
                 continue
             fi
 
-            ## Env var for routing-agent-service deployment
-            python3 update_k8s_env.py \
-                    --deployment routing-agent-service \
-                    --namespace default \
-                    --container routing-agent \
-                    --env TTFT_SLO=${TTFT_SLO} \
-                    --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
-                    --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
-                    --env MODEL=simpler_contextual_bandit \
-                    --env REWARD_FUNCTION=${REWARD_FUNCTION} \
-                    --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
-                    --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
+            # ## Env var for routing-agent-service deployment
+            # python3 update_k8s_env.py \
+            #         --deployment routing-agent-service \
+            #         --namespace default \
+            #         --container routing-agent \
+            #         --env TTFT_SLO=${TTFT_SLO} \
+            #         --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
+            #         --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
+            #         --env MODEL=simpler_contextual_bandit \
+            #         --env REWARD_FUNCTION=${REWARD_FUNCTION} \
+            #         --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
+            #         --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
 
-            ## Env var for aibrix-gateway-plugins deployment
-            python3 update_k8s_env.py \
-                    --deployment aibrix-gateway-plugins \
-                    --namespace aibrix-system \
-                    --container gateway-plugin \
-                    --env ENABLE_FLUSH=${ENABLE_FLUSH} \
-                    --env FLUSH_PERIOD=${flushPeriod} \
-                    --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
+            # ## Env var for aibrix-gateway-plugins deployment
+            # python3 update_k8s_env.py \
+            #         --deployment aibrix-gateway-plugins \
+            #         --namespace aibrix-system \
+            #         --container gateway-plugin \
+            #         --env ENABLE_FLUSH=${ENABLE_FLUSH} \
+            #         --env FLUSH_PERIOD=${flushPeriod} \
+            #         --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
 
             start_time=$(date +%s)
-            
-            kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
-            kubectl rollout restart deployment routing-agent-service -n default
 
 
             # python ship_all.py 0 ${final_model_dir}

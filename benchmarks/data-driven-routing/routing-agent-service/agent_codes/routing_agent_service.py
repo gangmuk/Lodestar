@@ -43,8 +43,8 @@ hyperparameter_file_path = '/app/final_model/model_config.json'
 
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
-final_model_path = "final_model"
-feature_normalization_stats_file = f"{final_model_path}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
+final_model_dir = "/app/final_model"
+feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
 NUM_TRAINS = 0
 MODEL_UPDATED = True
 TRAINING_DATA_UPDATED = False
@@ -218,7 +218,7 @@ def handle_infer():
 
         infer_from_tensor_start_time = time.time()
         if MODEL == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data=tensor_data, request_id=request_id, model_updated=MODEL_UPDATED, HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS)
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
         else:
             logger.error(f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'")
             return jsonify({"error": f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'"}), 500
@@ -279,7 +279,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_path, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, hyperparameter_file_path
+    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, hyperparameter_file_path
 
     if  TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
@@ -287,7 +287,7 @@ def online_train_routine():
         try:
             if MODEL == "simpler_contextual_bandit":
                 is_online_learning = True
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_path, RL_MODEL_HYPERPARAMETERS, is_online_learning)
+                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
             # elif MODEL == "contextual_bandit":
             #     contextual_bandit.train(ENCODED_DATA_DIR)
             else:
