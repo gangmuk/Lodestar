@@ -23,6 +23,73 @@ import psutil
 import socket
 
 
+def get_sorted_all_pod_ids(source_type, data=None):
+    """
+    Centralized function to extract sorted_all_pod_ids from different sources.
+    
+    Args:
+        source_type (str): Type of source - 'batch_dataframe', 'single_row', 'processed_csv_columns'
+        data: The data source (DataFrame, dict, or list of column names)
+    
+    Returns:
+        list: Sorted list of pod IDs
+    """
+    if source_type == 'batch_dataframe':
+        # Extract from batch dataframe for training (parsed_df)
+        all_pods_set = set()
+        for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods']:
+            if col in data.columns:
+                for row_data in data[col]:
+                    if row_data:
+                        if type(row_data) is not dict:
+                            logger.error(f"Expected dict but got {type(row_data)}: {row_data}")
+                            assert False
+                        all_pods_set.update(row_data.keys())
+        sorted_all_pod_ids = sorted(list(all_pods_set))
+        logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from batch dataframe: {sorted_all_pod_ids}")
+        return sorted_all_pod_ids
+        
+    elif source_type == 'single_row':
+        # Extract from single row data (dict)
+        kv_cache = data.get('allPodsKvCacheHitRatios', {})
+        inflight = data.get('numInflightRequestsAllPods', {})
+        gpu_cache = data.get('vllmGPUKVCacheUsage', {})
+        cpu_cache = data.get('vllmCPUKVCacheUsage', {})
+        running = data.get('vllmNumRequestsRunning', {})
+        waiting = data.get('vllmNumRequestsWaiting', {})
+        
+        sorted_all_pod_ids = sorted(list(set(
+            list(kv_cache.keys()) +
+            list(inflight.keys()) +
+            list(gpu_cache.keys()) +
+            list(cpu_cache.keys()) +
+            list(running.keys()) +
+            list(waiting.keys())
+        )))
+        
+        if not sorted_all_pod_ids:
+            logger.error("Error: No pod IDs found in the single row data.")
+            logger.error(f"Row data keys: {data.keys()}")
+            assert False
+        logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from single row: {sorted_all_pod_ids}")
+        return sorted_all_pod_ids
+        
+    elif source_type == 'processed_csv_columns':
+        # Extract from already processed CSV columns
+        pod_ids_set = set()
+        for col in data:  # data is list of column names
+            if '-kv_hit_ratio' in col:
+                pod_id = col.replace('-kv_hit_ratio', '')
+                pod_ids_set.add(pod_id)
+        sorted_all_pod_ids = sorted(list(pod_ids_set))
+        logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from processed CSV columns: {sorted_all_pod_ids}")
+        return sorted_all_pod_ids
+        
+    else:
+        logger.error(f"Unknown source_type: {source_type}")
+        assert False
+
+
 def set_all_seeds(seed=42):
     """Set seeds for all sources of randomness to ensure reproducible results."""
     random.seed(seed)

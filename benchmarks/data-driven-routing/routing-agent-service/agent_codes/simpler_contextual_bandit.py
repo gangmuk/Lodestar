@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import glob
 import random
 from logger import logger, INCLUDE_GPU_IN_FEATURE
+from training_logger import TrainingLogger
 # INCLUDE_GPU_IN_FEATURE = True
 
 seed = 42
@@ -28,7 +29,7 @@ os.environ['PYTHONHASHSEED'] = str(seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
-final_model_dir = "final_model"
+# final_model_dir = "final_model"
 
 class FixedPolicyNetwork(nn.Module):
     """
@@ -239,13 +240,20 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    def __init__(self, state_dim, action_dim, HYPERPARAMETERS):
+    def __init__(self, state_dim, action_dim, HYPERPARAMETERS, final_model_dir=None):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.hyperparameters = HYPERPARAMETERS
         self.current_epoch = 0
         self.global_batch_counter = 0
         self.learn_call_counter = 0
+        
+        # Initialize training logger
+        if final_model_dir:
+            self.training_logger = TrainingLogger(final_model_dir, "training_metrics.csv")
+            logger.info(f"📊 Training logger initialized: {final_model_dir}/training_metrics.csv")
+        else:
+            self.training_logger = None
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
@@ -429,6 +437,24 @@ class SimplifiedContextualBandit:
                    f"[Learn #{self.learn_call_counter:2d}.{local_batch_idx}] "
                    f"Loss={loss.item():.4f}, Entropy={entropy.item():.4f}, Total={total_loss.item():.4f}")
 
+            # CSV LOGGING: Start iteration
+            if self.training_logger:
+                self.training_logger.start_iteration(
+                    self.current_epoch, self.global_batch_counter, 
+                    self.learn_call_counter, local_batch_idx
+                )
+                
+                # Log loss components
+                self.training_logger.log_losses(
+                    loss.item(), entropy.item(), entropy_bonus.item(), total_loss.item()
+                )
+                
+                # Log batch statistics
+                self.training_logger.log_batch_stats(batch_rewards, len(batch_rewards))
+                
+                # Log policy metrics
+                self.training_logger.log_policy_metrics(action_probs)
+
             # Update policy
             self.optimizer.zero_grad()
             total_loss.backward()
@@ -444,6 +470,12 @@ class SimplifiedContextualBandit:
                 param_change = (param - initial_param_snapshot[name]).abs().max().item()
                 max_param_change = max(max_param_change, param_change)
             logger.info(f"    → Max param change: {max_param_change:.6f}")
+            
+            # CSV LOGGING: Log gradients and optimizer info
+            if self.training_logger:
+                self.training_logger.log_gradients(self.policy, max_param_change)
+                self.training_logger.log_optimizer_info(self.optimizer, self.global_batch_counter)
+                self.training_logger.save_iteration()
             for name, param in self.policy.named_parameters():
                 initial_param_snapshot[name] = param.clone().detach()
 
@@ -643,25 +675,27 @@ def analyze_dataset_detailed(combined_data):
             action_reward_stats[action_idx] = mean_reward
             logger.info(f"  Pod {action_idx}: μ={mean_reward:.4f} (n={action_mask.sum()})")
     
-    # Find reward differences
+    # Find reward differences between pods (for reward gap analysis)
     if len(action_reward_stats) > 1:
-        reward_values = list(action_reward_stats.values())
-        reward_gap = max(reward_values) - min(reward_values)
+        pod_mean_rewards = list(action_reward_stats.values())
+        reward_gap = max(pod_mean_rewards) - min(pod_mean_rewards)
+        
+        # FIXED: Use actual training rewards for reward_distribution statistics, not pod means
         reward_distribution = {}
-        reward_distribution['mean'] = np.mean(reward_values)
-        reward_distribution['std'] = np.std(reward_values)
-        reward_distribution['min'] = np.min(reward_values)
-        reward_distribution['p10'] = np.percentile(reward_values, 10)
-        reward_distribution['p20'] = np.percentile(reward_values, 20)
-        reward_distribution['p30'] = np.percentile(reward_values, 30)
-        reward_distribution['p40'] = np.percentile(reward_values, 40)
-        reward_distribution['p50'] = np.percentile(reward_values, 50)
-        reward_distribution['p60'] = np.percentile(reward_values, 60)
-        reward_distribution['p70'] = np.percentile(reward_values, 70)
-        reward_distribution['p80'] = np.percentile(reward_values, 80)
-        reward_distribution['p90'] = np.percentile(reward_values, 90)
-        reward_distribution['p99'] = np.percentile(reward_values, 99)
-        reward_distribution['max'] = np.max(reward_values)
+        reward_distribution['mean'] = float(rewards.mean())
+        reward_distribution['std'] = float(rewards.std())
+        reward_distribution['min'] = float(rewards.min())
+        reward_distribution['p10'] = float(np.percentile(rewards, 10))
+        reward_distribution['p20'] = float(np.percentile(rewards, 20))
+        reward_distribution['p30'] = float(np.percentile(rewards, 30))
+        reward_distribution['p40'] = float(np.percentile(rewards, 40))
+        reward_distribution['p50'] = float(np.percentile(rewards, 50))
+        reward_distribution['p60'] = float(np.percentile(rewards, 60))
+        reward_distribution['p70'] = float(np.percentile(rewards, 70))
+        reward_distribution['p80'] = float(np.percentile(rewards, 80))
+        reward_distribution['p90'] = float(np.percentile(rewards, 90))
+        reward_distribution['p99'] = float(np.percentile(rewards, 99))
+        reward_distribution['max'] = float(rewards.max())
         logger.info(f"\nReward signal strength:")
         logger.info(f"  Reward gap: {reward_gap:.4f}")
         
@@ -919,7 +953,7 @@ def evaluate_agent(agent, eval_data, num_samples=100):
     return metrics
 
 
-def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
+def plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data=None):
     """
     Enhanced plotting function with proper train/eval data separation
     """
@@ -1331,10 +1365,9 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
     plt.tight_layout()
     
     # Save the plot
-    pdf_fn = f"{output_dir}/comprehensive_training_metrics.pdf"
+    pdf_fn = f"{final_model_dir}/comprehensive_training_metrics.pdf"
     plt.savefig(pdf_fn, dpi=150, bbox_inches='tight')
     plt.close()
-    
     logger.info(f"* Saved training plots: {pdf_fn}")
     
     # Print summary to console
@@ -1365,7 +1398,7 @@ def plot_training_metrics(agent, eval_metrics, output_dir, combined_data=None):
         else:
             logger.info("❌ Model performance close to random")
         logger.info("="*60)
-
+    return pdf_fn    
 
 def load_all_encoded_data(encoded_data_dir):
     """Load and combine data from all batch directories"""
@@ -1765,9 +1798,9 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
 
 
 # main entry point
-def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learning):
-    global final_model_dir
-    final_model_dir = model_output_dir
+def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning):
+
+    
     os.makedirs(final_model_dir, exist_ok=True)
     logger.info(f"Starting training process. final_model_dir: {final_model_dir}")
     
@@ -1814,6 +1847,7 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learnin
         state_dim=state_dim,
         action_dim=action_dim,
         HYPERPARAMETERS=HYPERPARAMETERS,
+        final_model_dir=final_model_dir
     )
 
     ##############################################
@@ -1951,6 +1985,15 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learnin
                     logger.info(f"Evaluation - Accuracy: {metrics['accuracy']:.4f}")
                     logger.info(f"Evaluation - Confidence: {metrics.get('avg_confidence', 0):.4f}")
                     
+                    # CSV LOGGING: Log evaluation metrics to the most recent training iteration
+                    if agent.training_logger:
+                        agent.training_logger.log_evaluation(
+                            accuracy=metrics['accuracy'], 
+                            confidence=metrics.get('avg_confidence', 0)
+                        )
+                        # Update the current row with evaluation data
+                        agent.training_logger.save_iteration()
+                    
                     # Do identity analysis separately (every few evaluations to avoid spam)
                     if len(eval_metrics) % 3 == 0:  # Every 3rd evaluation
                         try:
@@ -1991,7 +2034,7 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learnin
     # Save final model
     agent.save(final_model_dir)
     try:
-        plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data)
+        saved_plot_path = plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data)
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
     # os.system(f"cp -r {final_model_dir} final_model")
@@ -2000,21 +2043,15 @@ def train(encoded_data_dir, model_output_dir, HYPERPARAMETERS, is_online_learnin
     with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
         json.dump(HYPERPARAMETERS, f, indent=4, default=str)
     
-    return {
-        'agent': agent,
-        'model_dir': final_model_dir,
-        'eval_metrics': eval_metrics,
-        'best_accuracy': best_accuracy,
-        'HYPERPARAMETERS': HYPERPARAMETERS,
-    }
+    return saved_plot_path
 
 # Global cache for agent instance (for inference)
 _cached_agent = None
 _cached_agent_config = None
 _cached_metadata = None
 
-def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
-    global final_model_dir, _cached_agent, _cached_agent_config
+def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, final_model_dir):
+    global _cached_agent, _cached_agent_config
     overhead_summary = {}
     infer_start_time = time.time()
     
@@ -2039,7 +2076,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
         request_features = request_features.unsqueeze(0)
 
     # Get or create agent
-    agent = _get_or_create_agent(pod_features, kv_hit_ratios, request_features, model_updated, HYPERPARAMETERS)
+    agent = _get_or_create_agent(pod_features, kv_hit_ratios, request_features, model_updated, HYPERPARAMETERS, final_model_dir)
     overhead_summary['get_agent'] = time.time() - get_agent_start
     
     # # Optional detailed logging
@@ -2084,7 +2121,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS):
     return result, overhead_summary
 
 def _get_or_create_agent(pod_features, kv_hit_ratios, request_features, 
-                        model_updated, HYPERPARAMETERS):
+                        model_updated, HYPERPARAMETERS, final_model_dir):
     """
     Get cached agent or create new one with dimension validation
     """
@@ -2128,12 +2165,12 @@ def _get_or_create_agent(pod_features, kv_hit_ratios, request_features,
 
     # Load model weights if needed
     if not getattr(_get_or_create_agent, '_last_cache_hit', False) or model_updated:
-        _load_and_validate_model(agent, current_config)
+        _load_and_validate_model(agent, current_config, final_model_dir)
     
     return agent
 
 
-def _load_and_validate_model(agent, current_config):
+def _load_and_validate_model(agent, current_config, final_model_dir):
     """
     Load model with dimension validation
     """

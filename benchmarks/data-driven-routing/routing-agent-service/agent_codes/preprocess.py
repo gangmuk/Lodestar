@@ -211,8 +211,27 @@ def calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values
     }
 
 
-## new
-def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETERS):
+## new - unified preprocessing function
+def preprocess_data_unified(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True):
+    """
+    Unified preprocessing function that handles both single row (inference) and batch processing (training).
+    
+    Args:
+        parsed_df: DataFrame with parsed log data
+        ttft_slo: TTFT SLO threshold
+        avg_tpot_slo: Average TPOT SLO threshold  
+        RL_MODEL_HYPERPARAMETERS: Model hyperparameters
+        sorted_all_pod_ids: Sorted list of pod IDs
+        is_training: Whether this is for training (True) or inference (False)
+    
+    Returns:
+        For training: (processed_df, mapping_info, sorted_all_pod_ids, overhead_summary)
+        For inference: (processed_df, sorted_all_pod_ids, overhead_summary)
+    """
+    num_rows = len(parsed_df)
+    processing_type = "batch" if num_rows > 1 else "single row"
+    logger.info(f"Processing {num_rows} rows ({processing_type}) with is_training={is_training}")
+    
     # Pre-parse all JSON columns once to avoid repeated parsing
     logger.info("Pre-parsing JSON columns...")
     json_columns = [
@@ -236,28 +255,7 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     json_parse_overhead = time.time() - json_parse_start_time
 
     # Collect all unique pod IDs in a single pass
-    all_pods_set = set()
     logger.info("Collecting all unique pod IDs across the dataset...")
-    
-    # Vectorized approach - get all unique pods from all relevant columns at once
-    # for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'podMetricsLastSecond']:
-    for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods']:
-        if col in parsed_df.columns:
-            for data in parsed_df[col]:
-                if data:
-                    if type(data) is not dict:
-                        print(f"type(data): {type(data)}")
-                        print(f"data: {data}")
-                        print(f"parsed_df[{col}]: {parsed_df[col]}")
-                        assert False
-                    all_pods_set.update(data.keys())
-                    
-
-    # all_pods = list(all_pods_set) # BUG: NON-DETERMINISTIC ORDERING.  set-to-list conversion can produce different orderings. It affects the computation in _optimized_process_pod_features in encoding.py. This all_pods is returned in this function -> preprocess.main ->  encoding.encode_for_inference/encode_for_train -> encoding.prepare_for_encoding -> LLMRoutingDataProcessor.pod_ids = all_pods -> encoding._optimized_process_pod_features, for pod_idx, pod_id in enumerate(self.pod_ids): feature arrangement depends on the order of all_pods
-    # NOTE: Always sort the pod list... maybe it should have never used the set or dictionary when maintaining pods
-    # all_pods = list(all_pods_set) # IT was BUG
-    sorted_all_pod_ids = sorted(list(all_pods_set))
-    logger.info(f"Identified {len(sorted_all_pod_ids)} pods: {sorted_all_pod_ids}")
     logger.debug(f"Original dataset shape: {parsed_df.shape}")
     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
     expected_columns = [
@@ -268,7 +266,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'total_decode_time', 
         'e2e',
         'numInputTokens', 
-        'expectedNumOutputTokens', 
+        # 'expectedNumOutputTokens', 
+        'numOutputTokens', 
         'numTotalTokens',
         'allPodsKvCacheHitRatios', 
         'numInflightRequestsAllPods',
@@ -282,17 +281,12 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         # 'GPU_model',
     ]
 
-
-    column_check_start_time = time.time()
-
     if INCLUDE_GPU_IN_FEATURE:
         def get_gpu_model_encoded(selected_pod):
             selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
             return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
-        
         parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].apply(get_gpu_model_encoded)
         parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
-
     
     # Check for missing expected columns
     missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
@@ -379,7 +373,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'total_decode_time', 
         'e2e', 
         'numInputTokens', 
-        'expectedNumOutputTokens', 
+        # 'expectedNumOutputTokens', 
+        'numOutputTokens', 
         'numTotalTokens',
     ]
     
@@ -397,7 +392,8 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
         'request_id': parsed_df['requestID'].values,
         'selected_pod': parsed_df['selectedpod'].values,
         'input_tokens': parsed_df['numInputTokens'].values,
-        'output_tokens': parsed_df['expectedNumOutputTokens'].values,
+        # 'output_tokens': parsed_df['expectedNumOutputTokens'].values,
+        'output_tokens': parsed_df['numOutputTokens'].values,
         'total_tokens': parsed_df['numTotalTokens'].values,
         'ttft': parsed_df['ttft'].values,
         'avg_tpot': parsed_df['avg_tpot'].values,
@@ -453,44 +449,58 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     num_rows = len(base_data['request_id'])
 
     pod_index_start_time = time.time()
-    # Map pod IDs to integer indices for the action space - do this early with numpy arrays
-    unique_pods = np.unique(base_data['selected_pod'])
-    pod_to_index = {str(pod): idx for idx, pod in enumerate(unique_pods)}
-    index_to_pod = {int(idx): str(pod) for pod, idx in pod_to_index.items()}
-
-    # Pre-calculate all derived columns as numpy arrays (much faster than pandas operations)
-    selected_pods_array = np.array(base_data['selected_pod'])
-    action_values = np.array([pod_to_index[str(pod)] for pod in selected_pods_array])
+    
+    # Training-specific: Create action mappings
+    if is_training:
+        # Map pod IDs to integer indices for the action space - do this early with numpy arrays
+        unique_pods = np.unique(base_data['selected_pod'])
+        pod_to_index = {str(pod): idx for idx, pod in enumerate(unique_pods)}
+        index_to_pod = {int(idx): str(pod) for pod, idx in pod_to_index.items()}
+        
+        # Pre-calculate all derived columns as numpy arrays (much faster than pandas operations)
+        selected_pods_array = np.array(base_data['selected_pod'])
+        action_values = np.array([pod_to_index[str(pod)] for pod in selected_pods_array])
+    else:
+        # Inference: no need for action mappings
+        pod_to_index = {}
+        index_to_pod = {}
+        action_values = None
 
     ttft_values = np.array(base_data['ttft'], dtype=np.float64)
     tpot_values = np.array(base_data['avg_tpot'], dtype=np.float64)
     pod_index_overhead = time.time() - pod_index_start_time
-    if RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple":
-        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
-    elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple_extended":
-        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
-    elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "piecewise_linear_steeper_gradient":
-        ttft_rewards, tpot_rewards, combined_rewards = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
-    else:
-        logger.error(f"Unknown reward function: {RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION']}")
-        assert False
+    
+    # Training-specific calculations (rewards and action mapping)
+    if is_training:
+        # Calculate rewards for training
+        if RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple":
+            reward = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "linear_simple_extended":
+            reward = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        elif RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] == "piecewise_linear_steeper_gradient":
+            reward = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        else:
+            logger.error(f"Unknown reward function: {RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION']}")
+            assert False
         
-    # Add all the computed columns to base_data before DataFrame creation
-    base_data.update({
-        'action': action_values,
-        'avg_tpot_slo_satisfied': tpot_values <= avg_tpot_slo,
-        'avg_ttft_slo_satisfied': ttft_values <= ttft_slo,
-        'ttft_reward': reward['ttft_rewards'],
-        'tpot_reward': reward['tpot_rewards'],
-        'reward': reward['combined_rewards'],
-    })
+        # Add training-specific columns
+        base_data.update({
+            'action': action_values,
+            'avg_tpot_slo_satisfied': tpot_values <= avg_tpot_slo,
+            'avg_ttft_slo_satisfied': ttft_values <= ttft_slo,
+            'ttft_reward': reward['ttft_rewards'],
+            'tpot_reward': reward['tpot_rewards'],
+            'reward': reward['combined_rewards'],
+        })
+    else:
+        # Inference mode: skip reward calculation and action mapping for speed
+        # Only keep essential columns for inference
+        pass
 
     # Create DataFrame only once with all data
     create_df_start_time = time.time()
     processed_df = pd.DataFrame(base_data)
-    processed_df.to_csv("debug_processed_df.csv")
     create_df_overhead = time.time() - create_df_start_time
-
 
     # Replace fillna(0) with a more targeted approach since most values should already be handled
     # Only fill NaN values in specific columns that might have them
@@ -498,37 +508,38 @@ def preprocess_dataset(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPARAMETE
     if nan_columns:
         processed_df[nan_columns] = processed_df[nan_columns].fillna(0)
 
-    # Save mapping information
-    mapping_info = {
-        'pod_to_index': pod_to_index,
-        'index_to_pod': index_to_pod,
-    }
-    if INCLUDE_GPU_IN_FEATURE:
-        mapping_info['pod_gpu_models'] = pod_gpu_models
-
     logger.debug(f"Processed dataset shape: {processed_df.shape}")
     logger.debug(f"Processed columns: {processed_df.columns[:10].tolist()}...")
 
-    if INCLUDE_GPU_IN_FEATURE:
-        logger.debug("\nPod GPU model mapping:")
-        for pod_id, gpu_model in pod_gpu_models.items():
-            logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
-
-    ##################################################################
-
-    preprocess_dataset_overhead_summary = {
-        'preprocess.preprocess_dataset_json_parse_overhead': json_parse_overhead*1000,
-        'preprocess.preprocess_dataset_column_check_overhead': -1*1000,
-        'preprocess.preprocess_dataset_podmetrics_parse_overhead': -1*1000,
-        'preprocess.preprocess_dataset_numeric_conversion_overhead': numeric_conversion_overhead*1000,
-        'preprocess.preprocess_dataset_get_value_overhead': get_value_overhead*1000,
-        'preprocess.preprocess_dataset_create_df_overhead': create_df_overhead*1000,
-        'preprocess.preprocess_dataset_pod_index_overhead': pod_index_overhead*1000,
-        'preprocess.preprocess_dataset_reward_calc_overhead': -1*1000,
-        'preprocess.preprocess_dataset_slo_update_overhead': -1*1000,
+    # Prepare overhead summary
+    preprocess_overhead_summary = {
+        'preprocess.json_parse_overhead': json_parse_overhead*1000,
+        'preprocess.column_check_overhead': -1*1000,
+        'preprocess.podmetrics_parse_overhead': -1*1000,
+        'preprocess.numeric_conversion_overhead': numeric_conversion_overhead*1000,
+        'preprocess.get_value_overhead': get_value_overhead*1000,
+        'preprocess.create_df_overhead': create_df_overhead*1000,
+        'preprocess.pod_index_overhead': pod_index_overhead*1000,
+        'preprocess.reward_calc_overhead': -1*1000,
+        'preprocess.slo_update_overhead': -1*1000,
     }
     
-    return processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary
+    if is_training:
+        # Training mode: return mapping info for action space creation
+        mapping_info = {
+            'pod_to_index': pod_to_index,
+            'index_to_pod': index_to_pod,
+        }
+        if INCLUDE_GPU_IN_FEATURE:
+            mapping_info['pod_gpu_models'] = pod_gpu_models
+            logger.debug("\nPod GPU model mapping:")
+            for pod_id, gpu_model in pod_gpu_models.items():
+                logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
+        
+        return processed_df, mapping_info, sorted_all_pod_ids, preprocess_overhead_summary
+    else:
+        # Inference mode: simplified return for speed
+        return processed_df, sorted_all_pod_ids, preprocess_overhead_summary
 
 
 def parse_log_message(log_message):
@@ -584,90 +595,7 @@ def parse_log_message(log_message):
     else:
         return pd.DataFrame(), []
 
-def preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS):
-    row = parsed_df.iloc[0].to_dict()
-
-    ## deprecating podMetricsLastSecond features
-    # if not row.get('podMetricsLastSecond'):
-    #     logger.warning("Error: podMetricsLastSecond is missing or empty in the row data.")
-    #     logger.warning(f"Row data: {row}")
-    #     # assert False
-    
-    base_features = {
-        'request_id': row['requestID'],
-        'selected_pod': row['selectedpod'],
-        'input_tokens': row['numInputTokens'],
-        'output_tokens': row['expectedNumOutputTokens'],
-        'total_tokens': row['numTotalTokens'],
-        'ttft': row['ttft'],
-        'avg_tpot': row['avg_tpot'],
-        'e2e_latency': row['e2e'],
-    }
-    if INCLUDE_GPU_IN_FEATURE:
-        
-        selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][row['selectedpod']]
-        
-        gpu_model_encoded = RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
-        
-        base_features['gpu_model_encoded'] = gpu_model_encoded
-    
-    # Extract metrics directly without repeated dictionary lookups
-    kv_cache = row['allPodsKvCacheHitRatios']
-    inflight = row['numInflightRequestsAllPods']
-    gpu_cache = row['vllmGPUKVCacheUsage']
-    cpu_cache = row['vllmCPUKVCacheUsage']
-    running = row['vllmNumRequestsRunning']
-    waiting = row['vllmNumRequestsWaiting']
-    prefill = row['numPrefillTokensForAllPods']
-    decode = row['numDecodeTokensForAllPods']
-    sorted_all_pod_ids = sorted(list(set(list(kv_cache.keys()) +
-                                    list(inflight.keys()) +
-                                    list(gpu_cache.keys()) +
-                                    list(cpu_cache.keys()) +
-                                    list(running.keys()) +
-                                    list(waiting.keys()))))
-    if not sorted_all_pod_ids:
-        logger.error("Error: No pod IDs found in the row data.")
-        logger.error(f"Row data: {row}")
-        assert False
-    for pod_id in sorted_all_pod_ids:
-        pod_prefix = f"{pod_id}"
-        if INCLUDE_GPU_IN_FEATURE:
-            if RL_MODEL_HYPERPARAMETERS and 'pod_gpu_mapping' in RL_MODEL_HYPERPARAMETERS:
-                if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
-                    logger.error(f"Error: Pod ID {pod_id} not found in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:{RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']}")
-                    assert False
-                gpu_model = RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id]
-            else:
-                assert False
-                
-        # Direct assignment without intermediate dictionaries
-        base_features[f"{pod_prefix}-kv_hit_ratio"] = kv_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-inflight_requests"] = inflight.get(pod_id, 0)
-        base_features[f"{pod_prefix}-gpu_kv_cache"] = gpu_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-cpu_kv_cache"] = cpu_cache.get(pod_id, 0)
-        base_features[f"{pod_prefix}-running_requests"] = running.get(pod_id, 0)
-        base_features[f"{pod_prefix}-waiting_requests"] = waiting.get(pod_id, 0)
-        base_features[f"{pod_prefix}-prefill_tokens"] = prefill.get(pod_id, 0)
-        base_features[f"{pod_prefix}-decode_tokens"] = decode.get(pod_id, 0)
-        if INCLUDE_GPU_IN_FEATURE:
-            base_features[f"{pod_prefix}-gpu_model"] = gpu_model
-        
-        ## deprecating podMetricsLastSecond features
-        # pod_metrics_for_pod = pod_metrics.get(pod_id, {})
-        # base_features[f"{pod_prefix}-last_second_avg_ttft_ms"] = pod_metrics_for_pod.get('last_second_avg_ttft_ms', 0)
-        # base_features[f"{pod_prefix}-last_second_avg_tpot_ms"] = pod_metrics_for_pod.get('last_second_avg_tpot_ms', 0)
-        # base_features[f"{pod_prefix}-last_second_p99_ttft_ms"] = pod_metrics_for_pod.get('last_second_p99_ttft_ms', 0)
-        # base_features[f"{pod_prefix}-last_second_p99_tpot_ms"] = pod_metrics_for_pod.get('last_second_p99_tpot_ms', 0)
-        # base_features[f"{pod_prefix}-last_second_total_requests"] = pod_metrics_for_pod.get('last_second_total_requests', 0)
-        # base_features[f"{pod_prefix}-last_second_total_tokens"] = pod_metrics_for_pod.get('last_second_total_tokens', 0)
-        # base_features[f"{pod_prefix}-last_second_total_decode_tokens"] = pod_metrics_for_pod.get('last_second_total_decode_tokens', 0)
-        # base_features[f"{pod_prefix}-last_second_total_prefill_tokens"] = pod_metrics_for_pod.get('last_second_total_prefill_tokens', 0)
-    
-    processed_df = pd.DataFrame([base_features])
-    preprocess_dataset_overhead_summary = {}
-    
-    return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
+# REMOVED: preprocess_single_row_fast - now unified with preprocess_data_unified
 
 
 def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, label_selector):
@@ -727,18 +655,27 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
         logger.error("No data found after parsing JSON columns.")
         logger.error(f"Log message: {log_message}")
         assert False
+    # Unified preprocessing for both single row (inference) and batch (training)
+    sorted_all_pod_ids = utils.get_sorted_all_pod_ids('batch_dataframe', parsed_df)
+    
     if len(parsed_df) == 1 and input_file is None:
-        preprocess_single_row_fast_start_time = time.time()
-        processed_df, sorted_all_pod_ids, _ = preprocess_single_row_fast(parsed_df, RL_MODEL_HYPERPARAMETERS)
-        preprocess_dataset_overhead_summary["preprocess_single_row_fast"] = time.time() - preprocess_single_row_fast_start_time
+        # Inference mode: single row, no training-specific features needed
+        preprocess_start_time = time.time()
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(
+            parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=False
+        )
+        preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
+        mapping_info = None  # No mapping info needed for inference
     else:
-        # Existing batch processing for training
-        # REMOVED: No need for parse_json_columns since JSON is already parsed
-        # df = parse_json_columns(df, json_columns)
-        processed_df, mapping_info, sorted_all_pod_ids, _ = preprocess_dataset(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS)
+        # Training mode: batch processing with full features
+        preprocess_start_time = time.time()
+        processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(
+            parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True
+        )
+        preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
     mapping_info_write_start_time = time.time()
     output_file = None
-    if input_file is not None:
+    if input_file is not None and mapping_info is not None:
         try:
             input_dir = os.path.dirname(input_file)
             # Save mapping information
