@@ -16,6 +16,7 @@ from kubernetes import client, config
 from kubernetes.stream import stream
 import logging
 import utils as utils
+import argparse
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -299,15 +300,17 @@ class K8sHotDeployer:
                 overall_success = False
         
         return overall_success
+    
+
 
 def main():
-    """Main function"""
-    if len(sys.argv) != 3:
-        print("Usage: python ship_all.py [final_model_only] [final_model_dir]")
-        sys.exit(1)
-    
-    ship_final_model_only = int(sys.argv[1])
-    final_model_dir = sys.argv[2]
+    parser = argparse.ArgumentParser(description='Ship all files and directories')
+    parser.add_argument('--ship_final_model_only', type=int, default=1, help='Ship only final_model directory')
+    parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
+    args = parser.parse_args()
+
+    ship_final_model_only = args.ship_final_model_only
+    final_model_dir = args.final_model_dir
     
     print("Restarting gateway and routing-agent-service")
     os.system("kubectl rollout restart deployment routing-agent-service -n default & kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system")
@@ -401,7 +404,6 @@ def main():
             sys.exit(1)
 
         print(f"\n🔧 Executing additional commands in {pod_name}")
-        deployer.execute_kubectl_command(pod_name, "rm /app/llm_router.log")
         deployer.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
     else:
         logger.error("\n💥 Deployment failed!")

@@ -70,15 +70,18 @@ delimiter="+"
 # final_model_dir="./final_model-rl_dataset-all_normalized"
 # final_model_dir="./final_model-working-model"
 # final_model_dir="./final_model-new"
-final_model_dir="../training_data/p4096_s1024_rps20/rl+random/final_model"
+# final_model_dir="../training_data/p4096_s1024_rps20/rl+random/final_model-data"
+# final_model_dir="../training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-normalized_data"
+# final_model_dir="../training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-normalized_data-sampled"
+final_model_dir="../training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-data"
 if [ ! -d "${final_model_dir}" ]; then
     echo "Final model directory does not exist: ${final_model_dir}"
     exit 1
 fi
 
 routing_configs=(
-    # "rl-online-router${delimiter}none"
-    "rl-online-router${delimiter}prefix-cache-1"
+    "rl-online-router${delimiter}none"
+    # "rl-online-router${delimiter}prefix-cache-1"
     # "rl-online-router${delimiter}prefix-cache-2"
     # "rl-online-router${delimiter}random"
 
@@ -116,33 +119,34 @@ for ENABLE_ONLINE_LEARNING in false; do
                 continue
             fi
 
+            kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
+            kubectl rollout restart deployment routing-agent-service -n default
+
             # ## Env var for routing-agent-service deployment
-            # python3 update_k8s_env.py \
-            #         --deployment routing-agent-service \
-            #         --namespace default \
-            #         --container routing-agent \
-            #         --env TTFT_SLO=${TTFT_SLO} \
-            #         --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
-            #         --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
-            #         --env MODEL=simpler_contextual_bandit \
-            #         --env REWARD_FUNCTION=${REWARD_FUNCTION} \
-            #         --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
-            #         --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
+            python3 update_k8s_env.py \
+                    --deployment routing-agent-service \
+                    --namespace default \
+                    --container routing-agent \
+                    --env TTFT_SLO=${TTFT_SLO} \
+                    --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
+                    --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
+                    --env MODEL=simpler_contextual_bandit \
+                    --env REWARD_FUNCTION=${REWARD_FUNCTION} \
+                    --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
+                    --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
 
-            # ## Env var for aibrix-gateway-plugins deployment
-            # python3 update_k8s_env.py \
-            #         --deployment aibrix-gateway-plugins \
-            #         --namespace aibrix-system \
-            #         --container gateway-plugin \
-            #         --env ENABLE_FLUSH=${ENABLE_FLUSH} \
-            #         --env FLUSH_PERIOD=${flushPeriod} \
-            #         --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
-
-            start_time=$(date +%s)
+            ## Env var for aibrix-gateway-plugins deployment
+            python3 update_k8s_env.py \
+                    --deployment aibrix-gateway-plugins \
+                    --namespace aibrix-system \
+                    --container gateway-plugin \
+                    --env ENABLE_FLUSH=${ENABLE_FLUSH} \
+                    --env FLUSH_PERIOD=${flushPeriod} \
+                    --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
 
 
-            # python ship_all.py 0 ${final_model_dir}
-            # sleep 10
+            python ship_all.py --ship_final_model_only 1 --final_model_dir ${final_model_dir}
+            sleep 5
 
 
             #################################################
@@ -195,7 +199,6 @@ for ENABLE_ONLINE_LEARNING in false; do
             #         --iterations ${iterations} \
             #         --streaming &> ${client_log_file_name}
             #         # --streaming 2>&1 | tee ${client_log_file_name}
-            # duration=$(( $(date +%s) - start_time ))
             # python kubectl_cp_from_pod_to_host.py /app/final_model "${output_dir}/final_model" routing-agent-service default
             # python kubectl_cp_from_pod_to_host.py /app/llm_router.log "${output_dir}/llm_router.log" routing-agent-service default
             # cat ${output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" > ${output_dir}/filtered-aibrix-gateway-plugins.log.csv
