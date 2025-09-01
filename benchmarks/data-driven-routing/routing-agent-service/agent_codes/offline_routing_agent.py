@@ -157,7 +157,7 @@ def test_inference(args, log_message, request_id, final_model_dir):
         logger.info("No pod IPs found in log message - likely already in pod_xxxx format")
     
     # Step 2: Preprocess using the same path as production
-    processed_df, _, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+    processed_df, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
     
     preprocess_overhead = time.time() - handle_infer_start_time
     original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
@@ -288,7 +288,7 @@ def process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DA
         utils.write_to_file(train_data, raw_data)
         
         ts_preprocess = time.time()
-        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+        processed_df, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
         processed_df.to_csv(f"{data_dir}/processed_data.csv", index=False)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         

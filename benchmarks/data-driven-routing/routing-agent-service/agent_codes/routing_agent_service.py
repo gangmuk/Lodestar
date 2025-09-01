@@ -165,7 +165,7 @@ def handle_infer():
         
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
-        processed_df, _, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
         logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
