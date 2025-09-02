@@ -1,0 +1,53 @@
+{
+    "model_type": "simplified",
+    "hidden_dim": 32,
+    "batch_size": 32,
+    "learning_rate": 0.01,
+    "training_epochs": 5,
+    "learning_every_x_iter": 5,
+    "weight_decay": 0.0001,
+    "max_updates_per_epoch": 1000,
+    "exploration_rate": 0.1,
+    "explore": true,
+    "weight_initialization": "xavier",
+    "eval_interval": 10,
+    "entropy_bonus_factor": 0.01,
+    "per_learn_reward_normalization": false,
+    "normalization": {
+        "SIGNAL_AMPLIFICATION_DEGREE": 1.0,
+        "REWARD_AMPLIFICATION_DEGREE": 1.0,
+        "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+        "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+        "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+        "FEATURES_NORMALIZED": "{'pod_0001-gpu_kv_cache', 'pod_0006-prefill_tokens', 'pod_0001-waiting_requests', 'pod_0002-waiting_requests', 'pod_0000-kv_hit_ratio', 'pod_0000-inflight_requests', 'pod_0004-waiting_requests', 'pod_0003-running_requests', 'pod_0003-decode_tokens', 'pod_0001-running_requests', 'pod_0002-prefill_tokens', 'pod_0006-waiting_requests', 'pod_0002-kv_hit_ratio', 'pod_0000-prefill_tokens', 'pod_0006-kv_hit_ratio', 'pod_0000-decode_tokens', 'pod_0004-running_requests', 'pod_0000-gpu_kv_cache', 'pod_0004-prefill_tokens', 'pod_0006-running_requests', 'pod_0005-waiting_requests', 'pod_0004-inflight_requests', 'pod_0004-gpu_kv_cache', 'pod_0005-gpu_kv_cache', 'pod_0005-kv_hit_ratio', 'pod_0001-decode_tokens', 'pod_0005-inflight_requests', 'pod_0005-decode_tokens', 'pod_0002-decode_tokens', 'pod_0003-prefill_tokens', 'pod_0006-decode_tokens', 'pod_0005-running_requests', 'pod_0001-inflight_requests', 'pod_0004-kv_hit_ratio', 'pod_0005-prefill_tokens', 'pod_0002-inflight_requests', 'pod_0001-prefill_tokens', 'pod_0006-gpu_kv_cache', 'pod_0002-gpu_kv_cache', 'pod_0004-decode_tokens', 'pod_0006-inflight_requests', 'pod_0000-running_requests', 'total_tokens', 'pod_0002-running_requests', 'pod_0003-waiting_requests', 'pod_0003-kv_hit_ratio', 'input_tokens', 'output_tokens', 'pod_0003-inflight_requests', 'pod_0001-kv_hit_ratio', 'pod_0003-gpu_kv_cache', 'pod_0000-waiting_requests'}",
+        "NUM_FEATURES_NORMALIZED": 52,
+        "FEATURE_AMPLIFICATION": false,
+        "FEATURES_AMPLIFIED": "set()",
+        "NUM_FEATURES_AMPLIFIED": 0
+    },
+    "dataset_analysis": {
+        "total_samples": 7938,
+        "imbalance_ratio": 1.3119447754619917,
+        "reward_gap": 0.10344496369361877,
+        "reward_distribution": {
+            "mean": 0.31670942902565,
+            "std": 0.42875194549560547,
+            "min": -1.0,
+            "p10": -0.3199999928474426,
+            "p20": -0.05031996965408325,
+            "p30": 0.16519999504089355,
+            "p40": 0.4155200123786926,
+            "p50": 0.5,
+            "p60": 0.5564000010490417,
+            "p70": 0.6039999723434448,
+            "p80": 0.6530400514602661,
+            "p90": 0.7107999920845032,
+            "p99": 0.7731999754905701,
+            "max": 0.7888000011444092
+        },
+        "action_distribution": "tensor([1329, 1272, 1143, 1078, 1013, 1084, 1019])"
+    },
+    "deterministic_training": true,
+    "training_seed": 42,
+    "REWARD_FUNCTION": "linear_simple"
+}
