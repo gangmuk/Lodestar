@@ -9,7 +9,7 @@ from logger import logger
 import preprocess
 import random_forest
 import torch
-import feature_normalization
+import data_normalizer
 import offline_routing_agent
 
 def diagnose_training_data_issues(ENCODED_DATA_DIR):
@@ -300,7 +300,8 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
                 for feature in pod_features_cols:
                     if any(critical in feature for critical in critical_features):
                         if feature in processed_df.columns:
-                            processed_df[feature] = processed_df[feature] * feature_normalization.SIGNAL_AMPLIFICATION_DEGREE
+                            # Note: SIGNAL_AMPLIFICATION_DEGREE doesn't exist in merged module - using default value
+                            processed_df[feature] = processed_df[feature] * 1.0  # Default amplification degree
             
             # Encode baseline data
             tensor_dataset, _ = encoding.encode_for_inference(all_pods, processed_df, stats, offline_routing_agent.request_features_train)

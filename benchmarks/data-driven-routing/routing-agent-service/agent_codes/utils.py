@@ -21,6 +21,42 @@ import hashlib
 import traceback
 import psutil
 import socket
+import ast
+
+def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
+    if not os.path.exists(file_path):
+        logger.error(f"Hyperparameter file {file_path} does not exist")
+        assert False
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    for key, value in data.items():
+        if key == 'normalization':
+            # Handle nested normalization parameters
+            RL_MODEL_HYPERPARAMETERS[key] = {}
+            for sub_key, sub_value in value.items():
+                if sub_key == 'FEATURES_NORMALIZED':
+                    # Convert string representation of set to actual set
+                    if sub_value and sub_value != "set()":
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
+                    else:
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
+                elif sub_key == 'FEATURES_AMPLIFIED':
+                    # Convert string representation of set to actual set
+                    if sub_value and sub_value != "set()":
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
+                    else:
+                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
+                else:
+                    RL_MODEL_HYPERPARAMETERS[key][sub_key] = sub_value
+        else:
+            RL_MODEL_HYPERPARAMETERS[key] = value
+
+    for key, value in RL_MODEL_HYPERPARAMETERS.items():
+        if key == 'normalization':
+            for sub_key, sub_value in value.items():
+                logger.info(f"load_rl_hyperparameters, {key}.{sub_key}: {sub_value}")
+        else:
+            logger.info(f"load_rl_hyperparameters, {key}: {value}")
 
 
 def get_sorted_all_pod_ids(source_type, data=None):

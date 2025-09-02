@@ -26,16 +26,20 @@ from preprocess import (
 )
 
 class RLDatasetAnalyzer:
-    def __init__(self, csv_file):
+    def __init__(self, processed_csv):
         """Initialize analyzer with CSV file."""
-        self.csv_file = csv_file
-        self.df = pd.read_csv(csv_file)
+        self.processed_csv = processed_csv
+        self.df = pd.read_csv(processed_csv)
         self.num_samples = len(self.df)
         self.pod_ids = self._extract_pod_ids()
         self.num_pods = len(self.pod_ids)
         
+        # Determine if this is a processed (raw values) or normalized CSV
+        self.is_processed_csv = self._detect_csv_type()
+        
         print(f"Dataset loaded: {self.num_samples} samples, {self.num_pods} pods")
         print(f"Pod IDs: {self.pod_ids}")
+        print(f"CSV type: {'Processed (raw values)' if self.is_processed_csv else 'Normalized'}")
         
     def _extract_pod_ids(self):
         """Extract unique pod IDs from column names."""
@@ -46,41 +50,93 @@ class RLDatasetAnalyzer:
                 pod_ids.add(pod_id)
         return sorted(list(pod_ids))
     
+    def _detect_csv_type(self):
+        """Detect if CSV contains processed (raw) or normalized data."""
+        # Check for metadata columns that indicate processed CSV
+        processed_indicators = ['processing_timestamp', 'source_file', 'ttft_slo_used', 'avg_tpot_slo_used']
+        normalized_indicators = ['normalization_timestamp', 'reward_function_used']
+        
+        has_processed = any(col in self.df.columns for col in processed_indicators)
+        has_normalized = any(col in self.df.columns for col in normalized_indicators)
+        
+        if has_processed and not has_normalized:
+            return True  # Processed CSV
+        elif has_normalized:
+            return False  # Normalized CSV
+        else:
+            # Fallback: check if TTFT/TPOT values look like raw data (> 1.0 typically)
+            if 'ttft' in self.df.columns and 'avg_tpot' in self.df.columns:
+                ttft_mean = self.df['ttft'].mean()
+                tpot_mean = self.df['avg_tpot'].mean()
+                # Raw values are typically much larger than normalized values
+                return ttft_mean > 10 or tpot_mean > 5
+            return True  # Default to processed
+    
     def analyze_reward_signal(self, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple'):
         """Analyze reward signal strength and differentiation."""
         print("\n" + "="*60)
         print("1. REWARD SIGNAL ANALYSIS")
         print("="*60)
         
-        # Check if rewards are pre-calculated in the dataset
-        if 'reward' in self.df.columns:
-            print(f"Using pre-calculated rewards from dataset (matches training conditions)")
-            combined_rewards = self.df['reward'].values
-            ttft_rewards = self.df['ttft_reward'].values if 'ttft_reward' in self.df.columns else None
-            tpot_rewards = self.df['tpot_reward'].values if 'tpot_reward' in self.df.columns else None
-            print(f"Pre-calculated reward range: [{combined_rewards.min():.4f}, {combined_rewards.max():.4f}]")
+        # Always calculate rewards dynamically from raw TTFT/TPOT values
+        if 'ttft' not in self.df.columns or 'avg_tpot' not in self.df.columns:
+            print("ERROR: Missing required columns 'ttft' and 'avg_tpot' for reward calculation")
+            print(f"Available columns: {list(self.df.columns)}")
+            return None
+        
+        # Extract SLO values from metadata if available and not overridden
+        if ttft_slo == 1000 and 'ttft_slo_used' in self.df.columns:
+            ttft_slo = self.df['ttft_slo_used'].iloc[0]
+            print(f"Using TTFT SLO from dataset metadata: {ttft_slo}ms")
+        
+        if tpot_slo == 50 and 'avg_tpot_slo_used' in self.df.columns:
+            tpot_slo = self.df['avg_tpot_slo_used'].iloc[0]
+            print(f"Using TPOT SLO from dataset metadata: {tpot_slo}ms")
+        
+        # Always calculate rewards using specified function for consistent analysis
+        ttft_values = self.df['ttft'].values
+        tpot_values = self.df['avg_tpot'].values
+        
+        print(f"Calculating rewards using function: {reward_function}")
+        print(f"TTFT SLO: {ttft_slo}ms, TPOT SLO: {tpot_slo}ms")
+        print(f"Raw TTFT range: [{ttft_values.min():.1f}, {ttft_values.max():.1f}]ms")
+        print(f"Raw TPOT range: [{tpot_values.min():.1f}, {tpot_values.max():.1f}]ms")
+        
+        # Use imported reward functions from preprocess.py
+        if reward_function == 'linear_simple':
+            reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
+        elif reward_function == 'linear_simple_extended':
+            reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, tpot_slo)
+        elif reward_function == 'piecewise_linear_steeper_gradient':
+            reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, tpot_slo)
         else:
-            # Fallback: Calculate rewards using specified reward function
-            ttft_values = self.df['ttft'].values
-            tpot_values = self.df['avg_tpot'].values
+            print(f"Unknown reward function: {reward_function}, defaulting to linear_simple")
+            reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
+        
+        combined_rewards = reward_result['combined_rewards']
+        ttft_rewards = reward_result['ttft_rewards']
+        tpot_rewards = reward_result['tpot_rewards']
+        
+        # Compare with pre-calculated rewards if they exist
+        if 'reward' in self.df.columns and not self.is_processed_csv:
+            pre_calc_rewards = self.df['reward'].values
+            print(f"\nComparison with pre-calculated rewards:")
+            print(f"  Pre-calculated range: [{pre_calc_rewards.min():.4f}, {pre_calc_rewards.max():.4f}]")
+            print(f"  Newly calculated range: [{combined_rewards.min():.4f}, {combined_rewards.max():.4f}]")
             
-            print(f"No pre-calculated rewards found. Using reward function: {reward_function}")
-            print(f"TTFT SLO: {ttft_slo}ms, TPOT SLO: {tpot_slo}ms")
-            
-            # Use imported reward functions from preprocess.py
-            if reward_function == 'linear_simple':
-                reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
-            elif reward_function == 'linear_simple_extended':
-                reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, tpot_slo)
-            elif reward_function == 'piecewise_linear_steeper_gradient':
-                reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, tpot_slo)
-            else:
-                print(f"Unknown reward function: {reward_function}, defaulting to linear_simple")
-                reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
-            
-            combined_rewards = reward_result['combined_rewards']
-            ttft_rewards = reward_result['ttft_rewards']
-            tpot_rewards = reward_result['tpot_rewards']
+            # Check if they match (within tolerance)
+            if len(pre_calc_rewards) == len(combined_rewards):
+                diff = np.abs(pre_calc_rewards - combined_rewards)
+                max_diff = diff.max()
+                print(f"  Maximum difference: {max_diff:.6f}")
+                if max_diff < 0.001:
+                    print("  ✓ Pre-calculated and newly calculated rewards match!")
+                else:
+                    print(f"  ⚠️  Significant difference detected (max_diff={max_diff:.6f})")
+                    print("     This suggests different reward function or SLO values were used")
+        
+        print(f"\nDynamic reward calculation complete:")
+        print(f"  Calculated range: [{combined_rewards.min():.4f}, {combined_rewards.max():.4f}]")
         
         # Reward by selected pod
         reward_by_pod = {}
@@ -425,7 +481,12 @@ class RLDatasetAnalyzer:
         
         # Exclude non-numeric and identifier columns
         exclude_patterns = ['request_id', 'selected_pod', 'action']
-        exclude_exact = ['request_id', 'selected_pod', 'action']
+        # Do not include reward/latency metrics that are not used for model inference
+        exclude_exact = [
+            'request_id', 'selected_pod', 'action',
+            'reward', 'ttft_reward', 'tpot_reward',
+            'e2e_latency', 'ttft', 'avg_tpot', 'ttft_slo_used', 'processing_timestamp', 'avg_tpot_slo_used',
+        ]
         
         for col in self.df.columns:
             # Skip pod-specific columns
@@ -1293,10 +1354,10 @@ class RLDatasetAnalyzer:
             print("  Training with this dataset may result in poor model performance")
         
         # Generate visualizations
-        pdf_filename = self.create_visualizations(rewards, routing_metrics, ttft_slo, tpot_slo, reward_function, self.csv_file)
+        pdf_filename = self.create_visualizations(rewards, routing_metrics, ttft_slo, tpot_slo, reward_function, self.processed_csv)
         return pdf_filename
     
-    def create_visualizations(self, rewards, routing_metrics, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple', csv_file_path=None):
+    def create_visualizations(self, rewards, routing_metrics, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple', processed_csv=None):
         """Create professional visualization plots and save to PDF."""
         print(f"\nGenerating professional visualizations...")
         
@@ -1315,10 +1376,10 @@ class RLDatasetAnalyzer:
         })
         
         # Create PDF file in the same directory as input CSV
-        if csv_file_path:
+        if processed_csv:
             # Save in the same directory as the input CSV file
-            input_dir = os.path.dirname(csv_file_path)
-            input_basename = os.path.splitext(os.path.basename(csv_file_path))[0]
+            input_dir = os.path.dirname(processed_csv)
+            input_basename = os.path.splitext(os.path.basename(processed_csv))[0]
             pdf_filename = f"dataset_analysis_{reward_function}_{input_basename}.pdf"
             pdf_filename = os.path.join(input_dir, pdf_filename)
         else:
@@ -2355,7 +2416,7 @@ Quality Assessment:
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze RL dataset quality')
-    parser.add_argument('csv_file', help='Path to the CSV dataset file')
+    parser.add_argument('--processed_csv', help='Path to the CSV dataset file')
     parser.add_argument('--ttft-slo', type=float, default=1000, 
                        help='TTFT SLO threshold (default: 1000ms)')
     parser.add_argument('--tpot-slo', type=float, default=50,
@@ -2364,8 +2425,6 @@ def main():
                        choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient'],
                        default='linear_simple',
                        help='Reward function to use (default: linear_simple)')
-    parser.add_argument('--uniform-sampling', action='store_true',
-                       help='Use uniform reward distribution sampling for analysis')
     parser.add_argument('--sampling-bins', type=int, default=10,
                        help='Number of bins for uniform sampling (default: 10)')
     parser.add_argument('--samples-per-bin', type=int, default=None,
@@ -2375,11 +2434,11 @@ def main():
     
     args = parser.parse_args()
     
-    if not os.path.exists(args.csv_file):
-        print(f"Error: File {args.csv_file} not found")
+    if not os.path.exists(args.processed_csv):
+        print(f"Error: File {args.processed_csv} not found")
         return
     
-    analyzer = RLDatasetAnalyzer(args.csv_file)
+    analyzer = RLDatasetAnalyzer(args.processed_csv)
 
     # sampling for uniform reward distribution
     if args.save_sampled_dataset:
@@ -2408,8 +2467,8 @@ def main():
         analyzer.df = analyzer.df.iloc[sampled_indices].reset_index(drop=True)
         analyzer.num_samples = len(analyzer.df)
         # Create descriptive filename in the same directory as input CSV
-        input_dir = os.path.dirname(args.csv_file)
-        base_name = os.path.splitext(os.path.basename(args.csv_file))[0]
+        input_dir = os.path.dirname(args.processed_csv)
+        base_name = os.path.splitext(os.path.basename(args.processed_csv))[0]
         output_filename = f"{base_name}-sampled.csv"
         output_path = os.path.join(input_dir, output_filename)
         analyzer.df.to_csv(output_path, index=False)

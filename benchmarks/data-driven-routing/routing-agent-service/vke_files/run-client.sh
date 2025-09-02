@@ -92,14 +92,16 @@ routing_configs=(
     # "flexible-prefix-cache${delimiter}random"
 )
 
-TTFT_SLO=1000
-AVG_TPOT_SLO=50
+# TTFT_SLO=1000
+# AVG_TPOT_SLO=50
+# REWARD_FUNCTION="linear_simple" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient"
+
+
 EXPLORATION_ENABLED=0
 MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
 ENABLE_FLUSH=0
 flushPeriod=10 # seconds
 ONLINE_NORMALIZATION_DURING_FLUSH=0
-REWARD_FUNCTION="linear_simple" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient"
 
 # for ENABLE_ONLINE_LEARNING in true false; do
 for ENABLE_ONLINE_LEARNING in false; do
@@ -127,13 +129,13 @@ for ENABLE_ONLINE_LEARNING in false; do
                     --deployment routing-agent-service \
                     --namespace default \
                     --container routing-agent \
-                    --env TTFT_SLO=${TTFT_SLO} \
-                    --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
                     --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
                     --env MODEL=simpler_contextual_bandit \
-                    --env REWARD_FUNCTION=${REWARD_FUNCTION} \
                     --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
                     --env ONLINE_NORMALIZATION_DURING_FLUSH=${ONLINE_NORMALIZATION_DURING_FLUSH}
+                    # --env TTFT_SLO=${TTFT_SLO} \
+                    # --env AVG_TPOT_SLO=${AVG_TPOT_SLO} \
+                    # --env REWARD_FUNCTION=${REWARD_FUNCTION} \
 
             ## Env var for aibrix-gateway-plugins deployment
             python3 update_k8s_env.py \
@@ -145,7 +147,7 @@ for ENABLE_ONLINE_LEARNING in false; do
                     --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
 
 
-            python ship_all.py --ship_final_model_only 1 --final_model_dir ${final_model_dir}
+            # python ship_all.py --ship_final_model_only 1 --final_model_dir ${final_model_dir}
             sleep 5
 
 
