@@ -241,7 +241,7 @@ def preprocess_data_unified(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPAR
         'vllmCPUKVCacheUsage', 
         'vllmNumRequestsRunning', 
         'vllmNumRequestsWaiting', 
-        'podMetricsLastSecond', 
+        # 'podMetricsLastSecond',  # Made optional - will be handled separately
         'numPrefillTokensForAllPods', 
         'numDecodeTokensForAllPods',
     ]
@@ -252,6 +252,16 @@ def preprocess_data_unified(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPAR
             sample_val = parsed_df[col].iloc[0]
             if isinstance(sample_val, str):
                 parsed_df[col] = parsed_df[col].apply(safe_parse_json)
+    
+    # Handle podMetricsLastSecond separately (optional column)
+    if 'podMetricsLastSecond' in parsed_df.columns:
+        sample_val = parsed_df['podMetricsLastSecond'].iloc[0]
+        if isinstance(sample_val, str):
+            parsed_df['podMetricsLastSecond'] = parsed_df['podMetricsLastSecond'].apply(safe_parse_json)
+        logger.info("Found podMetricsLastSecond column - will be ignored for feature extraction")
+    else:
+        logger.info("podMetricsLastSecond column not found - this is fine, features from this column are not used")
+    
     json_parse_overhead = time.time() - json_parse_start_time
 
     # Collect all unique pod IDs in a single pass
@@ -275,7 +285,7 @@ def preprocess_data_unified(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPAR
         'vllmCPUKVCacheUsage',
         'vllmNumRequestsRunning', 
         'vllmNumRequestsWaiting',
-        'podMetricsLastSecond', 
+        # 'podMetricsLastSecond',  # Optional column - may be empty or missing
         'numPrefillTokensForAllPods',
         'numDecodeTokensForAllPods',
         # 'GPU_model',
@@ -416,7 +426,8 @@ def preprocess_data_unified(parsed_df, ttft_slo, avg_tpot_slo, RL_MODEL_HYPERPAR
     all_waiting = parsed_df['vllmNumRequestsWaiting'].values
     all_prefill = parsed_df['numPrefillTokensForAllPods'].values
     all_decode = parsed_df['numDecodeTokensForAllPods'].values
-    all_pod_metrics = parsed_df['podMetricsLastSecond'].values
+    # NOTE: podMetricsLastSecond features are not used in training anymore
+    # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
     for pod_id in sorted_all_pod_ids:
@@ -598,7 +609,7 @@ def parse_log_message(log_message):
 # REMOVED: preprocess_single_row_fast - now unified with preprocess_data_unified
 
 
-def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, label_selector):
+def main(input_file, log_message, RL_MODEL_HYPERPARAMETERS):
     preprocess_dataset_overhead_summary = {}
     main_start_time = time.time()
     if input_file == None and (log_message == "" or log_message is None):
@@ -610,23 +621,7 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
     if input_file is not None:  # Training path
         parsed_df, json_columns = parse_log_file(input_file)
     else:  # Inference path
-        if 'running_pods' not in RL_MODEL_HYPERPARAMETERS:
-            RL_MODEL_HYPERPARAMETERS['running_pods'] = utils.get_running_pods_by_label(label_selector)
-        if 'all_pod_ips_from_running_pods' not in RL_MODEL_HYPERPARAMETERS:
-            RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'] = utils.fetch_running_pod_ips(RL_MODEL_HYPERPARAMETERS['running_pods'])
-        sort_start_time = time.time()
-        unique_pod_ips = sorted(RL_MODEL_HYPERPARAMETERS['all_pod_ips_from_running_pods'])
-        preprocess_dataset_overhead_summary["sort_unique_pod_ips"] = time.time() - sort_start_time
-        if 'pod_ip_to_generalpodid' not in RL_MODEL_HYPERPARAMETERS:
-            pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(unique_pod_ips)
-            RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-        if 'generalpodid_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS:
-            generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(RL_MODEL_HYPERPARAMETERS['running_pods'], pod_ip_to_generalpodid)
-            RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
-        if 'pod_ip_to_gpu_model' not in RL_MODEL_HYPERPARAMETERS or 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
-            pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
-            RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-            RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+
         preprocess_dataset_overhead_summary["init"] = time.time() - main_start_time
         parse_start_time = time.time()
         parsed_df, _ = parse_log_message(log_message)
@@ -641,12 +636,12 @@ def main(input_file, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETE
     if len(parsed_df) == 1 and input_file is None:
         # Inference mode: single row, no training-specific features needed
         preprocess_start_time = time.time()
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=False)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS['TTFT_SLO'], RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'], RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=False)
         preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
         mapping_info = None  # No mapping info needed for inference
     else:
         # Training mode: batch processing with full features
         preprocess_start_time = time.time()
-        processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True)
+        processed_df, mapping_info, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS['TTFT_SLO'], RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'], RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training=True)
         preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
     return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary

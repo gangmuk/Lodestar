@@ -9,7 +9,7 @@ import threading
 import argparse
 import random_forest
 import torch
-import feature_normalization
+import data_normalizer
 import model_and_data_analysis_helper
 import shutil
 import re
@@ -17,6 +17,7 @@ import utils as utils
 import random
 from logger import logger, INCLUDE_GPU_IN_FEATURE
 import pandas as pd
+import data_normalizer
 
 utils.set_all_seeds(42)
 
@@ -53,6 +54,8 @@ RL_MODEL_HYPERPARAMETERS = {
     'deterministic_training': True,
     'training_seed': 42,
     'REWARD_FUNCTION': 'linear_simple',
+    # 'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
+    # 'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
 }
 
 # Global variables (simplified for offline use)
@@ -61,46 +64,16 @@ MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
 POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
 TOTAL_NUM_DATA = 0
-MIN_NUM_TRAINING_DATA = 500
+MIN_NUM_TRAINING_DATA = 50  # Reduced for testing with smaller datasets
 LOCK_TRAINING_DATA = threading.Lock()
 stats_instance = None
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
-def read_csv_data(log_file):
-    """Simple function to read log entries from a text file in deterministic order"""
-    from collections import OrderedDict
-    
-    log_data = OrderedDict()
-    
-    try:
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-        
-        request_count = 0
-        for line_num, line in enumerate(lines):
-            line = line.strip()
-            if line and '**@latency_metrics@' in line:
-                # Remove the log prefix (everything up to and including '] ')
-                bracket_pos = line.rfind('] ')
-                if bracket_pos != -1:
-                    clean_line = line[bracket_pos + 2:]
-                else:
-                    clean_line = line
-                
-                # Use line number to ensure deterministic ordering
-                log_data[f"request_{request_count}"] = clean_line
-                request_count += 1
-        
-        print(f"Successfully read {len(log_data)} log entries from {log_file}")
-        print(f"Entries are in the exact order they appeared in the file (lines processed: {len(lines)})")
-        return log_data
-        
-    except Exception as e:
-        print(f"Error reading file {log_file}: {e}")
-        return None
+# NOTE: read_csv_data function removed - no longer needed with new pipeline
+# Raw data processing is now handled by data_processor.py
 
-def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir, training_data_filename=None):
+def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA 
     if TRAINING_DATA_UPDATED and TOTAL_NUM_DATA > MIN_NUM_TRAINING_DATA:
         training_start_time = time.time()
@@ -122,6 +95,132 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir, training_
     else:
         logger.info(f"Not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
         assert False
+
+
+def create_test_data_from_processed_csv(processed_csv_file):
+    """
+    Create test data by generating mock log messages from processed CSV samples.
+    
+    Args:
+        processed_csv_file: Path to processed CSV file
+        
+    Returns:
+        list: Test data samples with mock log messages
+    """
+    import pandas as pd
+    import json
+    
+    test_data = []
+    
+    # Load processed data to create test set
+    df = pd.read_csv(processed_csv_file)
+    
+    # Use last 10% or 10 samples as test data
+    test_size = min(10, max(1, int(len(df) * 0.1)))
+    test_df = df.tail(test_size)
+    
+    # Extract actual pod IDs from the processed data
+    all_pod_ids = sorted(df['selected_pod'].unique())
+    logger.info(f"Using pod IDs from processed data: {all_pod_ids}")
+    
+    for _, row in test_df.iterrows():
+        # Reconstruct a proper log message for testing (minimal but valid format)
+        request_id = row.get('request_id', f"test_{row.name}")
+        
+        # Mock pod metrics with realistic values for all detected pods
+        kv_cache_ratios = {pod: 0.1 for pod in all_pod_ids}
+        inflight_requests = {pod: 2 for pod in all_pod_ids}
+        gpu_cache_usage = {pod: 0.15 for pod in all_pod_ids}
+        cpu_cache_usage = {pod: 0.0 for pod in all_pod_ids}
+        running_requests = {pod: 2 for pod in all_pod_ids}
+        waiting_requests = {pod: 0 for pod in all_pod_ids}
+        prefill_tokens = {pod: 5000 for pod in all_pod_ids}
+        decode_tokens = {pod: 50000 for pod in all_pod_ids}
+        
+        # Convert to JSON strings
+        kv_cache_json = json.dumps(kv_cache_ratios)
+        inflight_json = json.dumps(inflight_requests)
+        gpu_cache_json = json.dumps(gpu_cache_usage)
+        cpu_cache_json = json.dumps(cpu_cache_usage)
+        running_json = json.dumps(running_requests)
+        waiting_json = json.dumps(waiting_requests)
+        prefill_json = json.dumps(prefill_tokens)
+        decode_json = json.dumps(decode_tokens)
+        
+        mock_log_message = (
+            f"**@latency_metrics@requestID@{request_id}@"
+            f"request_start_time@1748656367682891@request_end_time@1748656374420081@"
+            f"selectedpod@{row['selected_pod']}@ttft@{row['ttft']}@avg_tpot@{row['avg_tpot']}@"
+            f"total_decode_time@{row['ttft'] + row['avg_tpot']}@e2e@{row.get('e2e_latency', row['ttft'] + row['avg_tpot'])}@"
+            f"numInputTokens@{row.get('input_tokens', 4000)}@numOutputTokens@{row.get('output_tokens', 100)}@"
+            f"numTotalTokens@{row.get('total_tokens', 4100)}@"
+            f"allPodsKvCacheHitRatios@{kv_cache_json}@numInflightRequestsAllPods@{inflight_json}@"
+            f"vllmGPUKVCacheUsage@{gpu_cache_json}@vllmCPUKVCacheUsage@{cpu_cache_json}@"
+            f"vllmNumRequestsRunning@{running_json}@vllmNumRequestsWaiting@{waiting_json}@"
+            f"podMetricsLastSecond@{{}}@numPrefillTokensForAllPods@{prefill_json}@"
+            f"numDecodeTokensForAllPods@{decode_json}@numTrains@1"
+        )
+        test_data.append({
+            "request_id": request_id,
+            "message": mock_log_message
+        })
+    
+    logger.info(f"Created {len(test_data)} test samples from processed data")
+    return test_data
+
+
+def run_test_inference_phase(args, test_data):
+    """
+    Run the test inference phase with the provided test data.
+    
+    Args:
+        args: Command line arguments
+        test_data: List of test samples with mock log messages
+    """
+    logger.info("=== STARTING TESTING PHASE ===")
+    success_count = 0
+    match_count = 0
+    mismatch_count = 0
+    unknown_original_count = 0
+    test_count = 10
+    
+    for td in test_data:
+        log_message = td['message']
+        request_id = td['request_id']
+        result = test_inference(args, log_message, request_id, args.final_model_dir)
+        
+        print()
+        print(f"Request_id: {request_id}, Selected Pod: {result['selected_pod']}")
+        print(f"pod_probabilities_list: ", end="")
+        for prob in result['pod_probabilities']:
+            print(f"{prob:.2f}", end=", ")
+        print()
+        print()
+        
+        if result:
+            success_count += 1
+            if result['prediction_matches'] is True:
+                match_count += 1
+            elif result['prediction_matches'] is False:
+                mismatch_count += 1
+            else:
+                unknown_original_count += 1
+                
+            # Log detailed results
+            if result['original_pod_choice']:
+                match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
+                logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}")
+            else:
+                logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}")
+        else:
+            logger.error(f"✗ Failed inference for {request_id}")
+                
+        test_count -= 1
+        if test_count <= 0:
+            break
+            
+    logger.info(f"Testing complete: {success_count} successful inferences")
+    logger.info(f"Prediction matches: {match_count}, mismatches: {mismatch_count}, unknown: {unknown_original_count}")
 
 
 def test_inference(args, log_message, request_id, final_model_dir):
@@ -157,7 +256,7 @@ def test_inference(args, log_message, request_id, final_model_dir):
         logger.info("No pod IPs found in log message - likely already in pod_xxxx format")
     
     # Step 2: Preprocess using the same path as production
-    processed_df, sorted_all_pod_ids, _ = preprocess.main(None, log_message, args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+    processed_df, sorted_all_pod_ids, _ = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
     
     preprocess_overhead = time.time() - handle_infer_start_time
     original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
@@ -179,17 +278,43 @@ def test_inference(args, log_message, request_id, final_model_dir):
             assert False
     
     ## new way
-    normalizable_features, non_normalizable_features = feature_normalization._get_normalizable_features(processed_df)
+    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
     logger.info(f"normalizable_features: {normalizable_features}")
     logger.info(f"non_normalizable_features: {non_normalizable_features}")
-    if stats_instance.count == 0:
+    if not stats_instance.feature_stats:
         logger.error(f"request_id,{request_id},No normalization statistics available for inference")
         assert False
     for feature in normalizable_features:
         stats = stats_instance.feature_stats[feature]
-        logger.info(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-        feature_normalization._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
-        logger.info(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+        
+        # Check data type and convert if necessary
+        feature_value = processed_df[feature].iloc[0]
+        if not pd.api.types.is_numeric_dtype(processed_df[feature]):
+            logger.warning(f"request_id,{request_id},Feature {feature} is not numeric (type: {type(feature_value)}), attempting conversion")
+            try:
+                processed_df[feature] = pd.to_numeric(processed_df[feature], errors='coerce')
+                feature_value = processed_df[feature].iloc[0]
+                if pd.isna(feature_value):
+                    logger.error(f"request_id,{request_id},Feature {feature} could not be converted to numeric")
+                    continue
+            except Exception as e:
+                logger.error(f"request_id,{request_id},Failed to convert feature {feature} to numeric: {e}")
+                continue
+        
+        try:
+            logger.info(f"before normalize, {feature}: value={feature_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+        except Exception as e:
+            logger.error(f"request_id,{request_id},Feature {feature} formatting error: {e}")
+            continue
+            
+        data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
+        
+        try:
+            normalized_value = processed_df[feature].iloc[0]
+            logger.info(f"after normalize, {feature}: value={normalized_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+        except Exception as e:
+            logger.error(f"request_id,{request_id},Feature {feature} post-normalization formatting error: {e}")
+            continue
         if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
             if feature in processed_df.columns:
                 processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
@@ -274,45 +399,45 @@ def test_inference(args, log_message, request_id, final_model_dir):
 
     return result_summary
 
-def process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DATA_DIR, already_processed_df=None):
+def process_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
     flush_start_time = time.time()
-    if not train_data and already_processed_df is None:
-        logger.error("None of training data provided. We need either train_data or already_processed_df.")
+    
+    if not os.path.exists(processed_csv_file):
+        logger.error(f"Processed CSV file not found: {processed_csv_file}")
         assert False
-    if train_data is not None:
-        logger.info(f"Processing training data with {len(train_data)} entries")
-        if not os.path.exists("temp_training_data"):
-            os.mkdir("temp_training_data")
-        raw_data = "temp_training_data/offline_batch.csv"
-        utils.write_to_file(train_data, raw_data)
-        
-        ts_preprocess = time.time()
-        processed_df, sorted_all_pod_ids, _ = preprocess.main(raw_data, "", args.ttft_slo, args.avg_tpot_slo, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
-        processed_df.to_csv(f"{data_dir}/processed_data.csv", index=False)
-        logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        
-        # update_stats_incrementally is called inside normalize_features_for_training
-        processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-        # processed_df = feature_normalization.try_reward_amplification(processed_df)
-        processed_df.to_csv(f"{data_dir}/processed_and_normalized_data.csv", index=False)
-    else:
-        if len(already_processed_df) != 0:
-            processed_df = already_processed_df
-            # Extract sorted_all_pod_ids from the already processed dataframe column names
-            sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', processed_df.columns.tolist())
-            
-            # BUGFIX: When using already processed data, we need to compute stats for inference
-            # The data is already normalized, so we compute stats from the normalized data
-            logger.info("Computing feature statistics from already processed/normalized data for inference")
-            feature_normalization.compute_stats_from_normalized_data(processed_df, stats_instance)
-        else:
-            logger.error("We are using already_processed_df but already_processed_df is empty. Check already_processed_csv file.")
-            assert False
-    # encoding
+    
+    logger.info(f"Loading processed training data from: {processed_csv_file}")
+    
+    # Load processed data (contains raw values)
+    import pandas as pd
+    processed_df = pd.read_csv(processed_csv_file)
+    logger.info(f"Loaded {len(processed_df)} samples with {len(processed_df.columns)} columns")
+    
+    # Extract sorted_all_pod_ids from the processed dataframe column names
+    sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', processed_df.columns.tolist())
+    logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs: {sorted_all_pod_ids}")
+    
+    # Apply normalization using the new data_normalizer module
+    normalized_df, updated_stats_instance, summary = data_normalizer.normalize_processed_data(
+        processed_csv_file,
+        output_csv_file=None,  # Don't save, just return normalized data
+        reward_function=RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'],
+        stats_file=None,  # Don't save stats yet
+        hyperparameters=RL_MODEL_HYPERPARAMETERS
+    )
+    
+    # Update the stats instance
+    stats_instance.feature_stats = updated_stats_instance.feature_stats
+    stats_instance.CONFIG = updated_stats_instance.CONFIG
+    
+    logger.info(f"Normalization complete: {summary['num_features_normalized']} features normalized")
+    logger.info(f"Reward function used: {summary['reward_function']}")
+    logger.info(f"Processing time: {summary['processing_time']:.2f} seconds")
+    # encoding (use normalized data for training)
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
-    encoding.encode_for_train(sorted_all_pod_ids, processed_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
+    encoding.encode_for_train(sorted_all_pod_ids, normalized_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
     logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
     # Verify encoded data
@@ -323,29 +448,14 @@ def process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DA
     elif os.path.exists(train_tensor_path):
         logger.info(f"✓ Found tensor dataset at: {train_tensor_path}")
     TRAINING_DATA_UPDATED = True
-    data_count = len(train_data) if train_data is not None else len(processed_df)
+    data_count = len(normalized_df)
     TOTAL_NUM_DATA += data_count
     logger.info(f"Successfully processed {data_count} log messages, took {time.time() - flush_start_time} seconds")
     return True
 
 
-def ensure_deterministic_data_split(all_data, split_ratio=0.8, seed=42):
-    """Ensure consistent train/test split across runs."""
-    # Sort by keys to ensure consistent ordering
-    sorted_items = sorted(all_data.items())
-    all_messages = [msg for _, msg in sorted_items]
-    
-    # Use seed for any randomization if needed
-    random.seed(seed)
-    
-    split_point = int(len(all_messages) * split_ratio)
-    train_messages = all_messages[:split_point]
-    test_messages = all_messages[split_point:]
-    
-    print(f"Deterministic split: {len(train_messages)} train, {len(test_messages)} test")
-    print(f"First test message hash: {utils.static_hash(test_messages[0]) if test_messages else 'None'}")
-    
-    return train_messages, test_messages
+# NOTE: ensure_deterministic_data_split function removed - no longer needed with new pipeline
+# Data splitting is now handled by working directly with processed CSV
 
 
 # Fixed verification function - remove unused variables
@@ -406,63 +516,51 @@ def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMET
 def main():
     global stats_instance
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
-    parser.add_argument('data_file', help='CSV file containing log messages for training')
-    parser.add_argument('--already_processed_csv', type=str, default=None, help='CSV file containing processed log messages for training')
-    parser.add_argument('--skip_training', action='store_true', help='Skip training and only do inference')
+    parser.add_argument('processed_csv', help='Processed CSV file containing training data with raw values')
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
     parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
     parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
     parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
-    
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
     args = parser.parse_args()
     
-    if args.already_processed_csv and args.already_processed_csv != "none":
-        if not os.path.exists(args.already_processed_csv):
-            logger.error(f"Already processed CSV file {args.already_processed_csv} not found")
-            assert False
-        data_dir = os.path.dirname(args.already_processed_csv)
-        train_data = None
-        test_data = None
-    else:
-        if not os.path.exists(args.data_file):
-            logger.error(f"Data file {args.data_file} not found")
-            assert False
-        data_dir = os.path.dirname(args.data_file)
-        if 'replaced' not in args.data_file:
-            logger.info(f"Data file {args.data_file} contains raw pod IPs, replacing with GeneralPodID")
-            args.data_file = utils.replace_pod_ip_with_generalpodid(args.data_file)
-            
-        all_data = {}
-        if os.path.isfile(args.data_file):
-            data_dir = os.path.dirname(args.data_file)
-            logger.info(f"data_file is a file: {args.data_file}")
-            all_data = read_csv_data(args.data_file)
-
-        if all_data is None or len(all_data) == 0:
-            logger.error("Failed to read data or no valid log messages found")
-            return
-        
-        train_messages, test_messages = ensure_deterministic_data_split(all_data, args.split_ratio)
-        test_messages = test_messages[:10]
-        train_data = {f"request_{i}": msg for i, msg in enumerate(train_messages)}
-        def extract_request_id(log_message):
-            match = re.search(r'@requestID@([^@]+)@', log_message)
-            return match.group(1) if match else None
-        
-        test_data = []
-        for msg in test_messages:
-            test_data.append({"request_id": extract_request_id(msg), "message": msg})
+    # Update RL_MODEL_HYPERPARAMETERS with SLO values from command line
+    RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = args.ttft_slo
+    RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = args.avg_tpot_slo
+    
+    # Validate processed CSV file
+    if not os.path.exists(args.processed_csv):
+        logger.error(f"Processed CSV file not found: {args.processed_csv}")
+        return
+    
+    # Validate the processed CSV format
+    import data_processor
+    validation = data_processor.validate_processed_csv(args.processed_csv)
+    if not validation['valid']:
+        logger.error(f"Invalid processed CSV: {validation['error']}")
+        return
+    
+    logger.info(f"✓ Using processed CSV: {args.processed_csv}")
+    logger.info(f"  Samples: {validation['num_samples']}, Pods: {validation['num_pods']}")
+    logger.info(f"  TTFT range: {validation['ttft_range']}, TPOT range: {validation['avg_tpot_range']}")
+    
+    data_dir = os.path.dirname(args.processed_csv)
 
     feature_normalization_stats_file = f"{args.final_model_dir}/feature_normalization_statistics.csv"
     
     if stats_instance is not None:
         logger.error("Using existing stats instance for normalization")
         assert False
-        
-    stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], None)
+    
+    # Load processed CSV to get feature information
+    import pandas as pd
+    processed_df = pd.read_csv(args.processed_csv)
+    
+    # Get normalizable features and create stats instance
+    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
+    stats_instance = data_normalizer.FeatureStats(normalizable_features)
 
     ENCODED_DATA_DIR = "encoded_data"
     if not os.path.exists(ENCODED_DATA_DIR):
@@ -471,87 +569,31 @@ def main():
         shutil.rmtree(ENCODED_DATA_DIR)
         os.makedirs(ENCODED_DATA_DIR)
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
-    already_processed_df = pd.read_csv(args.already_processed_csv) if args.already_processed_csv and args.already_processed_csv != "none" else None
-    process_training_data(args, data_dir, train_data, stats_instance, ENCODED_DATA_DIR, already_processed_df)
+    
+    # Process training data using the new simplified approach
+    process_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR)
 
-    stats_instance.write_stats_to_file(feature_normalization_stats_file)
+    # Save stats using CSV format
+    stats_file = f"{args.final_model_dir}/feature_normalization_statistics.csv"
+    stats_instance.write_stats_to_file(stats_file)
+    logger.info(f"Saved normalization statistics to: {stats_file}")
     
     model_and_data_analysis_helper.diagnose_training_data_issues(ENCODED_DATA_DIR)
-    
-    # Pass training data filename for model directory naming without modifying hyperparameters
-    training_data_filename = None
-    if args.data_file:
-        training_data_filename = os.path.basename(args.data_file).replace('.csv', '')
-    elif args.already_processed_csv:
-        training_data_filename = os.path.basename(args.already_processed_csv).replace('.csv', '')
-    
     is_online_learning = False
-        
-    saved_plot_path = train_model(ENCODED_DATA_DIR, is_online_learning, args.final_model_dir, training_data_filename)
+    saved_plot_path = train_model(ENCODED_DATA_DIR, is_online_learning, args.final_model_dir)
 
     # NEW: Behavior Analysis (before regular testing)
-    if args.analyze_behavior and test_data and len(test_data) > 0:
-        logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
-        # model_and_data_analysis_helper.analyze_model_behavior(args, test_data, feature_normalization_stats_file)
-        _ = model_and_data_analysis_helper.analyze_detailed_feature_sensitivity(args, test_data, feature_normalization_stats_file)
-        logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
+    test_data = create_test_data_from_processed_csv(args.processed_csv)
+    # if args.analyze_behavior and test_data and len(test_data) > 0:
+    logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
+    # model_and_data_analysis_helper.analyze_model_behavior(args, test_data, feature_normalization_stats_file)
+    _ = model_and_data_analysis_helper.analyze_detailed_feature_sensitivity(args, test_data, feature_normalization_stats_file)
+    logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
     
     
-    # Test inference
-    if test_data and len(test_data) > 0:
-        logger.info("=== STARTING TESTING PHASE ===")
-        success_count = 0
-        match_count = 0
-        mismatch_count = 0
-        unknown_original_count = 0
-        test_count = 10
-        selected_pod_list = []
-        pod_probabilities_list = []
-        message_list = []
-        for td in test_data:
-            log_message = td['message']
-            request_id = td['request_id']
-            result = test_inference(args, log_message, request_id, args.final_model_dir)
-            selected_pod_list.append(result['selected_pod'])
-            message_list.append(log_message)
-            
-            print()
-            print(f"Request_id: {request_id}, Selected Pod: {result['selected_pod']}")
-            # print(f"Message: {log_message}")
-            print(f"pod_probabilities_list: ", end="")
-            for prob in result['pod_probabilities']:
-                print(f"{prob:.2f}", end=", ")
-            print()
-            print()
-            
-            if result:
-                success_count += 1
-                if result['prediction_matches'] is True:
-                    match_count += 1
-                elif result['prediction_matches'] is False:
-                    mismatch_count += 1
-                else:
-                    unknown_original_count += 1
-                if result['original_pod_choice']:
-                    match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
-                    logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}")
-                else:
-                    logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}")
-            else:
-                logger.error(f"✗ Failed inference for {request_id}")
-                
-        # logger.info("=" * 60)
-        # logger.info("=== TESTING SUMMARY ===")
-        # logger.info(f"Total tests: {test_count}")
-        # logger.info(f"Successful inferences: {success_count}/{test_count} ({success_count/test_count*100:.1f}%)")
-        # if match_count + mismatch_count > 0:
-        #     accuracy = match_count / (match_count + mismatch_count) * 100
-        #     logger.info(f"Prediction accuracy: {match_count}/{match_count + mismatch_count} ({accuracy:.1f}%)")
-        #     logger.info(f"  - Matches: {match_count}")
-        #     logger.info(f"  - Mismatches: {mismatch_count}")
-        # if unknown_original_count > 0:
-        #     logger.info(f"  - Unknown original: {unknown_original_count}")
-        # logger.info("=" * 60)
+    # Run test inference if we have test data
+    # if test_data and len(test_data) > 0:
+    run_test_inference_phase(args, test_data)
         
         
     print(f"** saved_plot_path: {saved_plot_path}")

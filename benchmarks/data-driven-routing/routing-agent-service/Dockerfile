@@ -23,7 +23,7 @@ COPY start.sh .
 
 ## model
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model final_model-data
-COPY training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-data final_model
+COPY training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-data-processed final_model
 # COPY training_data/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half/final_model-normalized_data-sampled final_model
 
 # Remove the duplicate COPY command that overwrites the model above

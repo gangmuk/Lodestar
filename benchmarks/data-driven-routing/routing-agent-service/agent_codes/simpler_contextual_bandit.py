@@ -29,7 +29,6 @@ os.environ['PYTHONHASHSEED'] = str(seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
-# final_model_dir = "final_model"
 
 class FixedPolicyNetwork(nn.Module):
     """
@@ -240,7 +239,7 @@ class FixedPolicyNetwork(nn.Module):
 
 
 class SimplifiedContextualBandit:
-    def __init__(self, state_dim, action_dim, HYPERPARAMETERS, final_model_dir=None):
+    def __init__(self, state_dim, action_dim, HYPERPARAMETERS, final_model_dir):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.hyperparameters = HYPERPARAMETERS
@@ -249,11 +248,8 @@ class SimplifiedContextualBandit:
         self.learn_call_counter = 0
         
         # Initialize training logger
-        if final_model_dir:
-            self.training_logger = TrainingLogger(final_model_dir, "training_metrics.csv")
-            logger.info(f"📊 Training logger initialized: {final_model_dir}/training_metrics.csv")
-        else:
-            self.training_logger = None
+        self.training_logger = TrainingLogger(final_model_dir, "training_metrics.csv")
+        logger.info(f"📊 Training logger initialized: {final_model_dir}/training_metrics.csv")
         
         # Initialize simplified policy network
         # self.policy = SimplePolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
@@ -2042,7 +2038,7 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
     # Save configuration
     with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
         json.dump(HYPERPARAMETERS, f, indent=4, default=str)
-    
+        logger.info(f"Saved model configuration to {os.path.join(final_model_dir, 'model_config.json')}")
     return saved_plot_path
 
 # Global cache for agent instance (for inference)
@@ -2157,6 +2153,7 @@ def _get_or_create_agent(pod_features, kv_hit_ratios, request_features,
             state_dim=state_dim,
             action_dim=current_config['num_pods'],
             HYPERPARAMETERS=HYPERPARAMETERS,
+            final_model_dir=final_model_dir,
         )
         
         _cached_agent = agent

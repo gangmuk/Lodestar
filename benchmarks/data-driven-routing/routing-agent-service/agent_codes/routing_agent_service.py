@@ -26,7 +26,7 @@ import threading
 from kubernetes import client, config
 import ast
 import json
-import feature_normalization
+import data_normalizer
 import signal
 import sys
 import socket
@@ -56,13 +56,9 @@ NUM_NEW_DATA = 0
 MIN_NUM_TRAINING_DATA = 500  # Minimum number of training data required to trigger training
 
 POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
-MODEL = os.getenv("MODEL", "simpler_contextual_bandit")
-TTFT_SLO = int(os.getenv("TTFT_SLO", 1000))
-AVG_TPOT_SLO = int(os.getenv("AVG_TPOT_SLO", 50))
 ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
 ONLINE_NORMALIZATION_DURING_FLUSH = int(os.getenv("ONLINE_NORMALIZATION_DURING_FLUSH", 0))
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
-REWARD_FUNCTION = os.getenv("REWARD_FUNCTION", "linear_simple")
 
 RL_MODEL_HYPERPARAMETERS = None
 
@@ -92,13 +88,17 @@ def handle_flush():
         
         replaced_data_path = utils.replace_pod_ip_with_generalpodid(raw_data_path)
         ts_preprocess = time.time()
-        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
         # if ENABLE_ONLINE_LEARNING:
         if ONLINE_NORMALIZATION_DURING_FLUSH:
-            processed_df = feature_normalization.normalize_features_for_training(processed_df, stats_instance)
-            stats_instance.write_stats_to_file(feature_normalization_stats_file)
+            # Note: This function doesn't exist in the merged module - using direct normalization instead
+        # processed_df = data_normalizer.normalize_features_for_training(processed_df, stats_instance)
+            if stats_instance is not None:
+                stats_instance.write_stats_to_file(feature_normalization_stats_file)
+            else:
+                logger.warning("Cannot save stats - stats_instance is None")
 
         # Encode preprocessed data
         ts_encode = time.time()
@@ -165,16 +165,19 @@ def handle_infer():
         
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, TTFT_SLO, AVG_TPOT_SLO, RL_MODEL_HYPERPARAMETERS, POD_LABEL_SELECTOR)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
         logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
         normalize_start = time.time()
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
+            logger.error("Cannot perform inference without normalization statistics")
+            return jsonify({"error": "No normalization statistics available"}), 500
             assert False
-        if stats_instance.count == 0:
-            logger.warning(f"Stats instance count is 0, no data available for normalization")
+        if stats_instance.get_max_count() == 0:
+            logger.error(f"Stats instance count is 0, no data available for normalization")
+            assert False
         non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
         features_must_exist_in_stats_instance = []
         for feature in processed_df.columns:
@@ -189,16 +192,16 @@ def handle_infer():
                 logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
         ## new way
-        normalizable_features, non_normalizable_features = feature_normalization._get_normalizable_features(processed_df)
+        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
         logger.debug(f"normalizable_features: {normalizable_features}")
         logger.debug(f"non_normalizable_features: {non_normalizable_features}")
-        if stats_instance.count == 0:
+        if stats_instance.get_max_count() == 0:
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
         for feature in normalizable_features:
             stats = stats_instance.feature_stats[feature]
             logger.debug(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-            feature_normalization._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
+            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
             logger.debug(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
             if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
                 if feature in processed_df.columns:
@@ -217,11 +220,7 @@ def handle_infer():
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
-        if MODEL == "simpler_contextual_bandit":
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
-        else:
-            logger.error(f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'")
-            return jsonify({"error": f"Unknown model {MODEL}, please set MODEL environment variable to 'simpler_contextual_bandit' or 'contextual_bandit'"}), 500
+        result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
             MODEL_UPDATED = False
@@ -285,14 +284,7 @@ def online_train_routine():
         training_start_time = time.time()
         logger.info(f"online_train_routine, train! Starting {NUM_TRAINS}th online training iteration")
         try:
-            if MODEL == "simpler_contextual_bandit":
-                is_online_learning = True
-                simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
-            # elif MODEL == "contextual_bandit":
-            #     contextual_bandit.train(ENCODED_DATA_DIR)
-            else:
-                logger.error(f"Unknown model {MODEL}")
-                return
+            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
         except Exception as e:
             logger.error(f"Error during training: {e}")
             return
@@ -304,88 +296,6 @@ def online_train_routine():
     else:
         logger.info(f"online_train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
 
-
-def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
-    if not os.path.exists(file_path):
-        logger.error(f"Hyperparameter file {file_path} does not exist")
-        assert False
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    for key, value in data.items():
-        if key == 'normalization':
-            # Handle nested normalization parameters
-            RL_MODEL_HYPERPARAMETERS[key] = {}
-            for sub_key, sub_value in value.items():
-                if sub_key == 'FEATURES_NORMALIZED':
-                    # Convert string representation of set to actual set
-                    if sub_value and sub_value != "set()":
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
-                    else:
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
-                elif sub_key == 'FEATURES_AMPLIFIED':
-                    # Convert string representation of set to actual set
-                    if sub_value and sub_value != "set()":
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
-                    else:
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
-                else:
-                    RL_MODEL_HYPERPARAMETERS[key][sub_key] = sub_value
-        else:
-            RL_MODEL_HYPERPARAMETERS[key] = value
-
-    for key, value in RL_MODEL_HYPERPARAMETERS.items():
-        if key == 'normalization':
-            for sub_key, sub_value in value.items():
-                logger.info(f"load_rl_hyperparameters, {key}.{sub_key}: {sub_value}")
-        else:
-            logger.info(f"load_rl_hyperparameters, {key}: {value}")
-
-
-def fetch_pod_gpu_mapping():
-    """
-    Fetch GPU model for each pod in the llama-3-8b-instruct deployment
-    Returns a dictionary mapping pod_ip -> gpu_model
-    """
-    try:
-        try:
-            config.load_incluster_config()
-            logger.info("Loaded in-cluster config for Kubernetes access")
-        except:
-            config.load_kube_config()
-            logger.info("Loaded local kubeconfig for Kubernetes access")
-        v1 = client.CoreV1Api()
-        pods = v1.list_pod_for_all_namespaces(label_selector=POD_LABEL_SELECTOR)
-        pod_gpu_mapping = {}
-        for pod in pods.items:
-            if pod.status.phase == "Running" and pod.status.pod_ip:
-                pod_ip = pod.status.pod_ip
-                node_name = pod.spec.node_name
-                if node_name:
-                    try:
-                        node = v1.read_node(name=node_name)
-                        node_labels = node.metadata.labels or {}
-                        if 'machine.cluster.vke.volcengine.com/gpu-name' not in node_labels:
-                            logger.error(f"machine.cluster.vke.volcengine.com/gpu-name must exist in node.metadata.labels. It does not.")
-                            assert False
-                        gpu_model = node_labels['machine.cluster.vke.volcengine.com/gpu-name']
-                        pod_gpu_mapping[pod_ip] = gpu_model
-                        logger.info(f"Pod {pod.metadata.name} (IP: {pod_ip}) -> GPU: {gpu_model}")
-                    except Exception as e:
-                        logger.warning(f"Failed to get node info for {node_name}: {e}")
-                        pod_gpu_mapping[pod_ip] = 'unknown'
-                else:
-                    logger.warning(f"Pod {pod.metadata.name} has no node assignment")
-                    pod_gpu_mapping[pod_ip] = 'unknown'
-            else:
-                logger.debug(f"Skipping pod {pod.metadata.name} - Status: {pod.status.phase}, IP: {pod.status.pod_ip}")
-        logger.info(f"Successfully fetched GPU mapping for {len(pod_gpu_mapping)} pods")
-        return pod_gpu_mapping
-    except ImportError:
-        logger.error("kubernetes package not installed. Install with: pip install kubernetes")
-        return {}
-    except Exception as e:
-        logger.error(f"Failed to fetch pod GPU mapping: {e}")
-        return {}
 
 def test_kubernetes_permissions():
     """Test if we have the required Kubernetes permissions"""
@@ -437,14 +347,11 @@ def init():
     global RL_MODEL_HYPERPARAMETERS, stats_instance
     if RL_MODEL_HYPERPARAMETERS is None:
         RL_MODEL_HYPERPARAMETERS = {}
-        RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = REWARD_FUNCTION
-        RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = TTFT_SLO
-        RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = AVG_TPOT_SLO
         RL_MODEL_HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
         RL_MODEL_HYPERPARAMETERS['ONLINE_NORMALIZATION_DURING_FLUSH'] = ONLINE_NORMALIZATION_DURING_FLUSH
         RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         logger.info("Loading RL hyperparameters from model_config.json")
-        load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
+        utils.load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
         # Test permissions first
         logger.info("Testing Kubernetes API permissions...")
         if not test_kubernetes_permissions():
@@ -465,7 +372,7 @@ def init():
         pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
         
         logger.debug(f"sorted_running_pod_ips: {sorted_running_pod_ips}")
-        logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
+        logger.debug(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
         logger.debug(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
         logger.debug(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
         logger.debug(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
@@ -477,14 +384,31 @@ def init():
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
         
-        
-    stats_instance = feature_normalization.get_stats_instance(RL_MODEL_HYPERPARAMETERS['normalization'], feature_normalization_stats_file)
+        # Load normalization statistics from CSV file
+        if os.path.exists(feature_normalization_stats_file):
+            logger.info(f"Loading normalization statistics from: {feature_normalization_stats_file}")
+            try:
+                stats_instance = data_normalizer.FeatureStats.load_from_csv(feature_normalization_stats_file)
+                if stats_instance is not None:
+                    logger.info(f"Successfully loaded stats for {len(stats_instance.feature_stats)} features")
+                else:
+                    logger.error("Failed to load normalization statistics")
+                    assert False
+            except Exception as e:
+                logger.error(f"Failed to load normalization statistics: {e}")
+                assert False
+        else:
+            logger.error(f"Normalization statistics file not found: {feature_normalization_stats_file}")
+            assert False
     
-    ## print all features and std, mean, and count
-    logger.info("Per-feature statistics loaded:")
-    for feature_name, stats in stats_instance.feature_stats.items():
-        logger.info(f"stats_instance, {feature_name}: count={stats.count}, mean={stats.mean}, std={stats.std}")
-        
+    # Print feature statistics if available
+    if stats_instance is not None:
+        logger.info("Per-feature statistics loaded:")
+        for feature_name, stats in stats_instance.feature_stats.items():
+            logger.info(f"stats_instance, {feature_name}: count={stats.count}, mean={stats.mean}, std={stats.std}")
+    else:
+        logger.warning("No normalization statistics available - inference will fail")
+        assert False
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
