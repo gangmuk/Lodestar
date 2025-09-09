@@ -383,11 +383,11 @@ data_normalizer.py - INFO - _normalize_single_feature:341 - ✅ pod_0006-decode_
 data_normalizer.py - INFO - _normalize_single_feature:342 - ✅ pod_0006-decode_tokens, Normalize. prev min: -4987.000 new min: -1.091
 data_normalizer.py - INFO - _normalize_single_feature:343 - ✅ pod_0006-decode_tokens, Normalize. prev max: 162895.000 new max: 3.930
 data_normalizer.py - INFO - _normalize_single_feature:344 - ✅ pod_0006-decode_tokens, Normalize. prev mean: 31503.781 new mean: 0.000
-data_normalizer.py - INFO - normalize_processed_data:499 - Normalization completed in 0.04 seconds
-data_normalizer.py - INFO - normalize_processed_data:500 - Summary: {'input_file': '../training_data/p4096_s1024_rps20/rl+random/data_replaced-processed.csv', 'output_file': None, 'num_samples': 3000, 'num_features_normalized': 51, 'total_features': 59, 'reward_function': 'linear_simple', 'ttft_slo': 1000.0, 'avg_tpot_slo': 50.0, 'processing_time': 0.041555166244506836}
+data_normalizer.py - INFO - normalize_processed_data:499 - Normalization completed in 0.07 seconds
+data_normalizer.py - INFO - normalize_processed_data:500 - Summary: {'input_file': '../training_data/p4096_s1024_rps20/rl+random/data_replaced-processed.csv', 'output_file': None, 'num_samples': 3000, 'num_features_normalized': 51, 'total_features': 59, 'reward_function': 'linear_simple', 'ttft_slo': 1000.0, 'avg_tpot_slo': 50.0, 'processing_time': 0.06983709335327148}
 offline_routing_agent.py - INFO - process_training_data:434 - Normalization complete: 51 features normalized
 offline_routing_agent.py - INFO - process_training_data:435 - Reward function used: linear_simple
-offline_routing_agent.py - INFO - process_training_data:436 - Processing time: 0.04 seconds
+offline_routing_agent.py - INFO - process_training_data:436 - Processing time: 0.07 seconds
 encoding.py - INFO - encode_for_train:1149 - First row selected_pod value: pod_0005
 encoding.py - INFO - encode_for_train:1158 - Performing data quality checks...
 encoding.py - INFO - encode_for_train:1165 - Processing training data...
@@ -404,9 +404,9 @@ encoding.py - INFO - encode_for_train:1176 -   request_features: (3000, 3)
 encoding.py - INFO - encode_for_train:1177 -   positional_encodings: (3000, 7, 1)
 encoding.py - INFO - encode_for_train:1178 -   actions: (3000,)
 encoding.py - INFO - encode_for_train:1179 -   rewards: (3000,)
-offline_routing_agent.py - INFO - process_training_data:441 - Successfully encoded data to encoded_data/batch_1, took 0.02747964859008789 seconds
+offline_routing_agent.py - INFO - process_training_data:441 - Successfully encoded data to encoded_data/batch_1, took 0.029683828353881836 seconds
 offline_routing_agent.py - INFO - process_training_data:447 - ✓ Found tensor dataset at: encoded_data/batch_1/tensor_dataset.pt
-offline_routing_agent.py - INFO - process_training_data:453 - Successfully processed 3000 log messages, took 0.08012747764587402 seconds
+offline_routing_agent.py - INFO - process_training_data:453 - Successfully processed 3000 log messages, took 0.11749815940856934 seconds
 data_normalizer.py - INFO - write_stats_to_file:185 - Saved feature statistics to ../training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed/feature_normalization_statistics.csv for 59 features
 offline_routing_agent.py - INFO - main:579 - Saved normalization statistics to: ../training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed/feature_normalization_statistics.csv
 model_and_data_analysis_helper.py - INFO - diagnose_training_data_issues:20 - 🔬 DIAGNOSING TRAINING DATA ISSUES
@@ -1193,7 +1193,7 @@ simpler_contextual_bandit.py - INFO - learn:484 - ==============================
 simpler_contextual_bandit.py - INFO - train:1962 - Batch: 94/94, Loss: 0.6613
 simpler_contextual_bandit.py - INFO - train:2020 - ================================================================================
 simpler_contextual_bandit.py - INFO - train:2021 - EPOCH 1 SUMMARY:
-simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.3s
+simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.4s
 simpler_contextual_bandit.py - INFO - train:2023 -   Updates: 19
 simpler_contextual_bandit.py - INFO - train:2024 -   Global batches processed: 94
 simpler_contextual_bandit.py - INFO - train:2025 -   Avg Loss: 0.5754
@@ -1817,7 +1817,7 @@ simpler_contextual_bandit.py - INFO - learn:484 - ==============================
 simpler_contextual_bandit.py - INFO - train:1962 - Batch: 94/94, Loss: 0.3217
 simpler_contextual_bandit.py - INFO - train:2020 - ================================================================================
 simpler_contextual_bandit.py - INFO - train:2021 - EPOCH 2 SUMMARY:
-simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.3s
+simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.4s
 simpler_contextual_bandit.py - INFO - train:2023 -   Updates: 19
 simpler_contextual_bandit.py - INFO - train:2024 -   Global batches processed: 188
 simpler_contextual_bandit.py - INFO - train:2025 -   Avg Loss: 0.3236
@@ -2552,7 +2552,7 @@ simpler_contextual_bandit.py - INFO - learn:484 - ==============================
 simpler_contextual_bandit.py - INFO - train:1962 - Batch: 94/94, Loss: 0.0542
 simpler_contextual_bandit.py - INFO - train:2020 - ================================================================================
 simpler_contextual_bandit.py - INFO - train:2021 - EPOCH 3 SUMMARY:
-simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.3s
+simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.4s
 simpler_contextual_bandit.py - INFO - train:2023 -   Updates: 19
 simpler_contextual_bandit.py - INFO - train:2024 -   Global batches processed: 282
 simpler_contextual_bandit.py - INFO - train:2025 -   Avg Loss: 0.1743
@@ -3176,7 +3176,7 @@ simpler_contextual_bandit.py - INFO - learn:484 - ==============================
 simpler_contextual_bandit.py - INFO - train:1962 - Batch: 94/94, Loss: 0.4400
 simpler_contextual_bandit.py - INFO - train:2020 - ================================================================================
 simpler_contextual_bandit.py - INFO - train:2021 - EPOCH 4 SUMMARY:
-simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.3s
+simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.4s
 simpler_contextual_bandit.py - INFO - train:2023 -   Updates: 19
 simpler_contextual_bandit.py - INFO - train:2024 -   Global batches processed: 376
 simpler_contextual_bandit.py - INFO - train:2025 -   Avg Loss: 0.1915
@@ -3800,7 +3800,7 @@ simpler_contextual_bandit.py - INFO - learn:484 - ==============================
 simpler_contextual_bandit.py - INFO - train:1962 - Batch: 94/94, Loss: 0.2616
 simpler_contextual_bandit.py - INFO - train:2020 - ================================================================================
 simpler_contextual_bandit.py - INFO - train:2021 - EPOCH 5 SUMMARY:
-simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.3s
+simpler_contextual_bandit.py - INFO - train:2022 -   Duration: 0.4s
 simpler_contextual_bandit.py - INFO - train:2023 -   Updates: 19
 simpler_contextual_bandit.py - INFO - train:2024 -   Global batches processed: 470
 simpler_contextual_bandit.py - INFO - train:2025 -   Avg Loss: 0.2034
@@ -3824,7 +3824,7 @@ simpler_contextual_bandit.py - INFO - plot_training_metrics:1388 - Random baseli
 simpler_contextual_bandit.py - INFO - plot_training_metrics:1391 - ✅ Model is learning significantly!
 simpler_contextual_bandit.py - INFO - plot_training_metrics:1396 - ============================================================
 simpler_contextual_bandit.py - INFO - train:2041 - Saved model configuration to ../training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed/model_config.json
-offline_routing_agent.py - INFO - train_model:87 - Successfully completed 0th training of routing agent, took 3.1614718437194824 seconds
+offline_routing_agent.py - INFO - train_model:87 - Successfully completed 0th training of routing agent, took 4.43124794960022 seconds
 offline_routing_agent.py - INFO - create_test_data_from_processed_csv:124 - Using pod IDs from processed data: ['pod_0000', 'pod_0001', 'pod_0002', 'pod_0003', 'pod_0004', 'pod_0005', 'pod_0006']
 offline_routing_agent.py - INFO - create_test_data_from_processed_csv:168 - Created 10 test samples from processed data
 offline_routing_agent.py - INFO - main:588 - === STARTING BEHAVIOR ANALYSIS ===
