@@ -24,7 +24,8 @@ from logger import logger
 
 
 def process_raw_data_to_csv(input_file, 
-                           hyperparameters):
+                           output_file,
+                           HYPERPARAMETERS):
     """
     Process raw text log file to structured CSV with all features but no normalization.
     
@@ -32,7 +33,7 @@ def process_raw_data_to_csv(input_file,
         input_file: Path to raw text log file
         ttft_slo: TTFT SLO threshold
         avg_tpot_slo: Average TPOT SLO threshold
-        hyperparameters: Model hyperparameters dict
+        HYPERPARAMETERS: Model HYPERPARAMETERS dict
         
     Returns:
         str: Path to created processed CSV file
@@ -44,7 +45,7 @@ def process_raw_data_to_csv(input_file,
     input_dir = os.path.dirname(input_file)
     input_basename = os.path.basename(input_file)
     input_name = os.path.splitext(input_basename)[0]  # Remove .csv extension
-    output_file = os.path.join(input_dir, f"{input_name}-processed.csv")
+    # output_file = os.path.join(input_dir, f"{input_name}-processed.csv")
     logger.info(f"Output will be saved to: {output_file}")
     
     # Step 1: Replace pod IPs with general pod IDs if needed
@@ -58,7 +59,7 @@ def process_raw_data_to_csv(input_file,
     # Step 2: Use existing preprocessing logic but keep raw values
     logger.info("Running preprocessing to extract features...")
     processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(
-        replaced_file, "", hyperparameters
+        replaced_file, "", HYPERPARAMETERS
     )
     
     # Step 3: Ensure we preserve critical raw values for reward calculation
@@ -70,9 +71,11 @@ def process_raw_data_to_csv(input_file,
     
     # Step 4: Add metadata columns for tracking
     processed_df['processing_timestamp'] = time.time()
-    processed_df['ttft_slo_used'] = hyperparameters['TTFT_SLO']
-    processed_df['avg_tpot_slo_used'] = hyperparameters['AVG_TPOT_SLO']
+    processed_df['ttft_slo_used'] = HYPERPARAMETERS['TTFT_SLO']
+    processed_df['avg_tpot_slo_used'] = HYPERPARAMETERS['AVG_TPOT_SLO']
     processed_df['source_file'] = os.path.basename(input_file)
+    processed_df['ttft_reward_weight_used'] = HYPERPARAMETERS['TTFT_REWARD_WEIGHT']
+    processed_df['reward_function_used'] = HYPERPARAMETERS['REWARD_FUNCTION']
     
     # Step 5: Save to CSV
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -87,8 +90,8 @@ def process_raw_data_to_csv(input_file,
         'num_samples': int(len(processed_df)),
         'num_columns': int(len(processed_df.columns)),
         'processing_time': processing_time,
-        'ttft_slo': hyperparameters['TTFT_SLO'],
-        'avg_tpot_slo': hyperparameters['AVG_TPOT_SLO'],
+        'ttft_slo': HYPERPARAMETERS['TTFT_SLO'],
+        'avg_tpot_slo': HYPERPARAMETERS['AVG_TPOT_SLO'],
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
@@ -104,7 +107,7 @@ def process_raw_data_to_csv(input_file,
     return output_file
 
 
-def process_directory_batch(input_dir, hyperparameters):
+def process_directory_batch(input_dir, output_file, HYPERPARAMETERS):
     """
     Process all raw data files in a directory.
     
@@ -130,10 +133,7 @@ def process_directory_batch(input_dir, hyperparameters):
     processed_files = []
     for data_file in data_files:
         try:
-            processed_file = process_raw_data_to_csv(
-                data_file, hyperparameters,
-                hyperparameters,
-            )
+            processed_file = process_raw_data_to_csv(data_file, output_file,HYPERPARAMETERS)
             processed_files.append(processed_file)
             logger.info(f"✓ Processed: {data_file} → {processed_file}")
         except Exception as e:
@@ -216,12 +216,13 @@ def main():
     """Command line interface for data processing."""
     parser = argparse.ArgumentParser(description='Process raw text logs to structured CSV')
     parser.add_argument('--input_file', help='Raw text log file or directory to process')
+    parser.add_argument('--output_file', help='Output file to save processed CSV')
     parser.add_argument('--ttft_slo', type=float, default=1000, help='TTFT SLO threshold (ms)')
     parser.add_argument('--avg_tpot_slo', type=float, default=50, help='Average TPOT SLO threshold (ms)')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
     parser.add_argument('--REWARD_FUNCTION', type=str, default='linear_simple', help='Reward function to use')
-    
+    parser.add_argument('--ttft_reward_weight', type=float, default=0.5, help='TTFT reward weight')
     args = parser.parse_args()
     
     if args.validate:
@@ -235,15 +236,16 @@ def main():
         else:
             logger.error(f"✗ CSV validation failed: {results['error']}")
         return
-    hyperparameters = {
+    HYPERPARAMETERS = {
         'TTFT_SLO': args.ttft_slo,
         'AVG_TPOT_SLO': args.avg_tpot_slo,
         'REWARD_FUNCTION': args.REWARD_FUNCTION,
+        'TTFT_REWARD_WEIGHT': args.ttft_reward_weight,
     }
     
     if args.batch:
         # Batch processing mode
-        process_directory_batch(args.input_file, hyperparameters)
+        process_directory_batch(args.input_file, args.output_file, HYPERPARAMETERS)
     else:
         # Single file processing mode
         if not os.path.exists(args.input_file):
@@ -251,9 +253,9 @@ def main():
             return
         
 
-        
+        print(f"args.output_file: {args.output_file}")
         processed_file = process_raw_data_to_csv(
-            args.input_file, hyperparameters
+            args.input_file, args.output_file, HYPERPARAMETERS
         )
         
         # Validate the output

@@ -22,10 +22,10 @@ import data_normalizer
 utils.set_all_seeds(42)
 
 RL_MODEL_HYPERPARAMETERS = {
-    'model_type': 'simplified',
-    'hidden_dim': 32, # 256,
-    'batch_size': 32,
-    'learning_rate': 0.01, # 0.01, 0.005
+    'hidden_dim': 64, # 256,
+    'batch_size': 64,
+    # 'offline_learning_rate': 0.001,
+    'ONLINE_LEARNING_RATE': 0.0005,
     'training_epochs': 5, # 5,
     'learning_every_x_iter': 5,
     'weight_decay': 0.0001,
@@ -34,9 +34,8 @@ RL_MODEL_HYPERPARAMETERS = {
     'explore': True,
     'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
     
-    
     'eval_interval': 10,
-    'entropy_bonus_factor': 0.01,
+    'entropy_bonus_factor': 0.02,
     'per_learn_reward_normalization': False,
     'normalization': {
         "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
@@ -53,7 +52,7 @@ RL_MODEL_HYPERPARAMETERS = {
     'dataset_analysis': None,
     'deterministic_training': True,
     'training_seed': 42,
-    'REWARD_FUNCTION': 'linear_simple',
+    # 'REWARD_FUNCTION': 'linear_simple',
     # 'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
     # 'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
 }
@@ -352,21 +351,13 @@ def test_inference(args, log_message, request_id, final_model_dir):
     tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
     handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
     infer_from_tensor_start_time = time.time()
-    if args.model == "random_forest":
-        result, _ = random_forest.infer_from_tensor(
-            tensor_data=tensor_dataset, 
-            exploration_enabled=True, 
-            exploration_rate=RL_MODEL_HYPERPARAMETERS['exploration_rate'], 
-            model_updated=MODEL_UPDATED,
+    result, _ = simpler_contextual_bandit.infer_from_tensor(
+        tensor_data=tensor_dataset, 
+        request_id=request_id,
+        model_updated=MODEL_UPDATED,
+        HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
+        final_model_dir=args.final_model_dir,
     )
-    elif args.model == "simpler_contextual_bandit":
-        result, _ = simpler_contextual_bandit.infer_from_tensor(
-            tensor_data=tensor_dataset, 
-            request_id=request_id,
-            model_updated=MODEL_UPDATED,
-            HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
-            final_model_dir=args.final_model_dir,
-        )
     if MODEL_UPDATED:
         logger.info("Model updated flag consumed, resetting to False")
         MODEL_UPDATED = False
@@ -410,7 +401,6 @@ def process_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA
     logger.info(f"Loading processed training data from: {processed_csv_file}")
     
     # Load processed data (contains raw values)
-    import pandas as pd
     processed_df = pd.read_csv(processed_csv_file)
     logger.info(f"Loaded {len(processed_df)} samples with {len(processed_df.columns)} columns")
     
@@ -518,17 +508,22 @@ def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('processed_csv', help='Processed CSV file containing training data with raw values')
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
-    parser.add_argument('--model', choices=['random_forest', 'simpler_contextual_bandit'], default='simpler_contextual_bandit', help='Model type to use for training (default: simpler_contextual_bandit)')
-    parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
-    parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
+    parser.add_argument('--reward_function', type=str, default='linear_simple', help='Reward function to use')
+    parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
+    parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
+    parser.add_argument('--ttft_reward_weight', type=float, help='TTFT reward weight for preprocessing', default=0.5)
+    parser.add_argument('--offline_learning_rate', type=float, help='Learning rate for training', default=0.001)
     args = parser.parse_args()
     
     # Update RL_MODEL_HYPERPARAMETERS with SLO values from command line
     RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = args.ttft_slo
     RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = args.avg_tpot_slo
+    RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = args.ttft_reward_weight
+    RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = args.reward_function
+    RL_MODEL_HYPERPARAMETERS['OFFLINE_LEARNING_RATE'] = args.offline_learning_rate
     
     # Validate processed CSV file
     if not os.path.exists(args.processed_csv):
@@ -555,7 +550,6 @@ def main():
         assert False
     
     # Load processed CSV to get feature information
-    import pandas as pd
     processed_df = pd.read_csv(args.processed_csv)
     
     # Get normalizable features and create stats instance

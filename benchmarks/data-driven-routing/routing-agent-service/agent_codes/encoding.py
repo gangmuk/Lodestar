@@ -37,7 +37,7 @@ from functools import lru_cache
 
 random_seed = 42
 np.random.seed(random_seed)
-class LLMRoutingDataProcessor:
+class DataEncoder:
     """Processes raw LLM request routing data into formatted tensors for RL training.
     
     Implements advanced encoding techniques:
@@ -452,7 +452,7 @@ class LLMRoutingDataProcessor:
         
         return pod_features_3d, kv_hit_ratios_3d, kv_hit_ratios_3d, per_pod_feature_indices
 
-    def _optimized_process_pod_features(self, pod_data, n_samples, overhead_summary, HYPERPARAMETERS):
+    def _process_pod_features(self, pod_data, n_samples, overhead_summary, HYPERPARAMETERS):
         if not pod_data:
             logger.error("No pod data in expected format")
             assert False
@@ -646,13 +646,11 @@ class LLMRoutingDataProcessor:
 
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
     
-    
-    ## this is slow
-    def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS):
+    def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS):
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
         extract_pod_columns_start = time.time()
-        pod_data = self._ultra_fast_extract_pod_columns(processed_df, sorted_all_pod_ids)
+        pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids)
         overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
@@ -674,7 +672,7 @@ class LLMRoutingDataProcessor:
 
         # STEP 7: ULTRA-OPTIMIZED pod processing
         process_pod_feature_start = time.time()
-        pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._optimized_process_pod_features(pod_data, n_samples, overhead_summary, HYPERPARAMETERS)
+        pod_features_array, pod_kv_hit_array, kv_hit_norm, per_pod_feature_indices = self._process_pod_features(pod_data, n_samples, overhead_summary, HYPERPARAMETERS)
         overhead_summary['process_pod_feature'] = time.time() - process_pod_feature_start
 
         # STEP 8: actions/rewards (continues as normal)
@@ -736,7 +734,7 @@ class LLMRoutingDataProcessor:
         return processed_data, overhead_summary
 
 
-    def _ultra_fast_extract_pod_columns(self, processed_df, sorted_all_pod_ids):
+    def _extract_pod_columns(self, processed_df, sorted_all_pod_ids):
         pod_data = {}
         for col in processed_df.columns:
             if col.startswith('pod_') and '-' in col:
@@ -781,98 +779,6 @@ class LLMRoutingDataProcessor:
         return request_features, request_features_overhead
 
 
-    def _ultra_fast_process_pod_features(self, pod_data, n_samples):
-        n_pods = len(self.sorted_all_pod_ids)
-        if not pod_data:
-            # Return minimal defaults
-            default_shape = (n_samples, n_pods, 1)
-            zeros = np.zeros(default_shape, dtype=np.float32)
-            return zeros, zeros, zeros, zeros, {pod_id: {} for pod_id in self.sorted_all_pod_ids}
-        
-        # OPTIMIZATION 1: Pre-filter features (avoid repeated checks)
-        numeric_features = [f for f in self.pod_features if f not in ['kv_hit_ratio', 'gpu_model']]
-        n_numeric = len(numeric_features)
-        
-        if n_numeric == 0:
-            # Handle edge case fast
-            kv_arrays = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
-            for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
-                if 'kv_hit_ratio' in pod_data.get(pod_id, {}):
-                    kv_arrays[:, pod_idx, 0] = pod_data[pod_id]['kv_hit_ratio'].fillna(0).values
-            return kv_arrays, kv_arrays, kv_arrays, kv_arrays, {}
-        
-        # OPTIMIZATION 2: Single allocation with pre-determined size
-        numeric_arrays = np.zeros((n_samples, n_pods, n_numeric), dtype=np.float32)
-        kv_arrays = np.zeros((n_samples, n_pods, 1), dtype=np.float32)
-        
-        # OPTIMIZATION 3: Vectorized extraction using pre-built pod mapping
-        pod_indices = {pod_id: idx for idx, pod_id in enumerate(self.sorted_all_pod_ids)}
-        
-        # OPTIMIZATION 4: Process all features in single pass per pod
-        for pod_id, pod_idx in pod_indices.items():
-            pod_features_data = pod_data.get(pod_id, {})
-            
-            # Extract all numeric features for this pod at once
-            for feat_idx, feature in enumerate(numeric_features):
-                feature_data = pod_features_data.get(feature)
-                if feature_data is not None:
-                    # OPTIMIZATION: Use .values only once and handle fillna efficiently
-                    values = feature_data.values
-                    if pd.isna(values).any():
-                        values = np.nan_to_num(values, nan=0.0)
-                    numeric_arrays[:, pod_idx, feat_idx] = values
-            
-            # Extract KV ratio
-            kv_data = pod_features_data.get('kv_hit_ratio')
-            if kv_data is not None:
-                values = kv_data.values
-                if pd.isna(values).any():
-                    values = np.nan_to_num(values, nan=0.0)
-                kv_arrays[:, pod_idx, 0] = values
-        
-        pod_features_array = numeric_arrays
-        
-        # OPTIMIZATION 5: Minimal normalization with pre-check
-        if not hasattr(self, 'pod_feature_scaler'):
-            from sklearn.preprocessing import StandardScaler
-            self.pod_feature_scaler = StandardScaler()
-            self.kv_hit_scaler = StandardScaler()
-        
-        # OPTIMIZATION 6: Fast reshaping and normalization
-        pod_shape = pod_features_array.shape
-        kv_shape = kv_arrays.shape
-        
-        if pod_shape[2] > 0:  # Only normalize if we have features
-            pod_flat = pod_features_array.reshape(-1, pod_shape[2])
-            
-            # OPTIMIZATION 7: Skip normalization if data is constant (saves time)
-            if np.std(pod_flat) > 1e-8:  # Only normalize if there's variance
-                self.pod_feature_scaler.fit(pod_flat)
-                pod_features_norm = self.pod_feature_scaler.transform(pod_flat).reshape(pod_shape)
-            else:
-                pod_features_norm = pod_features_array  # Skip normalization for constant data
-        else:
-            pod_features_norm = pod_features_array
-        
-        # KV normalization
-        kv_flat = kv_arrays.reshape(-1, 1)
-        if np.std(kv_flat) > 1e-8:
-            self.kv_hit_scaler.fit(kv_flat)
-            kv_hit_norm = self.kv_hit_scaler.transform(kv_flat).reshape(kv_shape)
-        else:
-            kv_hit_norm = kv_arrays
-        
-        # OPTIMIZATION 8: Fast feature indices building
-        reference_indices = {feature: i for i, feature in enumerate(numeric_features)}
-        per_pod_indices = {pod_id: reference_indices for pod_id in self.sorted_all_pod_ids}
-        
-
-        
-        return pod_features_array, kv_arrays, pod_features_norm, kv_hit_norm, per_pod_indices
-
-
-
-
     def extract_actions_rewards(self, df, n_samples):
         """Fast action/reward extraction - minimal validation."""
         actions = np.zeros(n_samples, dtype=np.int64)
@@ -907,8 +813,7 @@ class LLMRoutingDataProcessor:
 
     def save_processed_data(self, processed_data):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = f"{self.output_dir}"
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
            
         # Create a PyTorch tensor dataset
         tensor_data = {
@@ -940,7 +845,7 @@ class LLMRoutingDataProcessor:
             
         # global_tensor_path = "global_tensor_dataset.pt"
         # self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
-        torch.save(tensor_data, os.path.join(output_dir, "tensor_dataset.pt"))
+        torch.save(tensor_data, os.path.join(self.output_dir, "tensor_dataset.pt"))
         
         if hasattr(self, '_reference_tensor_data') and self._reference_tensor_data is not None:
             if self._validate_tensor_compatibility(self._reference_tensor_data, tensor_data):
@@ -981,63 +886,12 @@ class LLMRoutingDataProcessor:
             }
         }
         
-        with open(os.path.join(output_dir, "metadata.json"), 'w') as f:
+        with open(os.path.join(self.output_dir, "metadata.json"), 'w') as f:
         # with open("metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
         
-        logger.info(f"Saved processed data to {output_dir}")
-        return output_dir
+        logger.info(f"Saved processed data to {self.output_dir}")
     
-    # def _append_to_global_tensor_dataset(self, new_tensor_data, global_tensor_path):
-    #     try:
-    #         # Check if global dataset already exists
-    #         if os.path.exists(global_tensor_path):
-    #             logger.info(f"Loading existing global tensor dataset from {global_tensor_path}")
-                
-    #             # Load existing data
-    #             existing_data = torch.load(global_tensor_path, map_location='cpu')
-                
-    #             # # Validate compatibility
-    #             if not self._validate_tensor_compatibility(existing_data, new_tensor_data):
-    #                 logger.error("New tensor data incompatible with existing global dataset")
-    #                 return
-                
-    #             # Concatenate tensors
-    #             merged_data = {}
-    #             for key in existing_data.keys():
-    #                 if key in new_tensor_data:
-    #                     if isinstance(existing_data[key], torch.Tensor) and isinstance(new_tensor_data[key], torch.Tensor):
-    #                         # Concatenate along batch dimension (dim=0)
-    #                         merged_data[key] = torch.cat([existing_data[key], new_tensor_data[key]], dim=0)
-    #                         logger.debug(f"Concatenated {key}: {existing_data[key].shape[0]} + {new_tensor_data[key].shape[0]} = {merged_data[key].shape[0]}")
-    #                     else:
-    #                         # For non-tensors, keep the existing value or update if needed
-    #                         merged_data[key] = existing_data[key]
-    #                 else:
-    #                     # Keep existing data for keys not in new data
-    #                     merged_data[key] = existing_data[key]
-                
-    #             # Add any new keys from new_tensor_data that weren't in existing_data
-    #             for key in new_tensor_data.keys():
-    #                 if key not in merged_data:
-    #                     logger.warning(f"New key {key} found in new data, adding to global dataset")
-    #                     merged_data[key] = new_tensor_data[key]
-                
-    #         else:
-    #             logger.info(f"Creating new global tensor dataset at {global_tensor_path}")
-    #             merged_data = new_tensor_data.copy()
-            
-    #         # Save the merged dataset
-    #         torch.save(merged_data, global_tensor_path)
-            
-    #         # Log the final sizes
-    #         total_samples = merged_data['actions'].shape[0] if 'actions' in merged_data else 0
-    #         new_samples = new_tensor_data['actions'].shape[0] if 'actions' in new_tensor_data else 0
-    #         logger.info(f"Successfully appended {new_samples} samples to global dataset. Total samples: {total_samples}")
-            
-    #     except Exception as e:
-    #         logger.error(f"Failed to append to global tensor dataset: {e}")
-    #         # Don't raise the exception to avoid breaking the main processing
 
     def _validate_tensor_compatibility(self, existing_data, new_data):
         """Validate that new tensor data is compatible with existing data for concatenation.
@@ -1163,12 +1017,14 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
         assert False
         
     logger.info("Processing training data...")
-    data_processor = LLMRoutingDataProcessor(output_dir=output_dir)
-    overhead_summary = {}
-    train_processed, _ = data_processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
-    train_path = data_processor.save_processed_data(train_processed)
+    
+    
+    data_encoder = DataEncoder(output_dir=output_dir)
+    train_processed, prepare_for_encoding_overhead_summary = data_encoder.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS)
+    data_encoder.save_processed_data(train_processed)
+    
     logger.info("Data processing complete!")
-    logger.info(f"Training data: {train_path}")
+    logger.info(f"Training data: {data_encoder.output_dir}")
     logger.info(f"Dataset shapes:")
     logger.info(f"  pod_features: {train_processed['pod_features'].shape}")
     logger.info(f"  pod_features_with_staleness: {train_processed['pod_features_with_staleness'].shape}")
@@ -1177,25 +1033,25 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
     logger.info(f"  positional_encodings: {train_processed['positional_encodings'].shape}")
     logger.info(f"  actions: {train_processed['actions'].shape}")
     logger.info(f"  rewards: {train_processed['rewards'].shape}")
-    return train_path
+    assert output_dir == data_encoder.output_dir
 
 
 # Global cached processor instance for inference performance
-_cached_processor = None
+_cached_encoder = None
 
-def get_cached_processor():
+def get_cached_data_encoder():
     """Get or create a cached processor instance for inference."""
-    global _cached_processor
-    if _cached_processor is None:
-        _cached_processor = LLMRoutingDataProcessor(output_dir="temp_inference")
-    return _cached_processor
+    global _cached_encoder
+    if _cached_encoder is None:
+        _cached_encoder = DataEncoder(output_dir="temp_inference")
+    return _cached_encoder
 
 def encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS):
     prepare_for_encoding_start = time.time()
-    # OPTIMIZATION 1: Use cached processor instance instead of creating new one
-    processor = get_cached_processor()
+    data_encoder = get_cached_data_encoder()
+    processed_data, prepare_for_encoding_overhead_summary = data_encoder.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS)
+    
     overhead_summary = {}
-    processed_data, prepare_for_encoding_overhead_summary = processor.prepare_for_encoding(processed_df, sorted_all_pod_ids, request_features_train, overhead_summary, HYPERPARAMETERS)
     overhead_summary['prepare_for_encoding'] = time.time() - prepare_for_encoding_start
     for key, val in prepare_for_encoding_overhead_summary.items():
         overhead_summary[f"prepare_for_encoding.{key}"] = val

@@ -1,6 +1,6 @@
 simpler_contextual_bandit.py - INFO - <module>:31 - Using device: cpu
-data_processor.py - INFO - validate_processed_csv:155 - Validating processed CSV: ../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv
-data_processor.py - INFO - validate_processed_csv:210 - Validation results: {'valid': True, 'num_samples': 4000, 'num_columns': 76, 'pod_ids': ['pod_0000', 'pod_0001', 'pod_0002', 'pod_0003', 'pod_0004', 'pod_0005', 'pod_0006'], 'num_pods': 7, 'ttft_range': [np.int64(68), np.int64(3550)], 'avg_tpot_range': [np.int64(20), np.int64(201)], 'has_reward_columns': True, 'data_types': {'request_id': 'int64', 'selected_pod': 'object', 'input_tokens': 'int64', 'output_tokens': 'int64', 'total_tokens': 'int64', 'ttft': 'int64', 'avg_tpot': 'int64', 'e2e_latency': 'int64'}, 'warnings': []}
+data_processor.py - INFO - validate_processed_csv:156 - Validating processed CSV: ../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv
+data_processor.py - INFO - validate_processed_csv:211 - Validation results: {'valid': True, 'num_samples': 4000, 'num_columns': 76, 'pod_ids': ['pod_0000', 'pod_0001', 'pod_0002', 'pod_0003', 'pod_0004', 'pod_0005', 'pod_0006'], 'num_pods': 7, 'ttft_range': [np.int64(68), np.int64(3550)], 'avg_tpot_range': [np.int64(20), np.int64(201)], 'has_reward_columns': True, 'data_types': {'request_id': 'int64', 'selected_pod': 'object', 'input_tokens': 'int64', 'output_tokens': 'int64', 'total_tokens': 'int64', 'ttft': 'int64', 'avg_tpot': 'int64', 'e2e_latency': 'int64'}, 'warnings': []}
 offline_routing_agent.py - INFO - main:540 - ✓ Using processed CSV: ../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv
 offline_routing_agent.py - INFO - main:541 -   Samples: 4000, Pods: 7
 offline_routing_agent.py - INFO - main:542 -   TTFT range: [np.int64(68), np.int64(3550)], TPOT range: [np.int64(20), np.int64(201)]
@@ -388,7 +388,7 @@ data_normalizer.py - INFO - _normalize_single_feature:344 - ✅ pod_0006-decode_
 data_normalizer.py - INFO - _normalize_single_feature:345 - ✅ pod_0006-decode_tokens, Normalize. prev max: 162895.000 new max: 3.888
 data_normalizer.py - INFO - _normalize_single_feature:346 - ✅ pod_0006-decode_tokens, Normalize. prev mean: 35800.611 new mean: 0.000
 data_normalizer.py - INFO - normalize_processed_data:487 - Normalization completed in 0.07 seconds
-data_normalizer.py - INFO - normalize_processed_data:488 - Summary: {'input_file': '../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv', 'output_file': None, 'num_samples': 4000, 'num_features_normalized': 52, 'total_features': 59, 'reward_function': 'linear_simple', 'ttft_slo': 1000.0, 'avg_tpot_slo': 50.0, 'processing_time': 0.06944704055786133}
+data_normalizer.py - INFO - normalize_processed_data:488 - Summary: {'input_file': '../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv', 'output_file': None, 'num_samples': 4000, 'num_features_normalized': 52, 'total_features': 59, 'reward_function': 'linear_simple', 'ttft_slo': 1000.0, 'avg_tpot_slo': 50.0, 'processing_time': 0.06566166877746582}
 offline_routing_agent.py - INFO - process_training_data:424 - Normalization complete: 52 features normalized
 offline_routing_agent.py - INFO - process_training_data:425 - Reward function used: linear_simple
 offline_routing_agent.py - INFO - process_training_data:426 - Processing time: 0.07 seconds
@@ -408,9 +408,9 @@ encoding.py - INFO - encode_for_train:1032 -   request_features: (4000, 3)
 encoding.py - INFO - encode_for_train:1033 -   positional_encodings: (4000, 7, 1)
 encoding.py - INFO - encode_for_train:1034 -   actions: (4000,)
 encoding.py - INFO - encode_for_train:1035 -   rewards: (4000,)
-offline_routing_agent.py - INFO - process_training_data:431 - Successfully encoded data to encoded_data/batch_1, took 0.03898906707763672 seconds
+offline_routing_agent.py - INFO - process_training_data:431 - Successfully encoded data to encoded_data/batch_1, took 0.037621259689331055 seconds
 offline_routing_agent.py - INFO - process_training_data:437 - ✓ Found tensor dataset at: encoded_data/batch_1/tensor_dataset.pt
-offline_routing_agent.py - INFO - process_training_data:443 - Successfully processed 4000 log messages, took 0.13103151321411133 seconds
+offline_routing_agent.py - INFO - process_training_data:443 - Successfully processed 4000 log messages, took 0.1260371208190918 seconds
 data_normalizer.py - INFO - write_stats_to_file:185 - Saved feature statistics to ../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50/feature_normalization_statistics.csv for 59 features
 offline_routing_agent.py - INFO - main:573 - Saved normalization statistics to: ../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50/feature_normalization_statistics.csv
 model_and_data_analysis_helper.py - INFO - diagnose_training_data_issues:20 - 🔬 DIAGNOSING TRAINING DATA ISSUES
@@ -3388,7 +3388,7 @@ simpler_contextual_bandit.py - INFO - plot_training_metrics:1417 - Random baseli
 simpler_contextual_bandit.py - INFO - plot_training_metrics:1420 - ✅ Model is learning significantly!
 simpler_contextual_bandit.py - INFO - plot_training_metrics:1425 - ============================================================
 simpler_contextual_bandit.py - INFO - train:2063 - Saved model configuration to ../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50/model_config.json
-offline_routing_agent.py - INFO - train_model:86 - Successfully completed 0th training of routing agent, took 4.546611547470093 seconds
+offline_routing_agent.py - INFO - train_model:86 - Successfully completed 0th training of routing agent, took 4.499465465545654 seconds
 offline_routing_agent.py - INFO - create_test_data_from_processed_csv:123 - Using pod IDs from processed data: ['pod_0000', 'pod_0001', 'pod_0002', 'pod_0003', 'pod_0004', 'pod_0005', 'pod_0006']
 offline_routing_agent.py - INFO - create_test_data_from_processed_csv:167 - Created 10 test samples from processed data
 offline_routing_agent.py - INFO - main:582 - === STARTING BEHAVIOR ANALYSIS ===

@@ -25,6 +25,7 @@ import pickle
 import preprocess
 from logger import logger
 from typing import Tuple, Dict, Any
+import json
 
 
 class RunningStats:
@@ -144,7 +145,6 @@ class FeatureStats:
     
     def write_stats_to_file(self, filename):
         """Write feature statistics to a CSV file in long format (feature_name, stats_type, value)"""
-        import pandas as pd
         
         stats_data = []
         for feature_name, stats in self.feature_stats.items():
@@ -187,7 +187,6 @@ class FeatureStats:
     @classmethod
     def load_from_csv(cls, filename):
         """Load feature statistics from a CSV file in long format (feature_name, stats_type, value)"""
-        import pandas as pd
         
         if not os.path.exists(filename):
             logger.error(f"Statistics file not found: {filename}")
@@ -316,8 +315,9 @@ def _normalize_single_feature(processed_df, feature, stats_instance, is_training
         prev_max = processed_df[feature].values.max()
         prev_mean = processed_df[feature].values.mean()
         
+        ##############################################
         stats_instance.feature_stats[feature].update_stats_incrementally(feature_data)
-        logger.debug(f"Updated stats for {feature}: count={stats_instance.feature_stats[feature].count}, mean={stats_instance.feature_stats[feature].mean}, std={stats_instance.feature_stats[feature].std}, var={stats_instance.feature_stats[feature].sum_sq_diff}")
+        ##############################################
         
         # Verify computed std is valid
         computed_std = stats_instance.feature_stats[feature].std
@@ -325,8 +325,10 @@ def _normalize_single_feature(processed_df, feature, stats_instance, is_training
             logger.warning(f"⚠️  {feature}: Invalid computed std ({computed_std}), skipping normalization")
             return
         
+        ##############################################
         # Apply normalization
         normalized_feature = stats_instance.feature_stats[feature].normalize(feature_data)
+        ##############################################
         
         # Verify normalized data doesn't contain NaN
         if np.any(np.isnan(normalized_feature)):
@@ -394,25 +396,9 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
     logger.info(f"Loaded {len(df)} samples with {len(df.columns)} columns")
     
     # Step 2: Extract SLO values from hyperparameters or metadata
-    if hyperparameters and 'TTFT_SLO' in hyperparameters:
-        ttft_slo = hyperparameters['TTFT_SLO']
-        logger.info(f"Using TTFT SLO from hyperparameters: {ttft_slo}")
-    elif 'ttft_slo_used' in df.columns:
-        ttft_slo = df['ttft_slo_used'].iloc[0]
-        logger.info(f"Using TTFT SLO from metadata: {ttft_slo}")
-    else:
-        ttft_slo = 1000  # Default value
-        logger.warning(f"No TTFT SLO found, using default: {ttft_slo}")
-    
-    if hyperparameters and 'AVG_TPOT_SLO' in hyperparameters:
-        avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
-        logger.info(f"Using TPOT SLO from hyperparameters: {avg_tpot_slo}")
-    elif 'avg_tpot_slo_used' in df.columns:
-        avg_tpot_slo = df['avg_tpot_slo_used'].iloc[0]
-        logger.info(f"Using TPOT SLO from metadata: {avg_tpot_slo}")
-    else:
-        avg_tpot_slo = 50  # Default value
-        logger.warning(f"No TPOT SLO found, using default: {avg_tpot_slo}")
+    ttft_slo = hyperparameters['TTFT_SLO']
+    avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
+    ttft_reward_weight = hyperparameters['TTFT_REWARD_WEIGHT']
     
     # Step 3: Calculate rewards using specified function
     logger.info(f"Calculating rewards using function: {reward_function}")
@@ -420,11 +406,13 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
     tpot_values = df['avg_tpot'].values
     
     if reward_function == 'linear_simple':
-        reward_result = preprocess.calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        reward_result = preprocess.calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     elif reward_function == 'linear_simple_extended':
-        reward_result = preprocess.calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        reward_result = preprocess.calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     elif reward_function == 'piecewise_linear_steeper_gradient':
-        reward_result = preprocess.calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo)
+        reward_result = preprocess.calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'gradual_within_slo':
+        reward_result = preprocess.calculate_rewards_gradual_within_slo(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     else:
         logger.error(f"Unknown reward function: {reward_function}")
         raise ValueError(f"Unknown reward function: {reward_function}")
@@ -578,7 +566,6 @@ def main():
     # Load hyperparameters if provided
     hyperparameters = None
     if args.hyperparameters and os.path.exists(args.hyperparameters):
-        import json
         with open(args.hyperparameters, 'r') as f:
             hyperparameters = json.load(f)
     

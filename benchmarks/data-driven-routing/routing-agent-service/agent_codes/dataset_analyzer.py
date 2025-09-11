@@ -22,7 +22,8 @@ import matplotlib.patches as mpatches
 from preprocess import (
     calculate_rewards_simple,
     calculate_rewards_simple_extended, 
-    calculate_rewards_piecewise_linear_steeper_gradient
+    calculate_rewards_piecewise_linear_steeper_gradient,
+    calculate_rewards_latency_optimization
 )
 
 class RLDatasetAnalyzer:
@@ -72,7 +73,7 @@ class RLDatasetAnalyzer:
                 return ttft_mean > 10 or tpot_mean > 5
             return True  # Default to processed
     
-    def analyze_reward_signal(self, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple'):
+    def analyze_reward_signal(self, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple', ttft_reward_weight=0.5):
         """Analyze reward signal strength and differentiation."""
         print("\n" + "="*60)
         print("1. REWARD SIGNAL ANALYSIS")
@@ -104,11 +105,13 @@ class RLDatasetAnalyzer:
         
         # Use imported reward functions from preprocess.py
         if reward_function == 'linear_simple':
-            reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
+            reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         elif reward_function == 'linear_simple_extended':
-            reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, tpot_slo)
+            reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         elif reward_function == 'piecewise_linear_steeper_gradient':
-            reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, tpot_slo)
+            reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
+        elif reward_function == 'latency_optimized':
+            reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         else:
             print(f"Unknown reward function: {reward_function}, defaulting to linear_simple")
             reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
@@ -1234,14 +1237,14 @@ class RLDatasetAnalyzer:
             if abs(ttft_autocorr) > 0.7 or abs(tpot_autocorr) > 0.7:
                 print("  ⚠️  HIGH AUTOCORRELATION: Data may be too temporally correlated")
     
-    def generate_summary_report(self, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple'):
+    def generate_summary_report(self, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple', ttft_reward_weight=0.5):
         """Generate overall dataset quality assessment."""
         print("\n" + "="*60)
         print("DATASET QUALITY SUMMARY")
         print("="*60)
         
         # Run all analyses to get metrics
-        reward_by_pod, rewards, signal_metrics = self.analyze_reward_signal(ttft_slo, tpot_slo, reward_function)
+        reward_by_pod, rewards, signal_metrics = self.analyze_reward_signal(ttft_slo, tpot_slo, reward_function, ttft_reward_weight)
         action_counts = self.analyze_action_distribution()
         routing_metrics = self.analyze_routing_signal_quality(rewards)
         req_diversity, pod_diversity = self.analyze_context_diversity()
@@ -1448,6 +1451,7 @@ class RLDatasetAnalyzer:
         axes[1, 0].set_xlabel('TTFT (ms)')
         axes[1, 0].set_ylabel('TPOT (ms)')
         axes[1, 0].set_title('TTFT vs TPOT (colored by Reward)')
+        axes[1, 0].set_xlim(0, 5000)
         cbar = plt.colorbar(scatter, ax=axes[1, 0])
         cbar.set_label('Combined Reward')
         axes[1, 0].grid(True, alpha=0.3)
@@ -2419,12 +2423,14 @@ def main():
     parser.add_argument('--processed_csv', help='Path to the CSV dataset file')
     parser.add_argument('--ttft-slo', type=float, default=1000, 
                        help='TTFT SLO threshold (default: 1000ms)')
-    parser.add_argument('--tpot-slo', type=float, default=50,
+    parser.add_argument('--avg-tpot-slo', type=float, default=50,
                        help='TPOT SLO threshold (default: 50ms)')
     parser.add_argument('--reward-function', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient'],
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'latency_optimized'],
                        default='linear_simple',
                        help='Reward function to use (default: linear_simple)')
+    parser.add_argument('--ttft-reward-weight', type=float, default=0.5,
+                       help='TTFT reward weight (default: 0.5)')
     parser.add_argument('--sampling-bins', type=int, default=10,
                        help='Number of bins for uniform sampling (default: 10)')
     parser.add_argument('--samples-per-bin', type=int, default=None,
@@ -2445,11 +2451,13 @@ def main():
         ttft_values = analyzer.df['ttft'].values
         tpot_values = analyzer.df['avg_tpot'].values
         if args.reward_function == 'linear_simple':
-            reward_result = calculate_rewards_simple(ttft_values, tpot_values, args.ttft_slo, args.tpot_slo)
+            reward_result = calculate_rewards_simple(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         elif args.reward_function == 'linear_simple_extended':
-            reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, args.ttft_slo, args.tpot_slo)
+            reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         elif args.reward_function == 'piecewise_linear_steeper_gradient':
-            reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, args.ttft_slo, args.tpot_slo)
+            reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
+        elif args.reward_function == 'latency_optimized':
+            reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         rewards = reward_result['combined_rewards']
 
         # Create uniform sample
@@ -2474,7 +2482,7 @@ def main():
         analyzer.df.to_csv(output_path, index=False)
         print(f"Dataset reduced from {len(rewards):,} to {len(sampled_indices):,} samples")
         print(f"Sampled dataset saved to: {output_path}")
-    analyzer.generate_summary_report(args.ttft_slo, args.tpot_slo, args.reward_function)
+    analyzer.generate_summary_report(args.ttft_slo, args.avg_tpot_slo, args.reward_function, args.ttft_reward_weight)
 
 if __name__ == "__main__":
     main()

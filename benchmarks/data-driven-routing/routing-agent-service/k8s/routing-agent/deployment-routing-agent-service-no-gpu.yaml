@@ -20,6 +20,15 @@ spec:
       labels:
         app: routing-agent-service
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: machine.cluster.vke.volcengine.com/gpu-name
+                operator: In
+                values:
+                - NVIDIA-L20
       serviceAccountName: routing-agent-sa
       containers:
       - env:
@@ -35,10 +44,6 @@ spec:
           value: simpler_contextual_bandit
         - name: ENABLE_ONLINE_LEARNING
           value: "true"
-        - name: TTFT_SLO
-          value: "1000"
-        - name: AVG_TPOT_SLO
-          value: "50"
         image: gangmuk/gangmuk-routing-agent:latest-mac
         imagePullPolicy: Always
         name: routing-agent
