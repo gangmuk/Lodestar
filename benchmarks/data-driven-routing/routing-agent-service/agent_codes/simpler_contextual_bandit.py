@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# simplified_contextual_bandit.py
+# filename: simplified_contextual_bandit.py
 
 import os
 import sys
@@ -262,7 +262,7 @@ class SimplifiedContextualBandit:
         
 
         # Optimizer with weight decay for regularization
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['learning_rate'], weight_decay= self.hyperparameters['weight_decay'])
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['OFFLINE_LEARNING_RATE'], weight_decay= self.hyperparameters['weight_decay'])
         
         # Learning rate scheduler
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
@@ -375,7 +375,7 @@ class SimplifiedContextualBandit:
         logger.info(f"="*60)
         logger.info(f"LEARN CALL #{self.learn_call_counter}: {n_samples} samples → {len(batches)} batches")
         
-        # ADD THIS: Track parameter changes
+                    # ADD THIS: Track parameter changes
         initial_param_snapshot = {name: param.clone().detach() for name, param in self.policy.named_parameters()}
         
         # Process each batch
@@ -461,7 +461,7 @@ class SimplifiedContextualBandit:
             self.optimizer.step()
             
 
-            max_param_change = 0
+            max_param_change = 0 # important metrics to tell if the model is converging
             for name, param in self.policy.named_parameters():
                 param_change = (param - initial_param_snapshot[name]).abs().max().item()
                 max_param_change = max(max_param_change, param_change)
@@ -519,7 +519,33 @@ class SimplifiedContextualBandit:
         
         # Save policy network
         torch.save(self.policy.state_dict(), os.path.join(final_model_dir, 'policy.pth'))
-        
+
+        # Save policy network weights in human-readable CSV format
+        state_dict = self.policy.state_dict()
+        weights_dir = os.path.join(final_model_dir, 'weights_csv')
+        os.makedirs(weights_dir, exist_ok=True)
+
+        for name, param in state_dict.items():
+            # Convert tensor to numpy array
+            param_np = param.detach().cpu().numpy()
+
+            # Flatten multi-dimensional tensors for CSV
+            if param_np.ndim > 1:
+                # For multi-dimensional tensors, flatten to 1D
+                param_flat = param_np.flatten()
+                # Save as single row CSV
+                np.savetxt(os.path.join(weights_dir, f'{name}.csv'), [param_flat], delimiter=',', fmt='%.8f')
+            else:
+                # For 1D tensors, save as single row CSV
+                np.savetxt(os.path.join(weights_dir, f'{name}.csv'), [param_np], delimiter=',', fmt='%.8f')
+
+            # Also save tensor shape information
+            with open(os.path.join(weights_dir, f'{name}_shape.txt'), 'w') as f:
+                f.write(f"Original shape: {param.shape}\n")
+                f.write(f"Data type: {param.dtype}\n")
+
+        logger.info(f"Saved model weights as CSV files in {weights_dir}")
+
         # Save optimizer state
         torch.save(self.optimizer.state_dict(), os.path.join(final_model_dir, 'optimizer.pth'))
         
@@ -957,10 +983,13 @@ def plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data=No
     fig = plt.figure(figsize=(20, 15))
     
     # Determine action dimension
-    if hasattr(agent.policy, 'policy_head'):
+    if hasattr(agent, 'action_dim'):
+        action_dim = agent.action_dim
+    elif hasattr(agent.policy, 'policy_head'):
         action_dim = agent.policy.policy_head.out_features
     else:
-        action_dim = 7  # Default for your setup
+        # action_dim = 7  # Default fallback
+        assert False
     
     # Create proper train/eval split for analysis if combined_data is available
     eval_data_for_analysis = None
@@ -1795,11 +1824,8 @@ def comprehensive_llm_routing_analysis(combined_data, agent=None):
 
 # main entry point
 def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning):
-
-    
     os.makedirs(final_model_dir, exist_ok=True)
     logger.info(f"Starting training process. final_model_dir: {final_model_dir}")
-    
     if HYPERPARAMETERS.get('deterministic_training', False):
         training_seed = HYPERPARAMETERS['training_seed']
         logger.info(f"🔒 DETERMINISTIC TRAINING MODE - Setting training seed: {training_seed}")
@@ -1822,8 +1848,8 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
 
     # Load and combine data from all batches
     combined_data = load_all_encoded_data(encoded_data_dir)
-    dataset_analysis = analyze_dataset_detailed(combined_data)
-    HYPERPARAMETERS['dataset_analysis'] = dataset_analysis
+    # dataset_analysis = analyze_dataset_detailed(combined_data)
+    # HYPERPARAMETERS['dataset_analysis'] = dataset_analysis
     state_dim = {
         'pod_features': combined_data['pod_features_with_staleness'].shape[2],
         'kv_hit_ratios': combined_data['kv_hit_ratios'].shape[2],
@@ -1854,12 +1880,8 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
             logger.info(f"Successfully loaded pretrained model from {final_model_dir} for online learning")
             ################################################
             # Adjust learning rate for online learning (typically lower)
-            if is_online_learning:
-                original_learning_rate = HYPERPARAMETERS['learning_rate']
-                HYPERPARAMETERS['learning_rate'] *= 0.1  # 10x lower learning rate
-                logger.info(f"Adjusted learning rate from {original_learning_rate} to {HYPERPARAMETERS['learning_rate']} for online learning")
             for param_group in agent.optimizer.param_groups:
-                param_group['lr'] = HYPERPARAMETERS['learning_rate']
+                param_group['lr'] = HYPERPARAMETERS['ONLINE_LEARNING_RATE']
         except Exception as e:
             logger.error(f"Error loading pretrained model: {e}")
             logger.info("Starting training from scratch")
@@ -2029,13 +2051,13 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
 
     # Save final model
     agent.save(final_model_dir)
+    saved_plot_path = None
     try:
         saved_plot_path = plot_training_metrics(agent, eval_metrics, final_model_dir, combined_data)
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
-    # os.system(f"cp -r {final_model_dir} final_model")
+        assert False
 
-    # Save configuration
     with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
         json.dump(HYPERPARAMETERS, f, indent=4, default=str)
         logger.info(f"Saved model configuration to {os.path.join(final_model_dir, 'model_config.json')}")

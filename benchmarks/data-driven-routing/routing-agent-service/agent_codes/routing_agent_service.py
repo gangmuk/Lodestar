@@ -47,22 +47,19 @@ final_model_dir = "/app/final_model"
 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
 NUM_TRAINS = 0
 MODEL_UPDATED = True
-TRAINING_DATA_UPDATED = False
 LOCK_TRAINING_DATA = threading.Lock()
 first_request_starting_time = None
 stats_instance = None 
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
-MIN_NUM_TRAINING_DATA = 500  # Minimum number of training data required to trigger training
+TRAINING_RIGHT_NOW = False
 
+MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 1000))
 POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
-ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "true").lower() == "true"
-ONLINE_NORMALIZATION_DURING_FLUSH = int(os.getenv("ONLINE_NORMALIZATION_DURING_FLUSH", 0))
+ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "false").lower() == "true"
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
-
+TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 RL_MODEL_HYPERPARAMETERS = None
-
-
 
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
@@ -70,7 +67,7 @@ request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global NUM_FLUSH, ENCODED_DATA_DIR, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
+    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
     NUM_FLUSH += 1
     flush_start_time = time.time()
     log_data = request.json
@@ -82,31 +79,42 @@ def handle_flush():
         
         # Write raw data to file
         ts_write_raw_data = time.time()
+        ##################################################
+        ## Write raw data to file
         utils.write_to_file(log_data, raw_data_path)
+        ##################################################
         logger.info(f"wrote {len(log_data)} entries to {raw_data_path}, took {time.time() - ts_write_raw_data} seconds")
 
-        
         replaced_data_path = utils.replace_pod_ip_with_generalpodid(raw_data_path)
         ts_preprocess = time.time()
-        processed_df, _, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
+        ##################################################
+        ## Preprocess
+        processed_df, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
+        ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
-        # if ENABLE_ONLINE_LEARNING:
-        if ONLINE_NORMALIZATION_DURING_FLUSH:
-            # Note: This function doesn't exist in the merged module - using direct normalization instead
-        # processed_df = data_normalizer.normalize_features_for_training(processed_df, stats_instance)
-            if stats_instance is not None:
-                stats_instance.write_stats_to_file(feature_normalization_stats_file)
-            else:
-                logger.warning("Cannot save stats - stats_instance is None")
+        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
+        if stats_instance.get_max_count() == 0:
+            logger.error(f"No normalization statistics available for training")
+            assert False
+        for feature in normalizable_features:
+            ##################################################
+            ## Normalize
+            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=True)
+            ##################################################
+        if stats_instance is not None:
+            stats_instance.write_stats_to_file(feature_normalization_stats_file)
+        else:
+            logger.error("stats_instance is None. Cannot save stats")
+            assert False
 
-        # Encode preprocessed data
-        ts_encode = time.time()
+        ##################################################
+        ## Encode
         encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{NUM_FLUSH}"
         encoding.encode_for_train(sorted_all_pod_ids, processed_df, encoded_data_subdir, request_features_train, RL_MODEL_HYPERPARAMETERS)
-        logger.info(f"Successfully encoded data to {encoded_data_subdir}, took {time.time() - ts_encode} seconds")
+        ##################################################
+        
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
-        TRAINING_DATA_UPDATED = True
         TOTAL_NUM_DATA += len(log_data)
         NUM_NEW_DATA += len(log_data)
             
@@ -191,27 +199,15 @@ def handle_infer():
                 logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
                 logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
-        ## new way
+
         normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
-        logger.debug(f"normalizable_features: {normalizable_features}")
-        logger.debug(f"non_normalizable_features: {non_normalizable_features}")
         if stats_instance.get_max_count() == 0:
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
         for feature in normalizable_features:
-            stats = stats_instance.feature_stats[feature]
-            logger.debug(f"before normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+            ##################################################
             data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
-            logger.debug(f"after normalize, {feature}: value={processed_df[feature].iloc[0]:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-            if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
-                if feature in processed_df.columns:
-                    processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
-                    logger.info(f"request_id,{request_id},Amplified critical feature {feature} after normalization")
-                else:
-                    logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
-                    assert False
-        ## old way
-        # processed_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
+            ##################################################
         handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
 
         ## Encode data (normalization already done)
@@ -278,23 +274,26 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, hyperparameter_file_path
-
-    if  TRAINING_DATA_UPDATED and NUM_NEW_DATA > MIN_NUM_TRAINING_DATA:
-        training_start_time = time.time()
-        logger.info(f"online_train_routine, train! Starting {NUM_TRAINS}th online training iteration")
-        try:
-            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
-        except Exception as e:
-            logger.error(f"Error during training: {e}")
-            return
-        MODEL_UPDATED = True
-        TRAINING_DATA_UPDATED = False
-        logger.info(f"online_train_routine, Successfully completed {NUM_TRAINS}th online training, took {time.time() - training_start_time} seconds")
-        NUM_TRAINS += 1
-        NUM_NEW_DATA = 0
-    else:
-        logger.info(f"online_train_routine, not enough training data available (TOTAL_NUM_DATA: {TOTAL_NUM_DATA}), skipping training")
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW
+    if TRAINING_RIGHT_NOW:
+        logger.info(f"Previous training still in progress, skipping training")
+        return
+    if NUM_NEW_DATA < MIN_NUM_TRAINING_DATA:
+        logger.info(f"Not enough training data available (NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}). Wait until more data comes in.")
+        return
+    TRAINING_RIGHT_NOW = True
+    training_start_time = time.time()
+    logger.info(f"Start {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
+    try:
+        simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
+    except Exception as e:
+        logger.error(f"Error during training: {e}")
+        return
+    MODEL_UPDATED = True
+    NUM_TRAINS += 1
+    NUM_NEW_DATA = 0
+    TRAINING_RIGHT_NOW = False
+    logger.info(f"Successfully completed {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data, took {time.time() - training_start_time} seconds")
 
 
 def test_kubernetes_permissions():
@@ -347,8 +346,8 @@ def init():
     global RL_MODEL_HYPERPARAMETERS, stats_instance
     if RL_MODEL_HYPERPARAMETERS is None:
         RL_MODEL_HYPERPARAMETERS = {}
+        RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
         RL_MODEL_HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
-        RL_MODEL_HYPERPARAMETERS['ONLINE_NORMALIZATION_DURING_FLUSH'] = ONLINE_NORMALIZATION_DURING_FLUSH
         RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         logger.info("Loading RL hyperparameters from model_config.json")
         utils.load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
@@ -428,7 +427,7 @@ if __name__ == "__main__":
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model
     if ENABLE_ONLINE_LEARNING:
-        scheduler.add_job(func=online_train_routine, trigger="interval", seconds=10)
+        scheduler.add_job(func=online_train_routine, trigger="interval", seconds=30)
     else:
         logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
     scheduler.start()

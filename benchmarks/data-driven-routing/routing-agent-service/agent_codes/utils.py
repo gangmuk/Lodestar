@@ -257,9 +257,8 @@ def extract_pod_ips_from_content(content):
 def create_pod_ip_to_generalpodid_mapping(unique_pod_ips):
     """Create mapping from pod IPs to general pod IDs."""
     pod_ip_to_generalpodid = {}
-    unique_pod_ips = sorted(unique_pod_ips)  # Ensure consistent ordering
-    
-    for idx, pod_ip in enumerate(unique_pod_ips):
+    sorted_unique_pod_ips = sorted(unique_pod_ips)  # Ensure consistent ordering
+    for idx, pod_ip in enumerate(sorted_unique_pod_ips):
         if idx < 10:
             pod_ip_to_generalpodid[pod_ip] = f"pod_000{idx}"
         elif idx < 100:
@@ -267,9 +266,8 @@ def create_pod_ip_to_generalpodid_mapping(unique_pod_ips):
         elif idx < 1000:
             pod_ip_to_generalpodid[pod_ip] = f"pod_0{idx}"
         else:
-            logger.error(f"Too many pods ({len(unique_pod_ips)}) to map to generalpodid, only supporting up to 1000 pods")
+            logger.error(f"Too many pods ({len(sorted_unique_pod_ips)}) to map to generalpodid, only supporting up to 1000 pods")
             assert False
-    
     logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
     return pod_ip_to_generalpodid
 
@@ -304,10 +302,13 @@ def get_running_pods_by_label(label_selector):
     try:
         config.load_incluster_config()
     except ConfigException:
-        try:
-            config.load_kube_config()
-        except ConfigException:
-            raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        # try:
+        #     config.load_kube_config()
+        # except ConfigException:
+        #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        assert False
+    
     v1 = client.CoreV1Api()
     return v1.list_pod_for_all_namespaces(label_selector=label_selector)
     
@@ -325,10 +326,12 @@ def fetch_generalpodid_to_gpu_model(running_pods: client.V1PodList, pod_ip_to_ge
     try:
         config.load_incluster_config()
     except ConfigException:
-        try:
-            config.load_kube_config()
-        except ConfigException:
-            raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        # try:
+        #     config.load_kube_config()
+        # except ConfigException:
+        #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        assert False
     v1 = client.CoreV1Api()
     generalpodid_to_gpu_model = {}
     for pod in running_pods.items:
@@ -474,10 +477,12 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
         try:
             config.load_incluster_config()
         except ConfigException:
-            try:
-                config.load_kube_config()
-            except ConfigException:
-                raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+            # try:
+            #     config.load_kube_config()
+            # except ConfigException:
+            #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+            raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+            assert False
         apps_v1 = client.AppsV1Api()
         core_v1 = client.CoreV1Api()
         

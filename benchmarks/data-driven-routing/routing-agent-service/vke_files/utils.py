@@ -126,8 +126,15 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
         bool: True if all pods and their containers are ready, False otherwise (will keep checking).
     """
     try:
-        # Load Kubernetes configuration (assuming you have a valid kubeconfig file)
-        config.load_kube_config()
+        try:
+            # Try to load in-cluster config first (if running inside a pod)
+            config.load_incluster_config()
+            print("Loaded in-cluster Kubernetes config")
+        except config.ConfigException:
+            # Fall back to loading from ~/.kube/config
+            config.load_kube_config()
+            print("Loaded Kubernetes config from ~/.kube/config")
+        
         apps_v1 = client.AppsV1Api()
         core_v1 = client.CoreV1Api()
         

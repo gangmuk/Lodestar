@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """
 Script to update environment variables in Kubernetes deployments.
-Supports updating multiple key-value pairs in a single operation.
+Uses kubectl directly to avoid context confusion issues.
 """
 
 import argparse
 import sys
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
+import subprocess
+import json
+
+
+def run_kubectl(cmd):
+    """Run kubectl command and return result"""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"❌ kubectl command failed: {' '.join(cmd)}")
+        print(f"Error: {e.stderr}")
+        sys.exit(1)
 
 
 def update_deployment_env_vars(deployment_name, namespace, container_name, env_vars):
     """
-    Update environment variables in a Kubernetes deployment.
+    Update environment variables in a Kubernetes deployment using kubectl.
     
     Args:
         deployment_name (str): Name of the deployment to update
@@ -21,80 +32,68 @@ def update_deployment_env_vars(deployment_name, namespace, container_name, env_v
         env_vars (dict): Dictionary of environment variable key-value pairs
     """
     try:
-        # Load Kubernetes config
+        # Get current context
+        current_context = run_kubectl(['kubectl', 'config', 'current-context'])
+        print(f"🎯 Using kubectl context: {current_context}")
+        
+        # Check if deployment exists
+        print(f"🔍 Checking deployment '{deployment_name}' in namespace '{namespace}'...")
+        run_kubectl(['kubectl', 'get', 'deployment', deployment_name, '-n', namespace])
+        print("✅ Deployment found")
+        
+        # Get current env vars to show before
+        print(f"📋 Current environment variables for container '{container_name}':")
         try:
-            # Try to load in-cluster config first (if running inside a pod)
-            config.load_incluster_config()
-            print("Loaded in-cluster Kubernetes config")
-        except config.ConfigException:
-            # Fall back to loading from ~/.kube/config
-            config.load_kube_config()
-            print("Loaded Kubernetes config from ~/.kube/config")
+            env_output = run_kubectl([
+                'kubectl', 'get', 'deployment', deployment_name, '-n', namespace,
+                '-o', f'jsonpath={{.spec.template.spec.containers[?(@.name=="{container_name}")].env[*]}}'
+            ])
+            
+            if env_output:
+                env_data = json.loads(env_output.replace("'", '"'))
+                if isinstance(env_data, list):
+                    for env_var in env_data:
+                        print(f"  {env_var['name']}={env_var['value']}")
+                else:
+                    print(f"  {env_data['name']}={env_data['value']}")
+            else:
+                print("  (no environment variables)")
+        except:
+            print("  (could not parse current env vars)")
         
-        # Create API client
-        apps_v1 = client.AppsV1Api()
+        print("-" * 50)
         
-        # Get the current deployment
-        print(f"Fetching deployment '{deployment_name}' in namespace '{namespace}'...")
-        deployment = apps_v1.read_namespaced_deployment(
-            name=deployment_name,
-            namespace=namespace
-        )
+        # Set each environment variable
+        for env_key, env_value in env_vars.items():
+            print(f"🔧 Setting {env_key}={env_value}...")
+            run_kubectl([
+                'kubectl', 'set', 'env', f'deployment/{deployment_name}',
+                '-n', namespace,
+                f'{env_key}={env_value}',
+                f'--containers={container_name}'
+            ])
+            
+            # Verify it was set
+            print(f"🔍 Verifying {env_key} was set...")
+            result = run_kubectl([
+                'kubectl', 'get', 'deployment', deployment_name, '-n', namespace,
+                '-o', f'jsonpath={{.spec.template.spec.containers[?(@.name=="{container_name}")].env[?(@.name=="{env_key}")].value}}'
+            ])
+            
+            if result == env_value:
+                print(f"✅ SUCCESS: {env_key}={result}")
+            else:
+                print(f"❌ FAILED: Expected {env_value}, got {result}")
+                return False
         
-        # Find the container and update environment variables
-        containers = deployment.spec.template.spec.containers
-        container_found = False
+        # Show rollout status
+        print("🚀 Watching rollout...")
+        subprocess.run(['kubectl', 'rollout', 'status', f'deployment/{deployment_name}', '-n', namespace])
         
-        for container in containers:
-            if container.name == container_name:
-                container_found = True
-                print(f"Found container '{container.name}', updating environment variables...")
-                
-                # Initialize env list if it doesn't exist
-                if container.env is None:
-                    container.env = []
-                
-                # Process each environment variable
-                for env_key, env_value in env_vars.items():
-                    env_updated = False
-                    
-                    # Update existing environment variable
-                    for env_var in container.env:
-                        if env_var.name == env_key:
-                            old_value = env_var.value
-                            env_var.value = env_value
-                            print(f"Updated {env_key}: {old_value} -> {env_value}")
-                            env_updated = True
-                            break
-                    
-                    # Add environment variable if it doesn't exist
-                    if not env_updated:
-                        container.env.append(client.V1EnvVar(name=env_key, value=env_value))
-                        print(f"Added {env_key}: {env_value}")
-                
-                break
-        
-        if not container_found:
-            print(f"ERROR: Container '{container_name}' not found in deployment")
-            return False
-        
-        # Update the deployment
-        print("Applying changes to deployment...")
-        apps_v1.patch_namespaced_deployment(
-            name=deployment_name,
-            namespace=namespace,
-            body=deployment
-        )
-        
-        print(f"Successfully updated deployment '{deployment_name}'")
-        print("The deployment will automatically roll out the changes.")
         return True
         
-    except ApiException as e:
-        print(f"Kubernetes API error: {e}")
-        return False
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"💥 ERROR: {e}")
         return False
 
 
@@ -123,7 +122,7 @@ def parse_env_vars(env_strings):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Update environment variables in Kubernetes deployments",
+        description="Update environment variables in Kubernetes deployments using kubectl",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

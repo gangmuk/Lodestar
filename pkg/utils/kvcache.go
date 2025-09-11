@@ -619,7 +619,6 @@ var ExplorationMutex sync.RWMutex
 var ExplorationEnabledMutex sync.RWMutex
 
 var (
-	UseRealRequest                = LoadEnv("AIBRIX_RL_ROUTER_USE_REAL_REQUEST", "true")
 	FirstRequestStartTime   int64 = 0
 	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
@@ -960,6 +959,7 @@ func AddRequestLogMessage(requestID string, logMessage string) {
 
 	if _, exists := RequestToLogMessage[requestID]; !exists {
 		RequestToLogMessage[requestID] = logMessage
+		klog.Infof("AddRequestLogMessage for request ID: %s, total number of log messages: %d", requestID, len(RequestToLogMessage))
 	} else {
 		klog.Errorf("Error, Request ID %s already exists in RequestToLogMessage", requestID)
 	}
@@ -971,7 +971,7 @@ func DeleteRequestLogMessage(requestID string) {
 
 	if _, exists := RequestToLogMessage[requestID]; exists {
 		delete(RequestToLogMessage, requestID)
-		klog.Infof("Deleted log message for request ID: %s", requestID)
+		klog.Infof("DeleteRequestLogMessage for request ID: %s", requestID)
 	} else {
 		klog.Errorf("Error, Failed to delete log message for request ID: %s, not found", requestID)
 	}
@@ -995,7 +995,7 @@ func CleanupRequestLogMessage(requestID string) {
 
 	if _, exists := RequestToLogMessage[requestID]; exists {
 		delete(RequestToLogMessage, requestID)
-		klog.V(5).Infof("CleanupRequestLogMessage, Deleted log message for request ID: %s", requestID)
+		klog.Infof("CleanupRequestLogMessage, Deleted log message for request ID: %s", requestID)
 	} else {
 		klog.Errorf("Error, Failed CleanupRequestLogMessage, No log message found for request ID: %s", requestID)
 	}

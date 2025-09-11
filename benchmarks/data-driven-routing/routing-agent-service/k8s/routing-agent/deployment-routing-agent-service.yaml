@@ -44,10 +44,6 @@ spec:
           value: simpler_contextual_bandit
         - name: ENABLE_ONLINE_LEARNING
           value: "true"
-        - name: TTFT_SLO
-          value: "1000"
-        - name: AVG_TPOT_SLO
-          value: "50"
         image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:latest
         imagePullPolicy: Always
         name: routing-agent

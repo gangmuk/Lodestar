@@ -27,7 +27,6 @@ var (
 	minNumLogMessagesToFlush   = utils.LoadEnvInt("MIN_NUM_LOG_MESSAGES_TO_FLUSH", 100)
 	useRealRequest             = utils.LoadEnvInt("useRealRequest", 1)
 	flushed                    = false
-	trained                    = false
 	received_the_first_request = false
 	allPodIPs                  = []string{}
 	fake_request_id            = 0
@@ -140,7 +139,7 @@ func FlushLogMessageToRLAgent() {
 						}
 						resp.Body.Close()
 						utils.CleanupAllRequestLogMessage()
-						klog.Infof("Successfully flushed, response: %s", string(body))
+						klog.Infof("Successfully flush, response: %s", string(body))
 						flushed = true
 						numFlush += 1
 					} else {
@@ -152,7 +151,7 @@ func FlushLogMessageToRLAgent() {
 				}
 			}
 		}()
-	} else {
+	} else { // useRealRequest == 0
 		done := make(chan struct{})
 		go func() {
 			ticker := time.NewTicker(flushPeriod)
@@ -165,11 +164,11 @@ func FlushLogMessageToRLAgent() {
 						continue // Skip this iteration and check again on the next tick
 					}
 
-					if flushed {
-						// flush only once to simplify experiment
-						klog.Infof("Skip flushing. Configured to flush only once for Fake data, utils.UseRealRequest == false")
-						continue
-					}
+					// if flushed {
+					// 	// flush only once to simplify experiment
+					// 	klog.Infof("Skip flushing. Configured to flush only once for Fake data, utils.UseRealRequest == false")
+					// 	continue
+					// }
 
 					// If we got here, the first request has been received
 					klog.Infof("Start flushing log messages to RL agent, %dth flush", numFlush)
@@ -224,7 +223,7 @@ func FlushLogMessageToRLAgent() {
 					//// Delete when the RL agent is doing continuous learning.
 					//// When the RL agent trains the model from scratch at every flush call, don't discard previous logs but flush all history every time.
 					// utils.CleanupAllRequestLogMessage()
-					flushed = true
+					// flushed = true
 					numFlush += 1
 				case <-done:
 					return
@@ -317,6 +316,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
 	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
 	expectedNumOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
+	expectedNumOutputTokens = 100
 	if !exist {
 		klog.Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, expectedNumOutputTokens)
 	}
@@ -332,15 +332,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
 
-	// klog.Infof("requestID: %s, numInputTokens: %d, expectedNumOutputTokens: %d, numTotalTokens: %d, input_message: %s, input_tokens_in_bytearray: %v, matchedPrefixHashes: %v, allPrefixHashes: %v, podIPsWithMatchingRatios: %v", ctx.RequestID, numInputTokens, expectedNumOutputTokens, numTotalTokens, input_message, input_tokens_in_bytearray, matchedPrefixHashes, allPrefixHashes, podIPsWithMatchingRatios)
-
-	// if !flushed {
-	// 	klog.Infof("At least one training is required for RL based routing. Using fallback routing and return right away.")
-	// 	targetPod, _ = r.fallbackRouting(ctx, readyPods)
-	// 	ctx.SetTargetPod(targetPod)
-	// 	return ctx.TargetAddress(), nil
-	// }
-
 	if len(readyPods) == 0 {
 		klog.Errorf("requestID: %s, No ready pods available for routing", ctx.RequestID)
 		return "", fmt.Errorf("no ready pods available")
@@ -354,7 +345,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	var log string
 	log_construction_start_time := time.Now()
-	if utils.UseRealRequest == "true" {
+	if useRealRequest == 1 {
 		// Prepare for JSON strings to use in logging
 		var jsonStrings = make(map[string]string)
 
@@ -425,9 +416,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			jsonStrings["numPrefillTokensForAllPods"],
 			jsonStrings["numDecodeTokensForAllPods"],
 		)
-	} else {
-		numLogs := 1
-		log = utils.GenerateLogMessages(allPodIPs, numLogs)[0]
+	} else { // useRealRequest == 0
+		log = utils.GenerateLogMessages(allPodIPs, 1)[0]
 	}
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
 	reqBody, err := json.Marshal(log)
