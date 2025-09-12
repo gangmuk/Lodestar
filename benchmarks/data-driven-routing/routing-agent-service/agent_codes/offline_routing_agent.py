@@ -7,6 +7,7 @@ import simpler_contextual_bandit
 import preprocess
 import threading
 import argparse
+import json
 import random_forest
 import torch
 import data_normalizer
@@ -21,41 +22,45 @@ import data_normalizer
 
 utils.set_all_seeds(42)
 
-RL_MODEL_HYPERPARAMETERS = {
-    'hidden_dim': 64, # 256,
-    'batch_size': 64,
-    # 'offline_learning_rate': 0.001,
-    'ONLINE_LEARNING_RATE': 0.0005,
-    'training_epochs': 5, # 5,
-    'learning_every_x_iter': 5,
-    'weight_decay': 0.0001,
-    'max_updates_per_epoch': 1000, # 1000000000
-    'exploration_rate': 0.1, # 0.1
-    'explore': True,
-    'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
+
+# Hyperparameters are loaded later inside main() from the single source JSON
+RL_MODEL_HYPERPARAMETERS = {}
+
+# RL_MODEL_HYPERPARAMETERS = {
+#     'hidden_dim': 64, # 256,
+#     'batch_size': 64,
+#     # 'offline_learning_rate': 0.001,
+#     'ONLINE_LEARNING_RATE': 0.0005,
+#     'training_epochs': 5, # 5,
+#     'learning_every_x_iter': 5,
+#     'weight_decay': 0.0001,
+#     'max_updates_per_epoch': 1000, # 1000000000
+#     'exploration_rate': 0.1, # 0.1
+#     'explore': True,
+#     'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
     
-    'eval_interval': 10,
-    'entropy_bonus_factor': 0.02,
-    'per_learn_reward_normalization': False,
-    'normalization': {
-        "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
-        "REWARD_AMPLIFICATION_DEGREE": 1.0,
-        "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
-        "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
-        "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
-        "FEATURES_NORMALIZED": set(),
-        "NUM_FEATURES_NORMALIZED": 0,
-        "FEATURE_AMPLIFICATION": False,
-        "FEATURES_AMPLIFIED": set(),
-        "NUM_FEATURES_AMPLIFIED": 0,
-    },
-    'dataset_analysis': None,
-    'deterministic_training': True,
-    'training_seed': 42,
-    # 'REWARD_FUNCTION': 'linear_simple',
-    # 'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
-    # 'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
-}
+#     'eval_interval': 10,
+#     'entropy_bonus_factor': 0.02,
+#     'per_learn_reward_normalization': False,
+#     'normalization': {
+#         "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
+#         "REWARD_AMPLIFICATION_DEGREE": 1.0,
+#         "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
+#         "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
+#         "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
+#         "FEATURES_NORMALIZED": set(),
+#         "NUM_FEATURES_NORMALIZED": 0,
+#         "FEATURE_AMPLIFICATION": False,
+#         "FEATURES_AMPLIFIED": set(),
+#         "NUM_FEATURES_AMPLIFIED": 0,
+#     },
+#     'dataset_analysis': None,
+#     'deterministic_training': True,
+#     'training_seed': 42,
+#     # 'REWARD_FUNCTION': 'linear_simple',
+#     # 'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
+#     # 'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
+# }
 
 # Global variables (simplified for offline use)
 NUM_TRAINS = 0
@@ -511,19 +516,28 @@ def main():
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
-    parser.add_argument('--reward_function', type=str, default='linear_simple', help='Reward function to use')
-    parser.add_argument('--ttft_slo', type=float, help='TTFT SLO threshold for preprocessing', default=1000)
-    parser.add_argument('--avg_tpot_slo', type=float, help='Average TPOT SLO threshold for preprocessing', default=50)
-    parser.add_argument('--ttft_reward_weight', type=float, help='TTFT reward weight for preprocessing', default=0.5)
-    parser.add_argument('--offline_learning_rate', type=float, help='Learning rate for training', default=0.001)
+    # Only this argument is required; JSON is the source of truth. Other flags are optional overrides.
+    parser.add_argument('--hyperparameters', type=str, required=True, help='Path to JSON hyperparameter file (single source of truth)')
     args = parser.parse_args()
     
-    # Update RL_MODEL_HYPERPARAMETERS with SLO values from command line
-    RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = args.ttft_slo
-    RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = args.avg_tpot_slo
-    RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = args.ttft_reward_weight
-    RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = args.reward_function
-    RL_MODEL_HYPERPARAMETERS['OFFLINE_LEARNING_RATE'] = args.offline_learning_rate
+    # 1) Load JSON hyperparameters (required)
+    if not os.path.exists(args.hyperparameters):
+        logger.error(f"Hyperparameters JSON not found: {args.hyperparameters}")
+        return
+    try:
+        with open(args.hyperparameters, 'r') as f:
+            hp = json.load(f)
+        if not isinstance(hp, dict):
+            logger.error(f"Hyperparameters file is not a JSON object: {args.hyperparameters}")
+            assert False
+        RL_MODEL_HYPERPARAMETERS.clear()
+        RL_MODEL_HYPERPARAMETERS.update(hp)
+        logger.info(f"Loaded hyperparameters from {args.hyperparameters}")
+    except Exception as e:
+        logger.error(f"Failed to read hyperparameters from {args.hyperparameters}: {e}")
+        assert False
+
+    logger.info(f"EXCLUDED_POD_FEATURES: {RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', [])}")
     
     # Validate processed CSV file
     if not os.path.exists(args.processed_csv):

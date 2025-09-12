@@ -190,41 +190,35 @@ def _feature_ranges_from_reference(tensor_path: str) -> Dict[str, np.ndarray]:
 
 
 def _load_feature_names(reference_tensor: Optional[str], pod_feat_dim: int, kv_dim: int, req_feat_dim: int) -> Dict[str, list]:
-    # Default names based on encoding.py pipeline
-    base_pod_order = [
-        "inflight_requests",
-        "gpu_kv_cache",
-        "cpu_kv_cache",
-        "running_requests",
-        "waiting_requests",
-        "prefill_tokens",
-        "decode_tokens",
-    ]
-    # If pod_feat_dim includes staleness (pod_features_with_staleness), append it
-    if pod_feat_dim == len(base_pod_order) + 1:
-        pod_names = base_pod_order + ["staleness"]
-    else:
-        pod_names = base_pod_order[:pod_feat_dim]
+    # Strict mode: require metadata.json and matching dimensions
+    assert reference_tensor and os.path.exists(reference_tensor), "reference_tensor not found; cannot infer feature names"
+    meta_path = os.path.join(os.path.dirname(reference_tensor), "metadata.json")
+    assert os.path.exists(meta_path), f"metadata.json not found next to reference tensor: {meta_path}"
 
+    with open(meta_path, 'r') as f:
+        meta = json.load(f)
+
+    # Pod feature names (without staleness in metadata). If tensor has +1, it is staleness.
+    pod_from_meta = meta.get('pod_features_list')
+    assert isinstance(pod_from_meta, list) and len(pod_from_meta) > 0, "Invalid pod_features_list in metadata.json"
+    if len(pod_from_meta) == pod_feat_dim:
+        pod_names = list(pod_from_meta)
+    elif len(pod_from_meta) + 1 == pod_feat_dim:
+        pod_names = list(pod_from_meta) + ["staleness"]
+    else:
+        raise AssertionError(
+            f"Pod feature dim mismatch: tensor={pod_feat_dim}, metadata={len(pod_from_meta)} (expected equal or +1 for staleness)"
+        )
+
+    # Request feature names must match exactly
+    req_from_meta = meta.get('numeric_request_features')
+    assert isinstance(req_from_meta, list), "numeric_request_features missing in metadata.json"
+    assert len(req_from_meta) == req_feat_dim, f"Request feature dim mismatch: tensor={req_feat_dim}, metadata={len(req_from_meta)}"
+    req_names = list(req_from_meta)
+
+    # KV names: deterministic
     kv_names = ["kv_hit_ratio"] if kv_dim == 1 else [f"kv_feat_{i}" for i in range(kv_dim)]
-    req_names = ["input_tokens", "output_tokens", "total_tokens"][:req_feat_dim]
-    if reference_tensor and os.path.exists(reference_tensor):
-        meta_path = os.path.join(os.path.dirname(reference_tensor), "metadata.json")
-        if os.path.exists(meta_path):
-            try:
-                with open(meta_path, 'r') as f:
-                    meta = json.load(f)
-                # Pod features
-                if isinstance(meta.get('pod_features_list'), list) and len(meta['pod_features_list']) > 0:
-                    names = list(meta['pod_features_list'])
-                    if len(names) < pod_feat_dim and (pod_feat_dim - len(names)) == 1:
-                        names = names + ["staleness"]
-                    pod_names = names[:pod_feat_dim]
-                # Request features
-                if isinstance(meta.get('numeric_request_features'), list) and len(meta['numeric_request_features']) == req_feat_dim:
-                    req_names = list(meta['numeric_request_features'])
-            except Exception:
-                pass
+
     return {"pod": pod_names, "kv": kv_names, "req": req_names}
 
 
@@ -1182,19 +1176,16 @@ def main():
         x_vals, y_vals, Z = interaction_heatmap(agent, pod_ctx, kv_ctx, req_ctx, ranges, target_pod=target_pod, f1=f1, f2=f2, num_points=40)
         interaction_payload = (x_vals, y_vals, Z, f1, f2)
 
-    # 7) Faithful analyses focused on prefill_tokens (if available)
+    # 7) Faithful analyses focused on prefill_tokens (only if present)
     prefill_name = "prefill_tokens"
-    try:
-        if prefill_name in feature_names['pod']:
-            prefill_idx = feature_names['pod'].index(prefill_name)
-        else:
-            prefill_idx = 5  # fallback to default ordering
-    except Exception:
-        prefill_idx = 5
-
-    rel_pdp_obj = relative_pdp(agent, pod_ctx, kv_ctx, req_ctx, ranges, f_idx=int(prefill_idx), num_points=25, num_contexts=min(16, pod_ctx.shape[0]), target_pod=target_pod)
-    ale_obj = ale_one_feature(agent, pod_ctx, kv_ctx, req_ctx, f_idx=int(prefill_idx), bins=10, target_pod=target_pod)
-    rank_obj = rank_effect(agent, pod_ctx, kv_ctx, req_ctx, f_idx=int(prefill_idx), target_pod=target_pod)
+    prefill_idx = None
+    if prefill_name in feature_names.get('pod', []):
+        prefill_idx = feature_names['pod'].index(prefill_name)
+    rel_pdp_obj, ale_obj, rank_obj = {}, {}, {}
+    if prefill_idx is not None:
+        rel_pdp_obj = relative_pdp(agent, pod_ctx, kv_ctx, req_ctx, ranges, f_idx=int(prefill_idx), num_points=25, num_contexts=min(16, pod_ctx.shape[0]), target_pod=target_pod)
+        ale_obj = ale_one_feature(agent, pod_ctx, kv_ctx, req_ctx, f_idx=int(prefill_idx), bins=10, target_pod=target_pod)
+        rank_obj = rank_effect(agent, pod_ctx, kv_ctx, req_ctx, f_idx=int(prefill_idx), target_pod=target_pod)
 
     # Direct-to-PDF report (vector quality)
     report_pdf = os.path.join(out_dir, "xai_report.pdf")
@@ -1209,10 +1200,11 @@ def main():
             f1_name = feature_names['pod'][f1] if f1 < len(feature_names['pod']) else f"feat {f1}"
             f2_name = feature_names['pod'][f2] if f2 < len(feature_names['pod']) else f"feat {f2}"
             _add_interaction_page(pdf, x_vals, y_vals, Z, title=f"Interaction heatmap (pod{target_pod} {f1_name} vs {f2_name})")
-        # New faithful explainability pages
-        _add_relative_pdp_page(pdf, rel_pdp_obj, title=f"Relative PDP (sum-conserving) for pod{target_pod}:{prefill_name}")
-        _add_ale_page(pdf, ale_obj, title=f"ALE for pod{target_pod}:{prefill_name}")
-        _add_rank_effect_page(pdf, rank_obj, title=f"Rank-based effect for pod{target_pod}:{prefill_name}")
+        # New faithful explainability pages (only if prefill exists)
+        if prefill_idx is not None:
+            _add_relative_pdp_page(pdf, rel_pdp_obj, title=f"Relative PDP (sum-conserving) for pod{target_pod}:{prefill_name}")
+            _add_ale_page(pdf, ale_obj, title=f"ALE for pod{target_pod}:{prefill_name}")
+            _add_rank_effect_page(pdf, rank_obj, title=f"Rank-based effect for pod{target_pod}:{prefill_name}")
         _add_counterfactuals_page(pdf, cf_res)
         # New: narrative findings pages
         _add_findings_pages(pdf, grad_res, ig_res, sym_res, cf_res, pdp_res, feature_names)

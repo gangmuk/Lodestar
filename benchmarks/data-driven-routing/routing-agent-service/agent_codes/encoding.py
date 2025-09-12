@@ -192,113 +192,101 @@ class DataEncoder:
                 
         return feature_timing
 
-    def prepare_metrics_based_positional_encoding(self, pod_features, feature_indices_map):
-        # Find indices of key metrics for positional encoding
-        key_metrics_indices = []
-        max_feature_dim = pod_features.shape[2]
-        
-        for metric in self.key_metric_names:
-            matching_features = [
-                idx for feature, idx in feature_indices_map.items() 
-                if metric in feature and idx < max_feature_dim
-            ]
-            key_metrics_indices.extend(matching_features)
-        
-        # Filter out any indices that are still out of bounds
-        key_metrics_indices = [idx for idx in key_metrics_indices if idx < max_feature_dim]
-        
-        # If no key metrics found, use a subset of available features
-        if not key_metrics_indices and pod_features.shape[2] > 0:
-            # Use first few numeric features (excluding one-hot encoded)
-            key_metrics_indices = list(range(min(3, pod_features.shape[2])))
-        
-        # Extract key metrics for positional encoding
-        if key_metrics_indices:
-            logger.info(f"Using {len(key_metrics_indices)} metrics for positional encoding, indices: {key_metrics_indices}")
-            pos_encoding_features = pod_features[:, :, key_metrics_indices]
-        else:
-            # Fallback if no suitable metrics found
-            pos_encoding_features = np.zeros((pod_features.shape[0], pod_features.shape[1], 1))
-            logger.warning("No suitable metrics for positional encoding, using zeros")
-        
-        return pos_encoding_features
+
+    ## not used currently
+    # def prepare_metrics_based_positional_encoding(self, pod_features, feature_indices_map):
+    #     # Find indices of key metrics for positional encoding
+    #     key_metrics_indices = []
+    #     max_feature_dim = pod_features.shape[2]
+    #     for metric in self.key_metric_names:
+    #         matching_features = [
+    #             idx for feature, idx in feature_indices_map.items() 
+    #             if metric in feature and idx < max_feature_dim
+    #         ]
+    #         key_metrics_indices.extend(matching_features)
+    #     # Filter out any indices that are still out of bounds
+    #     key_metrics_indices = [idx for idx in key_metrics_indices if idx < max_feature_dim]
+    #     # If no key metrics found, use a subset of available features
+    #     if not key_metrics_indices and pod_features.shape[2] > 0:
+    #         # Use first few numeric features (excluding one-hot encoded)
+    #         key_metrics_indices = list(range(min(3, pod_features.shape[2])))
+    #     # Extract key metrics for positional encoding
+    #     if key_metrics_indices:
+    #         logger.info(f"Using {len(key_metrics_indices)} metrics for positional encoding, indices: {key_metrics_indices}")
+    #         pos_encoding_features = pod_features[:, :, key_metrics_indices]
+    #     else:
+    #         # Fallback if no suitable metrics found
+    #         pos_encoding_features = np.zeros((pod_features.shape[0], pod_features.shape[1], 1))
+    #         logger.warning("No suitable metrics for positional encoding, using zeros")
+    #     return pos_encoding_features
 
 
-    def add_staleness_features(self, pod_features, timestamps, feature_timing, feature_indices_map):
-        """Add staleness indicators for historical features - OPTIMIZED."""
-        # OPTIMIZATION: Pre-compute historical feature indices
-        historical_features = [f for f, timing in feature_timing.items() if timing == 'historical']
-        historical_indices = [
-            idx for feature, idx in feature_indices_map.items() 
-            if feature in historical_features
-        ]
-        
-        if not historical_indices or len(timestamps) == 0 or np.all(timestamps == 0):
-            logger.info("No historical features or valid timestamps, skipping staleness")
-            staleness_features = np.zeros((pod_features.shape[0], pod_features.shape[1], 1))
-            return np.concatenate([pod_features, staleness_features], axis=2)
-        
-        # OPTIMIZATION: Vectorized staleness calculation
-        max_staleness = 60.0
-        sorted_indices = np.argsort(timestamps)
-        sorted_timestamps = timestamps[sorted_indices]
-        time_diffs = np.diff(sorted_timestamps, prepend=sorted_timestamps[0])
-        time_diffs = np.maximum(time_diffs, 0)
-        
-        # OPTIMIZATION: Use advanced indexing for reordering
-        staleness = np.zeros_like(timestamps)
-        staleness[sorted_indices] = time_diffs
-        staleness = np.clip(staleness / max_staleness, 0, 1)
-        
-        # OPTIMIZATION: Broadcasting instead of loop
-        staleness_features = np.broadcast_to(
-            staleness[:, np.newaxis, np.newaxis], 
-            (pod_features.shape[0], pod_features.shape[1], 1)
-        ).copy()
-        
-        logger.info(f"Added staleness indicator for {len(historical_indices)} historical features")
-        return np.concatenate([pod_features, staleness_features], axis=2)
+    ## not used currently
+    # def add_staleness_features(self, pod_features, timestamps, feature_timing, feature_indices_map):
+    #     """Add staleness indicators for historical features - OPTIMIZED."""
+    #     # OPTIMIZATION: Pre-compute historical feature indices
+    #     historical_features = [f for f, timing in feature_timing.items() if timing == 'historical']
+    #     historical_indices = [
+    #         idx for feature, idx in feature_indices_map.items() 
+    #         if feature in historical_features
+    #     ]
+    #     if not historical_indices or len(timestamps) == 0 or np.all(timestamps == 0):
+    #         logger.info("No historical features or valid timestamps, skipping staleness")
+    #         staleness_features = np.zeros((pod_features.shape[0], pod_features.shape[1], 1))
+    #         return np.concatenate([pod_features, staleness_features], axis=2)
+    #     # OPTIMIZATION: Vectorized staleness calculation
+    #     max_staleness = 60.0
+    #     sorted_indices = np.argsort(timestamps)
+    #     sorted_timestamps = timestamps[sorted_indices]
+    #     time_diffs = np.diff(sorted_timestamps, prepend=sorted_timestamps[0])
+    #     time_diffs = np.maximum(time_diffs, 0)
+    #     # OPTIMIZATION: Use advanced indexing for reordering
+    #     staleness = np.zeros_like(timestamps)
+    #     staleness[sorted_indices] = time_diffs
+    #     staleness = np.clip(staleness / max_staleness, 0, 1)
+    #     # OPTIMIZATION: Broadcasting instead of loop
+    #     staleness_features = np.broadcast_to(
+    #         staleness[:, np.newaxis, np.newaxis], 
+    #         (pod_features.shape[0], pod_features.shape[1], 1)
+    #     ).copy()
+    #     logger.info(f"Added staleness indicator for {len(historical_indices)} historical features")
+    #     return np.concatenate([pod_features, staleness_features], axis=2)
 
 
-    def prepare_cross_attention_inputs(self, pod_features, kv_hit_ratios):
-        """Format inputs for cross-attention between pod features and KV hit ratios.
-        
-        This separates pod state from KV hit ratios to enable cross-attention
-        in the transformer model.
-        
-        Args:
-            pod_features: Normalized pod features [batch, n_pods, feature_dim]
-            kv_hit_ratios: Normalized KV hit ratios [batch, n_pods, 1]
-            
-        Returns:
-            Dictionary with query and key/value tensors
-        """
-        # Ensure kv_hit_ratios has the right shape
-        if kv_hit_ratios.shape[2] != 1:
-            logger.warning(f"Expected KV hit ratios to have shape [batch, n_pods, 1], got {kv_hit_ratios.shape}")
-        
-        return {
-            'query': pod_features,  # Pod features as query
-            'key_value': kv_hit_ratios  # KV hit ratios as key/value
-        }
+    
+    ## not used currently
+    # def prepare_cross_attention_inputs(self, pod_features, kv_hit_ratios):
+    #     """Format inputs for cross-attention between pod features and KV hit ratios.
+    #     This separates pod state from KV hit ratios to enable cross-attention
+    #     in the transformer model.
+    #     Args:
+    #         pod_features: Normalized pod features [batch, n_pods, feature_dim]
+    #         kv_hit_ratios: Normalized KV hit ratios [batch, n_pods, 1]
+    #     Returns:
+    #         Dictionary with query and key/value tensors
+    #     """
+    #     # Ensure kv_hit_ratios has the right shape
+    #     if kv_hit_ratios.shape[2] != 1:
+    #         logger.warning(f"Expected KV hit ratios to have shape [batch, n_pods, 1], got {kv_hit_ratios.shape}")
+    #     return {
+    #         'query': pod_features,  # Pod features as query
+    #         'key_value': kv_hit_ratios  # KV hit ratios as key/value
+    #     }
 
 
-    def create_request_pod_interaction_features(self, request_features, pod_features):
-        """Create request-pod interaction features - OPTIMIZED."""
-        if request_features.shape[1] == 0:
-            logger.warning("No request features available for interaction")
-            return None
-            
-        batch_size, n_pods, _ = pod_features.shape
-        
-        # OPTIMIZATION: Use numpy broadcasting instead of repeat
-        expanded_request = np.broadcast_to(
-            request_features[:, np.newaxis, :], 
-            (batch_size, n_pods, request_features.shape[1])
-        ).copy()
-        
-        logger.info(f"Created request-pod interaction features with shape {expanded_request.shape}")
-        return expanded_request
+    # def create_request_pod_interaction_features(self, request_features, pod_features):
+    #     """Create request-pod interaction features - OPTIMIZED."""
+    #     if request_features.shape[1] == 0:
+    #         logger.warning("No request features available for interaction")
+    #         return None
+    #     batch_size, n_pods, _ = pod_features.shape
+    #     # OPTIMIZATION: Use numpy broadcasting instead of repeat
+    #     expanded_request = np.broadcast_to(
+    #         request_features[:, np.newaxis, :], 
+    #         (batch_size, n_pods, request_features.shape[1])
+    #     ).copy()
+    #     logger.info(f"Created request-pod interaction features with shape {expanded_request.shape}")
+    #     return expanded_request
 
 
     def _filter_identity_features(self, pod_features_array, feature_names):
@@ -376,17 +364,18 @@ class DataEncoder:
         """Optimized processing for single-row inference (n_samples=1)."""
         vectorized_extraction_start_time = time.time()
         
-        # Feature definitions (same as batch version)
-        ALL_NUMERIC_FEATURES = [
+        # Feature definitions (same as batch version) with proper exclusion
+        base_features_list = [
             'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache',
             'running_requests', 'waiting_requests', 'prefill_tokens', 
             'decode_tokens', 'kv_hit_ratio'
         ]
-        
-        # CRITICAL FIX: Exclude kv_hit_ratio from pod features (same as batch processing)
-        POD_NUMERIC_FEATURES = [f for f in ALL_NUMERIC_FEATURES if f != 'kv_hit_ratio']
+        excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+        # Apply exclusions and remove kv_hit_ratio from pod features (handled separately)
+        filtered_numeric = [f for f in base_features_list if f not in excluded]
+        POD_NUMERIC_FEATURES = [f for f in filtered_numeric if f != 'kv_hit_ratio']
         n_pods = len(self.sorted_all_pod_ids)
-        n_pod_numeric = len(POD_NUMERIC_FEATURES)  # Exclude kv_hit_ratio
+        n_pod_numeric = len(POD_NUMERIC_FEATURES)
         
         # Calculate feature dimensions (for pod features only, not including kv_hit_ratio)
         if INCLUDE_GPU_IN_FEATURE:
@@ -433,7 +422,7 @@ class DataEncoder:
                     gpu_model_id = gpu_encoded_per_pod[pod_id]
                     gpu_onehot = np.zeros(gpu_onehot_dim)
                     gpu_onehot[gpu_model_id] = 1
-                    pod_features_2d[pod_idx, n_numeric:] = gpu_onehot
+                    pod_features_2d[pod_idx, n_pod_numeric:] = gpu_onehot
         
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         overhead_summary['vectorized_extraction'] = vectorized_extraction_overhead
@@ -464,16 +453,18 @@ class DataEncoder:
         vectorized_extraction_start_time = time.time()
         
         # Include ALL features we want to potentially keep
-        ALL_NUMERIC_FEATURES = [
-            'inflight_requests', # index 0
-            'gpu_kv_cache', # index 1
-            'cpu_kv_cache', # index 2
-            'running_requests', # index 3
-            'waiting_requests', # index 4
-            'prefill_tokens', # index 5
-            'decode_tokens', # index 6 ← This is your 5.4486e+04 value
-            'kv_hit_ratio' # index 7
+        base_features_list = [
+            'inflight_requests',
+            'gpu_kv_cache',
+            'cpu_kv_cache',
+            'running_requests',
+            'waiting_requests',
+            'prefill_tokens',
+            'decode_tokens',
+            'kv_hit_ratio'
         ]
+        excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+        ALL_NUMERIC_FEATURES = [f for f in base_features_list if f not in excluded]
         n_pods = len(self.sorted_all_pod_ids)
         n_numeric = len(ALL_NUMERIC_FEATURES)
         
@@ -519,13 +510,10 @@ class DataEncoder:
                     all_features_array[:, pod_idx, 3] = pod_features['running_requests'].fillna(0)
                 if 'waiting_requests' in pod_features:
                     all_features_array[:, pod_idx, 4] = pod_features['waiting_requests'].fillna(0)
-                if 'prefill_tokens' in pod_features:
-                    all_features_array[:, pod_idx, 5] = pod_features['prefill_tokens'].fillna(0)
-                if 'decode_tokens' in pod_features:
-                    all_features_array[:, pod_idx, 6] = pod_features['decode_tokens'].fillna(0)
-                # KV ratio in main array
-                if 'kv_hit_ratio' in pod_features:
-                    all_features_array[:, pod_idx, 7] = pod_features['kv_hit_ratio'].fillna(0)
+                # Assign dynamically based on ALL_NUMERIC_FEATURES order
+                for feat_index, feat_name in enumerate(ALL_NUMERIC_FEATURES):
+                    if feat_name in pod_features:
+                        all_features_array[:, pod_idx, feat_index] = pod_features[feat_name].fillna(0)
                 if INCLUDE_GPU_IN_FEATURE:
                     gpu_model_id = gpu_encoded_per_pod[pod_id]
                     gpu_onehot = np.zeros(gpu_onehot_dim)
@@ -862,6 +850,11 @@ class DataEncoder:
         metadata = {
             'dataset_size': len(processed_data['actions']),
             'num_pods': len(processed_data['pod_ids']),
+            # Names for correct XAI labeling
+            'pod_features_list': processed_data.get('pod_features_list', []),
+            'numeric_request_features': processed_data.get('numeric_request_features', []),
+            'categorical_request_features': processed_data.get('categorical_request_features', []),
+            'pod_ids': processed_data.get('pod_ids', []),
             'feature_dimensions': {
                 'pod_features': processed_data['pod_features'].shape[2],
                 'pod_features_with_staleness': processed_data['pod_features_with_staleness'].shape[2],

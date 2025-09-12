@@ -490,6 +490,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
+    excluded = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
     for pod_id in sorted_all_pod_ids:
         # Vectorized extraction for each pod across all rows
         base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
@@ -498,8 +499,10 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         base_data[f"{pod_id}-cpu_kv_cache"] = [data.get(pod_id, 0) for data in all_cpu_cache]
         base_data[f"{pod_id}-running_requests"] = [data.get(pod_id, 0) for data in all_running]
         base_data[f"{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
-        base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
-        base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
+        if 'prefill_tokens' not in excluded:
+            base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
+        if 'decode_tokens' not in excluded:
+            base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
         if INCLUDE_GPU_IN_FEATURE:
             if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
                 logger.error(f"Error: Pod ID {pod_id} not found in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']")

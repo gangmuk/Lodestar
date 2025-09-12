@@ -1,0 +1,26 @@
+{
+  "to_pod_0": {
+    "success": false,
+    "total_delta_l2": 6.503800198435783
+  },
+  "to_pod_1": {
+    "success": false,
+    "total_delta_l2": 7.191347248852253
+  },
+  "to_pod_2": {
+    "success": false,
+    "total_delta_l2": 6.409622438251972
+  },
+  "to_pod_3": {
+    "success": false,
+    "total_delta_l2": 6.758387081325054
+  },
+  "to_pod_5": {
+    "success": false,
+    "total_delta_l2": 6.914415687322617
+  },
+  "to_pod_6": {
+    "success": false,
+    "total_delta_l2": 6.566182874143124
+  }
+}

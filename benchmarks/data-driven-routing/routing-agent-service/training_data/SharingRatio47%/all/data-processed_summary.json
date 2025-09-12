@@ -1,0 +1,29 @@
+{
+  "input_file": "../training_data/SharingRatio47%/all/data.csv",
+  "output_file": "../training_data/SharingRatio47%/all/data-processed.csv",
+  "num_samples": 6940,
+  "num_columns": 69,
+  "processing_time": 2.982656955718994,
+  "ttft_slo": 1000.0,
+  "avg_tpot_slo": 50.0,
+  "sorted_all_pod_ids": [
+    "pod_0000",
+    "pod_0001",
+    "pod_0002",
+    "pod_0003",
+    "pod_0004",
+    "pod_0005",
+    "pod_0006"
+  ],
+  "ttft_range": [
+    0.0,
+    12391.0
+  ],
+  "avg_tpot_range": [
+    0.0,
+    341.0
+  ],
+  "excluded_pod_features": [
+    "prefill_tokens"
+  ]
+}

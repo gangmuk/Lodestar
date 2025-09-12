@@ -186,17 +186,8 @@ class FixedPolicyNetwork(nn.Module):
         # Reshape to process all pods in batch
         # [batch * num_pods, combined_feature_size]
         reshaped_features = full_features.view(batch_size * num_pods, -1)
-        
-        # Score each pod given its features + request context
-        # print(f"type(reshaped_features): {type(reshaped_features)}, reshaped_features.shape: {reshaped_features.shape}")
-        # print(f"reshaped_features: {reshaped_features}")
-        # exit()
         pod_scores = self.pod_scorer(reshaped_features)  # [batch * num_pods, 1]
-        
-        # Reshape back to [batch, num_pods]
         pod_scores = pod_scores.view(batch_size, num_pods)
-        
-        # Convert to probabilities
         action_probs = F.softmax(pod_scores, dim=1)
         
         if return_attention:
@@ -2058,10 +2049,10 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
         logger.error(f"Error plotting training metrics: {e}")
         assert False
 
-    with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
-        json.dump(HYPERPARAMETERS, f, indent=4, default=str)
-        logger.info(f"Saved model configuration to {os.path.join(final_model_dir, 'model_config.json')}")
-    return saved_plot_path
+    # with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
+    #     json.dump(HYPERPARAMETERS, f, indent=4, default=str)
+    #     logger.info(f"Saved model configuration to {os.path.join(final_model_dir, 'model_config.json')}")
+    # return saved_plot_path
 
 # Global cache for agent instance (for inference)
 _cached_agent = None

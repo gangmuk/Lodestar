@@ -31,9 +31,7 @@ def process_raw_data_to_csv(input_file,
     
     Args:
         input_file: Path to raw text log file
-        ttft_slo: TTFT SLO threshold
-        avg_tpot_slo: Average TPOT SLO threshold
-        HYPERPARAMETERS: Model HYPERPARAMETERS dict
+        HYPERPARAMETERS: Model HYPERPARAMETERS dict (read from JSON)
         
     Returns:
         str: Path to created processed CSV file
@@ -77,13 +75,24 @@ def process_raw_data_to_csv(input_file,
     processed_df['ttft_reward_weight_used'] = HYPERPARAMETERS['TTFT_REWARD_WEIGHT']
     processed_df['reward_function_used'] = HYPERPARAMETERS['REWARD_FUNCTION']
     
-    # Step 5: Save to CSV
+    # Step 5: Optionally drop excluded per-pod features (e.g., prefill_tokens)
+    excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+    if excluded:
+        drop_cols = []
+        for feat in excluded:
+            suffix = f"-{feat}"
+            drop_cols.extend([c for c in processed_df.columns if c.startswith('pod_') and c.endswith(suffix)])
+        if drop_cols:
+            logger.info(f"Excluding {len(drop_cols)} columns due to EXCLUDED_POD_FEATURES: {sorted(list(excluded))}")
+            processed_df = processed_df.drop(columns=drop_cols, errors='ignore')
+
+    # Step 6: Save to CSV
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     processed_df.to_csv(output_file, index=False)
     logger.info(f"** Processed CSV saved to: {output_file}")
     processing_time = time.time() - start_time
     
-    # Step 6: Generate processing summary
+    # Step 7: Generate processing summary
     summary = {
         'input_file': input_file,
         'output_file': output_file,
@@ -95,6 +104,7 @@ def process_raw_data_to_csv(input_file,
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
+        'excluded_pod_features': list(excluded),
     }
     
     # Save summary
@@ -217,12 +227,10 @@ def main():
     parser = argparse.ArgumentParser(description='Process raw text logs to structured CSV')
     parser.add_argument('--input_file', help='Raw text log file or directory to process')
     parser.add_argument('--output_file', help='Output file to save processed CSV')
-    parser.add_argument('--ttft_slo', type=float, default=1000, help='TTFT SLO threshold (ms)')
-    parser.add_argument('--avg_tpot_slo', type=float, default=50, help='Average TPOT SLO threshold (ms)')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
-    parser.add_argument('--REWARD_FUNCTION', type=str, default='linear_simple', help='Reward function to use')
-    parser.add_argument('--ttft_reward_weight', type=float, default=0.5, help='TTFT reward weight')
+    parser.add_argument('--hyperparameters', type=str, default=None, help='Path to JSON hyperparameters (single source of truth)')
+    parser.add_argument('--exclude-pod-features', type=str, default=None, help='Comma-separated pod feature names to exclude (e.g., prefill_tokens,decode_tokens)')
     args = parser.parse_args()
     
     if args.validate:
@@ -236,12 +244,25 @@ def main():
         else:
             logger.error(f"✗ CSV validation failed: {results['error']}")
         return
-    HYPERPARAMETERS = {
-        'TTFT_SLO': args.ttft_slo,
-        'AVG_TPOT_SLO': args.avg_tpot_slo,
-        'REWARD_FUNCTION': args.REWARD_FUNCTION,
-        'TTFT_REWARD_WEIGHT': args.ttft_reward_weight,
-    }
+    # Load hyperparameters JSON (required)
+    if not args.hyperparameters or not os.path.exists(args.hyperparameters):
+        logger.error("--hyperparameters JSON is required and must exist")
+        return
+    try:
+        import json
+        with open(args.hyperparameters, 'r') as f:
+            HYPERPARAMETERS = json.load(f)
+        logger.info(f"Loaded hyperparameters from {args.hyperparameters}")
+    except Exception as e:
+        logger.error(f"Failed to read hyperparameters file {args.hyperparameters}: {e}")
+        return
+
+    # Merge CLI exclude list (highest precedence)
+    if args.exclude_pod_features:
+        excl = [x.strip() for x in args.exclude_pod_features.split(',') if x.strip()]
+        if excl:
+            HYPERPARAMETERS['EXCLUDED_POD_FEATURES'] = excl
+            logger.info(f"EXCLUDED_POD_FEATURES set via CLI: {excl}")
     
     if args.batch:
         # Batch processing mode

@@ -22,9 +22,10 @@ COPY agent_codes/*.py .
 COPY start.sh .
 
 ## model
-COPY training_data/p4096_s1024_rps20/rl+random/final_model final_model
+# COPY training_data/p4096_s1024_rps20/rl+random/final_model final_model
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model_backup final_model
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed final_model
+COPY training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 final_model
 # COPY training_data/SharingRatio9%/all/final_model-data-processed final_model
 # COPY training_data/SharingRatio71%/all/final_model-data-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 final_model
 
