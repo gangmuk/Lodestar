@@ -53,32 +53,26 @@ class K8sHotDeployer:
             if not Path(local_path).exists():
                 logger.error(f"Local file {local_path} does not exist")
                 return False
-            
             with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as temp_tar:
                 with tarfile.open(temp_tar.name, 'w') as tar:
                     tar.add(local_path, arcname=os.path.basename(local_path))
-                
                 command = ['sh', '-c', f'tar -xmf - -C {os.path.dirname(remote_path)}']
-                
                 resp = stream(
                     self.v1.connect_get_namespaced_pod_exec,
                     pod_name, self.namespace, command=command,
                     stderr=True, stdin=True, stdout=True, tty=False, _preload_content=False
                 )
-                
                 with open(temp_tar.name, 'rb') as tar_data:
                     resp.write_stdin(tar_data.read())
                 resp.close()
-
             os.unlink(temp_tar.name)
-            print(f"✅ Copied {local_path} to {pod_name}:{remote_path}")
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to copy {local_path} to {pod_name}: {e}")
             return False
     
-    def copy_directory_to_pod(self, pod_name, local_dir, remote_dir):
+    def copy_directory_to_pod(self, pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
         """Copy entire directory to pod by copying individual files"""
         try:
             local_path = Path(local_dir)
@@ -90,6 +84,10 @@ class K8sHotDeployer:
             files_to_copy = []
             for file_path in local_path.rglob('*'):
                 if file_path.is_file():
+                    rel_path = file_path.relative_to(local_path)
+                    if any(part in exclude_dir_or_file_list for part in rel_path.parts):
+                        print(f"Excluding {file_path} because it is in the exclude list")
+                        continue
                     files_to_copy.append(file_path)
             
             if not files_to_copy:
@@ -121,7 +119,7 @@ class K8sHotDeployer:
                 # Copy the individual file
                 if self.copy_file_to_pod(pod_name, str(file_path), remote_file_path):
                     success_count += 1
-                    logger.info(f"Copied: {file_path} -> {remote_file_path}")
+                    print(f"Copied: {file_path} -> {remote_file_path}")
                 else:
                     logger.error(f"Failed to copy: {file_path}")
                     return False
@@ -130,9 +128,6 @@ class K8sHotDeployer:
             
             # Verify by listing some files
             result = self.execute_command(pod_name, f"find {remote_dir} -type f | head -10")
-            if result.strip():
-                print(f"Sample files in {remote_dir}: {result.strip().replace(chr(10), ', ')}")
-            
             current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             self.execute_command(pod_name, f"touch {remote_dir}/copied_from_{local_dir}_at_{current_time}")
             return True
@@ -281,10 +276,11 @@ class K8sHotDeployer:
                     exit()
             
             # Copy directories
+            exclude_dir_or_file_list = ['weights_csv']
             dirs_copied = 0
             for local_dir, remote_dir in directory_mappings.items():
                 print(f"Copying directory {local_dir} to {pod_name}:{remote_dir}")
-                if self.copy_directory_to_pod(pod_name, local_dir, remote_dir):
+                if self.copy_directory_to_pod(pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
                     dirs_copied += 1
                 else:
                     logger.error(f"Failed to copy directory {local_dir} to {pod_name}:{remote_dir}")
@@ -366,7 +362,7 @@ def main():
             logger.error("❌ No running pods found. Please ensure the routing-agent-service is deployed.")
             sys.exit(1)
         elif len(pods) > 1:
-            logger.info(f"Multiple pods found: {pods}. Will try again in 5 seconds...")
+            print(f"Multiple pods found: {pods}. Will try again in 5 seconds...")
             time.sleep(5)
         elif len(pods) == 1:
             print(f"Found 1 running pod: {pods[0]}")

@@ -3,7 +3,7 @@
   "output_file": "../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv",
   "num_samples": 4000,
   "num_columns": 76,
-  "processing_time": 0.6920955181121826,
+  "processing_time": 0.6823172569274902,
   "ttft_slo": 1000.0,
   "avg_tpot_slo": 50.0,
   "sorted_all_pod_ids": [
@@ -22,5 +22,8 @@
   "avg_tpot_range": [
     20.0,
     201.0
+  ],
+  "excluded_pod_features": [
+    "none"
   ]
 }

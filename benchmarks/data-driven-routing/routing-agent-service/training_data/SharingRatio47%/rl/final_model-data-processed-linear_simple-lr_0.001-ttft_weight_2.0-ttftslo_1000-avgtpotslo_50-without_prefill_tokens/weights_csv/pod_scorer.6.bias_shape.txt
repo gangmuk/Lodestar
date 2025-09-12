@@ -1,0 +1,2 @@
+Original shape: torch.Size([1])
+Data type: torch.float32

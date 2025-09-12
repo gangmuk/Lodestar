@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -e
+
+parent_dir_list=(
+    "p4096_s1024_rps20"
+    "SharingRatio71%"
+    "SharingRatio28%"
+    "SharingRatio47%"
+    "SharingRatio9%"
+)
+
+routing_policy_dir_list=(
+    "all"
+)
+
+data_file_list=(
+    # "data.csv"
+    "data_replaced.csv"
+)
+
+merged_dir="merged-data"
+if [ ! -d "${merged_dir}" ]; then
+    mkdir ${merged_dir}
+    echo "Created merged directory ${merged_dir}"
+fi
+
+moved_file_list=()
+for parent_dir in "${parent_dir_list[@]}"; do
+    if [ ! -d "${parent_dir}" ]; then
+        echo "Parent directory ${parent_dir} does not exist."
+        exit 1
+    fi
+    for routing_policy_dir in "${routing_policy_dir_list[@]}"; do
+        if [ ! -d "${parent_dir}/${routing_policy_dir}" ]; then
+            echo "Parent directory ${parent_dir}/${routing_policy_dir} does not exist."
+            exit 1
+        fi
+
+        for data_file in "${data_file_list[@]}"; do
+            if [ ! -f "${parent_dir}/${routing_policy_dir}/${data_file}" ]; then
+                echo "Parent directory ${parent_dir}/${routing_policy_dir}/${data_file} does not exist."
+                exit 1
+            fi
+        done
+
+        
+        cp ${parent_dir}/${routing_policy_dir}/${data_file} ${merged_dir}/${parent_dir}-${routing_policy_dir}-${data_file}
+        moved_file_list+=("${merged_dir}/${parent_dir}-${routing_policy_dir}-${data_file}")
+        echo "Copied ${parent_dir}/${routing_policy_dir}/${data_file} to ${merged_dir}/${parent_dir}-${routing_policy_dir}-${data_file}"
+    done
+done
+
+
+for data_file in "${data_file_list[@]}"; do
+    grand_merged_file="${merged_dir}/${data_file}"
+    if [ -f "${grand_merged_file}" ]; then
+        echo "${grand_merged_file} already exists. exiting..."
+        echo "Do you want to remove it? (y/n)"
+        read remove_file
+        if [ "${remove_file}" == "y" ]; then
+            rm ${grand_merged_file}
+            echo "Removed ${grand_merged_file}"
+        else
+            echo "Exiting..."
+            exit 1
+        fi
+    fi
+
+    for moved_file in "${moved_file_list[@]}"; do
+        cat ${moved_file} >> ${grand_merged_file}
+        echo "Appended ${moved_file} to ${grand_merged_file}"
+    done
+done
+
+echo "Done"
