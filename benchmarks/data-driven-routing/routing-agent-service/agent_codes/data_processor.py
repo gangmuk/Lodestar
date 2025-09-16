@@ -68,7 +68,6 @@ def process_raw_data_to_csv(input_file,
         raise ValueError(f"Processed data missing required columns: {missing_columns}")
     
     # Step 4: Add metadata columns for tracking
-    processed_df['processing_timestamp'] = time.time()
     processed_df['ttft_slo_used'] = HYPERPARAMETERS['TTFT_SLO']
     processed_df['avg_tpot_slo_used'] = HYPERPARAMETERS['AVG_TPOT_SLO']
     processed_df['source_file'] = os.path.basename(input_file)

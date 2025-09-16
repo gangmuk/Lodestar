@@ -86,7 +86,7 @@ class K8sHotDeployer:
                 if file_path.is_file():
                     rel_path = file_path.relative_to(local_path)
                     if any(part in exclude_dir_or_file_list for part in rel_path.parts):
-                        print(f"Excluding {file_path} because it is in the exclude list")
+                        # print(f"Excluding {file_path} because it is in the exclude list")
                         continue
                     files_to_copy.append(file_path)
             
@@ -119,7 +119,8 @@ class K8sHotDeployer:
                 # Copy the individual file
                 if self.copy_file_to_pod(pod_name, str(file_path), remote_file_path):
                     success_count += 1
-                    print(f"Copied: {file_path} -> {remote_file_path}")
+                    # print(f"Copied: {file_path} -> {remote_file_path}")
+                    # print(f"Copied: {file_path}")
                 else:
                     logger.error(f"Failed to copy: {file_path}")
                     return False

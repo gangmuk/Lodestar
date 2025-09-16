@@ -17,17 +17,26 @@ set -e
 # workload_dataset="p4096_s1024_rps20"
 
 workload_dataset_list=(
+    "temp"
+    # "merged-data"
     # "p4096_s1024_rps20"
-    "SharingRatio71%"
+    # "SharingRatio71%"
     # "SharingRatio47%"
     # "SharingRatio28%"
     # "SharingRatio9%"
-    # "merged-data"
 )
-csv_filename="data_replaced.csv"
-
-excluded_pod_features="none" # "prefill_tokens", "none"
-
+csv_filename="data.csv" # "data_replaced.csv", "data.csv"
+lr_scheduler_type="exponential" # "exponential", "plateau", "gradient_adaptive"
+lr_scheduler_gamma=0.95
+excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
+use_sampled_data=false # true, false
+analyze_behavior=true # true, false
+analyze_dataset=false # true, false
+ttft_slo=1000
+avg_tpot_slo=50
+ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
+REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
+offline_learning_rate=0.001
 routing_policy_for_data_file="all" # "all", "prefix", "rl", "random", "rl+random"
 routing_policy_for_data_file_list=(
     # "prefix"
@@ -39,14 +48,6 @@ routing_policy_for_data_file_list=(
 for workload_dataset in "${workload_dataset_list[@]}"; do
     for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; do
         data_file="../training_data/${workload_dataset}/${routing_policy_for_data_file}/${csv_filename}"
-
-        use_sampled_data=false # true, false
-        analyze_behavior=true # true, false
-        ttft_slo=1000
-        avg_tpot_slo=50
-        ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
-        REWARD_FUNCTION="linear_simple" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
-        offline_learning_rate=0.001
 
         # Step 1: Process raw data to structured CSV
         if [ ! -f "${data_file}" ]; then
@@ -70,6 +71,19 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         if [ "${excluded_pod_features}" != "" ]; then
             final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
         fi
+        final_model_dir="${final_model_dir}-hidden_dim_128"
+
+        if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
+            final_model_dir="${final_model_dir}-lrs_grad_adapt"
+        elif [ "${lr_scheduler_type}" == "exponential" ]; then
+            final_model_dir="${final_model_dir}-lrs_exp"
+        elif [ "${lr_scheduler_type}" == "plateau" ]; then
+            final_model_dir="${final_model_dir}-lrs_plateau"
+        else
+            echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
+            exit 1
+        fi
+
         if [ -d "${final_model_dir}" ]; then
             rm -rf "${final_model_dir}"
         fi
@@ -85,7 +99,9 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         --ttft_reward_weight ${ttft_reward_weight} \
         --reward_function ${REWARD_FUNCTION} \
         --offline_learning_rate ${offline_learning_rate} \
-        --excluded_pod_features ${excluded_pod_features}
+        --excluded_pod_features ${excluded_pod_features} \
+        --lr_scheduler_type ${lr_scheduler_type} \
+        --lr_scheduler_gamma ${lr_scheduler_gamma}
         
 
         process_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --hyperparameters ${hyper_json}"
@@ -97,8 +113,9 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
             exit 1
         fi
 
-
-        python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset
+        if [ "${analyze_dataset}" = "true" ]; then
+            python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset
+        fi
 
         sampled_processed_csv="${processed_csv%.*}-sampled.csv"
         echo "Sampled processed CSV: ${sampled_processed_csv}"

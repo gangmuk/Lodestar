@@ -329,21 +329,23 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     logger.debug(f"Original dataset shape: {parsed_df.shape}")
     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
     expected_columns = [
-        'requestID', 
-        'selectedpod', 
-        'ttft', 
-        'avg_tpot', 
-        'total_decode_time', 
+        'requestID',
+        'selectedpod',
+        'ttft',
+        'avg_tpot',
+        'total_decode_time',
         'e2e',
-        'numInputTokens', 
-        # 'expectedNumOutputTokens', 
-        'numOutputTokens', 
+        'numInputTokens',
+        # 'expectedNumOutputTokens',
+        'numOutputTokens',
         'numTotalTokens',
-        'allPodsKvCacheHitRatios', 
+        'request_start_time',  # NEW: Add request timing columns
+        'request_end_time',    # NEW: Add request timing columns
+        'allPodsKvCacheHitRatios',
         'numInflightRequestsAllPods',
-        'vllmGPUKVCacheUsage', 
+        'vllmGPUKVCacheUsage',
         'vllmCPUKVCacheUsage',
-        'vllmNumRequestsRunning', 
+        'vllmNumRequestsRunning',
         'vllmNumRequestsWaiting',
         # 'podMetricsLastSecond',  # Optional column - may be empty or missing
         'numPrefillTokensForAllPods',
@@ -438,14 +440,16 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     numeric_conversion_start_time = time.time()
     # Convert string columns to appropriate types - vectorized
     numeric_columns = [
-        'ttft', 
-        'avg_tpot', 
-        'total_decode_time', 
-        'e2e', 
-        'numInputTokens', 
-        # 'expectedNumOutputTokens', 
-        'numOutputTokens', 
+        'ttft',
+        'avg_tpot',
+        'total_decode_time',
+        'e2e',
+        'numInputTokens',
+        # 'expectedNumOutputTokens',
+        'numOutputTokens',
         'numTotalTokens',
+        'request_start_time',  # NEW: Add to numeric conversion
+        'request_end_time',    # NEW: Add to numeric conversion
     ]
     
     for col in numeric_columns:
@@ -468,6 +472,8 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'ttft': parsed_df['ttft'].values,
         'avg_tpot': parsed_df['avg_tpot'].values,
         'e2e_latency': parsed_df['e2e'].values,
+        'request_start_time': parsed_df['request_start_time'].values,  # NEW: Add request timing
+        'request_end_time': parsed_df['request_end_time'].values,      # NEW: Add request timing
     }
     if INCLUDE_GPU_IN_FEATURE:
         base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values

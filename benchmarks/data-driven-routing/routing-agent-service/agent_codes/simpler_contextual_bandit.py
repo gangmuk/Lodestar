@@ -255,8 +255,36 @@ class SimplifiedContextualBandit:
         # Optimizer with weight decay for regularization
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['OFFLINE_LEARNING_RATE'], weight_decay= self.hyperparameters['weight_decay'])
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
+        # Learning rate scheduler - multiple options based on hyperparameters
+        self.scheduler_type = self.hyperparameters.get('lr_scheduler_type', 'plateau')
+        self.gradient_norms = []  # Track gradient norms for gradient-based scheduling
+        self.min_grad_norm_threshold = 1e-4  # Minimum gradient norm threshold
+        self.max_grad_norm_threshold = 10.0  # Maximum gradient norm threshold
+        
+        if self.scheduler_type == 'plateau':
+            # Original: ReduceLROnPlateau - based on loss (problematic for policy gradients)
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.5, patience=5
+            )
+            logger.info("🔧 Using ReduceLROnPlateau scheduler (loss-based)")
+            
+        elif self.scheduler_type == 'exponential':
+            # Option 3: Fixed exponential decay - predictable and stable
+            gamma = self.hyperparameters.get('lr_scheduler_gamma', 0.95)
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
+            logger.info(f"🔧 Using ExponentialLR scheduler (gamma={gamma})")
+            
+        elif self.scheduler_type == 'gradient_adaptive':
+            # Option 4: Gradient-based scheduling - reduce LR based on gradient norms
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.3, patience=2
+            )
+            logger.info("🔧 Using gradient-adaptive scheduler (gradient norm-based)")
+            
+        else:
+            logger.warning(f"Unknown scheduler type '{self.scheduler_type}', defaulting to exponential")
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95)
+            self.scheduler_type = 'exponential'
         
         # Initialize memory attributes
         self.pod_features = []
@@ -446,6 +474,14 @@ class SimplifiedContextualBandit:
             self.optimizer.zero_grad()
             total_loss.backward()
             
+            # Calculate gradient norm BEFORE clipping for scheduling
+            grad_norm = 0.0
+            for param in self.policy.parameters():
+                if param.grad is not None:
+                    grad_norm += param.grad.data.norm(2).item() ** 2
+            grad_norm = grad_norm ** 0.5
+            self.gradient_norms.append(grad_norm)
+            
             # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
             
@@ -474,9 +510,42 @@ class SimplifiedContextualBandit:
 
         logger.info(f"="*60)
 
-        # Update learning rate based on loss
+        # Update learning rate based on scheduler type
         avg_loss = epoch_loss / max(1, num_updates)
-        self.scheduler.step(avg_loss)
+        current_lr = self.optimizer.param_groups[0]['lr']
+        
+        if self.scheduler_type == 'plateau':
+            # Original: Use loss (problematic for policy gradients)
+            self.scheduler.step(avg_loss)
+            logger.info(f"📉 LR Scheduler (loss-based): avg_loss={avg_loss:.6f}, LR={current_lr:.8f}")
+            
+        elif self.scheduler_type == 'exponential':
+            # Fixed exponential decay - predictable
+            self.scheduler.step()
+            new_lr = self.optimizer.param_groups[0]['lr']
+            logger.info(f"📉 LR Scheduler (exponential): LR={current_lr:.8f} → {new_lr:.8f}")
+            
+        elif self.scheduler_type == 'gradient_adaptive':
+            # Gradient-based scheduling - use average gradient norm
+            if len(self.gradient_norms) > 0:
+                avg_grad_norm = sum(self.gradient_norms[-num_updates:]) / num_updates if num_updates > 0 else 0.0
+                
+                # Check gradient norm conditions
+                if avg_grad_norm < self.min_grad_norm_threshold:
+                    # Gradients too small - might need LR reduction or training is done
+                    self.scheduler.step(0.1)  # Trigger reduction
+                    logger.warning(f"🔍 Gradient norm too small ({avg_grad_norm:.8f} < {self.min_grad_norm_threshold:.8f}) - reducing LR")
+                elif avg_grad_norm > self.max_grad_norm_threshold:
+                    # Gradients too large - might be unstable
+                    self.scheduler.step(0.1)  # Trigger reduction
+                    logger.warning(f"⚡ Gradient norm too large ({avg_grad_norm:.8f} > {self.max_grad_norm_threshold:.2f}) - reducing LR")
+                else:
+                    # Gradients in good range - no change needed
+                    logger.info(f"✅ Gradient norm healthy ({avg_grad_norm:.6f}) - keeping LR")
+                
+                logger.info(f"📉 LR Scheduler (gradient-adaptive): grad_norm={avg_grad_norm:.6f}, LR={current_lr:.8f}")
+            else:
+                logger.warning("No gradient norms collected - skipping gradient-based scheduling")
         
         # Clear memory.
         self.clear_memory()
