@@ -570,7 +570,7 @@ def main():
     normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
     stats_instance = data_normalizer.FeatureStats(normalizable_features)
 
-    ENCODED_DATA_DIR = "encoded_data"
+    ENCODED_DATA_DIR = f"{args.final_model_dir}/encoded_data"
     if not os.path.exists(ENCODED_DATA_DIR):
         os.makedirs(ENCODED_DATA_DIR)
     if os.path.exists(ENCODED_DATA_DIR):

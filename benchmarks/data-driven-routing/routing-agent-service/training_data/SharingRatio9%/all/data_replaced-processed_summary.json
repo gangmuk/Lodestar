@@ -2,8 +2,8 @@
   "input_file": "../training_data/SharingRatio9%/all/data_replaced.csv",
   "output_file": "../training_data/SharingRatio9%/all/data_replaced-processed.csv",
   "num_samples": 7473,
-  "num_columns": 69,
-  "processing_time": 0.9713258743286133,
+  "num_columns": 76,
+  "processing_time": 1.0202534198760986,
   "ttft_slo": 1000.0,
   "avg_tpot_slo": 50.0,
   "sorted_all_pod_ids": [
@@ -24,6 +24,6 @@
     353.0
   ],
   "excluded_pod_features": [
-    "prefill_tokens"
+    "none"
   ]
 }

@@ -13,11 +13,11 @@ systematic explainability analyses:
 - Counterfactual (minimal change) analysis to flip routing decisions
 - Two-way interaction heatmaps
 
-Outputs are saved under: <model_dir>/xai_report
+Outputs are saved under: <final_model_dir>/xai_report
 
 Usage example:
   python model_explainability.py \
-    --model_dir \
+    --final_model_dir \
       /users/gangmuk/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/training_data/SharingRatio71%/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 \
     --search_data_roots \
       /users/gangmuk/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/training_data/SharingRatio71%/all
@@ -82,13 +82,13 @@ def _find_reference_tensor(search_roots: Optional[str]) -> Optional[str]:
     return None
 
 
-def _load_model_config(model_dir: str) -> Dict[str, Any]:
-    cfg_path = os.path.join(model_dir, "model_config.json")
+def _load_model_config(final_model_dir: str) -> Dict[str, Any]:
+    cfg_path = os.path.join(final_model_dir, "model_config.json")
     if os.path.exists(cfg_path):
         with open(cfg_path, "r") as f:
             cfg = json.load(f)
         return cfg
-    logger.warning(f"model_config.json not found in {model_dir}, using minimal defaults")
+    logger.warning(f"model_config.json not found in {final_model_dir}, using minimal defaults")
     return {
         "hidden_dim": 64,
         "weight_initialization": "xavier",
@@ -117,7 +117,7 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _build_agent(model_cfg: Dict[str, Any], num_pods: int, pod_feat_dim: int, kv_dim: int, req_feat_dim: int, model_dir: str) -> scb.SimplifiedContextualBandit:
+def _build_agent(model_cfg: Dict[str, Any], num_pods: int, pod_feat_dim: int, kv_dim: int, req_feat_dim: int, final_model_dir: str) -> scb.SimplifiedContextualBandit:
     state_dim = {
         "pod_features": pod_feat_dim,
         "kv_hit_ratios": kv_dim,
@@ -135,8 +135,8 @@ def _build_agent(model_cfg: Dict[str, Any], num_pods: int, pod_feat_dim: int, kv
         H["hidden_dim"] = 64
     if "weight_initialization" not in H:
         H["weight_initialization"] = "xavier"
-    agent = scb.SimplifiedContextualBandit(state_dim, num_pods, H, final_model_dir=model_dir)
-    agent.load(model_dir)
+    agent = scb.SimplifiedContextualBandit(state_dim, num_pods, H, final_model_dir=final_model_dir)
+    agent.load(final_model_dir)
     agent.policy.eval()
     return agent
 
@@ -1091,9 +1091,9 @@ def _add_findings_pages(pdf: PdfPages, grad_res: Dict[str, Any], ig_res: Dict[st
 
 def main():
     parser = argparse.ArgumentParser(description="Explainability for RL router policy")
-    parser.add_argument("--model_dir", required=True, help="Path to trained model directory containing policy.pth")
-    parser.add_argument("--search_data_roots", default="", help="Colon-separated roots to search for tensor_dataset.pt")
-    parser.add_argument("--reference_tensor", default="", help="Explicit path to tensor_dataset.pt (overrides search)")
+    parser.add_argument("--final_model_dir", required=True, help="Path to trained model directory containing policy.pth")
+    # parser.add_argument("--search_data_roots", default="", help="Colon-separated roots to search for tensor_dataset.pt")
+    # parser.add_argument("--reference_tensor", default="", help="Explicit path to tensor_dataset.pt (overrides search)")
     parser.add_argument("--num_pods", type=int, default=0, help="Override num pods if no reference found")
     parser.add_argument("--pod_feat_dim", type=int, default=0, help="Override pod feature dim if no reference found")
     parser.add_argument("--kv_dim", type=int, default=0, help="Override kv feature dim if no reference found")
@@ -1104,11 +1104,9 @@ def main():
 
     set_all_seeds(args.seed)
 
-    model_dir = os.path.abspath(args.model_dir)
-    assert os.path.exists(os.path.join(model_dir, "policy.pth")), f"policy.pth not found under {model_dir}"
-
-    # Locate reference tensor
-    reference_tensor = args.reference_tensor if args.reference_tensor else _find_reference_tensor(args.search_data_roots)
+    final_model_dir = os.path.abspath(args.final_model_dir)
+    # assert os.path.exists(os.path.join(final_model_dir, "policy.pth")), f"policy.pth not found under {final_model_dir}"
+    reference_tensor = f"{final_model_dir}/encoded_data/batch_1/tensor_dataset.pt"
     if reference_tensor:
         logger.info(f"Using reference tensor: {reference_tensor}")
         num_pods, pod_feat_dim, kv_dim, req_feat_dim = _infer_dims_from_tensor(reference_tensor)
@@ -1118,8 +1116,8 @@ def main():
             "When no reference dataset is found, you must supply --num_pods --pod_feat_dim --kv_dim --req_feat_dim"
         num_pods, pod_feat_dim, kv_dim, req_feat_dim = args.num_pods, args.pod_feat_dim, args.kv_dim, args.req_feat_dim
 
-    model_cfg = _load_model_config(model_dir)
-    agent = _build_agent(model_cfg, num_pods, pod_feat_dim, kv_dim, req_feat_dim, model_dir)
+    model_cfg = _load_model_config(final_model_dir)
+    agent = _build_agent(model_cfg, num_pods, pod_feat_dim, kv_dim, req_feat_dim, final_model_dir)
 
     # Prepare contexts and ranges
     pod_ctx, kv_ctx, req_ctx = _select_base_samples(reference_tensor, args.samples, num_pods, pod_feat_dim, kv_dim, req_feat_dim)
@@ -1139,7 +1137,7 @@ def main():
     # Load feature names from metadata if available
     feature_names = _load_feature_names(reference_tensor, pod_feat_dim, kv_dim, req_feat_dim)
 
-    out_dir = os.path.join(model_dir, "xai_report")
+    out_dir = os.path.join(final_model_dir, "xai_report")
     os.makedirs(out_dir, exist_ok=True)
 
     # 1) Gradient saliency
@@ -1190,7 +1188,7 @@ def main():
     # Direct-to-PDF report (vector quality)
     report_pdf = os.path.join(out_dir, "xai_report.pdf")
     with PdfPages(report_pdf) as pdf:
-        _add_title_page(pdf, "Routing Policy Explainability Report", os.path.basename(model_dir))
+        _add_title_page(pdf, "Routing Policy Explainability Report", os.path.basename(final_model_dir))
         _add_saliency_page(pdf, grad_res, feature_names, topk=20)
         _add_ig_page(pdf, ig_res, feature_names, topk=20)
         _add_symmetry_page(pdf, sym_res)

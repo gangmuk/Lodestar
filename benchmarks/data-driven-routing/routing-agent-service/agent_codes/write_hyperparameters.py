@@ -6,10 +6,9 @@ import argparse
 
 
 RL_MODEL_HYPERPARAMETERS = {
-    'hidden_dim': 64, # 256,
+    'hidden_dim': 128, # 64, 128, 256
     'batch_size': 64,
     # 'offline_learning_rate': 0.001,
-    'ONLINE_LEARNING_RATE': 0.0005,
     'training_epochs': 5, # 5,
     'learning_every_x_iter': 5,
     'weight_decay': 0.0001,
@@ -41,7 +40,12 @@ RL_MODEL_HYPERPARAMETERS = {
     'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
     'TTFT_REWARD_WEIGHT': 0.5,
     'OFFLINE_LEARNING_RATE': 0.001,
+    'ONLINE_LEARNING_RATE': 0.0005,
     'EXCLUDED_POD_FEATURES': [],
+    
+    # Learning rate scheduling options
+    'lr_scheduler_type': 'exponential',  # 'plateau', 'exponential', 'gradient_adaptive'
+    'lr_scheduler_gamma': 0.95,  # For exponential scheduler
 }
 
 
@@ -54,6 +58,8 @@ def main():
     parser.add_argument('--reward_function', type=str, default=None)
     parser.add_argument('--offline_learning_rate', type=float, default=None)
     parser.add_argument('--excluded_pod_features', type=str, default='', help='Comma-separated pod features to exclude')
+    parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive'], help='Learning rate scheduler type')
+    parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
     args = parser.parse_args()
 
     excluded = [x.strip() for x in args.excluded_pod_features.split(',') if x.strip()]
@@ -70,6 +76,10 @@ def main():
         RL_MODEL_HYPERPARAMETERS['OFFLINE_LEARNING_RATE'] = float(args.offline_learning_rate)
     if args.excluded_pod_features:
         RL_MODEL_HYPERPARAMETERS['EXCLUDED_POD_FEATURES'] = excluded
+    if args.lr_scheduler_type:
+        RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'] = args.lr_scheduler_type
+    if args.lr_scheduler_gamma:
+        RL_MODEL_HYPERPARAMETERS['lr_scheduler_gamma'] = float(args.lr_scheduler_gamma)
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w') as f:

@@ -1,0 +1,55 @@
+{
+  "dataset_size": 7473,
+  "num_pods": 7,
+  "pod_features_list": [
+    "inflight_requests",
+    "gpu_kv_cache",
+    "cpu_kv_cache",
+    "running_requests",
+    "waiting_requests",
+    "prefill_tokens",
+    "decode_tokens"
+  ],
+  "numeric_request_features": [
+    "input_tokens",
+    "output_tokens",
+    "total_tokens"
+  ],
+  "categorical_request_features": [],
+  "pod_ids": [
+    "pod_0000",
+    "pod_0001",
+    "pod_0002",
+    "pod_0003",
+    "pod_0004",
+    "pod_0005",
+    "pod_0006"
+  ],
+  "feature_dimensions": {
+    "pod_features": 7,
+    "pod_features_with_staleness": 8,
+    "kv_hit_ratios": 1,
+    "request_features": 3,
+    "positional_encodings": 1
+  },
+  "reward_statistics": {
+    "mean": -0.8354225754737854,
+    "std": 1.1678580045700073,
+    "min": -3.4000000953674316,
+    "max": 0.7360000014305115
+  },
+  "action_distribution": {
+    "0": 1045,
+    "1": 1034,
+    "2": 1096,
+    "3": 1058,
+    "4": 1063,
+    "5": 1098,
+    "6": 1079
+  },
+  "timestamp": "20250913_223139",
+  "processing_info": {
+    "historical_features": 0,
+    "current_features": 8
+  }
+}
