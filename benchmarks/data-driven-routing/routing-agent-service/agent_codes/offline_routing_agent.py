@@ -63,6 +63,8 @@ RL_MODEL_HYPERPARAMETERS = {}
 # }
 
 # Global variables (simplified for offline use)
+# excluded_pod_feature = ["kv_hit_ratio"]
+# excluded_pod_feature = []
 NUM_TRAINS = 0
 MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
@@ -265,29 +267,31 @@ def test_inference(args, log_message, request_id, final_model_dir):
     preprocess_overhead = time.time() - handle_infer_start_time
     original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
     
-    # CRITICAL FIX: Add the same feature validation as routing_agent_service.py
-    # This excludes last_second_* features that cause dimension mismatch
-    non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
-    features_must_exist_in_stats_instance = []
-    for feature in processed_df.columns:
-        # NOTE: ignoring last_second_* features (same as routing_agent_service.py)
-        if "last_second_" not in feature and feature not in non_interest:
-            features_must_exist_in_stats_instance.append(feature)
-    for feature in features_must_exist_in_stats_instance:
-        if feature not in stats_instance.feature_stats:
-            logger.error(f"Feature {feature} not found in stats_instance")
-            logger.error(f"processed_df.columns: {list(processed_df.columns)}")
-            logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
-            logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
-            assert False
-    
     ## new way
-    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
+    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
     logger.info(f"normalizable_features: {normalizable_features}")
     logger.info(f"non_normalizable_features: {non_normalizable_features}")
     if not stats_instance.feature_stats:
         logger.error(f"request_id,{request_id},No normalization statistics available for inference")
         assert False
+    
+    # CRITICAL FIX: Add the same feature validation as routing_agent_service.py
+    # This excludes last_second_* features that cause dimension mismatch
+    non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_start_time', 'request_end_time']
+    non_interest += non_normalizable_features
+    features_must_exist_in_stats_instance = []
+    for feature in processed_df.columns:
+        # NOTE: ignoring last_second_* features (same as routing_agent_service.py)
+        if "last_second_" not in feature and feature not in non_interest and feature in normalizable_features:
+            features_must_exist_in_stats_instance.append(feature)
+    for feature in features_must_exist_in_stats_instance:
+        if feature not in stats_instance.feature_stats:
+            logger.error(f"Feature {feature} not found in stats_instance")
+            logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
+            # logger.error(f"processed_df.columns: {list(processed_df.columns)}")
+            # logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+            assert False
+            
     for feature in normalizable_features:
         stats = stats_instance.feature_stats[feature]
         
@@ -326,7 +330,6 @@ def test_inference(args, log_message, request_id, final_model_dir):
             else:
                 logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
                 assert False
-
     ## old way
     # normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
     
@@ -395,7 +398,7 @@ def test_inference(args, log_message, request_id, final_model_dir):
 
     return result_summary
 
-def process_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR):
+def normalize_and_encode_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
     flush_start_time = time.time()
     
@@ -567,7 +570,7 @@ def main():
     processed_df = pd.read_csv(args.processed_csv)
     
     # Get normalizable features and create stats instance
-    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
+    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
     stats_instance = data_normalizer.FeatureStats(normalizable_features)
 
     ENCODED_DATA_DIR = f"{args.final_model_dir}/encoded_data"
@@ -579,7 +582,7 @@ def main():
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
     
     # Process training data using the new simplified approach
-    process_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR)
+    normalize_and_encode_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR)
 
     # Save stats using CSV format
     stats_file = f"{args.final_model_dir}/feature_normalization_statistics.csv"
