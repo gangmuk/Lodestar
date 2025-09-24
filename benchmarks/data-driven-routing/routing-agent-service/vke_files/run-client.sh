@@ -15,11 +15,10 @@ set -e
 
 
 #### benchmark related parameters
-iterations=3
+iterations=2
 max_tokens=5000
 
 #### online learning related parameters
-## routing_agent_service.py
 EXPLORATION_ENABLED=1
 ENABLE_ONLINE_LEARNING=true
 MIN_NUM_TRAINING_DATA=1000
@@ -33,8 +32,8 @@ MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
 FLUSH_PERIOD=10 # seconds
 
 #### model loading to the container
-do_you_want_to_ship=true
-ship_final_model_only=1
+ship_model=1
+ship_code=1
 
 # final_model_dir=None
 
@@ -52,7 +51,7 @@ final_model_dir_list=(
 
 
 #### one of the best
-"../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_64-lrs_grad_adapt"
+# "../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_64-lrs_grad_adapt"
 
 # "../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-piecewise_linear_steeper_gradient-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
 
@@ -73,7 +72,7 @@ final_model_dir_list=(
 # "../training_data/merged-data/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
 
 ####    
-"../training_data/merged-data/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
+# "../training_data/merged-data/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
 
 #### kinda worked for online learning with iterations=10
 # "../training_data/merged-data/all/final_model-data_replaced-processed-piecewise_linear_steeper_gradient-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
@@ -82,6 +81,13 @@ final_model_dir_list=(
 
 # "../training_data/SharingRatio71%/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none"
 # "../training_data/SharingRatio71%/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill"
+
+## overfit test (2025-09-21)
+# "../training_data/SharingRatio71%/prefix/final_model-data-processed-linear_simple-lr_0.
+# 001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens"
+
+##(2025-09-21)
+"../training_data/SharingRatio71%/all/final_model-data-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp"
 
 
 ## this does not work... don't know why
@@ -112,7 +118,6 @@ routing_configs=(
 )
 
 input_workload_dirs=(
-    # "workload/ten_request"
     # "workload/p4096_s1024_rps10_spp_20_ndp_100-shortversion"
     # "workload/p4096_s1024_rps10_spp_20_ndp_100-half"
     
@@ -146,11 +151,11 @@ input_workload_dirs=(
     # "workload/SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80"
     # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80"
 
+    # "workload/ten_request"
     "workload/SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
-    "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
-    "workload/SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80-half"
-    "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
-
+    # "workload/SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
+    # "workload/SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80-half"
+    # "workload/SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
 )
 
 repeat_times=1
@@ -167,9 +172,12 @@ for i in $(seq 1 ${repeat_times}); do
                 #     continue
                 # fi
                 workload_name=$(echo "$workload_dir" | awk -F'/' '{print $2}')
+                workload_name=$(echo "$workload_name" | awk -F'-' '{print $1}')
+                echo "workload_name: ${workload_name}"
                 output_dir_in_vke_node="${config}-iter${iterations}"
                 if [ "${subAlgorithm}" == "none" ]; then
                     trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+                    used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
                     hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
                     hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
                     new_var="$trained_model_data_name-$hyperparameter_name"
@@ -182,7 +190,7 @@ for i in $(seq 1 ${repeat_times}); do
                 echo "* full_path_in_vke_node: ${full_path_in_vke_node}"
                 experiment_result_output_dir="../experiment_results/${workload_name}/${subAlgorithm}"
                 if [ "${subAlgorithm}" == "none" ]; then
-                    experiment_result_output_dir="${experiment_result_output_dir}-trained_${trained_model_data_name}-${hyperparameter_name}-${timestamp}"
+                    experiment_result_output_dir="${experiment_result_output_dir}-trained_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-${timestamp}"
                 else
                     experiment_result_output_dir="${experiment_result_output_dir}-${timestamp}"
                 fi
@@ -193,6 +201,9 @@ for i in $(seq 1 ${repeat_times}); do
 
                 kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
                 kubectl rollout restart deployment routing-agent-service -n default
+
+                # kubectl rollout restart deployment llama-3-8b-instruct -n default
+                # sleep 3 && python3 check_ready.py && sleep 3
 
                 # ## Env var for routing-agent-service deployment
                 python3 update_k8s_env.py \
@@ -213,11 +224,8 @@ for i in $(seq 1 ${repeat_times}); do
                         --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH} \
                         --env useRealRequest=1
 
-                if [ "${do_you_want_to_ship}" == "true" ]; then
-                    python ship_all.py --ship_final_model_only ${ship_final_model_only} --final_model_dir ${final_model_dir}
-                fi
+                python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir}
                 sleep 5
-
 
                 ###################
                 ## Start logging ##

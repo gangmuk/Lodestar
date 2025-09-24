@@ -237,7 +237,7 @@ class FeatureStats:
             return None
 
 
-def _get_normalizable_features(processed_df, excluded_pod_features=None):
+def _get_normalizable_features(processed_df, no_normalize_features: list[str]):
     """
     Automatically detect which features can be normalized.
     
@@ -245,15 +245,22 @@ def _get_normalizable_features(processed_df, excluded_pod_features=None):
         tuple: (normalizable_features, non_normalizable_features)
     """
     normalizable_features = ['input_tokens', 'output_tokens', 'total_tokens']
-    
-    # Add all pod-specific features except gpu_model (which is categorical)
-    excluded_pod_features = set(excluded_pod_features or [])
     for col in processed_df.columns:
         if col.startswith('pod_') and 'gpu_model' not in col:
-            # filter by excluded suffixes (e.g., '-prefill_tokens')
-            if any(col.endswith(f"-{feat}") for feat in excluded_pod_features):
-                continue
-            normalizable_features.append(col)
+            temp = col.split('pod_')[1][5:]
+            if temp not in no_normalize_features:
+                normalizable_features.append(col)
+            else:
+                logger.info(f"temp: {temp}")
+                logger.info(f"no_normalize_features: {no_normalize_features}")
+                logger.info(f"Excluding {col} from normalization. Exclude feature keyword: {no_normalize_features}")
+    # for col in processed_df.columns:
+    #     if col.startswith('pod_') and 'gpu_model' not in col:
+    #         for exclude_feat in excluded_pod_features:
+    #             if exclude_feat in col:
+    #                 logger.warning(f"Excluding {col} from normalization. Exclude feature keyword: {exclude_feat}")
+    #                 continue
+    #         normalizable_features.append(col)
     
     # Find non-normalizable features
     non_normalizable_features = []
@@ -440,10 +447,7 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         logger.info(f"Created action mapping: {pod_to_action}")
     
     # Step 5: Detect normalizable features automatically
-    excluded = []
-    if hyperparameters and isinstance(hyperparameters, dict):
-        excluded = list(hyperparameters.get('EXCLUDED_POD_FEATURES', []))
-    normalizable_features, non_normalizable_features = _get_normalizable_features(df, excluded_pod_features=excluded)
+    normalizable_features, non_normalizable_features = _get_normalizable_features(df, hyperparameters.get('NO_NORMALIZE_FEATURES', []))
     logger.info(f"Detected {len(normalizable_features)} normalizable features and {len(non_normalizable_features)} non-normalizable features")
     logger.debug(f"Normalizable features: {normalizable_features[:5]}...")
     logger.debug(f"Non-normalizable features: {non_normalizable_features[:5]}...")

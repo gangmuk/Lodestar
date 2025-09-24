@@ -270,6 +270,7 @@ class K8sHotDeployer:
             files_copied = 0
             for local_path, remote_path in file_mappings.items():
                 if self.copy_file_to_pod(pod_name, local_path, remote_path):
+                    print(f"Copied {local_path}")
                     files_copied += 1
                 else:
                     logger.error(f"Failed to copy {local_path} to {pod_name}:{remote_path}")
@@ -302,13 +303,15 @@ class K8sHotDeployer:
 
 def main():
     parser = argparse.ArgumentParser(description='Ship all files and directories')
-    parser.add_argument('--ship_final_model_only', type=int, default=1, help='Ship only final_model directory')
+    parser.add_argument('--ship_code', type=int, default=1, help='ship_code')
+    parser.add_argument('--ship_model', type=int, default=1, help='ship_model')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     args = parser.parse_args()
-
-    ship_final_model_only = args.ship_final_model_only
-    final_model_dir = args.final_model_dir
     
+    if args.ship_code == 0 and args.ship_model == 0:
+        logger.info("Nothing to ship")
+        return 
+
     print("Restarting gateway and routing-agent-service")
     os.system("kubectl rollout restart deployment routing-agent-service -n default & kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system")
     time.sleep(3)
@@ -321,23 +324,23 @@ def main():
     APP_LABEL = "routing-agent-service"
     
     # Individual files to deploy
-    DIRECTORIES_TO_DEPLOY = {f"./{final_model_dir}": "/app/final_model"}
+    DIRECTORIES_TO_DEPLOY = {}
     FILES_TO_DEPLOY = {}
-    if ship_final_model_only:
-        print("Shipping only final_model directory")
-    else:
+    if args.ship_code == 1:
         print("Shipping all files and directories")
-        # ../ since it is executed inside vke_files directory
         FILES_TO_DEPLOY = {
             "../agent_codes/routing_agent_service.py": "/app/routing_agent_service.py",
             "../agent_codes/preprocess.py": "/app/preprocess.py",
-            "../agent_codes/feature_normalization.py": "/app/feature_normalization.py",
+            "../agent_codes/data_processor.py": "/app/data_processor.py",
+            "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
             "../agent_codes/logger.py": "/app/logger.py",
             "../agent_codes/utils.py": "/app/utils.py",
         }
-    
+    if args.ship_model == 1:
+        print("Shipping only final_model directory")
+        DIRECTORIES_TO_DEPLOY = {f"./{args.final_model_dir}": "/app/final_model"}
     # Check if files exist
     missing_files = [f for f in FILES_TO_DEPLOY.keys() if not os.path.exists(f)]
     if missing_files:

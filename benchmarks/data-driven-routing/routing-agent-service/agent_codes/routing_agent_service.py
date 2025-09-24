@@ -41,6 +41,9 @@ app = Flask(__name__)
 
 hyperparameter_file_path = '/app/final_model/model_config.json'
 
+excluded_pod_feature = ["kv_hit_ratio"]
+
+
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 final_model_dir = "/app/final_model"
@@ -93,7 +96,7 @@ def handle_flush():
         ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
-        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
+        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
         if stats_instance.get_max_count() == 0:
             logger.error(f"No normalization statistics available for training")
             assert False
@@ -186,11 +189,17 @@ def handle_infer():
         if stats_instance.get_max_count() == 0:
             logger.error(f"Stats instance count is 0, no data available for normalization")
             assert False
-        non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod']
+
+        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+        if stats_instance.get_max_count() == 0:
+            logger.error(f"request_id,{request_id},No normalization statistics available for inference")
+            assert False
+            
+        non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_start_time', 'request_end_time']
         features_must_exist_in_stats_instance = []
         for feature in processed_df.columns:
             # NOTE: ignoring last_second_* features
-            if "last_second_" not in feature and feature not in non_interest:
+            if "last_second_" not in feature and feature not in non_interest and feature in normalizable_features:
                 features_must_exist_in_stats_instance.append(feature)
         for feature in features_must_exist_in_stats_instance:
             if feature not in stats_instance.feature_stats:
@@ -199,11 +208,7 @@ def handle_infer():
                 logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
                 logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
-
-        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df)
-        if stats_instance.get_max_count() == 0:
-            logger.error(f"request_id,{request_id},No normalization statistics available for inference")
-            assert False
+                
         for feature in normalizable_features:
             ##################################################
             data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)

@@ -42,6 +42,7 @@ RL_MODEL_HYPERPARAMETERS = {
     'OFFLINE_LEARNING_RATE': 0.001,
     'ONLINE_LEARNING_RATE': 0.0005,
     'EXCLUDED_POD_FEATURES': [],
+    'NO_NORMALIZE_FEATURES': [],
     
     # Learning rate scheduling options
     'lr_scheduler_type': 'exponential',  # 'plateau', 'exponential', 'gradient_adaptive'
@@ -58,16 +59,23 @@ def main():
     parser.add_argument('--reward_function', type=str, default=None)
     parser.add_argument('--offline_learning_rate', type=float, default=None)
     parser.add_argument('--excluded_pod_features', type=str, default='', help='Comma-separated pod features to exclude')
+    parser.add_argument('--no_normalize_features', type=str, default='', help='Comma-separated features to not normalize')
     parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive'], help='Learning rate scheduler type')
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
+    parser.add_argument('--hidden_dim', type=int, default=None, help='Hidden dimension')
+    parser.add_argument('--reward_decay_factor', type=float, default=0.9, help='reward_decay_factor (lambda)')
+    
     args = parser.parse_args()
 
     excluded = [x.strip() for x in args.excluded_pod_features.split(',') if x.strip()]
+    no_normalize_features = [x.strip() for x in args.no_normalize_features.split(',') if x.strip()]
 
     if args.ttft_slo:
         RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = float(args.ttft_slo)
     if args.avg_tpot_slo:
         RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = float(args.avg_tpot_slo)
+    if args.hidden_dim:
+        RL_MODEL_HYPERPARAMETERS['hidden_dim'] = int(args.hidden_dim)
     if args.ttft_reward_weight:
         RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = float(args.ttft_reward_weight)
     if args.reward_function:
@@ -80,7 +88,10 @@ def main():
         RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'] = args.lr_scheduler_type
     if args.lr_scheduler_gamma:
         RL_MODEL_HYPERPARAMETERS['lr_scheduler_gamma'] = float(args.lr_scheduler_gamma)
-
+    if args.no_normalize_features:
+        RL_MODEL_HYPERPARAMETERS['NO_NORMALIZE_FEATURES'] = no_normalize_features
+    if args.reward_decay_factor:
+        RL_MODEL_HYPERPARAMETERS['reward_decay_factor'] = float(args.reward_decay_factor)
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w') as f:
         json.dump(RL_MODEL_HYPERPARAMETERS, f, indent=4, default=str)

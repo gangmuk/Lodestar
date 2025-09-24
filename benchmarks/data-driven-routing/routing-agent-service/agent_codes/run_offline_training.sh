@@ -10,40 +10,39 @@ set -e
 # workload_dataset="SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
 # workload_dataset="SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
 
-# workload_dataset="SharingRatio71%"
-# workload_dataset="SharingRatio47%"
-# workload_dataset="SharingRatio28%"
-# workload_dataset="SharingRatio9%"
-# workload_dataset="p4096_s1024_rps20"
-
 workload_dataset_list=(
-    "temp"
+    # "temp"
     # "merged-data"
     # "p4096_s1024_rps20"
-    # "SharingRatio71%"
+    "SharingRatio71%"
     # "SharingRatio47%"
     # "SharingRatio28%"
     # "SharingRatio9%"
 )
-csv_filename="data.csv" # "data_replaced.csv", "data.csv"
-lr_scheduler_type="exponential" # "exponential", "plateau", "gradient_adaptive"
-lr_scheduler_gamma=0.95
-excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
-use_sampled_data=false # true, false
-analyze_behavior=true # true, false
-analyze_dataset=false # true, false
-ttft_slo=1000
-avg_tpot_slo=50
-ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
-REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
-offline_learning_rate=0.001
-routing_policy_for_data_file="all" # "all", "prefix", "rl", "random", "rl+random"
 routing_policy_for_data_file_list=(
     # "prefix"
     # "rl"
     # "random"
     "all"
 )
+csv_filename="data.csv" # "data_replaced.csv", "data.csv"
+
+lr_scheduler_type="exponential" # "exponential", "plateau", "gradient_adaptive"
+lr_scheduler_gamma=0.95
+excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
+no_normalize_features="kv_hit_ratio" # "kv_hit_ratio", "none"
+
+use_sampled_data=false # true, false
+analyze_behavior=true # true, false
+analyze_dataset=false # true, false
+
+reward_decay_factor=0.91
+hidden_dim=64 # 64, 128, 256
+ttft_slo=1000
+avg_tpot_slo=50
+ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
+REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
+offline_learning_rate=0.001
 
 for workload_dataset in "${workload_dataset_list[@]}"; do
     for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; do
@@ -71,7 +70,7 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         if [ "${excluded_pod_features}" != "" ]; then
             final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
         fi
-        final_model_dir="${final_model_dir}-hidden_dim_128"
+        final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
 
         if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
             final_model_dir="${final_model_dir}-lrs_grad_adapt"
@@ -96,12 +95,15 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         --output ${hyper_json} \
         --ttft_slo ${ttft_slo} \
         --avg_tpot_slo ${avg_tpot_slo} \
+        --hidden_dim ${hidden_dim} \
         --ttft_reward_weight ${ttft_reward_weight} \
         --reward_function ${REWARD_FUNCTION} \
         --offline_learning_rate ${offline_learning_rate} \
         --excluded_pod_features ${excluded_pod_features} \
+        --no_normalize_features ${no_normalize_features} \
         --lr_scheduler_type ${lr_scheduler_type} \
-        --lr_scheduler_gamma ${lr_scheduler_gamma}
+        --lr_scheduler_gamma ${lr_scheduler_gamma} \
+        --reward_decay_factor ${reward_decay_factor}
         
 
         process_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --hyperparameters ${hyper_json}"
