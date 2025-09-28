@@ -40,6 +40,7 @@ type RoutingContext struct {
 	context.Context
 	Algorithm    RoutingAlgorithm
 	SubAlgorithm string
+	Iteration    int
 	Model        string
 	Message      string
 	RequestID    string
@@ -119,6 +120,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.SubAlgorithm = "" // Initialize the new field
+	r.Iteration = -2
 	r.Model = model
 	r.Message = message
 	r.RequestID = requestID

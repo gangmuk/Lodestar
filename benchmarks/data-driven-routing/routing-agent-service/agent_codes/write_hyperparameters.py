@@ -6,10 +6,10 @@ import argparse
 
 
 RL_MODEL_HYPERPARAMETERS = {
-    'hidden_dim': 128, # 64, 128, 256
-    'batch_size': 64,
+    'hidden_dim': 64, # 64, 128, 256
+    'batch_size': 32,
     # 'offline_learning_rate': 0.001,
-    'training_epochs': 5, # 5,
+    'training_epochs': 15, # 5,
     'learning_every_x_iter': 5,
     'weight_decay': 0.0001,
     'max_updates_per_epoch': 1000, # 1000000000
@@ -47,6 +47,10 @@ RL_MODEL_HYPERPARAMETERS = {
     # Learning rate scheduling options
     'lr_scheduler_type': 'exponential',  # 'plateau', 'exponential', 'gradient_adaptive'
     'lr_scheduler_gamma': 0.95,  # For exponential scheduler
+    
+    # Model type selection
+    'MODEL_TYPE': 'contextual_bandit',  # 'contextual_bandit', 'latency_predictor'
+    'LATENCY_METRIC': 'ttft',  # 'ttft', 'avg_tpot', 'e2e_latency' (for latency_predictor)
 }
 
 
@@ -64,6 +68,8 @@ def main():
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
     parser.add_argument('--hidden_dim', type=int, default=None, help='Hidden dimension')
     parser.add_argument('--reward_decay_factor', type=float, default=0.9, help='reward_decay_factor (lambda)')
+    parser.add_argument('--model_type', type=str, default=None, choices=['contextual_bandit', 'latency_predictor'], help='Model type to use')
+    parser.add_argument('--latency_metric', type=str, default=None, choices=['ttft', 'avg_tpot', 'e2e_latency'], help='Latency metric for latency_predictor model')
     
     args = parser.parse_args()
 
@@ -90,6 +96,10 @@ def main():
         RL_MODEL_HYPERPARAMETERS['lr_scheduler_gamma'] = float(args.lr_scheduler_gamma)
     if args.no_normalize_features:
         RL_MODEL_HYPERPARAMETERS['NO_NORMALIZE_FEATURES'] = no_normalize_features
+    if args.model_type:
+        RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] = args.model_type
+    if args.latency_metric:
+        RL_MODEL_HYPERPARAMETERS['LATENCY_METRIC'] = args.latency_metric
     if args.reward_decay_factor:
         RL_MODEL_HYPERPARAMETERS['reward_decay_factor'] = float(args.reward_decay_factor)
     os.makedirs(os.path.dirname(args.output), exist_ok=True)

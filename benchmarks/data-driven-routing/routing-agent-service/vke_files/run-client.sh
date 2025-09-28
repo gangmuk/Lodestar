@@ -15,12 +15,12 @@ set -e
 
 
 #### benchmark related parameters
-iterations=2
+iterations=1
 max_tokens=5000
 
 #### online learning related parameters
-EXPLORATION_ENABLED=1
-ENABLE_ONLINE_LEARNING=true
+EXPLORATION_ENABLED=0
+ENABLE_ONLINE_LEARNING=false
 MIN_NUM_TRAINING_DATA=1000
 
 if [ "${ENABLE_ONLINE_LEARNING}" = "true" ]; then
@@ -38,6 +38,9 @@ ship_code=1
 # final_model_dir=None
 
 final_model_dir_list=(
+
+####### contextual bandit
+
 # "../training_data/p4096_s1024_rps20/rl+random/final_model_backup" # not working again...
 # "../training_data/p4096_s1024_rps20/rl+random/final_model" # not working again...
 # "../training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50" # this is sort of working
@@ -87,7 +90,7 @@ final_model_dir_list=(
 # 001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens"
 
 ##(2025-09-21)
-"../training_data/SharingRatio71%/all/final_model-data-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp"
+# "../training_data/SharingRatio71%/all/final_model-data-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp"
 
 
 ## this does not work... don't know why
@@ -99,21 +102,33 @@ final_model_dir_list=(
 # "../training_data/SharingRatio9%/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens"
 
 # "../training_data/SharingRatio9%/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128"
+
+
+
+####### latency predictor
+# "../training_data/merged-data/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp-latency_predictor"
+
+# "../training_data/merged-data/all/final_model-latency_predictor_e2e_latency"
+# "../training_data/merged-data/all/final_model-latency_predictor_avg_tpot"
+"../training_data/merged-data/all/final_model-latency_predictor_ttft"
 )
 
 
 for final_model_dir in "${final_model_dir_list[@]}"; do
-    if [ "${do_you_want_to_ship}" == "true" ] && [ ! -d "${final_model_dir}" ]; then
-        echo "Final model directory does not exist: ${final_model_dir}"
+    if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
+        echo "Error: Final model directory does not exist: ${final_model_dir}"
+        echo "Exiting..."
         exit 1
     fi
 done
 
 delimiter="+"
 routing_configs=(
-    "rl-online-router${delimiter}none"
-    # "rl-online-router${delimiter}prefix-cache-1"
-    # "rl-online-router${delimiter}prefix-cache-2"
+    # "rl-online-router${delimiter}rl_naive"
+    "rl-online-router${delimiter}latency_predictor"
+    # "rl-online-router${delimiter}prefix_cache_1"
+    # "rl-online-router${delimiter}prefix_cache_2"
+    # "rl-online-router${delimiter}preble"
     # "rl-online-router${delimiter}random"
 )
 
@@ -174,34 +189,41 @@ for i in $(seq 1 ${repeat_times}); do
                 workload_name=$(echo "$workload_dir" | awk -F'/' '{print $2}')
                 workload_name=$(echo "$workload_name" | awk -F'-' '{print $1}')
                 echo "workload_name: ${workload_name}"
-                output_dir_in_vke_node="${config}-iter${iterations}"
+                timestamp=$(date +%Y%m%d_%H%M%S)
+                output_dir_in_vke_node="${config}"
+                experiment_result_output_dir="../experiment_results/${workload_name}/${subAlgorithm}"
+
                 if [ "${subAlgorithm}" == "none" ]; then
                     trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
                     used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
                     hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
                     hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
-                    new_var="$trained_model_data_name-$hyperparameter_name"
-                    output_dir_in_vke_node="${output_dir_in_vke_node}-onlinelearning_${ENABLE_ONLINE_LEARNING}-${new_var}"
+                    postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-iter${iterations}"
+                    output_dir_in_vke_node="${output_dir_in_vke_node}-${postfix}"
+                    experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
+                elif [ "${subAlgorithm}" == "latency_predictor" ]; then
+                    trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+                    prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
+                    used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+                    postfix="trained_on_${trained_model_data_name}_${used_data_name}-iter${iterations}"
+                    output_dir_in_vke_node="${output_dir_in_vke_node}-${postfix}"
+                    experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}-${postfix}"
                 fi
-                timestamp=$(date +%Y%m%d_%H%M%S)
+
                 output_dir_in_vke_node="${output_dir_in_vke_node}-${timestamp}"
-                echo "output_dir_in_vke_node: ${output_dir_in_vke_node}"
                 full_path_in_vke_node="${workload_dir}/${output_dir_in_vke_node}"
-                echo "* full_path_in_vke_node: ${full_path_in_vke_node}"
-                experiment_result_output_dir="../experiment_results/${workload_name}/${subAlgorithm}"
-                if [ "${subAlgorithm}" == "none" ]; then
-                    experiment_result_output_dir="${experiment_result_output_dir}-trained_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-${timestamp}"
-                else
-                    experiment_result_output_dir="${experiment_result_output_dir}-${timestamp}"
-                fi
+                experiment_result_output_dir="${experiment_result_output_dir}-${timestamp}"
+                echo "* output_dir_in_vke_node: ${output_dir_in_vke_node}"
+                # echo "* full_path_in_vke_node: ${full_path_in_vke_node}"
+                echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
                 if [ ! -d "${experiment_result_output_dir}" ]; then
                     mkdir -p "${experiment_result_output_dir}"
                 fi
-                echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
 
                 kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
                 kubectl rollout restart deployment routing-agent-service -n default
-
+                echo "-------------------restart deployment done----------------------------"
+                
                 # kubectl rollout restart deployment llama-3-8b-instruct -n default
                 # sleep 3 && python3 check_ready.py && sleep 3
 
@@ -240,7 +262,33 @@ for i in $(seq 1 ${repeat_times}); do
                 ## Send load from vke node ##
                 #################################################
                 echo "SSH into vke to run client script!!!!"
-                ssh root@180.184.82.203 "cd /mnt/vdb/data-driven-routing/client && bash run-client-only.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${full_path_in_vke_node}"
+
+                # Function to cleanup remote processes on interrupt
+                cleanup_remote() {
+                    echo "Interrupt received, cleaning up remote processes..."
+                    # Kill the background SSH process
+                    if [ ! -z "$ssh_pid" ] && kill -0 $ssh_pid 2>/dev/null; then
+                        kill $ssh_pid 2>/dev/null
+                    fi
+                    # Kill remote client processes - specifically async-client.py and kubectl logging processes
+                    ssh root@180.184.82.203 "pkill -f 'async-client.py' && pkill -f 'kubectl logs' && pkill -f 'run-client-only.sh'" 2>/dev/null || true
+                    echo "Remote cleanup completed."
+                    exit 1
+                }
+
+                # Set up trap for SIGINT (Ctrl+C)
+                trap cleanup_remote SIGINT
+
+                # Run SSH command in background
+                ssh root@180.184.82.203 "cd /mnt/vdb/data-driven-routing/client && bash run-client-only.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${full_path_in_vke_node}" &
+                ssh_pid=$!
+
+                # Wait for the SSH command to complete
+                wait $ssh_pid
+                ssh_pid=""
+
+                # Clear the trap since we're done with this iteration
+                trap - SIGINT
 
                 #################
                 ## End logging ##

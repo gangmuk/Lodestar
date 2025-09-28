@@ -251,9 +251,9 @@ def _get_normalizable_features(processed_df, no_normalize_features: list[str]):
             if temp not in no_normalize_features:
                 normalizable_features.append(col)
             else:
-                logger.info(f"temp: {temp}")
-                logger.info(f"no_normalize_features: {no_normalize_features}")
-                logger.info(f"Excluding {col} from normalization. Exclude feature keyword: {no_normalize_features}")
+                logger.debug(f"temp: {temp}")
+                logger.debug(f"no_normalize_features: {no_normalize_features}")
+                logger.debug(f"Excluding {col} from normalization. Exclude feature keyword: {no_normalize_features}")
     # for col in processed_df.columns:
     #     if col.startswith('pod_') and 'gpu_model' not in col:
     #         for exclude_feat in excluded_pod_features:

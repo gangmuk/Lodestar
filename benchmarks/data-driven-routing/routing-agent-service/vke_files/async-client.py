@@ -14,6 +14,12 @@ import aiohttp
 import httpx
 import re
 import utils
+import hashlib
+import random
+from transformers import AutoTokenizer
+
+def static_hash(input_str: str) -> str:
+    return str(int(hashlib.sha256(input_str.encode()).hexdigest(), 16))[:8]
 
 
 # Configure logging
@@ -50,7 +56,7 @@ async def load_workload(workload_path: str) -> List[Dict[str, Any]]:
             logger.error(f"Error loading workload: {e}")
             raise
 
-async def send_request_streaming(client, model, prompt, output_file, request_id, 
+async def send_request_streaming(client, model, prompt, output_file, request_id,
                                 session_id, target_time, max_tokens,
                                 temperature, routing_strategy, results_lock, history_lock):
     """Send a streaming request asynchronously"""
@@ -81,17 +87,17 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         else:
             logger.info(f"Request {request_id}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
         
-        # Double-check prompt format
-        if not isinstance(prompt, list):
-            # Convert to list format for chat completions
-            prompt = [{"role": "user", "content": str(prompt)}]
-        else:
-            assert prompt, "Prompt list should not be empty"
+        # # Double-check prompt format
+        # if not isinstance(prompt, list):
+        #     # Convert to list format for chat completions
+        #     prompt = [{"role": "user", "content": str(static_hash(str(iteration))) + " " + str(prompt)}]
+        # else:
+        #     assert prompt, "Prompt list should not be empty"
         
-        # Ensure each item in the list has role and content
-        for i, msg in enumerate(prompt):
-            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
-                prompt[i] = {"role": "user", "content": str(msg)}
+        # # Ensure each item in the list has role and content
+        # for i, msg in enumerate(prompt):
+        #     if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+        #         prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
         
         # Format validation logging
         logger.debug(f"Request {request_id}: Formatted prompt for streaming: {prompt}")
@@ -238,10 +244,159 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         # Write error results
         await write_result_to_files(error_result, output_file, output_csv_file_name)
         return error_result
-        
 
 
-async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = None) -> List[Dict[str, str]]:
+async def send_request_with_token_ids(client, model, token_ids, output_file, request_id,
+                                   session_id, target_time, max_tokens,
+                                   temperature, routing_strategy, results_lock, history_lock):
+    """Send a request with directly sampled token IDs (bypasses text tokenization)"""
+    start_time = asyncio.get_running_loop().time()
+    selected_pod_ip = ""
+    selected_pod_name = ""
+    client_side_ttft = -1
+    client_side_tpot = -1
+    scheduled_time = target_time
+    actual_start_time = time.time()
+
+    try:
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, "
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
+
+        # Use provided token IDs from workload
+        logger.info(f"Request {request_id}: Using {len(token_ids)} token IDs from workload: {token_ids[:10]}...")
+
+        # Set additional headers if needed
+        extra_headers = {}
+        if routing_strategy:
+            extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["request-id"] = str(request_id)
+
+        # Patch the client to capture headers
+        transport = patch_openai_client(client)
+
+        try:
+            # Send request using completions endpoint with prompt_token_ids
+            response = await client.completions.create(
+                model=model,
+                prompt_token_ids=token_ids,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                extra_headers=extra_headers,
+                extra_body={"subAlgorithm": args.subAlgorithm},
+            )
+
+            # Validate response
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                raise ValueError("Incomplete or invalid response received")
+
+            # Extract headers data
+            headers_data = extract_headers_data(transport.captured_headers)
+            print(f"Request {request_id}, headers_data: {headers_data}")
+            # Extract response time and token counts
+            response_time = asyncio.get_running_loop().time()
+            completion_time = time.time()
+            prompt_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens
+            output_text = response.choices[0].text
+
+            # Update session history if needed
+            if session_id:
+                await update_response(output_text, session_id)
+
+            # Create success result
+            result = create_success_result(
+                request_id=request_id,
+                start_time=start_time,
+                response_time=response_time,
+                client_side_ttft=client_side_ttft,
+                client_side_tpot=client_side_tpot,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                headers_data=headers_data,
+                prompt_text=f"token_ids:{token_ids[:10]}...",  # Store first 10 token IDs for reference
+                output_text=output_text,
+                session_id=session_id
+            )
+
+            # Calculate total elapsed time
+            total_elapsed = completion_time - actual_start_time
+
+            logger.info(f"Request {request_id}: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+                       f"Elapsed: {total_elapsed:.3f}s, "
+                       f"Tokens: {prompt_tokens} in / {output_tokens} out, "
+                       f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+
+            # Log scheduling information
+            if scheduled_time:
+                scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+                actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+                logger.info(f"Request {request_id}: Scheduling summary - "
+                          f"Scheduled: {scheduled_dt}, "
+                          f"Started: {actual_dt}, "
+                          f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+
+            # Write results to files
+            await write_result_to_files(result, output_file, output_csv_file_name)
+            return result
+
+        except openai.BadRequestError as e:
+            logger.error(f"Request {request_id}: Bad request error: {str(e)}")
+            error_msg = str(e)
+            raise e
+
+    except Exception as e:
+        error_time = asyncio.get_running_loop().time()
+        completion_time = time.time()
+
+        # Create error result
+        error_result = create_error_result(
+            request_id=request_id,
+            start_time=start_time,
+            error_time=error_time,
+            e=e,
+            prompt=f"token_ids_from_workload:{len(token_ids)}",  # Store token count for reference
+            selected_pod_ip=selected_pod_ip,
+            selected_pod_name=selected_pod_name,
+            session_id=session_id
+        )
+
+        # Calculate total elapsed time
+        total_elapsed = completion_time - actual_start_time
+
+        logger.error(f"Request {request_id}: Error at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]} "
+                   f"after {total_elapsed:.3f}s: {error_result['error_type']}: {error_result['error_message']}")
+
+        # Log scheduling information for errors too
+        if scheduled_time:
+            scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+            actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+            logger.error(f"Request {request_id}: Scheduling error summary - "
+                      f"Scheduled: {scheduled_dt}, "
+                      f"Started: {actual_dt}, "
+                      f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+
+        # Write error results
+        await write_result_to_files(error_result, output_file, output_csv_file_name)
+        return error_result
+
+
+async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = None, iteration: Optional[int] = None) -> List[Dict[str, str]]:
     """Prepare prompt with session history if needed and ensure it's in the correct format"""
     # Convert string prompts to proper chat format
     formatted_prompt = []
@@ -252,7 +407,7 @@ async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = N
         if prompt and prompt[0].isdigit():
             # Remove the first character if it's a digit
             prompt = prompt[1:]
-        formatted_prompt = [{"role": "user", "content": prompt}]
+        formatted_prompt = [{"role": "user", "content": "iteration: " + str(static_hash(str(iteration))) + "-" + str(prompt)}]
     elif isinstance(prompt, list):
         # If it's already a list, make sure each item has role and content
         formatted_prompt = prompt
@@ -260,24 +415,14 @@ async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = N
         for i, msg in enumerate(formatted_prompt):
             if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
                 # Convert invalid messages to proper format
-                formatted_prompt[i] = {"role": "user", "content": str(msg)}
-    else:
-        # For any other type, convert to string and make it a user message
-        formatted_prompt = [{"role": "user", "content": str(prompt)}]
+                formatted_prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
+        
+    # Note: Session history handling is done in the calling function for token-ids mode
     
-    # Add session history if needed
-    if session_id is not None:
-        async with history_lock:
-            if session_id not in session_history:
-                session_history[session_id] = []
-            else:
-                # Combine history with current messages
-                formatted_prompt = session_history[session_id] + formatted_prompt
-    
-    # Validate final prompt format to ensure it's correct
-    if not formatted_prompt:
-        # Provide a default message if somehow we ended up with an empty prompt
-        formatted_prompt = [{"role": "user", "content": "Hello"}]
+    # # Validate final prompt format to ensure it's correct
+    # if not formatted_prompt:
+    #     # Provide a default message if somehow we ended up with an empty prompt
+    #     formatted_prompt = [{"role": "user", "content": str(static_hash(str(iteration))) + " " + "Hello"}]
     
     logger.debug(f"Formatted prompt: {formatted_prompt}")
     return formatted_prompt
@@ -557,8 +702,8 @@ async def create_client(api_key, endpoint, max_retries, timeout, routing_strateg
     
     return client
 
-async def send_request_batch(client, model, prompt, output_file, request_id, 
-                             session_id=None, target_time=None, max_tokens=2048,
+async def send_request_batch(client, model, prompt, output_file, request_id,
+                             session_id, target_time, max_tokens,
                              temperature=0.0, routing_strategy=None):
     """Send a batch (non-streaming) request asynchronously"""
     start_time = asyncio.get_running_loop().time()
@@ -587,17 +732,17 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
         else:
             logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
         
-        # Double-check prompt format
-        if not isinstance(prompt, list):
-            # Convert to list format for chat completions
-            prompt = [{"role": "user", "content": str(prompt)}]
-        elif not prompt:
-            prompt = [{"role": "user", "content": "Hello"}]
+        # # Double-check prompt format
+        # if not isinstance(prompt, list):
+        #     # Convert to list format for chat completions
+        #     prompt = [{"role": "user", "content": str(prompt)}]
+        # elif not prompt:
+        #     prompt = [{"role": "user", "content": "Hello"}]
         
-        # Ensure each item in the list has role and content
-        for i, msg in enumerate(prompt):
-            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
-                prompt[i] = {"role": "user", "content": str(msg)}
+        # # Ensure each item in the list has role and content
+        # for i, msg in enumerate(prompt):
+        #     if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+        #         prompt[i] = {"role": "user", "content": str(iteration) + "-" + str(msg)}
         
         # Format validation logging
         logger.debug(f"Request {request_id}: Formatted prompt: {prompt}")
@@ -803,13 +948,17 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
 
 
-async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, prompt_type="chat"):
     """Schedule and execute tasks based on their target times with true concurrency"""
     # Sort tasks by target_time
     tasks.sort(key=lambda t: t["target_time"])
-    
-    # Select the appropriate send function based on streaming mode
-    send_func = send_request_streaming if is_streaming else send_request_batch
+
+    # Select the appropriate send function based on streaming mode and prompt type
+    if prompt_type == "token-ids":
+        send_func = send_request_with_token_ids
+        logger.info(f"Using token-ids mode (token IDs from workload file)")
+    else:
+        send_func = send_request_streaming if is_streaming else send_request_batch
     
     # Create a list to hold all task futures
     all_task_futures = []
@@ -824,24 +973,43 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
         delay = max(0, target_time - base_time)
         
         # Create a scheduled task using asyncio
-        scheduled_task = asyncio.create_task(
-            schedule_task(
-                delay=delay,
-                target_time=target_time,
-                request_id=task["request_id"],
-                send_func=send_func,
-                client=client,
-                model=model,
-                prompt=task["prompt"],
-                output_file=output_file,
-                session_id=task["session_id"],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                routing_strategy=routing_strategy,
-                results_lock=results_lock,
-                history_lock=history_lock,
+        if prompt_type == "token-ids":
+            scheduled_task = asyncio.create_task(
+                schedule_task_token_ids(
+                    delay=delay,
+                    target_time=target_time,
+                    request_id=task["request_id"],
+                    client=client,
+                    model=model,
+                    token_ids=task["token_ids"],
+                    output_file=output_file,
+                    session_id=task["session_id"],
+                    max_tokens=task["max_tokens"],
+                    temperature=temperature,
+                    routing_strategy=routing_strategy,
+                    results_lock=results_lock,
+                    history_lock=history_lock,
+                )
             )
-        )
+        else:
+            scheduled_task = asyncio.create_task(
+                schedule_task(
+                    delay=delay,
+                    target_time=target_time,
+                    request_id=task["request_id"],
+                    send_func=send_func,
+                    client=client,
+                    model=model,
+                    prompt=task["prompt"],
+                    output_file=output_file,
+                    session_id=task["session_id"],
+                    max_tokens=task["max_tokens"],
+                    temperature=temperature,
+                    routing_strategy=routing_strategy,
+                    results_lock=results_lock,
+                    history_lock=history_lock,
+                )
+            )
         
         all_task_futures.append(scheduled_task)
     
@@ -858,23 +1026,23 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
     
     return results
 
-async def schedule_task(delay, target_time, request_id, send_func, client, model, prompt, 
+async def schedule_task(delay, target_time, request_id, send_func, client, model, prompt,
                         output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock):
     """Schedule and execute a single task at the specified time"""
     task_start = time.time()
-    
+
     # Wait until the scheduled time
     if delay > 0:
         logger.debug(f"Request {request_id}: Waiting {delay:.3f}s until scheduled time {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}")
         await asyncio.sleep(delay)
-    
+
     # Record actual start time after waiting
     actual_start = time.time()
     wait_accuracy = actual_start - (task_start + delay)
-    
-    logger.debug(f"Request {request_id}: Executing at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start))[:-3]}, " 
+
+    logger.debug(f"Request {request_id}: Executing at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start))[:-3]}, "
                f"scheduling accuracy: {(actual_start - target_time)*1000:.2f}ms, wait accuracy: {wait_accuracy*1000:.2f}ms")
-    
+
     # Execute the task
     result = await send_func(
         client=client,
@@ -890,12 +1058,47 @@ async def schedule_task(delay, target_time, request_id, send_func, client, model
         results_lock=results_lock,
         history_lock=history_lock,
     )
-    
+
+    return result
+
+async def schedule_task_token_ids(delay, target_time, request_id, client, model, token_ids,
+                                output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+    """Schedule and execute a single token-ids task at the specified time"""
+    task_start = time.time()
+
+    # Wait until the scheduled time
+    if delay > 0:
+        logger.debug(f"Request {request_id}: Waiting {delay:.3f}s until scheduled time {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}")
+        await asyncio.sleep(delay)
+
+    # Record actual start time after waiting
+    actual_start = time.time()
+    wait_accuracy = actual_start - (task_start + delay)
+
+    logger.debug(f"Request {request_id}: Executing token-ids task at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start))[:-3]}, "
+               f"scheduling accuracy: {(actual_start - target_time)*1000:.2f}ms, wait accuracy: {wait_accuracy*1000:.2f}ms")
+
+    # Execute the token-ids task
+    result = await send_request_with_token_ids(
+        client=client,
+        model=model,
+        token_ids=token_ids,
+        output_file=output_file,
+        request_id=request_id,
+        session_id=session_id,
+        target_time=target_time,  # No additional waiting as we've already done that
+        max_tokens=max_tokens,
+        temperature=temperature,
+        routing_strategy=routing_strategy,
+        results_lock=results_lock,
+        history_lock=history_lock,
+    )
+
     return result
 
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
-                       temperature, is_streaming, results_lock, history_lock, iterations=1):
+                       temperature, is_streaming, results_lock, history_lock, iterations):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Create a client
     client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
@@ -928,15 +1131,44 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             
             for request in requests:
                 session_id = request.get("session_id", None)
-                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id)
+
+                if args.prompt_type == "token-ids":
+                    # Parse token IDs from workload file
+                    try:
+                        if isinstance(request["prompt"], list):
+                            # Already a list
+                            token_ids = request["prompt"]
+                        elif isinstance(request["prompt"], str):
+                            # Try to parse as JSON array first
+                            try:
+                                token_ids = json.loads(request["prompt"])
+                            except json.JSONDecodeError:
+                                # If not JSON, try space-separated integers
+                                try:
+                                    token_ids = [int(x.strip()) for x in request["prompt"].split() if x.strip()]
+                                except ValueError:
+                                    raise ValueError(f"Cannot parse as token IDs: {request['prompt']}")
+                        else:
+                            raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+
+                        prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
+                    except (json.JSONDecodeError, KeyError, ValueError) as e:
+                        logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
+                        raise
+                else:
+                    token_ids = None
+                    prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+
                 max_tokens_value = request.get("Output Length", max_tokens)
+                # print(f"max_tokens_value: {max_tokens_value}")
                 task = {
                     "prompt": prompt,
                     "request_id": request_id,
                     "session_id": session_id,
                     "target_time": target_time,
                     "max_tokens": max_tokens_value,
-                    "iteration": iteration
+                    "iteration": iteration,
+                    "token_ids": token_ids
                 }
                 iteration_tasks.append(task)
                 request_id += 1
@@ -951,11 +1183,11 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             model=model,
             is_streaming=is_streaming,
             output_file=output_file,
-            max_tokens=max_tokens,
             temperature=temperature,
             routing_strategy=routing_strategy,
             results_lock=results_lock,
             history_lock=history_lock,
+            prompt_type=args.prompt_type,
         )
         end_time = time.time()
         
@@ -1057,6 +1289,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
     parser.add_argument("--output_dir", type=str, default="./", help="output dir")
     parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
+    parser.add_argument("--prompt-type", type=str, default="chat", choices=["chat", "token-ids"],
+                       help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
 
     args = parser.parse_args()
 

@@ -665,7 +665,7 @@ class DataEncoder:
 
         # STEP 8: actions/rewards (continues as normal)
         extract_actions_start = time.time()
-        actions, rewards, ttft_rewards, tpot_rewards = self.extract_actions_rewards(processed_df, n_samples)
+        actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency = self.extract_actions_rewards(processed_df, n_samples)
         overhead_summary['extract_actions'] = time.time() - extract_actions_start
 
         # STEP 10: MINIMAL positional encoding
@@ -711,6 +711,9 @@ class DataEncoder:
             'rewards': rewards,
             'ttft_rewards': ttft_rewards,
             'tpot_rewards': tpot_rewards,
+            'ttft': ttft,
+            'avg_tpot': avg_tpot,
+            'e2e_latency': e2e_latency,
             'feature_stats': getattr(self, 'feature_stats', {}),
             'pod_features_list': self.pod_features,
             'feature_indices_map': per_pod_feature_indices[self.sorted_all_pod_ids[0]] if per_pod_feature_indices and self.sorted_all_pod_ids else {},
@@ -773,6 +776,9 @@ class DataEncoder:
         rewards = np.zeros(n_samples, dtype=np.float32)
         ttft_rewards = np.zeros(n_samples, dtype=np.float32)
         tpot_rewards = np.zeros(n_samples, dtype=np.float32)
+        ttft = np.zeros(n_samples, dtype=np.float32)
+        avg_tpot = np.zeros(n_samples, dtype=np.float32)
+        e2e_latency = np.zeros(n_samples, dtype=np.float32)
         
         # Direct extraction without validation
         if 'selected_pod' in df.columns:
@@ -785,7 +791,7 @@ class DataEncoder:
                         actions[i] = idx
         
         # Direct column extraction
-        for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards)]:
+        for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards), ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency)]:
             if col in df.columns:
                 try:
                     target[:] = df[col].fillna(0).values.astype(np.float32)
@@ -797,7 +803,7 @@ class DataEncoder:
                     logger.error(f"Error processing column {col}: {e}")
                     exit(1)
 
-        return actions, rewards, ttft_rewards, tpot_rewards
+        return actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency
 
     def save_processed_data(self, processed_data):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -811,7 +817,9 @@ class DataEncoder:
             'request_features': torch.FloatTensor(processed_data['request_features']),
             'actions': torch.LongTensor(processed_data['actions']),
             'rewards': torch.FloatTensor(processed_data['rewards']),
-            
+            'ttft': torch.FloatTensor(processed_data['ttft']),
+            'avg_tpot': torch.FloatTensor(processed_data['avg_tpot']),
+            'e2e_latency': torch.FloatTensor(processed_data['e2e_latency']),
             # Enhanced features for transformer
             'positional_encodings': torch.FloatTensor(processed_data['positional_encodings']),
             'pod_features_with_staleness': torch.FloatTensor(processed_data['pod_features_with_staleness']),
@@ -830,7 +838,12 @@ class DataEncoder:
             tensor_data['ttft_rewards'] = torch.FloatTensor(processed_data['ttft_rewards'])
         if 'tpot_rewards' in processed_data and processed_data['tpot_rewards'] is not None:
             tensor_data['tpot_rewards'] = torch.FloatTensor(processed_data['tpot_rewards'])
-            
+        if 'ttft' in processed_data and processed_data['ttft'] is not None:
+            tensor_data['ttft'] = torch.FloatTensor(processed_data['ttft'])
+        if 'avg_tpot' in processed_data and processed_data['avg_tpot'] is not None:
+            tensor_data['avg_tpot'] = torch.FloatTensor(processed_data['avg_tpot'])
+        if 'e2e_latency' in processed_data and processed_data['e2e_latency'] is not None:
+            tensor_data['e2e_latency'] = torch.FloatTensor(processed_data['e2e_latency'])
         # global_tensor_path = "global_tensor_dataset.pt"
         # self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
         torch.save(tensor_data, os.path.join(self.output_dir, "tensor_dataset.pt"))

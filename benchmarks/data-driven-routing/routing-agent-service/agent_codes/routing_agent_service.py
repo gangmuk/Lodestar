@@ -17,6 +17,7 @@ import encoding
 # import ppo
 # import contextual_bandit
 import simpler_contextual_bandit
+import latency_predictor
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -221,7 +222,18 @@ def handle_infer():
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
-        result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+        
+        # Route to appropriate model based on model type
+        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        
+        if model_type == 'latency_predictor':
+            logger.info(f"Using latency predictor model for inference (request_id: {request_id})")
+            result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids)
+        else:
+            logger.info(f"Using contextual bandit model for inference (request_id: {request_id})")
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+            result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
+            result['chosen_pod_predicted_latency'] = -1
         if MODEL_UPDATED:
             logger.info("Model updated flag consumed, resetting to False")
             MODEL_UPDATED = False
@@ -256,6 +268,7 @@ def handle_infer():
             overhead_log += f", preprocess_{key}: {value*1000:.0f}ms"
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
+            
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
@@ -267,6 +280,8 @@ def handle_infer():
             "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
             "overhead_log": overhead_log,
+            "predicted_latencies": result['predicted_latencies'],
+            "chosen_pod_predicted_latency": result['chosen_pod_predicted_latency'],
         }
         return jsonify(response), 200
         
@@ -290,9 +305,19 @@ def online_train_routine():
     training_start_time = time.time()
     logger.info(f"Start {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
     try:
-        simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
+        # Route to appropriate training function based on model type
+        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        
+        if model_type == 'latency_predictor':
+            logger.info(f"Training with latency predictor model")
+            latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+        else:
+            logger.info(f"Training with contextual bandit model")
+            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
+            
     except Exception as e:
         logger.error(f"Error during training: {e}")
+        TRAINING_RIGHT_NOW = False
         return
     MODEL_UPDATED = True
     NUM_TRAINS += 1
@@ -356,6 +381,15 @@ def init():
         RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         logger.info("Loading RL hyperparameters from model_config.json")
         utils.load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
+        
+        # Log the model type that will be used
+        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        logger.info(f"🤖 Model type configured: {model_type}")
+        if model_type == 'latency_predictor':
+            latency_metric = RL_MODEL_HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
+            logger.info(f"📊 Latency metric for prediction: {latency_metric}")
+        else:
+            logger.info(f"🎯 Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
         # Test permissions first
         logger.info("Testing Kubernetes API permissions...")
         if not test_kubernetes_permissions():

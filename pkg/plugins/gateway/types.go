@@ -82,6 +82,9 @@ const (
 
 	HeaderNumPrefillTokensForAllPods = "x-num-prefill-tokens-all-pods"
 	HeaderNumDecodeTokensForAllPods  = "x-num-decode-tokens-all-pods"
+
+	HeaderPredictedLatencies        = "x-predicted-latencies"
+	HeaderChosenPodPredictedLatency = "x-chosen-pod-predicted-latency"
 )
 
 var (

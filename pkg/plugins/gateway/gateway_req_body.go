@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	var model string
 	var subAlgorithm string
+	var iteration int
 	var routingCtx *types.RoutingContext
 	var ok, stream bool
 	var term int64 // Identify the trace window
@@ -60,17 +62,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				Key: HeaderErrorNoModelInRequest, RawValue: []byte(model)}}},
 			"no model in request body"), model, routingCtx, stream, term
 	}
-
-	if subAlgorithmValue, exists := jsonMap["subAlgorithm"]; exists {
-		if subAlgorithm, ok = subAlgorithmValue.(string); !ok {
-			klog.InfoS("subAlgorithm is not a string", "requestID", requestID, "value", subAlgorithmValue)
-			subAlgorithm = ""
-		}
-	} else {
-		subAlgorithm = ""
-		klog.V(4).InfoS("subAlgorithm not present in request. set it empty string", "requestID", requestID)
-	}
-	klog.InfoS("subAlgorithm", "requestID", requestID, "subAlgorithm", subAlgorithm)
 
 	// early reject the request if model doesn't exist.
 	if !s.cache.HasModel(model) {
@@ -109,13 +100,37 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
 		message, extErr := getRequestMessage(jsonMap)
+		routingCtx = routingAlgorithm.NewContext(ctx, model, message, requestID)
+
 		if extErr != nil {
 			klog.Errorf("error to get request message: %v, requestID: %s", extErr, requestID)
 			return extErr, model, routingCtx, stream, term
 		}
 		// klog.InfoS("Context state before pod selection", "requestID", requestID, "isDone", ctx.Err() != nil)
-		routingCtx = routingAlgorithm.NewContext(ctx, model, message, requestID)
+		if subAlgorithmValue, exists := jsonMap["subAlgorithm"]; exists {
+			if subAlgorithm, ok = subAlgorithmValue.(string); !ok {
+				klog.InfoS("subAlgorithm is not a string", "requestID", requestID, "value", subAlgorithmValue)
+				subAlgorithm = ""
+			}
+		} else {
+			subAlgorithm = ""
+			klog.ErrorS(nil, "subAlgorithm not present in request. set it empty string", "requestID", requestID)
+		}
+		klog.InfoS("subAlgorithm", "requestID", requestID, "subAlgorithm", subAlgorithm)
 		routingCtx.SubAlgorithm = subAlgorithm
+
+		if iterationValue, exists := jsonMap["iteration"]; exists {
+			strValue, ok := iterationValue.(string)
+			if !ok {
+				klog.ErrorS(nil, "iteration is not a string", "requestID", requestID, "value", iterationValue)
+				iteration = -2
+			}
+			iteration, err = strconv.Atoi(strValue)
+		} else {
+			iteration = -3
+			klog.ErrorS(nil, "iteration not present in request. set it -3", "requestID", requestID)
+		}
+		routingCtx.Iteration = iteration
 
 		// klog.V(5).InfoS("New routing context created", "requestID", requestID, "isDone", routingCtx.Err() != nil)
 

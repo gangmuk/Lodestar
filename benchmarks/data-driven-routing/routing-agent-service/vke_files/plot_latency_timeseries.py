@@ -10,11 +10,13 @@ import pandas as pd
 import re
 import json
 from matplotlib.lines import Line2D
+import numpy as np
+from numpy.polynomial.polynomial import polyfit
 # from logger import logger
 
-linewidth = 2
+linewidth = 1.5
 edgecolor = 'gray'
-alpha = 0.8
+alpha = 0.7
 marker_size = 50
 edgewidth=0.5
 
@@ -99,6 +101,10 @@ def parse_metrics_line(line):
         'num_prefill_tokens_for_all_pods': parsed_data.get('numPrefillTokensForAllPods'),  # ADD THIS
         'num_decode_tokens_for_all_pods': parsed_data.get('numDecodeTokensForAllPods'),  # ADD THIS
         'vllm_gpu_kv_cache_usage': parsed_data.get('vllmGPUKVCacheUsage'),  # ADD THIS
+        'exploration': parsed_data.get('exploration'),  # ADD THIS - routing exploration flag
+        'exploration_enabled': parsed_data.get('explorationEnabled'),  # ADD THIS - exploration enabled flag
+        'predicted_latencies': parsed_data.get('predictedLatencies'),  # ADD THIS - predicted latencies for all pods
+        'chosen_pod_predicted_latency': float(parsed_data.get('chosenPodPredictedLatency', 0)) if parsed_data.get('chosenPodPredictedLatency') else None,  # ADD THIS - predicted latency for chosen pod
     }
     
     # Only require request_id and start_time as essential
@@ -124,9 +130,10 @@ def parse_metrics_string(metrics_str):
         key = parts[i]
         
         # JSON fields that might span multiple parts
-        json_keys = {'allPodsKvCacheHitRatios', 'vllmGPUKVCacheUsage', 'vllmCPUKVCacheUsage', 
+        json_keys = {'allPodsKvCacheHitRatios', 'vllmGPUKVCacheUsage', 'vllmCPUKVCacheUsage',
                      'vllmNumRequestsRunning', 'vllmNumRequestsWaiting', 'podMetricsLastSecond',
-                     'numInflightRequestsAllPods', 'numPrefillTokensForAllPods', 'numDecodeTokensForAllPods'}
+                     'numInflightRequestsAllPods', 'numPrefillTokensForAllPods', 'numDecodeTokensForAllPods',
+                     'predictedLatencies'}
         
         if key in json_keys:
             # Handle JSON value
@@ -1248,6 +1255,134 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     
     return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10, ax11]
 
+def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1):
+    """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
+    # Define the prediction analysis plots (rows 20-21)
+    ax_pred_scatter = fig.add_subplot(gs[20, :])  # Actual vs Predicted Latency Scatter Plot (full width)
+    ax_pred_timeseries = fig.add_subplot(gs[21, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
+
+    # SUBPLOT 1: Actual vs Predicted Latency Scatter Plot (ax_pred_scatter)
+    # Filter out entries where predicted latency is None or 0 (no prediction made)
+    valid_predictions = df[(df['chosen_pod_predicted_latency'].notna()) &
+                          (df['chosen_pod_predicted_latency'] > 0) &
+                          (df['e2e'].notna()) &
+                          (df['e2e'] > 0)]
+
+    if not valid_predictions.empty:
+        # Scatter plot of actual vs predicted
+        ax_pred_scatter.scatter(valid_predictions['e2e'], valid_predictions['chosen_pod_predicted_latency'],
+                               s=10, color='tab:pink', alpha=0.6, marker='.',
+                               label='Predictions')
+
+        # Add diagonal line for perfect prediction
+        max_val = max(valid_predictions['e2e'].max(), valid_predictions['chosen_pod_predicted_latency'].max())
+        min_val = min(valid_predictions['e2e'].min(), valid_predictions['chosen_pod_predicted_latency'].min())
+        ax_pred_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=linewidth, alpha=alpha, label='Perfect Prediction')
+
+        ## Add regression line (optional)
+        # try:
+        #     b, m = polyfit(valid_predictions['e2e'], valid_predictions['chosen_pod_predicted_latency'], 1)
+        #     x_range = np.linspace(min_val, max_val, 100)
+        #     ax_pred_scatter.plot(x_range, m * x_range + b, 'g-', linewidth=linewidth, alpha=alpha, label=f'Linear Fit: y={m:.2f}x+{b:.2f}')
+        # except:
+        #     pass  # Skip regression if it fails
+
+        # Set same range for x and y axes, starting from 0
+        ax_pred_scatter.set_xlim(0, max_val)
+        ax_pred_scatter.set_ylim(0, max_val)
+
+        # Set same grid intervals for both axes to create square grid cells
+        # Calculate a reasonable number of grid lines (around 10-15 total)
+        import math
+        n_grid_lines = 10
+        grid_interval = math.ceil(max_val / n_grid_lines / 1000) * 1000  # Round to nearest 1000ms
+
+        # Create explicit tick positions that are exactly the same for both axes
+        tick_positions = [i * grid_interval for i in range(0, int(max_val / grid_interval) + 2)]
+        tick_positions = [pos for pos in tick_positions if pos <= max_val]
+
+        # Clear any existing locators and formatters
+        ax_pred_scatter.xaxis.set_major_locator(ticker.NullLocator())
+        ax_pred_scatter.yaxis.set_major_locator(ticker.NullLocator())
+
+        # Set exact same tick positions for both axes
+        ax_pred_scatter.set_xticks(tick_positions)
+        ax_pred_scatter.set_yticks(tick_positions)
+
+        # Force the same tick labels
+        ax_pred_scatter.set_xticklabels([f'{int(tick)}' for tick in tick_positions])
+        ax_pred_scatter.set_yticklabels([f'{int(tick)}' for tick in tick_positions])
+
+        # Use FixedLocator to prevent matplotlib from changing ticks
+        ax_pred_scatter.xaxis.set_major_locator(ticker.FixedLocator(tick_positions))
+        ax_pred_scatter.yaxis.set_major_locator(ticker.FixedLocator(tick_positions))
+
+        ax_pred_scatter.set_xlabel('Actual E2E Latency (ms)', fontsize=10, fontweight='bold')
+        ax_pred_scatter.set_ylabel('Predicted Latency (ms)', fontsize=10, fontweight='bold')
+        ax_pred_scatter.set_title('Actual vs Predicted Latency Comparison', fontsize=16, fontweight='bold', pad=10)
+        ax_pred_scatter.grid(True, alpha=alpha, which='major')
+        ax_pred_scatter.legend(fontsize=8, loc='upper right')
+
+        # Rotate x-axis tick labels by 45 degrees
+        ax_pred_scatter.tick_params(axis='x', rotation=45)
+
+        # Calculate and display prediction accuracy metrics
+        mse = ((valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']) ** 2).mean()
+        mae = (valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']).abs().mean()
+        mape = ((valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']).abs() / valid_predictions['e2e']).mean() * 100
+
+        # ax_pred_scatter.text(0.02, 0.98, '.2f',
+        #                     transform=ax_pred_scatter.transAxes, fontsize=10, verticalalignment='top',
+        #                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=alpha))
+
+        # Set equal aspect ratio for better visualization
+        ax_pred_scatter.set_aspect('equal', adjustable='box')
+
+    else:
+        ax_pred_scatter.text(0.5, 0.5, 'No Valid Prediction Data Available', transform=ax_pred_scatter.transAxes,
+                            ha='center', va='center', fontsize=16, alpha=alpha)
+        ax_pred_scatter.set_title('Actual vs Predicted Latency Comparison', fontsize=16, fontweight='bold', pad=10)
+
+    # SUBPLOT 2: Prediction Time Series (ax_pred_timeseries)
+    # Plot actual E2E latency for each pod (following same format as other time series)
+    for pod in unique_pods:
+        pod_df = df[df['selectedpod'] == pod]
+        ax_pred_timeseries.scatter(pod_df['relative_time'], pod_df['e2e'], s=marker_size,
+                                  color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+
+    # Plot predicted latency where available (as overlay)
+    valid_pred_timeseries = df[(df['chosen_pod_predicted_latency'].notna()) &
+                              (df['chosen_pod_predicted_latency'] > 0)]
+    
+    # if not valid_pred_timeseries.empty:
+    #     ax_pred_timeseries.scatter(valid_pred_timeseries['relative_time'], valid_pred_timeseries['chosen_pod_predicted_latency'],
+    #                               s=10, color='tab:pink', linewidth=linewidth, alpha=0.7,
+    #                               marker='x', label='Predicted Latency')
+
+    # Add average predicted latency per second (using valid predictions only)
+    valid_pred_avg = df[(df['chosen_pod_predicted_latency'].notna()) & (df['chosen_pod_predicted_latency'] > 0)].copy()
+    if not valid_pred_avg.empty:
+        valid_pred_avg['time_bin'] = np.floor(valid_pred_avg['relative_time']).astype(int)
+        pred_avg_per_sec = valid_pred_avg.groupby('time_bin')['chosen_pod_predicted_latency'].mean().reset_index()
+        ax_pred_timeseries.plot(pred_avg_per_sec['time_bin'], pred_avg_per_sec['chosen_pod_predicted_latency'],
+                               color='tab:pink', linestyle='-', linewidth=linewidth+0.5, alpha=1,
+                               label='Avg Predicted (per sec)', zorder=10)
+        
+    # Add sliding window average for all E2E values per second
+    df['time_bin'] = np.floor(df['relative_time']).astype(int)
+    e2e_avg_per_sec = df.groupby('time_bin')['e2e'].mean().reset_index()
+    ax_pred_timeseries.plot(e2e_avg_per_sec['time_bin'], e2e_avg_per_sec['e2e'], 'tab:orange', '-', linewidth=linewidth+0.5, alpha=1, label='Avg E2E (per sec)', zorder=10)
+
+    add_transition_lines(ax_pred_timeseries, train_transitions, flush_transitions)
+    ax_pred_timeseries.set_xlabel('Relative Time (seconds)', fontsize=14, fontweight='bold')
+    ax_pred_timeseries.set_ylabel('Latency (ms)', fontsize=14, fontweight='bold')
+    ax_pred_timeseries.set_title('E2E Latency Time Series with Predictions', fontsize=16, fontweight='bold', pad=10)
+    ax_pred_timeseries.grid(True, alpha=alpha)
+    ax_pred_timeseries.legend(fontsize=10, loc='upper left')
+
+    return ax_pred_scatter, ax_pred_timeseries
+
+
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     # Convert to DataFrame for easier analysis
     df = pd.DataFrame(data)
@@ -1280,8 +1415,8 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     pod_colors = dict(zip(unique_pods, colors))
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
-    fig = plt.figure(figsize=(15, 50))  # Reduced height after removing empty rows
-    gs = GridSpec(20, 3, figure=fig, height_ratios=[0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0], hspace=1.0, top=0.96)  # 20 rows with very wide spacing and much taller analysis plots
+    fig = plt.figure(figsize=(15, 55))  # Increased height for additional plots
+    gs = GridSpec(22, 3, figure=fig, height_ratios=[0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0], hspace=1.0, top=0.96)  # 22 rows with very wide spacing and much taller analysis plots
     
     # Plot all subplots
     ax_total_rate, ax_token_rate, ax_pod_rate = plot_request_rate_subplots(
@@ -1293,15 +1428,24 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     
     analysis_axes = plot_analysis_subplots(
         fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors)
-    
-    # Set font sizes for tick labels  
-    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes
+
+    prediction_axes = plot_prediction_analysis_subplots(
+        fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1)
+
+    # Unpack prediction axes for conditional formatting below
+    ax_pred_scatter, ax_pred_timeseries = prediction_axes
+
+    # Set font sizes for tick labels
+    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes + list(prediction_axes)
     for ax in all_axes:
         ax.tick_params(axis='both', which='major', labelsize=11)
         ax.grid(True, linestyle='--', alpha=0.3)
         
         # Force y-axis tick generation for axes with data
         ylim = ax.get_ylim()
+        # Do not override custom ticks on the Actual vs Predicted scatter plot
+        if ax is ax_pred_scatter:
+            continue
         if ylim[1] > ylim[0] + 1:  # Only if there's a meaningful range
             # Force matplotlib to generate proper y-ticks
             ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=6))

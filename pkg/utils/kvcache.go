@@ -618,6 +618,11 @@ var ExplorationEnabled = make(map[string]int)
 var ExplorationMutex sync.RWMutex
 var ExplorationEnabledMutex sync.RWMutex
 
+var PredictedLatenciesMutex sync.RWMutex
+var PredictedLatencies = make(map[string]map[string]float64)
+var ChosenPodPredictedLatencyMutex sync.RWMutex
+var ChosenPodPredictedLatency = make(map[string]float64)
+
 var (
 	FirstRequestStartTime   int64 = 0
 	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
@@ -850,6 +855,46 @@ func CleanupExploration(requestID string) {
 	defer ExplorationEnabledMutex.Unlock()
 	delete(Exploration, requestID)
 	delete(ExplorationEnabled, requestID)
+}
+
+func SetPredictedLatencies(predictedLatencies map[string]float64, requestID string) {
+	PredictedLatenciesMutex.Lock()
+	defer PredictedLatenciesMutex.Unlock()
+	PredictedLatencies[requestID] = predictedLatencies
+}
+
+func GetPredictedLatencies(requestID string) map[string]float64 {
+	PredictedLatenciesMutex.RLock()
+	defer PredictedLatenciesMutex.RUnlock()
+	return PredictedLatencies[requestID]
+}
+
+func CleanupPredictedLatencies(requestID string) {
+	PredictedLatenciesMutex.Lock()
+	defer PredictedLatenciesMutex.Unlock()
+	delete(PredictedLatencies, requestID)
+}
+
+func GetPredictedLatenciesMutex() *sync.RWMutex {
+	return &PredictedLatenciesMutex
+}
+
+func SetChosenPodPredictedLatency(chosenPodPredictedLatency float64, requestID string) {
+	ChosenPodPredictedLatencyMutex.Lock()
+	defer ChosenPodPredictedLatencyMutex.Unlock()
+	ChosenPodPredictedLatency[requestID] = chosenPodPredictedLatency
+}
+
+func GetChosenPodPredictedLatency(requestID string) float64 {
+	ChosenPodPredictedLatencyMutex.RLock()
+	defer ChosenPodPredictedLatencyMutex.RUnlock()
+	return ChosenPodPredictedLatency[requestID]
+}
+
+func CleanupChosenPodPredictedLatency(requestID string) {
+	ChosenPodPredictedLatencyMutex.Lock()
+	defer ChosenPodPredictedLatencyMutex.Unlock()
+	delete(ChosenPodPredictedLatency, requestID)
 }
 
 func GetNumFlush() int {
