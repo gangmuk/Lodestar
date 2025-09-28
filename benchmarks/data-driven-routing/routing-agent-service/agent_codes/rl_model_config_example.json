@@ -1,0 +1,41 @@
+{
+    "MODEL_TYPE": "rl_contextual_bandit_sb3",
+    
+    "_comment_model_type": "Options: 'contextual_bandit', 'latency_predictor', 'rl_contextual_bandit_sb3'",
+    
+    "learning_rate": 0.0003,
+    "reward_decay_factor": 0.95,
+    "hidden_dim": 64,
+    "use_custom_reward": true,
+    
+    "_comment_sb3_params": "SB3-specific hyperparameters",
+    "n_steps": 2048,
+    "batch_size": 64,
+    "n_epochs": 10,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "entropy_coeff": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    
+    "_comment_online_learning": "Online learning parameters",
+    "online_update_threshold": 50,
+    
+    "_comment_existing_params": "Existing parameters (unchanged)",
+    "training_epochs": 50,
+    "batch_size_for_train": 256,
+    "eval_interval": 3,
+    "training_seed": 42,
+    "deterministic_training": true,
+    "per_learn_reward_normalization": false,
+    "entropy_bonus_factor": 0.01,
+    "lr_scheduler": "exponential",
+    "lr_scheduler_gamma": 0.95,
+    "exclude_pod_features": ["prefill_tokens"],
+    "NO_NORMALIZE_FEATURES": [],
+    "REWARD_FUNC": "linear_simple_extended",
+    "ttft_slo": 1000,
+    "avg_tpot_slo": 50,
+    "ttft_reward_weight": 2.0,
+    "weight_initialization": "kaiming"
+}

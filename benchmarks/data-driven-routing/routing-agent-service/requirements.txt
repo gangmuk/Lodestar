@@ -5,6 +5,10 @@ scikit-learn>=1.0.0
 matplotlib>=3.4.0
 seaborn
 
+# RL dependencies
+stable-baselines3[extra]>=2.7.0
+gymnasium>=1.2.0
+
 kubernetes>=28.1.0
 python-dateutil>=2.8.0
 torch

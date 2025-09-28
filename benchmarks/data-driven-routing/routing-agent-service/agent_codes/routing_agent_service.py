@@ -229,6 +229,12 @@ def handle_infer():
         if model_type == 'latency_predictor':
             logger.info(f"Using latency predictor model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids)
+        elif model_type == 'rl_contextual_bandit_sb3':
+            logger.info(f"Using SB3 RL contextual bandit model for inference (request_id: {request_id})")
+            import rl_contextual_bandit_sb3
+            result, infer_from_tensor_overhead_summary = rl_contextual_bandit_sb3.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+            result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
+            result['chosen_pod_predicted_latency'] = -1
         else:
             logger.info(f"Using contextual bandit model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
