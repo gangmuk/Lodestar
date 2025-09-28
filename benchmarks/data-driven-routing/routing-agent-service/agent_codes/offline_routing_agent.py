@@ -94,6 +94,10 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
             if model_type == 'latency_predictor':
                 logger.info("Training with latency predictor model")
                 saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+            elif model_type == 'rl_contextual_bandit_sb3':
+                logger.info("Training with SB3 RL contextual bandit model")
+                import rl_contextual_bandit_sb3
+                saved_plot_path = rl_contextual_bandit_sb3.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
             else:
                 logger.info("Training with contextual bandit model")
                 saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
@@ -504,13 +508,23 @@ def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMET
     logger.info("🔍 VERIFYING TRAINING DETERMINISM")
     
     # Train model twice with same settings
+    model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+    
     logger.info("Training model #1...")
     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
+    if model_type == 'rl_contextual_bandit_sb3':
+        import rl_contextual_bandit_sb3
+        saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
+    else:
+        saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
     
     logger.info("Training model #2...")
     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
+    if model_type == 'rl_contextual_bandit_sb3':
+        import rl_contextual_bandit_sb3
+        saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
+    else:
+        saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
     
     # Compare final model weights
     model1_path = f"{model_output_dir}_test1/policy.pth"

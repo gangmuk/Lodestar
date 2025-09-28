@@ -1255,8 +1255,35 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     
     return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10, ax11]
 
-def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1):
+def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy):
     """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
+    # Determine the target latency metric based on routing policy
+    if 'latency_predictor_ttft' in routing_policy:
+        actual_col = 'ttft'
+        metric_name = 'TTFT'
+        ylabel = 'TTFT (ms)'
+        title_scatter = 'Actual vs Predicted TTFT Comparison'
+        title_timeseries = 'TTFT Time Series with Predictions'
+    elif 'latency_predictor_avg_tpot' in routing_policy:
+        actual_col = 'avg_tpot'
+        metric_name = 'TPOT'
+        ylabel = 'TPOT (ms)'
+        title_scatter = 'Actual vs Predicted TPOT Comparison'
+        title_timeseries = 'TPOT Time Series with Predictions'
+    elif 'latency_predictor_e2e_latency' in routing_policy:
+        actual_col = 'e2e'
+        metric_name = 'E2E Latency'
+        ylabel = 'E2E Latency (ms)'
+        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
+        title_timeseries = 'E2E Latency Time Series with Predictions'
+    else:
+        # Fallback to E2E for any other latency predictor
+        actual_col = 'e2e'
+        metric_name = 'E2E Latency'
+        ylabel = 'E2E Latency (ms)'
+        title_scatter = 'Actual vs Predicted Latency Comparison'
+        title_timeseries = 'E2E Latency Time Series with Predictions'
+
     # Define the prediction analysis plots (rows 20-21)
     ax_pred_scatter = fig.add_subplot(gs[20, :])  # Actual vs Predicted Latency Scatter Plot (full width)
     ax_pred_timeseries = fig.add_subplot(gs[21, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
@@ -1265,23 +1292,23 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     # Filter out entries where predicted latency is None or 0 (no prediction made)
     valid_predictions = df[(df['chosen_pod_predicted_latency'].notna()) &
                           (df['chosen_pod_predicted_latency'] > 0) &
-                          (df['e2e'].notna()) &
-                          (df['e2e'] > 0)]
+                          (df[actual_col].notna()) &
+                          (df[actual_col] > 0)]
 
     if not valid_predictions.empty:
         # Scatter plot of actual vs predicted
-        ax_pred_scatter.scatter(valid_predictions['e2e'], valid_predictions['chosen_pod_predicted_latency'],
+        ax_pred_scatter.scatter(valid_predictions[actual_col], valid_predictions['chosen_pod_predicted_latency'],
                                s=10, color='tab:pink', alpha=0.6, marker='.',
                                label='Predictions')
 
         # Add diagonal line for perfect prediction
-        max_val = max(valid_predictions['e2e'].max(), valid_predictions['chosen_pod_predicted_latency'].max())
-        min_val = min(valid_predictions['e2e'].min(), valid_predictions['chosen_pod_predicted_latency'].min())
+        max_val = max(valid_predictions[actual_col].max(), valid_predictions['chosen_pod_predicted_latency'].max())
+        min_val = min(valid_predictions[actual_col].min(), valid_predictions['chosen_pod_predicted_latency'].min())
         ax_pred_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=linewidth, alpha=alpha, label='Perfect Prediction')
 
         ## Add regression line (optional)
         # try:
-        #     b, m = polyfit(valid_predictions['e2e'], valid_predictions['chosen_pod_predicted_latency'], 1)
+        #     b, m = polyfit(valid_predictions[actual_col], valid_predictions['chosen_pod_predicted_latency'], 1)
         #     x_range = np.linspace(min_val, max_val, 100)
         #     ax_pred_scatter.plot(x_range, m * x_range + b, 'g-', linewidth=linewidth, alpha=alpha, label=f'Linear Fit: y={m:.2f}x+{b:.2f}')
         # except:
@@ -1317,9 +1344,9 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         ax_pred_scatter.xaxis.set_major_locator(ticker.FixedLocator(tick_positions))
         ax_pred_scatter.yaxis.set_major_locator(ticker.FixedLocator(tick_positions))
 
-        ax_pred_scatter.set_xlabel('Actual E2E Latency (ms)', fontsize=10, fontweight='bold')
+        ax_pred_scatter.set_xlabel(f'Actual {metric_name} (ms)', fontsize=10, fontweight='bold')
         ax_pred_scatter.set_ylabel('Predicted Latency (ms)', fontsize=10, fontweight='bold')
-        ax_pred_scatter.set_title('Actual vs Predicted Latency Comparison', fontsize=16, fontweight='bold', pad=10)
+        ax_pred_scatter.set_title(title_scatter, fontsize=16, fontweight='bold', pad=10)
         ax_pred_scatter.grid(True, alpha=alpha, which='major')
         ax_pred_scatter.legend(fontsize=8, loc='upper right')
 
@@ -1327,9 +1354,9 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         ax_pred_scatter.tick_params(axis='x', rotation=45)
 
         # Calculate and display prediction accuracy metrics
-        mse = ((valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']) ** 2).mean()
-        mae = (valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']).abs().mean()
-        mape = ((valid_predictions['e2e'] - valid_predictions['chosen_pod_predicted_latency']).abs() / valid_predictions['e2e']).mean() * 100
+        mse = ((valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']) ** 2).mean()
+        mae = (valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']).abs().mean()
+        mape = ((valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']).abs() / valid_predictions[actual_col]).mean() * 100
 
         # ax_pred_scatter.text(0.02, 0.98, '.2f',
         #                     transform=ax_pred_scatter.transAxes, fontsize=10, verticalalignment='top',
@@ -1341,19 +1368,19 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     else:
         ax_pred_scatter.text(0.5, 0.5, 'No Valid Prediction Data Available', transform=ax_pred_scatter.transAxes,
                             ha='center', va='center', fontsize=16, alpha=alpha)
-        ax_pred_scatter.set_title('Actual vs Predicted Latency Comparison', fontsize=16, fontweight='bold', pad=10)
+        ax_pred_scatter.set_title(title_scatter, fontsize=16, fontweight='bold', pad=10)
 
     # SUBPLOT 2: Prediction Time Series (ax_pred_timeseries)
-    # Plot actual E2E latency for each pod (following same format as other time series)
+    # Plot actual target latency metric for each pod (following same format as other time series)
     for pod in unique_pods:
         pod_df = df[df['selectedpod'] == pod]
-        ax_pred_timeseries.scatter(pod_df['relative_time'], pod_df['e2e'], s=marker_size,
+        ax_pred_timeseries.scatter(pod_df['relative_time'], pod_df[actual_col], s=marker_size,
                                   color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
 
     # Plot predicted latency where available (as overlay)
     valid_pred_timeseries = df[(df['chosen_pod_predicted_latency'].notna()) &
                               (df['chosen_pod_predicted_latency'] > 0)]
-    
+
     # if not valid_pred_timeseries.empty:
     #     ax_pred_timeseries.scatter(valid_pred_timeseries['relative_time'], valid_pred_timeseries['chosen_pod_predicted_latency'],
     #                               s=10, color='tab:pink', linewidth=linewidth, alpha=0.7,
@@ -1367,23 +1394,29 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         ax_pred_timeseries.plot(pred_avg_per_sec['time_bin'], pred_avg_per_sec['chosen_pod_predicted_latency'],
                                color='tab:pink', linestyle='-', linewidth=linewidth+0.5, alpha=1,
                                label='Avg Predicted (per sec)', zorder=10)
-        
-    # Add sliding window average for all E2E values per second
+
+    # Add sliding window average for all target metric values per second
     df['time_bin'] = np.floor(df['relative_time']).astype(int)
-    e2e_avg_per_sec = df.groupby('time_bin')['e2e'].mean().reset_index()
-    ax_pred_timeseries.plot(e2e_avg_per_sec['time_bin'], e2e_avg_per_sec['e2e'], 'tab:orange', '-', linewidth=linewidth+0.5, alpha=1, label='Avg E2E (per sec)', zorder=10)
+    actual_avg_per_sec = df.groupby('time_bin')[actual_col].mean().reset_index()
+    ax_pred_timeseries.plot(actual_avg_per_sec['time_bin'], actual_avg_per_sec[actual_col], 'tab:orange', '-', linewidth=linewidth+0.5, alpha=1, label=f'Avg {metric_name} (per sec)', zorder=10)
 
     add_transition_lines(ax_pred_timeseries, train_transitions, flush_transitions)
     ax_pred_timeseries.set_xlabel('Relative Time (seconds)', fontsize=14, fontweight='bold')
-    ax_pred_timeseries.set_ylabel('Latency (ms)', fontsize=14, fontweight='bold')
-    ax_pred_timeseries.set_title('E2E Latency Time Series with Predictions', fontsize=16, fontweight='bold', pad=10)
+    ax_pred_timeseries.set_ylabel(ylabel, fontsize=14, fontweight='bold')
+    ax_pred_timeseries.set_title(title_timeseries, fontsize=16, fontweight='bold', pad=10)
     ax_pred_timeseries.grid(True, alpha=alpha)
-    ax_pred_timeseries.legend(fontsize=10, loc='upper left')
+
+    # Create legend with only the labeled lines we want (exclude any automatic blue label)
+    legend_elements = []
+    if not valid_pred_avg.empty:
+        legend_elements.append(Line2D([0], [0], color='tab:pink', linewidth=linewidth+0.5, label='Avg Predicted (per sec)'))
+    legend_elements.append(Line2D([0], [0], color='tab:orange', linewidth=linewidth+0.5, label=f'Avg {metric_name} (per sec)'))
+    ax_pred_timeseries.legend(handles=legend_elements, fontsize=10, loc='upper left')
 
     return ax_pred_scatter, ax_pred_timeseries
 
 
-def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
+def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy):
     # Convert to DataFrame for easier analysis
     df = pd.DataFrame(data)
     if len(df) == 0:
@@ -1414,9 +1447,19 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     colors = plt.cm.viridis(np.linspace(0, 0.9, len(unique_pods)))
     pod_colors = dict(zip(unique_pods, colors))
 
+    # Determine number of rows based on whether prediction plots are needed
+    if 'latency_predictor' in routing_policy:
+        n_rows = 22
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0]
+        fig_height = 55
+    else:
+        n_rows = 20  # Skip the last 2 rows for prediction plots
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0]
+        fig_height = 50
+
     # Create a more complex figure with GridSpec - Updated with additional subplots
-    fig = plt.figure(figsize=(15, 55))  # Increased height for additional plots
-    gs = GridSpec(22, 3, figure=fig, height_ratios=[0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0], hspace=1.0, top=0.96)  # 22 rows with very wide spacing and much taller analysis plots
+    fig = plt.figure(figsize=(15, fig_height))
+    gs = GridSpec(n_rows, 3, figure=fig, height_ratios=height_ratios, hspace=1.0, top=0.96)
     
     # Plot all subplots
     ax_total_rate, ax_token_rate, ax_pod_rate = plot_request_rate_subplots(
@@ -1429,14 +1472,19 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     analysis_axes = plot_analysis_subplots(
         fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors)
 
-    prediction_axes = plot_prediction_analysis_subplots(
-        fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1)
+    if 'latency_predictor' in routing_policy:
+        prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy)
+    else:
+        prediction_axes = None
 
-    # Unpack prediction axes for conditional formatting below
-    ax_pred_scatter, ax_pred_timeseries = prediction_axes
+    # Unpack prediction axes for conditional formatting below (only if prediction plots were created)
+    if prediction_axes is not None:
+        ax_pred_scatter, ax_pred_timeseries = prediction_axes
 
     # Set font sizes for tick labels
-    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes + list(prediction_axes)
+    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes
+    if prediction_axes is not None:
+        all_axes += list(prediction_axes)
     for ax in all_axes:
         ax.tick_params(axis='both', which='major', labelsize=11)
         ax.grid(True, linestyle='--', alpha=0.3)
@@ -1444,7 +1492,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
         # Force y-axis tick generation for axes with data
         ylim = ax.get_ylim()
         # Do not override custom ticks on the Actual vs Predicted scatter plot
-        if ax is ax_pred_scatter:
+        if prediction_axes is not None and ax is ax_pred_scatter:
             continue
         if ylim[1] > ylim[0] + 1:  # Only if there's a meaningful range
             # Force matplotlib to generate proper y-ticks
@@ -1491,26 +1539,25 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft=1000, slo_tpot=50):
     
     return fig
 
+import argparse
+
+parser = argparse.ArgumentParser(description='Plot latency metrics analysis')
+parser.add_argument('log_file', type=str, help='Path to the log file')
+parser.add_argument('--setylim', type=int, default=0, help='Set y-axis limits')
+parser.add_argument('--slo_ttft', type=int, default=1000, help='SLO TTFT')
+parser.add_argument('--slo_tpot', type=int, default=50, help='SLO TPOT')
 
 
 if __name__ == "__main__":
-    # Parse the log file
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python plot_latency_timeseries.py <log_file>")
-        sys.exit(1)
+    args = parser.parse_args()
 
-    if len(sys.argv) == 2:
-        setylim = False
-    else:
-        setylim = int(sys.argv[2]) == 1
-
-    slo_ttft = 1000 if len(sys.argv) <= 3 else int(sys.argv[3])
-    slo_tpot = 50 if len(sys.argv) <= 4 else int(sys.argv[4])
-    
-    log_file = sys.argv[1]
+    log_file = args.log_file
     log_dir = log_file.rsplit('/', 1)[0]
-    # Parse the log file to get data
+    setylim = args.setylim
+    slo_ttft = args.slo_ttft
+    slo_tpot = args.slo_tpot
+    routing_policy = log_file.split('/')[-2].split('-')[0]
+    print(f"routing_policy: {routing_policy}")
     data = parse_log_file(log_file)
     
     if not data:
@@ -1520,7 +1567,7 @@ if __name__ == "__main__":
     print(f"Found {len(data)} log entries with latency metrics")
     
     # Create and save the enhanced plot
-    fig = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot)
+    fig = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy)
     
     # Print summary statistics
     df = pd.DataFrame(data)
