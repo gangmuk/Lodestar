@@ -15,7 +15,7 @@ import offline_routing_agent
 def diagnose_training_data_issues(ENCODED_DATA_DIR):
     """
     Diagnose why the model is learning static preferences instead of contextual routing.
-    Call this right after process_training_data() in main().
+    Call this right after normalize_and_encode_training_data() in main().
     """
     logger.info("🔬 DIAGNOSING TRAINING DATA ISSUES")
     logger.info("=" * 60)

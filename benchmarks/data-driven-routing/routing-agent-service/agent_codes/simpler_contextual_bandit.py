@@ -688,6 +688,10 @@ class RoutingDataset(Dataset):
         self.request_features = tensor_data['request_features']
         self.actions = tensor_data['actions']
         self.rewards = tensor_data['rewards']
+        # Add the missing tensor data that training code expects
+        self.ttft = tensor_data['ttft']
+        self.avg_tpot = tensor_data['avg_tpot']
+        self.e2e_latency = tensor_data['e2e_latency']
         
     def __len__(self):
         return len(self.rewards)
@@ -698,7 +702,10 @@ class RoutingDataset(Dataset):
             'kv_hit_ratios': self.kv_hit_ratios[idx],
             'request_features': self.request_features[idx],
             'action': self.actions[idx],
-            'reward': self.rewards[idx]
+            'reward': self.rewards[idx],
+            'ttft': self.ttft[idx],
+            'avg_tpot': self.avg_tpot[idx],
+            'e2e_latency': self.e2e_latency[idx]
         }
 
 
@@ -2020,6 +2027,10 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
             request_features = batch['request_features'].to(device)
             actions = batch['action'].to(device)
             rewards = batch['reward'].to(device).unsqueeze(1)
+            ttft = batch['ttft']
+            avg_tpot = batch['avg_tpot']
+            e2e_latency = batch['e2e_latency']
+            print(f"gangmuk2, ttft: {ttft.shape}, avg_tpot: {avg_tpot.shape}, e2e_latency: {e2e_latency.shape}")
             
             for j in range(len(rewards)):
                 agent.remember(

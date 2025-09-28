@@ -4,6 +4,7 @@ import os
 import time
 import encoding
 import simpler_contextual_bandit
+import latency_predictor
 import preprocess
 import threading
 import argparse
@@ -86,7 +87,17 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
         logger.info(f"Starting {NUM_TRAINS}th training of routing agent")
         try:
             utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
-            saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
+            
+            # Select model type based on hyperparameters
+            model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+            
+            if model_type == 'latency_predictor':
+                logger.info("Training with latency predictor model")
+                saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+            else:
+                logger.info("Training with contextual bandit model")
+                saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
+            
             MODEL_UPDATED = True
             TRAINING_DATA_UPDATED = False
             NUM_TRAINS += 1
@@ -201,6 +212,12 @@ def run_test_inference_phase(args, test_data):
         for prob in result['pod_probabilities']:
             print(f"{prob:.2f}", end=", ")
         print()
+        
+        # Print latency predictions if available
+        if 'predicted_latencies' in result and result['predicted_latencies']:
+            if isinstance(result['predicted_latencies'], dict):
+                print(f"predicted_latencies: {result['predicted_latencies']}")
+            print(f"chosen_pod_predicted_latency: {result.get('chosen_pod_predicted_latency', 'N/A')}")
         print()
         
         if result:
@@ -215,9 +232,11 @@ def run_test_inference_phase(args, test_data):
             # Log detailed results
             if result['original_pod_choice']:
                 match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
-                logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}")
+                latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
+                logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}{latency_info}")
             else:
-                logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}")
+                latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
+                logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}{latency_info}")
         else:
             logger.error(f"✗ Failed inference for {request_id}")
                 
@@ -359,13 +378,29 @@ def test_inference(args, log_message, request_id, final_model_dir):
     tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
     handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
     infer_from_tensor_start_time = time.time()
-    result, _ = simpler_contextual_bandit.infer_from_tensor(
-        tensor_data=tensor_dataset, 
-        request_id=request_id,
-        model_updated=MODEL_UPDATED,
-        HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
-        final_model_dir=args.final_model_dir,
-    )
+    
+    # Select model type for inference
+    model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+    
+    if model_type == 'latency_predictor':
+        result, _ = latency_predictor.infer_latency_predictor(
+            tensor_data=tensor_dataset, 
+            request_id=request_id,
+            model_updated=MODEL_UPDATED,
+            HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
+            final_model_dir=args.final_model_dir,
+            sorted_all_pod_ids=sorted_all_pod_ids,
+        )
+    else:
+        result, _ = simpler_contextual_bandit.infer_from_tensor(
+            tensor_data=tensor_dataset, 
+            request_id=request_id,
+            model_updated=MODEL_UPDATED,
+            HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
+            final_model_dir=args.final_model_dir,
+        )
+        result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
+        result['chosen_pod_predicted_latency'] = -1
     if MODEL_UPDATED:
         logger.info("Model updated flag consumed, resetting to False")
         MODEL_UPDATED = False
@@ -383,6 +418,8 @@ def test_inference(args, log_message, request_id, final_model_dir):
         "pod_probabilities": result['pod_probabilities'],
         "prediction_matches": prediction_matches,
         "confidence": result['confidence'],
+        "predicted_latencies": result.get('predicted_latencies', {pod_id: -1 for pod_id in sorted_all_pod_ids}),
+        "chosen_pod_predicted_latency": result.get('chosen_pod_predicted_latency', -1),
         "total_inference_time_ms": handle_infer_total_overhead * 1000,
         "preprocess_time_ms": preprocess_overhead * 1000,
         "encoding_time_ms": handle_infer_total_total_encoding_overhead * 1000,
@@ -394,7 +431,12 @@ def test_inference(args, log_message, request_id, final_model_dir):
         match_status = "original routing == model routing"
     else:
         match_status = "original routing != model routing"
-    logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}")
+    
+    latency_info = ""
+    if result.get('chosen_pod_predicted_latency', -1) != -1:
+        latency_info = f", predicted_latency={result['chosen_pod_predicted_latency']:.2f}"
+    
+    logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}{latency_info}")
 
     return result_summary
 

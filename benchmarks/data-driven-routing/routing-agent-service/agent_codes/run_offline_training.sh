@@ -12,9 +12,9 @@ set -e
 
 workload_dataset_list=(
     # "temp"
-    # "merged-data"
+    "merged-data"
     # "p4096_s1024_rps20"
-    "SharingRatio71%"
+    # "SharingRatio71%"
     # "SharingRatio47%"
     # "SharingRatio28%"
     # "SharingRatio9%"
@@ -23,14 +23,18 @@ routing_policy_for_data_file_list=(
     # "prefix"
     # "rl"
     # "random"
+    # "latency_predictor"
     "all"
 )
-csv_filename="data.csv" # "data_replaced.csv", "data.csv"
+csv_filename="data_replaced.csv" # "data_replaced.csv", "data.csv"
 
 lr_scheduler_type="exponential" # "exponential", "plateau", "gradient_adaptive"
 lr_scheduler_gamma=0.95
 excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
-no_normalize_features="kv_hit_ratio" # "kv_hit_ratio", "none"
+no_normalize_features="none" # "kv_hit_ratio", "none"
+
+model_type="latency_predictor" # "contextual_bandit", "latency_predictor"  
+latency_metric="avg_tpot" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 
 use_sampled_data=false # true, false
 analyze_behavior=true # true, false
@@ -47,14 +51,13 @@ offline_learning_rate=0.001
 for workload_dataset in "${workload_dataset_list[@]}"; do
     for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; do
         data_file="../training_data/${workload_dataset}/${routing_policy_for_data_file}/${csv_filename}"
-
-        # Step 1: Process raw data to structured CSV
         if [ ! -f "${data_file}" ]; then
             echo "❌ Data file not found: ${data_file}"
             exit 1
         fi
-
         echo "✓ Found data file: ${data_file}"
+
+        # data_file="../experiment_results/SharingRatio28%/latency_predictor-trained_on_merged-data_all-20250925_190503/filtered-aibrix-gateway-plugins.log.csv"
 
         # Generate processed CSV filename automatically
         data_dir=$(dirname "${data_file}")
@@ -65,27 +68,36 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
 
         echo "📊 STEP 1: Processing data to structured CSV"
         echo "==========================================="
-        base_final_model_dir="${data_dir}/final_model"
-        final_model_dir="${base_final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
-        if [ "${excluded_pod_features}" != "" ]; then
-            final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
-        fi
-        final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
+        final_model_dir="${data_dir}/final_model"
+        if [ "${model_type}" == "contextual_bandit" ]; then
+            final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
+            if [ "${excluded_pod_features}" != "" ]; then
+                final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
+            fi
+            final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
 
-        if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
-            final_model_dir="${final_model_dir}-lrs_grad_adapt"
-        elif [ "${lr_scheduler_type}" == "exponential" ]; then
-            final_model_dir="${final_model_dir}-lrs_exp"
-        elif [ "${lr_scheduler_type}" == "plateau" ]; then
-            final_model_dir="${final_model_dir}-lrs_plateau"
-        else
-            echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
-            exit 1
+            if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
+                final_model_dir="${final_model_dir}-lrs_grad_adapt"
+            elif [ "${lr_scheduler_type}" == "exponential" ]; then
+                final_model_dir="${final_model_dir}-lrs_exp"
+            elif [ "${lr_scheduler_type}" == "plateau" ]; then
+                final_model_dir="${final_model_dir}-lrs_plateau"
+            else
+                echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
+                exit 1
+            fi
+        fi
+
+        final_model_dir="${final_model_dir}-${model_type}"
+        
+        if [ "${model_type}" == "latency_predictor" ]; then
+            final_model_dir="${final_model_dir}_${latency_metric}"
         fi
 
         if [ -d "${final_model_dir}" ]; then
             rm -rf "${final_model_dir}"
         fi
+        echo "Final model directory: ${final_model_dir}"
         mkdir -p "${final_model_dir}"
 
 
@@ -103,7 +115,9 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         --no_normalize_features ${no_normalize_features} \
         --lr_scheduler_type ${lr_scheduler_type} \
         --lr_scheduler_gamma ${lr_scheduler_gamma} \
-        --reward_decay_factor ${reward_decay_factor}
+        --reward_decay_factor ${reward_decay_factor} \
+        --model_type ${model_type} \
+        --latency_metric ${latency_metric}
         
 
         process_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --hyperparameters ${hyper_json}"
@@ -149,14 +163,14 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
 
         python_cmd="python3 offline_routing_agent.py ${processed_csv} ${analyze_flag} --final_model_dir ${final_model_dir} --hyperparameters ${hyper_json}"
 
-
         ${python_cmd} 2>&1 | tee "${final_model_dir}/output.txt"
         echo "${python_cmd}" > "${final_model_dir}/python_command.txt"
         echo "final_model_dir: ${final_model_dir}" > ${final_model_dir}/full_path.txt
         echo "data_file: ${data_file}" >> ${final_model_dir}/full_path.txt
         echo "processed_csv: ${processed_csv}" >> ${final_model_dir}/full_path.txt
-
-        python csv_training_analyzer.py ${final_model_dir}/training_metrics.csv
+        if [ "${model_type}" == "contextual_bandit" ]; then
+            python csv_training_analyzer.py ${final_model_dir}/training_metrics.csv
+        fi
         echo "Model saved to: ${final_model_dir}"
     done
 done

@@ -246,7 +246,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			usage = res.Usage
 		}
 		if b.ResponseBody.EndOfStream {
-			// if routerCtx.Algorithm == "prefix-cache-and-load" {
+			// if routerCtx.Algorithm == "preble" {
 			ret := utils.DecrementNumDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
 			klog.V(5).Infof("DecrementNumDecodeTokensForPod(%s) by %d, %d", routerCtx.TargetAddressWithoutPort(), timing.totalTokenCount, ret)
 
@@ -255,9 +255,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes, int(usage.CompletionTokens))
 
 			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
-			if utils.UseRealRequest == "true" {
-				utils.AddRequestLogMessage(routerCtx.RequestID, logMessage)
-			}
+			// if utils.UseRealRequest == "true" {
+			utils.AddRequestLogMessage(routerCtx.RequestID, logMessage)
+			// }
 			utils.CleanupKVCacheHitRatio(routerCtx.RequestID)
 			utils.CleanupInflightRequests(routerCtx.RequestID)
 			utils.CleanupvLLMGPUKVCacheUsage(routerCtx.RequestID)
@@ -271,6 +271,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupByteArrayPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupHashOfPrefixHashesForRequest(routerCtx.RequestID)
 			utils.CleanupExploration(routerCtx.RequestID)
+			utils.CleanupPredictedLatencies(routerCtx.RequestID)
+			utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
@@ -633,7 +635,11 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
 	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
 
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
+	// Get predicted latencies
+	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
+	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
+
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -657,6 +663,9 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		utils.GetNumFlush(),
 		exploration,
 		explorationEnabled,
+		jsonStrings["predictedLatencies"],
+		utils.GetChosenPodPredictedLatency(routerCtx.RequestID),
+		routerCtx.Iteration,
 	)
 
 	// logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",

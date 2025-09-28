@@ -335,6 +335,7 @@ def main():
             "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
+            "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
             "../agent_codes/logger.py": "/app/logger.py",
             "../agent_codes/utils.py": "/app/utils.py",
         }

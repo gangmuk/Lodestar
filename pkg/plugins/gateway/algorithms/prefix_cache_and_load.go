@@ -33,7 +33,7 @@ import (
 )
 
 var (
-	RouterPrefixCacheAndLoad types.RoutingAlgorithm = "prefix-cache-and-load"
+	RouterPrefixCacheAndLoad types.RoutingAlgorithm = "preble"
 )
 
 func init() {
@@ -45,7 +45,7 @@ const (
 	defaultDecodingLength  = 45                      // FIXME: decode length is hardcoded. Preble as well.
 	slidingWindowPeriod    = 3 * time.Minute         // NOTE: hardcoded
 	evictionLoopInterval   = 1000 * time.Millisecond // NOTE: hardcoded
-	targetGPU              = "A6000"                 // FIXME: make it configurable
+	targetGPU              = "L20"                   // FIXME: make it configurable
 )
 
 type SlidingWindowHistogram struct {
@@ -198,6 +198,62 @@ func calculateAttnQuadV100(numTokens int, seqLen *int) float64 {
 	return attnQuad / 1000.0
 }
 
+// Performance models for NVIDIA L20 + Llama-3 8B Instruct
+// Based on scaling from A6000 Mistral 7B baseline
+
+func llama3_8B_L20_LinearTime(numBatchedTokens int) float64 {
+	// L20 has ~30% less compute than A6000, Llama-3 8B has ~15% more compute than Mistral 7B
+	// Combined scaling factor: 1.3 * 1.15 = 1.495 ≈ 1.5x
+	if numBatchedTokens >= 384 {
+		return (0.16264*float64(numBatchedTokens) + 6.314665) / 1000.0
+	} else if numBatchedTokens >= 192 {
+		return (-177 + 1.875*float64(numBatchedTokens) - 3.84e-3*math.Pow(float64(numBatchedTokens), 2)) / 1000.0
+	}
+	return 33.0 / 1000.0
+}
+
+func llama3_8B_L20_AttentionTime(numReqs, totalContext, numUniqueKV int) float64 {
+	if numUniqueKV == 0 {
+		numUniqueKV = totalContext
+	}
+
+	var forwardTime float64
+	if totalContext <= 1024 {
+		// L20 has better memory architecture than V100 but less compute than A6000
+		// Scaling factor: ~1.2x from A6000 baseline
+		forwardTime = 0.384
+	} else {
+		// Linear scaling with context length, adjusted for L20 characteristics
+		forwardTime = 2.232e-4*float64(totalContext) + 0.191
+		if float64(numUniqueKV)/float64(numReqs) <= 1024 && numReqs*numUniqueKV <= 32*256*2048 {
+			forwardTime /= 2
+		}
+	}
+	return forwardTime / 1000.0
+}
+
+func calculateAttnQuadL20(numTokens int, seqLen *int) float64 {
+	var attnQuad float64
+	// L20 quadratic attention costs - scaled between A6000 and V100
+	// Using ~1.8x scaling factor from A6000 baseline
+	if seqLen == nil {
+		// Case 1: No sequence length provided
+		if numTokens >= 4096 {
+			attnQuad += -13.266 + // from A6000: -7.37
+				6.948e-3*float64(numTokens) + // from A6000: 3.86e-3
+				3.888e-6*math.Pow(float64(numTokens), 2) // from A6000: 2.16e-6
+		}
+	} else {
+		// Case 2: Sequence length provided
+		if numTokens*(*seqLen) > 1024*1024 {
+			attnQuad += 2.034e-3*float64(numTokens) + // from A6000: 1.13e-3
+				3.15e-3*float64(*seqLen) + // from A6000: 1.75e-3
+				3.942e-6*float64(numTokens)*float64(*seqLen) // from A6000: 2.19e-6
+		}
+	}
+	return attnQuad / 1000.0
+}
+
 func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
 	missRate := 1.0
 	if h.promptTokens[node] > 0 {
@@ -210,6 +266,8 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 		baseTime = mistral7BA6000LinearTime(numTokens) + mistral7BA6000AttentionTime(1, contextLength, numTokens)
 	} else if targetGPU == "V100" {
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
+	} else if targetGPU == "L20" {
+		baseTime = llama3_8B_L20_LinearTime(numTokens) + llama3_8B_L20_AttentionTime(1, contextLength, numTokens)
 	} else {
 		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
@@ -220,6 +278,8 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 		attnQuad = calculateAttnQuadA6000(numTokens, nil)
 	} else if targetGPU == "V100" {
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
+	} else if targetGPU == "L20" {
+		attnQuad = calculateAttnQuadL20(numTokens, nil)
 	} else {
 		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
