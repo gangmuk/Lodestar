@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 import logging
 import argparse
+import csv
 # import training.preprocess as preprocess
 import preprocess
 from matplotlib.gridspec import GridSpec
@@ -264,6 +265,103 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
     
     return averaged_metrics
 
+def export_metrics_to_csv(all_metrics, base_dir, output_dir="../experiment_results"):
+    """Export performance metrics to an aggregated CSV file."""
+    if not all_metrics:
+        print("No metrics to export.")
+        return
+
+    # Resolve relative path from current working directory
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(os.getcwd(), output_dir)
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Use a single aggregated CSV file
+    csv_filename = "aggregated_summary.csv"
+    csv_filepath = os.path.join(output_dir, csv_filename)
+
+    # Extract group from base_dir (part after experiment_results)
+    group = ""
+    if "experiment_results" in base_dir:
+        # Split by experiment_results and take everything after it
+        parts = base_dir.split("experiment_results")
+        if len(parts) > 1:
+            group = parts[1].lstrip("/")
+
+    # Define the metrics we want to export
+    metric_columns = [
+        'avg_ttft', 'p99_ttft', 'avg_tpot', 'p99_tpot',
+        'avg_end_to_end', 'p99_end_to_end', 'num_requests',
+        'throughput_rps', 'throughput_tps'
+    ]
+
+    print(f"Exporting metrics to aggregated file: {csv_filepath}")
+
+    # Read existing data if file exists
+    existing_data = {}
+    if os.path.exists(csv_filepath):
+        try:
+            with open(csv_filepath, 'r', newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    filename = row.get('filename', '')
+                    if filename:
+                        existing_data[filename] = row
+        except Exception as e:
+            print(f"Warning: Could not read existing CSV file: {e}")
+
+    # Prepare new data for current run
+    for metrics in all_metrics:
+        strategy_name = metrics.get('strategy', '')
+        row = {
+            'filename': strategy_name,
+            'routing_policy': categorize_strategy(strategy_name),
+            'group': group,
+        }
+
+        # Add all metric values
+        for metric in metric_columns:
+            row[metric] = metrics.get(metric, '')
+
+        # Add additional info if available (from averaging)
+        if 'experiment_count' in metrics:
+            row['experiment_count'] = metrics['experiment_count']
+        if f'avg_ttft_std' in metrics:
+            row['avg_ttft_std'] = metrics.get('avg_ttft_std', '')
+            row['avg_ttft_min'] = metrics.get('avg_ttft_min', '')
+            row['avg_ttft_max'] = metrics.get('avg_ttft_max', '')
+
+        # Update existing data with new data (always update group for current run)
+        if strategy_name in existing_data:
+            # Preserve any existing fields not in current row, but update group
+            existing_row = existing_data[strategy_name]
+            existing_row.update(row)
+            existing_data[strategy_name] = existing_row
+        else:
+            existing_data[strategy_name] = row
+
+    # Write aggregated data back to CSV
+    if existing_data:
+        # Get all fieldnames from existing data
+        all_fieldnames = set()
+        for row in existing_data.values():
+            all_fieldnames.update(row.keys())
+
+        # Ensure consistent field order
+        fieldnames = ['filename', 'routing_policy', 'group'] + metric_columns
+        extra_fields = sorted(all_fieldnames - set(fieldnames))
+        fieldnames.extend(extra_fields)
+
+        with open(csv_filepath, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in existing_data.values():
+                writer.writerow(row)
+
+        print(f"Successfully exported {len(existing_data)} total strategy results to {csv_filepath} ({len(all_metrics)} updated from current run)")
+
 def normalize_time(df):
     first_request_start_time = df['request_start_time'].min()
     df['normalized_start_time'] = df['request_start_time'] - first_request_start_time
@@ -375,6 +473,53 @@ def calculate_slo_satisfaction(df, slo_ttft=500, slo_tpot=50):
         'tpot_satisfaction_rate': tpot_satisfied / total_requests * 100 if total_requests > 0 else 0,
         'both_satisfaction_rate': both_satisfied / total_requests * 100 if total_requests > 0 else 0
     }
+
+# Sort strategies by avg_ttft for consistent ordering
+def get_strategy_priority(strategy_name):
+    if rl_naive_routing in strategy_name.lower():
+        return (0, strategy_name)  # First priority
+    elif e2e_latency_predictor_routing in strategy_name.lower():
+        return (1, strategy_name)  # Second priority
+    elif ttft_latency_predictor_routing in strategy_name.lower():
+        return (2, strategy_name)  # Second priority
+    elif avg_tpot_latency_predictor_routing in strategy_name.lower():
+        return (3, strategy_name)  # Third priority
+    elif prefix_cache_1_routing in strategy_name.lower():
+        return (4, strategy_name)  # Second priority
+    elif prefix_cache_2_routing in strategy_name.lower():
+        return (5, strategy_name)  # Third priority
+    elif preble_routing in strategy_name.lower():
+        return (6, strategy_name)  # Second priority
+    elif random_routing in strategy_name.lower():
+        return (7, strategy_name)  # Third priority
+    else:
+        return (8, strategy_name)  # Others last
+
+
+# Set up colors by category
+def get_strategy_color(strategy_name, index_in_category):
+    """Get color for strategy based on category and index within category"""
+    if rl_naive_routing in strategy_name.lower():
+        base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
+    elif e2e_latency_predictor_routing in strategy_name.lower():
+        base_colors = ['#8b008b','#ba55d3', '#9932cc', '#8a2be2',  '#c71585']  # Purple family
+    elif ttft_latency_predictor_routing in strategy_name.lower():
+        base_colors = ['#ff1493', '#ff69b4', '#dc143c', '#ff00ff', '#da70d6']  # Pink/Magenta family
+    elif avg_tpot_latency_predictor_routing in strategy_name.lower():
+        base_colors = ['#8b0000', '#b22222', '#cd5c5c', '#f08080', '#fa8072']  # Dark red/Coral family
+    elif prefix_cache_1_routing in strategy_name.lower():
+        base_colors = ['#1f77b4', '#4682b4', '#6495ed', '#aec7e8', '#87ceeb']  # Blue family
+    elif prefix_cache_2_routing in strategy_name.lower():
+        base_colors = ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']  # Dark green/Lime family
+    elif preble_routing in strategy_name.lower():
+        base_colors = ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']  # Orange/Gold family
+    elif random_routing in strategy_name.lower():
+        base_colors = ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']  # Light green family
+    else:
+        base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
+    # Use modulo to cycle through colors if more strategies than colors
+    return base_colors[index_in_category % len(base_colors)]
+
     
 def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None):
     """Create bar charts comparing performance metrics across routing strategies."""
@@ -385,55 +530,10 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     # Convert to DataFrame for easier plotting
     metrics_df = pd.DataFrame(metrics_list)
     
-    # Sort strategies by avg_ttft for consistent ordering
-    def get_strategy_priority(strategy_name):
-        if rl_naive_routing in strategy_name.lower():
-            return (0, strategy_name)  # First priority
-        elif e2e_latency_predictor_routing in strategy_name.lower():
-            return (1, strategy_name)  # Second priority
-        elif ttft_latency_predictor_routing in strategy_name.lower():
-            return (2, strategy_name)  # Second priority
-        elif avg_tpot_latency_predictor_routing in strategy_name.lower():
-            return (3, strategy_name)  # Third priority
-        elif prefix_cache_1_routing in strategy_name.lower():
-            return (4, strategy_name)  # Second priority
-        elif prefix_cache_2_routing in strategy_name.lower():
-            return (5, strategy_name)  # Third priority
-        elif preble_routing in strategy_name.lower():
-            return (6, strategy_name)  # Second priority
-        elif random_routing in strategy_name.lower():
-            return (7, strategy_name)  # Third priority
-        else:
-            return (8, strategy_name)  # Others last
 
     # Sort strategies by custom priority
     all_strategies = metrics_df['strategy'].tolist()
     strategy_order = sorted(all_strategies, key=get_strategy_priority)
-
-    # Set up colors by category
-    def get_strategy_color(strategy_name, strategies_in_category, index_in_category):
-        """Get color for strategy based on category and index within category"""
-        if rl_naive_routing in strategy_name.lower():
-            base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
-        elif e2e_latency_predictor_routing in strategy_name.lower():
-            base_colors = ['#8b008b','#ba55d3', '#9932cc', '#8a2be2',  '#c71585']  # Purple family
-        elif ttft_latency_predictor_routing in strategy_name.lower():
-            base_colors = ['#ff1493', '#ff69b4', '#dc143c', '#ff00ff', '#da70d6']  # Pink/Magenta family
-        elif avg_tpot_latency_predictor_routing in strategy_name.lower():
-            base_colors = ['#8b0000', '#b22222', '#cd5c5c', '#f08080', '#fa8072']  # Dark red/Coral family
-        elif prefix_cache_1_routing in strategy_name.lower():
-            base_colors = ['#1f77b4', '#4682b4', '#6495ed', '#aec7e8', '#87ceeb']  # Blue family
-        elif prefix_cache_2_routing in strategy_name.lower():
-            base_colors = ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']  # Dark green/Lime family
-        elif preble_routing in strategy_name.lower():
-            base_colors = ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']  # Orange/Gold family
-        elif random_routing in strategy_name.lower():
-            base_colors = ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']  # Light green family
-        else:
-            base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
-        
-        # Use modulo to cycle through colors if more strategies than colors
-        return base_colors[index_in_category % len(base_colors)]
 
     # Create color dictionary with grouped coloring
     color_dict = {}
@@ -441,31 +541,31 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
     for strategy in strategy_order:
         if rl_naive_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[rl_naive_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[rl_naive_routing])
             category_counts[rl_naive_routing] += 1
         elif e2e_latency_predictor_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[e2e_latency_predictor_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[e2e_latency_predictor_routing])
             category_counts[e2e_latency_predictor_routing] += 1
         elif ttft_latency_predictor_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[ttft_latency_predictor_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[ttft_latency_predictor_routing])
             category_counts[ttft_latency_predictor_routing] += 1
         elif avg_tpot_latency_predictor_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[avg_tpot_latency_predictor_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[avg_tpot_latency_predictor_routing])
             category_counts[avg_tpot_latency_predictor_routing] += 1
         elif prefix_cache_1_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[prefix_cache_1_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[prefix_cache_1_routing])
             category_counts[prefix_cache_1_routing] += 1
         elif prefix_cache_2_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[prefix_cache_2_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[prefix_cache_2_routing])
             category_counts[prefix_cache_2_routing] += 1
         elif preble_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[preble_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[preble_routing])
             category_counts[preble_routing] += 1
         elif random_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts[random_routing])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[random_routing])
             category_counts[random_routing] += 1
         else:
-            color_dict[strategy] = get_strategy_color(strategy, None, category_counts['other'])
+            color_dict[strategy] = get_strategy_color(strategy, category_counts['other'])
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
@@ -503,7 +603,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     # Plot 5: End-to-End
     if 'avg_end_to_end' in metrics_df.columns:
         ax = fig.add_subplot(gs[0, 4])
-        plot_metric_bar(ax, metrics_df, 'avg_end_to_end', 'End-to-End', strategy_order, color_dict)
+        plot_metric_bar(ax, metrics_df, 'avg_end_to_end', 'Average End-to-End', strategy_order, color_dict)
 
     # Plot 6: P99 End-to-End
     if 'p99_end_to_end' in metrics_df.columns:
@@ -559,7 +659,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
         # Plot 13: Average TTFT, TPOT, and End-to-End Comparison (full width, now row 5)
         ax = fig.add_subplot(gs[5, :])
-        plot_avg_ttft_tpot_comparison(ax, metrics_df, strategy_order, color_dict)
+        plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict)
     else:
         # If no CSV data provided, show placeholder text for reward plots
         for row in [1, 2, 3, 4, 5]:
@@ -680,8 +780,8 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             ax.axhline(y=0.5, color='green', linestyle=':', alpha=0.7, linewidth=1.5)
 
 
-# New function to plot average TTFT and average TPOT comparison
-def plot_avg_ttft_tpot_comparison(ax, metrics_df, strategy_order, color_dict):
+# New function to plot triple-axis comparison (TTFT, TPOT, End-to-End)
+def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     """Plot bar chart with triple y-axis: left for avg TTFT, middle for avg TPOT, right for avg end-to-end across strategies."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     label_list = []
@@ -944,13 +1044,16 @@ if __name__ == "__main__":
         sample_df = csv_data_dict[first_key]
         print(f"Sample DataFrame columns: {list(sample_df.columns)}")
         print(f"Sample DataFrame shape: {sample_df.shape}")
-        
+
         # Check for required columns
         required_cols = ['ttft', 'avg_tpot', 'relative_time']
         missing_cols = [col for col in required_cols if col not in sample_df.columns]
         if missing_cols:
             print(f"WARNING: Missing required columns: {missing_cols}")
             print(f"Available columns: {list(sample_df.columns)}")
-    
+
+    # Export metrics to CSV
+    export_metrics_to_csv(all_metrics, base_dir)
+
     # Plot the comparison - MODIFIED to pass csv_data_dict
     plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict)
