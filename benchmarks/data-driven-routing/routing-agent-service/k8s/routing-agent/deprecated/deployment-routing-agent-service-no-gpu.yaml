@@ -44,7 +44,7 @@ spec:
           value: simpler_contextual_bandit
         - name: ENABLE_ONLINE_LEARNING
           value: "true"
-        image: gangmuk/gangmuk-routing-agent:latest-mac
+        image: gangmuk/gangmuk-routing-agent:latest-linux
         imagePullPolicy: Always
         name: routing-agent
         ports:

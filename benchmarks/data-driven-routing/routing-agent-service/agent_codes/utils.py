@@ -138,7 +138,7 @@ def set_all_seeds(seed=42):
     torch.backends.cudnn.benchmark = False
     if hasattr(torch, 'use_deterministic_algorithms'):
         torch.use_deterministic_algorithms(True, warn_only=True)
-    print(f"All seeds set to {seed} for reproducible results")
+    logger.info(f"All seeds set to {seed} for reproducible results")
     
 def replace_pod_ip_with_generalpodid(data_input):
     """
@@ -299,16 +299,12 @@ def create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_gene
     return pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded
 
 def get_running_pods_by_label(label_selector):
-    try:
-        config.load_incluster_config()
-    except ConfigException:
-        # try:
-        #     config.load_kube_config()
-        # except ConfigException:
-        #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
-        raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
-        assert False
-    
+    # kube_config_file = '~/.kube/config'
+    # if not os.path.exists(kube_config_file):
+    #     logger.info(f"Error: {kube_config_file} does not exist")
+    #     assert False
+    # config.load_kube_config(config_file=kube_config_file)
+    config.load_incluster_config()
     v1 = client.CoreV1Api()
     return v1.list_pod_for_all_namespaces(label_selector=label_selector)
     
@@ -323,15 +319,12 @@ def fetch_running_pod_ips(running_pods: client.V1PodList):
     return pod_ips
 
 def fetch_generalpodid_to_gpu_model(running_pods: client.V1PodList, pod_ip_to_generalpodid):
-    try:
-        config.load_incluster_config()
-    except ConfigException:
-        # try:
-        #     config.load_kube_config()
-        # except ConfigException:
-        #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
-        raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
-        assert False
+    # kube_config_file = '~/.kube/config'
+    # if not os.path.exists(kube_config_file):
+    #     logger.info(f"Error: {kube_config_file} does not exist")
+    #     assert False
+    # config.load_kube_config(config_file=kube_config_file)
+    config.load_incluster_config()
     v1 = client.CoreV1Api()
     generalpodid_to_gpu_model = {}
     for pod in running_pods.items:
@@ -452,10 +445,10 @@ def run_command(command, required=True, print_error=True, nonblock=False):
             return True, output.strip()
     except subprocess.CalledProcessError as e:
         if print_error:
-            print(f"ERROR command: {command}")
-            print(f"ERROR output: {e.output.strip()}")
+            logger.info(f"ERROR command: {command}")
+            logger.info(f"ERROR output: {e.output.strip()}")
         if required:
-            print("Exiting due to required command failure...")
+            logger.info("Exiting due to required command failure...")
             raise  # Instead of assert False, it's better to raise an exception
         else:
             return False, e.output.strip()
@@ -474,15 +467,11 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
     """
     try:
         # Load Kubernetes configuration (assuming you have a valid kubeconfig file)
-        try:
-            config.load_incluster_config()
-        except ConfigException:
-            # try:
-            #     config.load_kube_config()
-            # except ConfigException:
-            #     raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
-            raise ConfigException("Could not load Kubernetes config from cluster or kubeconfig file")
+        kube_config_file = os.path.expanduser('~/.kube/config')
+        if not os.path.exists(kube_config_file):
+            logger.error(f"Error: {kube_config_file} does not exist")
             assert False
+        config.load_kube_config(config_file=kube_config_file)
         apps_v1 = client.AppsV1Api()
         core_v1 = client.CoreV1Api()
         
@@ -496,7 +485,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                 selector = deployment.spec.selector.match_labels
 
                 if not selector:
-                    print(f"No selector found for deployment '{deployment_name}'. Cannot find associated pods. Retrying in 1 second...")
+                    logger.info(f"No selector found for deployment '{deployment_name}'. Cannot find associated pods. Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     continue
@@ -506,7 +495,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                 pods = pod_list.items
 
                 if not pods:
-                    print(f"No pods found for deployment '{deployment_name}' in namespace '{namespace}' with selector '{label_selector}'. Retrying in 1 second...")
+                    logger.info(f"No pods found for deployment '{deployment_name}' in namespace '{namespace}' with selector '{label_selector}'. Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     continue
@@ -520,7 +509,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                     )
 
                     if not ready_condition or ready_condition.status != "True":
-                        print(f"Pod '{pod_name}' is not ready. Retrying in 1 second...")
+                        logger.info(f"Pod '{pod_name}' is not ready. Retrying in 1 second...")
                         all_ready = False
                         break
 
@@ -528,39 +517,39 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                     for container_status in container_statuses:
                         if not container_status.ready:
                             container_name = container_status.name
-                            print(f"Container '{container_name}' in pod '{pod_name}' is not ready. Retrying in 1 second...")
+                            logger.info(f"Container '{container_name}' in pod '{pod_name}' is not ready. Retrying in 1 second...")
                             all_ready = False
                             break
                     if not all_ready:
                         break
 
                 if all_ready:
-                    print(f"Deployment '{deployment_name}' is ready!")
+                    logger.info(f"Deployment '{deployment_name}' is ready!")
                     return True
 
-                print(f"Deployment '{deployment_name}' is not ready yet.")
+                logger.info(f"Deployment '{deployment_name}' is not ready yet.")
                 time.sleep(1)
                 retry_count += 1
                 
             except client.ApiException as e:
                 if e.status == 404:
-                    print(f"Deployment '{deployment_name}' not found in namespace '{namespace}'. Please check the name and namespace.")
+                    logger.info(f"Deployment '{deployment_name}' not found in namespace '{namespace}'. Please check the name and namespace.")
                     assert False
                 else:
-                    print(f"Kubernetes API exception: {e}")
-                    print("Retrying in 1 second...")
+                    logger.info(f"Kubernetes API exception: {e}")
+                    logger.info("Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     
-        print(f"Max retries ({max_retries}) reached. Deployment '{deployment_name}' is not ready.")
+        logger.info(f"Max retries ({max_retries}) reached. Deployment '{deployment_name}' is not ready.")
         return False
 
     except config.ConfigException as e:
-        print(f"Kubernetes configuration error: {e}")
-        print("Please ensure your kubeconfig file is properly configured.")
+        logger.info(f"Kubernetes configuration error: {e}")
+        logger.info("Please ensure your kubeconfig file is properly configured.")
         return False  # Exit if configuration is invalid
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logger.info(f"An unexpected error occurred: {e}")
         return False
 
 

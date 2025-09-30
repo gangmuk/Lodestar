@@ -104,8 +104,8 @@ def plot_group_rows(aggregated_csv: str, output_pdf: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Plot aggregated summary per group using triple-axis comparison')
-    parser.add_argument('--csv', default='experiment_results/aggregated_summary.csv', help='Path to aggregated_summary.csv')
-    parser.add_argument('--out', default='experiment_results/aggregated_groups_comparison.pdf', help='Output PDF path')
+    parser.add_argument('--csv', default='../workload-and-experiment_results/aggregated_summary.csv', help='Path to aggregated_summary.csv')
+    parser.add_argument('--out', default='../workload-and-experiment_results/aggregated_groups_comparison.pdf', help='Output PDF path')
     args = parser.parse_args()
 
     plot_group_rows(args.csv, args.out)

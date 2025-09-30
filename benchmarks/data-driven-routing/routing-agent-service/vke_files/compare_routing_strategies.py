@@ -265,7 +265,7 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
     
     return averaged_metrics
 
-def export_metrics_to_csv(all_metrics, base_dir, output_dir="../experiment_results"):
+def export_metrics_to_csv(all_metrics, base_dir, output_dir="../workload-and-experiment_results"):
     """Export performance metrics to an aggregated CSV file."""
     if not all_metrics:
         print("No metrics to export.")
@@ -282,11 +282,11 @@ def export_metrics_to_csv(all_metrics, base_dir, output_dir="../experiment_resul
     csv_filename = "aggregated_summary.csv"
     csv_filepath = os.path.join(output_dir, csv_filename)
 
-    # Extract group from base_dir (part after experiment_results)
+    # Extract group from base_dir (part after workload-and-experiment_results)
     group = ""
-    if "experiment_results" in base_dir:
-        # Split by experiment_results and take everything after it
-        parts = base_dir.split("experiment_results")
+    if "workload-and-experiment_results" in base_dir:
+        # Split by workload-and-experiment_results and take everything after it
+        parts = base_dir.split("workload-and-experiment_results")
         if len(parts) > 1:
             group = parts[1].lstrip("/")
 

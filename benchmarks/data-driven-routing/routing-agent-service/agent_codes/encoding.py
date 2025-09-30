@@ -637,6 +637,13 @@ class DataEncoder:
     def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS):
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
+        # Initialize GPU one-hot dimension from provided mapping
+        if INCLUDE_GPU_IN_FEATURE and 'pod_gpu_id_mapping' in HYPERPARAMETERS:
+            try:
+                max_id = max(HYPERPARAMETERS['pod_gpu_id_mapping'].values())
+                self.num_gpu_types = int(max_id) + 1
+            except Exception as e:
+                logger.error(f"Failed to infer num_gpu_types from pod_gpu_id_mapping: {e}")
         extract_pod_columns_start = time.time()
         pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids)
         overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
