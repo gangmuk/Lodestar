@@ -12,7 +12,7 @@ node_name=node1.gangmuk-272174.mlproxy-pg0.clemson.cloudlab.us
 kubectl label node $node_name machine.cluster.vke.volcengine.com/gpu-name=NVIDIA-L20
 
 ## RL routing agent service
-kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/deployment-routing-agent-service-no-gpu.yaml
+kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/routing-agent-service.yaml
 
 # kubectl apply -f ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/deployment-routing-agent-service.yaml
 

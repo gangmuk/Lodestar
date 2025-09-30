@@ -17,23 +17,21 @@ from kubernetes.stream import stream
 import logging
 import utils as utils
 import argparse
+from logger import logger, INCLUDE_GPU_IN_FEATURE
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logger = logging.getLogger(__name__)
 
 
 class K8sHotDeployer:
     def __init__(self, namespace="default", app_label="routing-agent-service"):
         self.namespace = namespace
         self.app_label = app_label
-        
-        try:
-            config.load_incluster_config()
-            print("Loaded in-cluster config")
-        except config.ConfigException:
-            config.load_kube_config()
-            print("Loaded local kubeconfig")
-            
+        kube_config_file = os.path.expanduser('~/.kube/config')
+        if not os.path.exists(kube_config_file):
+            print(f"Error: {kube_config_file} does not exist")
+            assert False
+        config.load_kube_config(config_file=kube_config_file)
         self.v1 = client.CoreV1Api()
     
     def get_pods(self):
@@ -334,6 +332,7 @@ def main():
             "../agent_codes/data_processor.py": "/app/data_processor.py",
             "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
+            "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
             "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
             "../agent_codes/logger.py": "/app/logger.py",

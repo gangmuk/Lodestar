@@ -17,7 +17,6 @@ spec:
     type: RollingUpdate
   template:
     metadata:
-      creationTimestamp: null
       labels:
         app: routing-agent-service
     spec:
@@ -30,6 +29,7 @@ spec:
                 operator: In
                 values:
                 - NVIDIA-L20
+      serviceAccountName: routing-agent-sa
       containers:
       - env:
         - name: PORT
@@ -44,7 +44,7 @@ spec:
           value: simpler_contextual_bandit
         - name: ENABLE_ONLINE_LEARNING
           value: "true"
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:latest
+        image: gangmuk/gangmuk-routing-agent:latest-linux
         imagePullPolicy: Always
         name: routing-agent
         ports:
@@ -54,11 +54,9 @@ spec:
           limits:
             cpu: "5"
             memory: 2Gi
-            nvidia.com/gpu: "1"
           requests:
             cpu: 200m
             memory: 200Mi
-            nvidia.com/gpu: "1"
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
       dnsPolicy: ClusterFirst
@@ -66,3 +64,63 @@ spec:
       schedulerName: default-scheduler
       securityContext: {}
       terminationGracePeriodSeconds: 5
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: routing-agent-reader
+rules:
+- apiGroups: [""] # The core API group
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: routing-agent-sa
+  namespace: default
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: routing-agent-reader-binding
+subjects:
+- kind: ServiceAccount
+  name: routing-agent-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: routing-agent-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: routing-agent-service
+  namespace: default
+spec:
+  # clusterIP: 192.168.70.209
+  # clusterIPs:
+  # - 192.168.70.209
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: routing-agent-service
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

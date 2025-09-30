@@ -10,12 +10,13 @@ import logging
 import traceback
 import datetime
 import pytz
+from logger import logger, INCLUDE_GPU_IN_FEATURE
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(levelname)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__)
 
 def load_workload(input_path: str) -> List[Any]:
     load_struct = None
@@ -126,14 +127,11 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
         bool: True if all pods and their containers are ready, False otherwise (will keep checking).
     """
     try:
-        try:
-            # Try to load in-cluster config first (if running inside a pod)
-            config.load_incluster_config()
-            print("Loaded in-cluster Kubernetes config")
-        except config.ConfigException:
-            # Fall back to loading from ~/.kube/config
-            config.load_kube_config()
-            print("Loaded Kubernetes config from ~/.kube/config")
+        kube_config_file = os.path.expanduser('~/.kube/config')
+        if not os.path.exists(kube_config_file):
+            logger.error(f"Error: {kube_config_file} does not exist")
+            assert False
+        config.load_kube_config(config_file=kube_config_file)
         
         apps_v1 = client.AppsV1Api()
         core_v1 = client.CoreV1Api()
@@ -148,7 +146,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                 selector = deployment.spec.selector.match_labels
 
                 if not selector:
-                    print(f"No selector found for deployment '{deployment_name}'. Cannot find associated pods. Retrying in 1 second...")
+                    logger.error(f"No selector found for deployment '{deployment_name}'. Cannot find associated pods. Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     continue
@@ -158,7 +156,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                 pods = pod_list.items
 
                 if not pods:
-                    print(f"No pods found for deployment '{deployment_name}' in namespace '{namespace}' with selector '{label_selector}'. Retrying in 1 second...")
+                    logger.error(f"No pods found for deployment '{deployment_name}' in namespace '{namespace}' with selector '{label_selector}'. Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     continue
@@ -172,7 +170,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                     )
 
                     if not ready_condition or ready_condition.status != "True":
-                        print(f"Pod '{pod_name}' is not ready. Retrying in 1 second...")
+                        logger.error(f"Pod '{pod_name}' is not ready. Retrying in 1 second...")
                         all_ready = False
                         break
 
@@ -180,7 +178,7 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                     for container_status in container_statuses:
                         if not container_status.ready:
                             container_name = container_status.name
-                            print(f"Container '{container_name}' in pod '{pod_name}' is not ready. Retrying in 1 second...")
+                            logger.error(f"Container '{container_name}' in pod '{pod_name}' is not ready. Retrying in 1 second...")
                             all_ready = False
                             break
                     if not all_ready:
@@ -196,23 +194,23 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
                 
             except client.ApiException as e:
                 if e.status == 404:
-                    print(f"Deployment '{deployment_name}' not found in namespace '{namespace}'. Please check the name and namespace.")
+                    logger.error(f"Deployment '{deployment_name}' not found in namespace '{namespace}'. Please check the name and namespace.")
                     assert False
                 else:
-                    print(f"Kubernetes API exception: {e}")
-                    print("Retrying in 1 second...")
+                    logger.error(f"Kubernetes API exception: {e}")
+                    logger.error("Retrying in 1 second...")
                     time.sleep(1)
                     retry_count += 1
                     
-        print(f"Max retries ({max_retries}) reached. Deployment '{deployment_name}' is not ready.")
+        logger.error(f"Max retries ({max_retries}) reached. Deployment '{deployment_name}' is not ready.")
         return False
 
     except config.ConfigException as e:
-        print(f"Kubernetes configuration error: {e}")
-        print("Please ensure your kubeconfig file is properly configured.")
+        logger.error(f"Kubernetes configuration error: {e}")
+        logger.error("Please ensure your kubeconfig file is properly configured.")
         return False  # Exit if configuration is invalid
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
         return False
 
 

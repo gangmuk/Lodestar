@@ -34,8 +34,7 @@ def update_deployment_env_vars(deployment_name, namespace, container_name, env_v
     try:
         current_context = run_kubectl(['kubectl', 'config', 'current-context'])
         run_kubectl(['kubectl', 'get', 'deployment', deployment_name, '-n', namespace])
-        print(f"Deployment: {deployment_name} in namespace: {namespace}")
-        
+        # print(f"Deployment: {deployment_name} in namespace: {namespace}")
         # print(f"Current environment variables for container '{container_name}':")
         try:
             env_output = run_kubectl([
@@ -43,19 +42,18 @@ def update_deployment_env_vars(deployment_name, namespace, container_name, env_v
                 '-o', f'jsonpath={{.spec.template.spec.containers[?(@.name=="{container_name}")].env[*]}}'
             ])
             
-            if env_output:
-                env_data = json.loads(env_output.replace("'", '"'))
-                if isinstance(env_data, list):
-                    for env_var in env_data:
-                        print(f"  {env_var['name']}={env_var['value']}")
-                else:
-                    print(f"  {env_data['name']}={env_data['value']}")
-            else:
-                print("  (no environment variables)")
+            # if env_output:
+            #     env_data = json.loads(env_output.replace("'", '"'))
+            #     if isinstance(env_data, list):
+            #         for env_var in env_data:
+            #             print(f"  {env_var['name']}={env_var['value']}")
+            #     else:
+            #         print(f"  {env_data['name']}={env_data['value']}")
+            # else:
+            #     print("  (no environment variables)")
         except:
             print("  (could not parse current env vars)")
-        
-        print("-" * 50)
+        # print("-" * 50)
         
         # Set each environment variable
         for env_key, env_value in env_vars.items():
@@ -72,20 +70,13 @@ def update_deployment_env_vars(deployment_name, namespace, container_name, env_v
                 '-o', f'jsonpath={{.spec.template.spec.containers[?(@.name=="{container_name}")].env[?(@.name=="{env_key}")].value}}'
             ])
             
-            if result == env_value:
-                print(f"SUCCESS: {env_key}={result}")
-            else:
+            if result != env_value:
                 print(f"❌ FAILED: Expected {env_value}, got {result}")
                 return False
-        
-        # Show rollout status
-        print("Rolling out...")
         subprocess.run(['kubectl', 'rollout', 'status', f'deployment/{deployment_name}', '-n', namespace])
-        
         return True
-        
     except Exception as e:
-        print(f"❌❌💥 ERROR: {e}")
+        print(f"❌ ERROR: {e}")
         return False
 
 
@@ -161,12 +152,12 @@ Examples:
     # Parse environment variables
     env_vars = parse_env_vars(args.env)
     
-    print(f"Updating deployment '{args.deployment}' in namespace '{args.namespace}'")
-    print(f"Container: {args.container}")
+    # print(f"Updating deployment '{args.deployment}' in namespace '{args.namespace}'")
+    # print(f"Container: {args.container}")
     # print("Environment variables to update:")
     # for key, value in env_vars.items():
     #     print(f"  {key}: {value}")
-    print("-" * 50)
+    # print("-" * 50)
     
     success = update_deployment_env_vars(
         deployment_name=args.deployment,
@@ -179,7 +170,7 @@ Examples:
         print("Env vars updated successfully!")
         sys.exit(0)
     else:
-        print("❌❌💥 Update failed!")
+        print("❌ Update failed!")
         sys.exit(1)
 
 

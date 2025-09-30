@@ -18,6 +18,7 @@ import encoding
 # import contextual_bandit
 import simpler_contextual_bandit
 import latency_predictor
+from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -34,6 +35,9 @@ import socket
 import utils as utils
 from kubernetes import client, config
 from logger import logger, INCLUDE_GPU_IN_FEATURE
+import queue
+from collections import deque
+from rwlock import RWLock
 
 # INCLUDE_GPU_IN_FEATURE = True
 
@@ -57,6 +61,19 @@ stats_instance = None
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
+
+# RL agent globals
+RL_AGENT = None  # Managed by lazy initialization in handle_infer()
+# RWLock enables concurrent predictions (readers) with exclusive updates (writer)
+# - Predictions: use rwlock.read() for high concurrency
+# - Updates: use rwlock.write() for exclusive access
+# - Initialization: use rwlock.write() for exclusive access
+RL_AGENT_LOCK = RWLock()
+
+# RL agent async update queue
+RL_UPDATE_QUEUE = queue.Queue(maxsize=1000)  # Bounded queue to prevent memory issues
+RL_UPDATE_THREAD = None
+RL_UPDATE_SHUTDOWN = threading.Event()
 
 MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 1000))
 POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
@@ -224,17 +241,93 @@ def handle_infer():
         infer_from_tensor_start_time = time.time()
         
         # Route to appropriate model based on model type
-        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
-        
-        if model_type == 'latency_predictor':
-            logger.info(f"Using latency predictor model for inference (request_id: {request_id})")
+        # model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        subAlgorithm = processed_df['subAlgorithm'].iloc[0]
+        logger.info(f"subAlgorithm: {subAlgorithm}")
+        if subAlgorithm == 'latency_predictor':
+            logger.info(f"subAlgorithm: {subAlgorithm}, Using latency predictor model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids)
-        elif model_type == 'rl_contextual_bandit_sb3':
-            logger.info(f"Using SB3 RL contextual bandit model for inference (request_id: {request_id})")
-            import rl_contextual_bandit_sb3
-            result, infer_from_tensor_overhead_summary = rl_contextual_bandit_sb3.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+        elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
+            logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
+        elif subAlgorithm == 'rl_agent':
+            logger.info(f"subAlgorithm: {subAlgorithm}, Using RL agent model for inference (request_id: {request_id})")
+            
+            # Thread-safe inference with RWLock for low latency:
+            # 1. Write lock for agent init (rare, ~50ms once or on pod scaling)
+            # 2. Read lock for prediction (~10ms) - allows 100s of concurrent predictions!
+            # 3. Write lock for buffer write (~0.1ms) - fast exclusive access
+            # Result: P99 latency ~15ms even with 100 concurrent requests
+            global RL_AGENT
+            
+            # Critical section 1: Get/initialize agent atomically (write lock)
+            with RL_AGENT_LOCK.write():
+                # Check if initialization needed
+                pod_features_t = tensor_data['pod_features']
+                n_pods = int(pod_features_t.shape[1])
+                per_pod_dim = int(pod_features_t.shape[2])
+                
+                if (RL_AGENT is None or 
+                    RL_AGENT.action_dim != n_pods or
+                    RL_AGENT.state_dim.get('pod_features') != per_pod_dim):
+                    # Initialize new agent
+                    kv_hit_t = tensor_data['kv_hit_ratios']
+                    req_features_t = tensor_data['request_features']
+                    state_dim = {
+                        'pod_features': per_pod_dim,
+                        'kv_hit_ratios': int(kv_hit_t.shape[2]),
+                        'request_features': int(req_features_t.shape[1]),
+                    }
+                    RL_AGENT = create_rl_routing_agent_sb3(
+                        state_dim=state_dim,
+                        action_dim=n_pods,
+                        **RL_MODEL_HYPERPARAMETERS
+                    )
+                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+                    if ckpt_path and os.path.exists(ckpt_path):
+                        try:
+                            RL_AGENT.load(ckpt_path)
+                            logger.info(f"Loaded RL checkpoint from {ckpt_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to load RL checkpoint {ckpt_path}: {e}")
+                    logger.info(f"Initialized RL agent with state_dim={state_dim}, action_dim={n_pods}")
+                
+                # Get agent reference under write lock
+                current_agent = RL_AGENT
+            
+            # Inference uses read lock for predictions (allows concurrency)
+            current_agent, result, infer_from_tensor_overhead_summary = infer_rl_agent(
+                tensor_data=tensor_data,
+                request_id=request_id,
+                sorted_all_pod_ids=sorted_all_pod_ids,
+                processed_df=processed_df,
+                rl_agent=current_agent,
+                hyperparameters=RL_MODEL_HYPERPARAMETERS,
+                agent_lock=RL_AGENT_LOCK  # RWLock for read (predict) and write (buffer)
+            )
+            
+            # Queue async update if online learning enabled (infrastructure concern)
+            update_overhead = 0.0
+            if ENABLE_ONLINE_LEARNING:
+                update_start = time.time()
+                # Use read lock for checking buffer size (non-mutating)
+                with RL_AGENT_LOCK.read():
+                    if RL_AGENT is not None:
+                        buffer_size = len(RL_AGENT.experience_buffer)
+                        batch_size = RL_AGENT.hyperparameters.get('batch_size', 64)
+                        
+                        # Only update when we have accumulated enough experiences
+                        if buffer_size >= batch_size:
+                            queue_rl_update(n_steps=batch_size)
+                            logger.debug(f"Queued RL update: buffer_size={buffer_size}, batch_size={batch_size}")
+                        else:
+                            logger.debug(f"Skipping RL update: buffer_size={buffer_size} < batch_size={batch_size}")
+                update_overhead = time.time() - update_start
+            
+            # Add online learning overhead to summary
+            infer_from_tensor_overhead_summary['online_update'] = update_overhead
         else:
             logger.info(f"Using contextual bandit model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
@@ -361,9 +454,87 @@ def test_kubernetes_permissions():
         logger.error(f"❌ Kubernetes API access failed: {e}")
         return False
 
+def rl_update_worker():
+    """Background worker thread for RL agent updates"""
+    global RL_AGENT, RL_AGENT_LOCK
+    logger.info("RL update worker thread started")
+    
+    while not RL_UPDATE_SHUTDOWN.is_set():
+        try:
+            # Wait for update request with timeout
+            update_request = RL_UPDATE_QUEUE.get(timeout=1.0)
+            
+            if update_request is None:  # Shutdown signal
+                break
+                
+            # Perform the update with WRITE lock (exclusive access)
+            # This blocks concurrent predictions to prevent PyTorch read+write races
+            with RL_AGENT_LOCK.write():
+                if RL_AGENT is not None:
+                    try:
+                        n_steps = update_request.get('n_steps', 32)
+                        RL_AGENT.update_online(n_steps=n_steps)
+                        logger.debug(f"RL agent updated with {n_steps} steps")
+                    except Exception as e:
+                        logger.error(f"Error updating RL agent: {e}")
+            
+            RL_UPDATE_QUEUE.task_done()
+            
+        except queue.Empty:
+            continue  # Timeout, check shutdown flag
+        except Exception as e:
+            logger.error(f"Error in RL update worker: {e}")
+    
+    logger.info("RL update worker thread stopped")
+
+
+def start_rl_update_worker():
+    """Start the RL update worker thread"""
+    global RL_UPDATE_THREAD
+    if RL_UPDATE_THREAD is None or not RL_UPDATE_THREAD.is_alive():
+        RL_UPDATE_THREAD = threading.Thread(target=rl_update_worker, daemon=True)
+        RL_UPDATE_THREAD.start()
+        logger.info("Started RL update worker thread")
+
+
+def stop_rl_update_worker():
+    """Stop the RL update worker thread"""
+    global RL_UPDATE_THREAD
+    if RL_UPDATE_THREAD and RL_UPDATE_THREAD.is_alive():
+        logger.info("Stopping RL update worker thread...")
+        RL_UPDATE_SHUTDOWN.set()
+        
+        # Send shutdown signal
+        try:
+            RL_UPDATE_QUEUE.put(None, timeout=1.0)
+        except queue.Full:
+            pass
+        
+        # Wait for thread to finish
+        RL_UPDATE_THREAD.join(timeout=5.0)
+        if RL_UPDATE_THREAD.is_alive():
+            logger.warning("RL update worker thread did not stop gracefully")
+        else:
+            logger.info("RL update worker thread stopped successfully")
+
+
+def queue_rl_update(n_steps=32):
+    """Queue an RL agent update request (non-blocking)"""
+    if ENABLE_ONLINE_LEARNING and RL_AGENT is not None:
+        try:
+            update_request = {'n_steps': n_steps}
+            RL_UPDATE_QUEUE.put_nowait(update_request)
+            logger.debug(f"Queued RL update request with {n_steps} steps")
+        except queue.Full:
+            logger.warning("RL update queue is full, skipping update request")
+
+
 def graceful_shutdown(sig=None, frame=None):
     """Handle graceful shutdown when receiving SIGTERM or SIGINT"""
     logger.info(f"Received signal {sig if sig else 'shutdown'}, shutting down gracefully...")
+    
+    # Stop RL update worker
+    stop_rl_update_worker()
     
     # Shutdown the scheduler if it exists
     if 'scheduler' in globals() and scheduler:
@@ -427,6 +598,23 @@ def init():
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+        # Additional mappings for GPU features expected by preprocess/encoding
+        RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
+        GPU_MODEL_TO_ENCODE = {
+            'NVIDIA-L20': 0,
+            'NVIDIA-L40': 1,
+            'NVIDIA-A10': 2,
+            'NVIDIA-A100': 3,
+            'NVIDIA-H100': 4,
+        }
+        pod_gpu_id_mapping = {}
+        for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
+            if gpu_model in GPU_MODEL_TO_ENCODE:
+                pod_gpu_id_mapping[generalpodid] = GPU_MODEL_TO_ENCODE[gpu_model]
+            else:
+                logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
+                assert False
+        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
         # Load normalization statistics from CSV file
         if os.path.exists(feature_normalization_stats_file):
@@ -477,6 +665,9 @@ if __name__ == "__main__":
         logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
+    
+    # Start RL update worker thread
+    start_rl_update_worker()
     
     # NEW CODE: Add error handling around app.run()
     try:

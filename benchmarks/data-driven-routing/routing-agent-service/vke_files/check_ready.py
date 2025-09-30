@@ -1,12 +1,9 @@
 import utils
-import time
+import argparse
 
 if __name__ == '__main__':
-    # utils.restart_deploy('aibrix-gateway-plugins', 'aibrix-system')
-    # utils.restart_deploy('latency-predictor-service', 'default')
-    # utils.restart_deploy('llama-3-8b-instruct', 'default')
-    time.sleep(3)
-    utils.check_deployment_ready_kubernetes('aibrix-gateway-plugins', 'aibrix-system')
-    utils.check_deployment_ready_kubernetes('llama-3-8b-instruct', 'default')
-    # utils.check_deployment_ready_kubernetes('latency-predictor-service', 'default')
-    utils.check_deployment_ready_kubernetes('routing-agent-service', 'default')
+    parser = argparse.ArgumentParser(description='Check if the deployment is ready')
+    parser.add_argument('--deployment', type=str, required=True, help='Deployment name')
+    parser.add_argument('--namespace', type=str, required=True, help='Namespace')
+    args = parser.parse_args()
+    utils.check_deployment_ready_kubernetes(args.deployment, args.namespace)

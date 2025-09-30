@@ -3,10 +3,10 @@
 set -e
 
 target_dir_list=(
-    "../experiment_results/SharingRatio71%/hand-picked"
-    "../experiment_results/SharingRatio47%/hand-picked"
-    "../experiment_results/SharingRatio28%/hand-picked"
-    "../experiment_results/SharingRatio9%/hand-picked"
+    "../workload-and-experiment_results/SharingRatio71%/hand-picked"
+    "../workload-and-experiment_results/SharingRatio47%/hand-picked"
+    "../workload-and-experiment_results/SharingRatio28%/hand-picked"
+    "../workload-and-experiment_results/SharingRatio9%/hand-picked"
 )
 
 for target_dir in "${target_dir_list[@]}"; do

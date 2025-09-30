@@ -351,6 +351,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'numPrefillTokensForAllPods',
         'numDecodeTokensForAllPods',
         # 'GPU_model',
+        'subAlgorithm',
     ]
 
     if INCLUDE_GPU_IN_FEATURE:
@@ -474,6 +475,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'e2e_latency': parsed_df['e2e'].values,
         'request_start_time': parsed_df['request_start_time'].values,  # NEW: Add request timing
         'request_end_time': parsed_df['request_end_time'].values,      # NEW: Add request timing
+        'subAlgorithm': parsed_df['subAlgorithm'].values,  # Preserve subAlgorithm column for routing decisions
     }
     if INCLUDE_GPU_IN_FEATURE:
         base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
@@ -629,7 +631,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
 
 
 def parse_log_message(log_message):
-    # Fast check without string operations
+    # logger.info(f"log_message: {log_message}")
     if "latency_metrics" not in log_message:
         logger.error(f"Invalid line. {log_message}")
         return pd.DataFrame(), []
@@ -673,6 +675,7 @@ def parse_log_message(log_message):
     # Create DataFrame only if we have data
     if row:
         df = pd.DataFrame([row])
+        # logger.info(f"df: {df.to_csv(index=False)}")
         return df, json_columns
     else:
         return pd.DataFrame(), []

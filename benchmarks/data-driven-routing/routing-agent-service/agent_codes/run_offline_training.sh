@@ -33,7 +33,7 @@ lr_scheduler_gamma=0.95
 excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
 no_normalize_features="none" # "kv_hit_ratio", "none"
 
-model_type="latency_predictor" # "contextual_bandit", "latency_predictor"  
+model_type="latency_predictor" # "contextual_bandit", "latency_predictor", "rl_agent"
 latency_metric="avg_tpot" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 
 use_sampled_data=false # true, false
@@ -57,7 +57,7 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         fi
         echo "✓ Found data file: ${data_file}"
 
-        # data_file="../experiment_results/SharingRatio28%/latency_predictor-trained_on_merged-data_all-20250925_190503/filtered-aibrix-gateway-plugins.log.csv"
+        # data_file="../workload-and-experiment_results/SharingRatio28%/latency_predictor-trained_on_merged-data_all-20250925_190503/filtered-aibrix-gateway-plugins.log.csv"
 
         # Generate processed CSV filename automatically
         data_dir=$(dirname "${data_file}")

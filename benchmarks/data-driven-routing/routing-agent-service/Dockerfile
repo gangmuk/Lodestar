@@ -18,6 +18,9 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 
 COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY agent_codes/*.py .
 COPY start.sh .
 
@@ -25,15 +28,13 @@ COPY start.sh .
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model final_model
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model_backup final_model
 # COPY training_data/p4096_s1024_rps20/rl+random/final_model-data_replaced-processed final_model
-# COPY training_data/merged-data/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp-latency_predictor final_model
+# COPY training_data/merged-data/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens-hidden_dim_64-lrs_exp-latency_predictor final_model
 COPY training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_64-lrs_grad_adapt final_model
 # COPY training_data/SharingRatio9%/all/final_model-data-processed final_model
 # COPY training_data/SharingRatio71%/all/final_model-data-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 final_model
 
 # Remove the duplicate COPY command that overwrites the model above
 COPY Dockerfile /app/Dockerfile
-
-RUN pip install --no-cache-dir -r requirements.txt
 # RUN pip install -r requirements.txt
 RUN chmod +x /app/start.sh
 
