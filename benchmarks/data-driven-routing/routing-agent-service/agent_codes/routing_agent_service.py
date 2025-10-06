@@ -19,6 +19,11 @@ import encoding
 import simpler_contextual_bandit
 import latency_predictor
 from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
+from scalable_rl_routing_agent import (
+    create_scalable_rl_agent,
+    infer_scalable_rl_agent,
+    on_request_complete_callback
+)
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -63,17 +68,23 @@ NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
 
 # RL agent globals
-RL_AGENT = None  # Managed by lazy initialization in handle_infer()
+RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
+SCALABLE_RL_AGENT = None  # New scalable RL agent (pod-independent) - for 'scalable_rl_agent' subAlgorithm
 # RWLock enables concurrent predictions (readers) with exclusive updates (writer)
 # - Predictions: use rwlock.read() for high concurrency
 # - Updates: use rwlock.write() for exclusive access
 # - Initialization: use rwlock.write() for exclusive access
 RL_AGENT_LOCK = RWLock()
+SCALABLE_RL_AGENT_LOCK = RWLock()
 
 # RL agent async update queue
 RL_UPDATE_QUEUE = queue.Queue(maxsize=1000)  # Bounded queue to prevent memory issues
 RL_UPDATE_THREAD = None
 RL_UPDATE_SHUTDOWN = threading.Event()
+
+# Request completion tracking (for scalable RL async completion)
+PENDING_REQUESTS = {}  # request_id → (route_time, selected_pod_idx)
+PENDING_REQUESTS_LOCK = threading.Lock()
 
 MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 1000))
 POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
@@ -84,6 +95,65 @@ RL_MODEL_HYPERPARAMETERS = None
 
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
+
+@app.route("/request_complete", methods=["POST"])
+def handle_request_complete():
+    """
+    Endpoint for async request completion notifications (for scalable_rl_agent).
+    
+    Expected payload:
+    {
+        "request_id": "req_12345",
+        "ttft": 45.6,           # milliseconds
+        "tpot": 12.3,           # milliseconds  
+        "selected_pod": "10.0.1.30"
+    }
+    """
+    global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
+    
+    try:
+        data = request.json
+        request_id = data.get('request_id')
+        ttft = data.get('ttft')
+        tpot = data.get('tpot')
+        selected_pod = data.get('selected_pod')
+        
+        if not request_id or ttft is None or tpot is None:
+            logger.error(f"Missing required fields in request completion: {data}")
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        if SCALABLE_RL_AGENT is None:
+            logger.debug(f"Scalable RL agent not initialized, ignoring completion for {request_id}")
+            return jsonify({"status": "ok", "message": "agent not initialized"}), 200
+        
+        # Get current cluster state (after completion)
+        try:
+            pod_features, kv_hit_ratios, request_features = get_current_cluster_features()
+            current_state = (pod_features, kv_hit_ratios, request_features)
+            
+            # Complete the experience
+            on_request_complete_callback(
+                rl_agent=SCALABLE_RL_AGENT,
+                request_id=request_id,
+                current_cluster_state=current_state,
+                ttft=ttft,
+                tpot=tpot,
+                hyperparameters=RL_MODEL_HYPERPARAMETERS
+            )
+            
+            logger.debug(f"✅ Completed experience for request {request_id} (ttft={ttft}ms, tpot={tpot}ms)")
+            return jsonify({"status": "ok"}), 200
+            
+        except NotImplementedError:
+            logger.debug(f"⚠️  get_current_cluster_features() not implemented, skipping completion for {request_id}")
+            return jsonify({"status": "ok", "message": "cluster state fetch not implemented"}), 200
+            
+    except Exception as e:
+        logger.error(f"Error in request completion handler: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
 
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
@@ -222,9 +292,9 @@ def handle_infer():
         for feature in features_must_exist_in_stats_instance:
             if feature not in stats_instance.feature_stats:
                 logger.error(f"Feature {feature} not found in stats_instance")
-                logger.error(f"processed_df.columns: {list(processed_df.columns)}")
-                logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
-                logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+                # logger.error(f"processed_df.columns: {list(processed_df.columns)}")
+                # logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
+                # logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
                 
         for feature in normalizable_features:
@@ -253,16 +323,11 @@ def handle_infer():
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
         elif subAlgorithm == 'rl_agent':
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using RL agent model for inference (request_id: {request_id})")
+            # === OLD RL AGENT (entire cluster as input state) ===
+            logger.info(f"subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference (request_id: {request_id})")
             
-            # Thread-safe inference with RWLock for low latency:
-            # 1. Write lock for agent init (rare, ~50ms once or on pod scaling)
-            # 2. Read lock for prediction (~10ms) - allows 100s of concurrent predictions!
-            # 3. Write lock for buffer write (~0.1ms) - fast exclusive access
-            # Result: P99 latency ~15ms even with 100 concurrent requests
             global RL_AGENT
             
-            # Critical section 1: Get/initialize agent atomically (write lock)
             with RL_AGENT_LOCK.write():
                 # Check if initialization needed
                 pod_features_t = tensor_data['pod_features']
@@ -292,7 +357,7 @@ def handle_infer():
                             logger.info(f"Loaded RL checkpoint from {ckpt_path}")
                         except Exception as e:
                             logger.error(f"Failed to load RL checkpoint {ckpt_path}: {e}")
-                    logger.info(f"Initialized RL agent with state_dim={state_dim}, action_dim={n_pods}")
+                    logger.info(f"Initialized OLD RL agent with state_dim={state_dim}, action_dim={n_pods}")
                 
                 # Get agent reference under write lock
                 current_agent = RL_AGENT
@@ -308,26 +373,72 @@ def handle_infer():
                 agent_lock=RL_AGENT_LOCK  # RWLock for read (predict) and write (buffer)
             )
             
-            # Queue async update if online learning enabled (infrastructure concern)
+            # Queue async update if online learning enabled
             update_overhead = 0.0
             if ENABLE_ONLINE_LEARNING:
                 update_start = time.time()
-                # Use read lock for checking buffer size (non-mutating)
                 with RL_AGENT_LOCK.read():
                     if RL_AGENT is not None:
                         buffer_size = len(RL_AGENT.experience_buffer)
                         batch_size = RL_AGENT.hyperparameters.get('batch_size', 64)
                         
-                        # Only update when we have accumulated enough experiences
                         if buffer_size >= batch_size:
                             queue_rl_update(n_steps=batch_size)
                             logger.debug(f"Queued RL update: buffer_size={buffer_size}, batch_size={batch_size}")
-                        else:
-                            logger.debug(f"Skipping RL update: buffer_size={buffer_size} < batch_size={batch_size}")
                 update_overhead = time.time() - update_start
             
-            # Add online learning overhead to summary
             infer_from_tensor_overhead_summary['online_update'] = update_overhead
+            
+        elif subAlgorithm == 'scalable_rl_agent':
+            # === NEW SCALABLE RL AGENT (pod-count independent) ===
+            logger.info(f"subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference (request_id: {request_id})")
+            
+            global SCALABLE_RL_AGENT
+            
+            with SCALABLE_RL_AGENT_LOCK.write():
+                if SCALABLE_RL_AGENT is None:
+                    # Initialize ONCE - works for any number of pods!
+                    pod_features_t = tensor_data['pod_features']
+                    per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
+                    kv_hit_t = tensor_data['kv_hit_ratios']
+                    kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
+                    req_features_t = tensor_data['request_features']
+                    req_dim = int(req_features_t.shape[1])  # e.g., 3
+                    
+                    # Per-pod dimension = pod_features + kv_hit_ratios
+                    total_per_pod_dim = per_pod_dim + kv_dim
+                    
+                    SCALABLE_RL_AGENT = create_scalable_rl_agent(
+                        per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
+                        request_dim=req_dim,             # 3
+                        max_pods=100,                    # Max expected pods
+                        **RL_MODEL_HYPERPARAMETERS
+                    )
+                    
+                    # Load checkpoint if available
+                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+                    if ckpt_path and os.path.exists(ckpt_path):
+                        try:
+                            SCALABLE_RL_AGENT.load(ckpt_path)
+                            logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
+                    
+                    logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
+                              f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
+                
+                current_agent = SCALABLE_RL_AGENT
+            
+            # Inference (no lock needed - thread-safe in new design)
+            current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
+                tensor_data=tensor_data,
+                request_id=request_id,
+                sorted_all_pod_ids=sorted_all_pod_ids,
+                processed_df=processed_df,
+                rl_agent=current_agent,
+                hyperparameters=RL_MODEL_HYPERPARAMETERS,
+                agent_lock=None  # New agent doesn't need lock for prediction
+            )
         else:
             logger.info(f"Using contextual bandit model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
@@ -529,6 +640,124 @@ def queue_rl_update(n_steps=32):
             logger.warning("RL update queue is full, skipping update request")
 
 
+def get_current_cluster_features():
+    """
+    Fetch real-time cluster state for experience completion (next_obs).
+    
+    This mirrors the feature extraction done in /infer, but fetches CURRENT state.
+    
+    Returns:
+        pod_features: [num_pods, 10] - Current pod metrics
+        kv_hit_ratios: [num_pods, 1] - Current cache hit ratios (zeros for now)
+        request_features: [3] - Dummy request features (not used for next_obs)
+    """
+    global RL_MODEL_HYPERPARAMETERS, stats_instance
+    
+    try:
+        # Get current running pods (same as init())
+        running_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
+        sorted_pod_ips = utils.fetch_running_pod_ips(running_pods)
+        num_pods = len(sorted_pod_ips)
+        
+        if num_pods == 0:
+            logger.warning("No running pods found for cluster state fetch")
+            # Return dummy state
+            return (
+                np.zeros((1, 10), dtype=np.float32),
+                np.zeros((1, 1), dtype=np.float32),
+                np.zeros(3, dtype=np.float32)
+            )
+        
+        # Initialize arrays for pod features
+        pod_features = np.zeros((num_pods, 10), dtype=np.float32)
+        
+        # Get pod_ip to general_pod_id mapping
+        pod_ip_to_generalpodid = RL_MODEL_HYPERPARAMETERS.get('pod_ip_to_generalpodid', {})
+        pod_ip_to_gpu_model_encoded = RL_MODEL_HYPERPARAMETERS.get('pod_ip_to_gpu_model_encoded', {})
+        
+        # For each pod, fetch current metrics
+        for i, pod_ip in enumerate(sorted_pod_ips):
+            try:
+                # These are the same features used in preprocess.py
+                # The exact column order depends on your feature extraction
+                # Adjust indices based on your actual feature schema
+                
+                # Example feature extraction (adjust to your schema):
+                # Column 0: running_requests (from inflight)
+                inflight_requests = utils.GetInflightRequestsForPod(pod_ip) if hasattr(utils, 'GetInflightRequestsForPod') else 0
+                pod_features[i, 0] = float(inflight_requests)
+                
+                # Column 1: queue_length (from waiting requests)
+                # Use stored metrics or default to 0
+                pod_features[i, 1] = 0  # Placeholder - implement if you track queue length
+                
+                # Column 2-3: GPU/CPU KV cache usage
+                # These would come from vLLM metrics if available
+                pod_features[i, 2] = 0  # GPU cache usage (implement if tracked)
+                pod_features[i, 3] = 0  # CPU cache usage (implement if tracked)
+                
+                # Column 4-5: Num requests running/waiting
+                pod_features[i, 4] = 0  # Running requests (implement if tracked)
+                pod_features[i, 5] = 0  # Waiting requests (implement if tracked)
+                
+                # Column 6-7: Prefill/decode token counts
+                prefill_tokens = utils.GetNumPrefillTokensForPod(pod_ip) if hasattr(utils, 'GetNumPrefillTokensForPod') else 0
+                decode_tokens = utils.GetNumDecodeTokensForPod(pod_ip) if hasattr(utils, 'GetNumDecodeTokensForPod') else 0
+                pod_features[i, 6] = float(prefill_tokens)
+                pod_features[i, 7] = float(decode_tokens)
+                
+                # Column 8: GPU type (encoded)
+                if pod_ip in pod_ip_to_gpu_model_encoded:
+                    pod_features[i, 8] = float(pod_ip_to_gpu_model_encoded[pod_ip])
+                else:
+                    pod_features[i, 8] = 0.0
+                
+                # Column 9: Availability (1.0 = available)
+                pod_features[i, 9] = 1.0  # Assume available (or check pod status)
+                
+            except Exception as e:
+                logger.warning(f"Error fetching metrics for pod {pod_ip}: {e}")
+                # Keep zeros for this pod
+        
+        # Normalize features using stats_instance (same as /infer)
+        if stats_instance is not None and stats_instance.get_max_count() > 0:
+            # Get normalizable feature names (adjust to your schema)
+            # This should match the features in your processed_df
+            feature_names = [
+                'running_requests', 'queue_length', 'gpu_cache', 'cpu_cache',
+                'num_running', 'num_waiting', 'prefill_tokens', 'decode_tokens',
+                'gpu_type', 'availability'
+            ]
+            
+            for col_idx, feature_name in enumerate(feature_names):
+                if feature_name in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature_name]
+                    # Z-score normalization: (x - mean) / std
+                    if stats.std > 0:
+                        pod_features[:, col_idx] = (pod_features[:, col_idx] - stats.mean) / stats.std
+        
+        # KV hit ratios - for next_obs, we don't have per-request cache hit info
+        # So we use zeros (or could use average cache hit rates if tracked)
+        kv_hit_ratios = np.zeros((num_pods, 1), dtype=np.float32)
+        
+        # Request features - dummy (not used for next_obs, but needed for consistency)
+        request_features = np.zeros(3, dtype=np.float32)
+        
+        logger.debug(f"Fetched current cluster state: {num_pods} pods")
+        return pod_features, kv_hit_ratios, request_features
+        
+    except Exception as e:
+        logger.error(f"Error in get_current_cluster_features: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Return minimal valid state
+        return (
+            np.zeros((1, 10), dtype=np.float32),
+            np.zeros((1, 1), dtype=np.float32),
+            np.zeros(3, dtype=np.float32)
+        )
+
+
 def graceful_shutdown(sig=None, frame=None):
     """Handle graceful shutdown when receiving SIGTERM or SIGINT"""
     logger.info(f"Received signal {sig if sig else 'shutdown'}, shutting down gracefully...")
@@ -641,6 +870,116 @@ def init():
     else:
         logger.warning("No normalization statistics available - inference will fail")
         assert False
+    
+    # Add checkpointing configuration to hyperparameters
+    if 'CHECKPOINT_INTERVAL_STEPS' not in RL_MODEL_HYPERPARAMETERS:
+        RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
+    if 'CHECKPOINT_DIR' not in RL_MODEL_HYPERPARAMETERS:
+        RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')
+    
+    # Create checkpoint directory if it doesn't exist
+    checkpoint_dir = RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    logger.info(f"Checkpoint directory: {checkpoint_dir}")
+    logger.info(f"Checkpointing every {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
+
+
+def periodic_checkpoint_scalable_rl():
+    """
+    Periodically checkpoint the scalable RL agent with comprehensive metadata.
+    
+    This runs in a background thread and saves:
+    - Model weights
+    - Training progress (steps, episodes)
+    - Performance metrics (rewards, success rate)
+    - Buffer statistics
+    - Human-readable JSON metadata
+    """
+    global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
+    
+    try:
+        if SCALABLE_RL_AGENT is None:
+            return  # Agent not initialized yet
+        
+        with SCALABLE_RL_AGENT_LOCK.read():
+            # Check if it's time to checkpoint
+            checkpoint_interval = RL_MODEL_HYPERPARAMETERS.get('CHECKPOINT_INTERVAL_STEPS', 1000)
+            total_steps = SCALABLE_RL_AGENT.total_steps
+            
+            # Checkpoint at regular intervals
+            if total_steps > 0 and total_steps % checkpoint_interval < 64:  # 64 = typical batch size
+                checkpoint_dir = RL_MODEL_HYPERPARAMETERS.get('CHECKPOINT_DIR')
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                checkpoint_name = f"scalable_rl_step_{total_steps}_{timestamp}"
+                checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+                
+                try:
+                    # Upgrade to write lock for saving
+                    with SCALABLE_RL_AGENT_LOCK.write():
+                        logger.info(f"💾 Checkpointing scalable RL agent at step {total_steps}")
+                        
+                        # Save with comprehensive metadata
+                        SCALABLE_RL_AGENT.save(
+                            checkpoint_path,
+                            save_buffer=False  # Don't save buffer by default (can be large)
+                        )
+                        
+                        # Log metrics
+                        metrics = SCALABLE_RL_AGENT.get_metrics()
+                        if metrics.get('reward_stats'):
+                            logger.info(f"  📊 Avg reward (recent 100): {metrics['reward_stats']['avg_reward_recent']:.3f}")
+                            logger.info(f"  ✅ Success rate: {metrics['success_rate']:.2%}")
+                        
+                        # Clean up old checkpoints (keep only last 5)
+                        cleanup_old_checkpoints(checkpoint_dir, keep_latest=5)
+                        
+                except Exception as e:
+                    logger.error(f"Failed to save checkpoint: {e}")
+    
+    except Exception as e:
+        logger.error(f"Error in periodic_checkpoint_scalable_rl: {e}")
+
+
+def cleanup_old_checkpoints(checkpoint_dir, keep_latest=5):
+    """
+    Remove old checkpoints, keeping only the most recent ones.
+    
+    Args:
+        checkpoint_dir: Directory containing checkpoints
+        keep_latest: Number of recent checkpoints to keep
+    """
+    try:
+        # Find all checkpoint files (main model file, not metadata)
+        import glob
+        checkpoint_files = []
+        
+        # Look for .zip files (SB3 PPO saves as .zip)
+        for f in glob.glob(os.path.join(checkpoint_dir, "scalable_rl_step_*.zip")):
+            # Get modification time
+            mtime = os.path.getmtime(f)
+            checkpoint_files.append((f, mtime))
+        
+        # Sort by modification time (newest first)
+        checkpoint_files.sort(key=lambda x: x[1], reverse=True)
+        
+        # Delete old ones
+        if len(checkpoint_files) > keep_latest:
+            for checkpoint_path, _ in checkpoint_files[keep_latest:]:
+                try:
+                    # Remove checkpoint and associated files
+                    base_path = checkpoint_path.replace('.zip', '')
+                    
+                    # Remove .zip, _metadata.pkl, _metadata.json
+                    for ext in ['.zip', '_metadata.pkl', '_metadata.json', '_buffer.pkl']:
+                        file_to_remove = base_path + ext if ext != '.zip' else checkpoint_path
+                        if os.path.exists(file_to_remove):
+                            os.remove(file_to_remove)
+                            logger.debug(f"  🗑️  Removed old checkpoint: {os.path.basename(file_to_remove)}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove old checkpoint {checkpoint_path}: {e}")
+    except Exception as e:
+        logger.error(f"Error cleaning up old checkpoints: {e}")
+
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
@@ -663,6 +1002,11 @@ if __name__ == "__main__":
         scheduler.add_job(func=online_train_routine, trigger="interval", seconds=30)
     else:
         logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
+    
+    # Add periodic checkpointing for scalable RL agent (every 2 minutes)
+    scheduler.add_job(func=periodic_checkpoint_scalable_rl, trigger="interval", seconds=120)
+    logger.info("📆 Periodic checkpointing scheduled (every 2 minutes)")
+    
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
     

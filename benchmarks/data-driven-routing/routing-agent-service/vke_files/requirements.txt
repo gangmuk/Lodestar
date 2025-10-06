@@ -3,3 +3,4 @@ openai
 transformers
 kubernetes
 tqdm
+httpx

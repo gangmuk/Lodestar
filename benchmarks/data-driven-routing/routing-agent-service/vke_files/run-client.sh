@@ -124,7 +124,8 @@ done
 
 delimiter="+"
 routing_configs=(
-    "rl-online-router${delimiter}rl_agent"
+    # "rl-online-router${delimiter}scalable_rl_agent"
+    "rl-online-router${delimiter}contextual_bandit"
     # "rl-online-router${delimiter}rl_naive"
     # "rl-online-router${delimiter}latency_predictor"
     # "rl-online-router${delimiter}prefix_cache_1"
@@ -177,12 +178,11 @@ input_workload_dirs=(
     ############################
     ## local k8s for mock app ##
     ############################
-    # basedir=""
     "../workload-and-experiment_results/ten_request"
-    # "${basedir}/SharingRatio71%"
-    # "${basedir}/SharingRatio47%"
-    # "${basedir}/SharingRatio28%"
-    # "${basedir}/SharingRatio9%"
+    # "../workload-and-experiment_results/SharingRatio71%"
+    # "../workload-and-experiment_results/SharingRatio47%"
+    # "../workload-and-experiment_results/SharingRatio28%"
+    # "../workload-and-experiment_results/SharingRatio9%"
 )
 
 # # Function to cleanup remote processes on interrupt
@@ -309,8 +309,8 @@ for i in $(seq 1 ${repeat_times}); do
                 echo "Wait for 10 seconds..."
                 sleep 15
 
-                echo "Send load from host!!!!"
-                bash local-k8s-client.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${experiment_result_output_dir}
+                # echo "Send load from host!!!!"
+                # bash local-k8s-client.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${experiment_result_output_dir}
                 # ssh_pid=$!
 
                 #############################
@@ -319,25 +319,38 @@ for i in $(seq 1 ${repeat_times}); do
                 # echo "SSH into vke to run client script!!!!"
 
                 # # Run SSH command in background
-                # ssh root@180.184.82.203 "cd /mnt/vdb/data-driven-routing/client && bash run-client-only.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${full_path_in_vke_node}" &
-                # ssh_pid=$!
+                ssh root@180.184.82.203 "cd /mnt/vdb/data-driven-routing/client && bash run-client-only.sh ${subAlgorithm} ${workload_dir} ${ENABLE_ONLINE_LEARNING} ${iterations} ${max_tokens} ${full_path_in_vke_node}" &
+                ssh_pid=$!
 
 
-                # # Wait for the SSH command to complete
-                # wait $ssh_pid
-                # ssh_pid=""
+                # Wait for the SSH command to complete
+                wait $ssh_pid
+                ssh_pid=""
 
-                # # Clear the trap since we're done with this iteration
-                # trap - SIGINT
+                # Clear the trap since we're done with this iteration
+                trap - SIGINT
 
                 #################
                 ## End logging ##
                 #################
+                
+                # Copy final model
                 python kubectl_cp_from_pod_to_host.py /app/final_model "${experiment_result_output_dir}/final_model" routing-agent-service default
+                
+                # Copy checkpoints (for scalable_rl_agent)
+                if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+                    echo "Copying scalable RL agent checkpoints..."
+                    python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${experiment_result_output_dir}/checkpoints" routing-agent-service default || echo "⚠️  No checkpoints found (agent may not have trained enough steps)"
+                fi
+                
+                # Process logs
                 cat ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" | grep -v "infer:" > ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
                 echo "* all gateway log: ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt"
                 echo "* filtered gateway log: ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv"
                 echo "* routing agent log: ${experiment_result_output_dir}/all-routing-agent-service.log.txt"
+                if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+                    echo "* checkpoints: ${experiment_result_output_dir}/checkpoints/"
+                fi
                 # python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
                 kill $pid_1
                 kill $pid_2

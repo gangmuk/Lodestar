@@ -75,6 +75,26 @@ func getRequestID(headers []*configPb.HeaderValue) string {
 	return ""
 }
 
+// getSubAlgorithm retrieves the subAlgorithm from headers
+func getSubAlgorithm(headers []*configPb.HeaderValue) string {
+	for _, header := range headers {
+		if strings.ToLower(header.Key) == "subalgorithm" {
+			return string(header.RawValue)
+		}
+	}
+	return ""
+}
+
+// getIteration retrieves the iteration from headers
+func getIteration(headers []*configPb.HeaderValue) string {
+	for _, header := range headers {
+		if strings.ToLower(header.Key) == "iteration" {
+			return string(header.RawValue)
+		}
+	}
+	return ""
+}
+
 // getRequestMessage returns input request message field which has user prompt
 func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
 	messages, ok := jsonMap["messages"]

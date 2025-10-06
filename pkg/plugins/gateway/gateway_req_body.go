@@ -106,31 +106,40 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			klog.Errorf("error to get request message: %v, requestID: %s", extErr, requestID)
 			return extErr, model, routingCtx, stream, term
 		}
-		// klog.InfoS("Context state before pod selection", "requestID", requestID, "isDone", ctx.Err() != nil)
-		if subAlgorithmValue, exists := jsonMap["subAlgorithm"]; exists {
-			if subAlgorithm, ok = subAlgorithmValue.(string); !ok {
-				klog.InfoS("subAlgorithm is not a string", "requestID", requestID, "value", subAlgorithmValue)
-				subAlgorithm = ""
-			}
-		} else {
-			subAlgorithm = ""
-			klog.ErrorS(nil, "subAlgorithm not present in request. set it empty string", "requestID", requestID)
-		}
-		klog.InfoS("subAlgorithm", "requestID", requestID, "subAlgorithm", subAlgorithm)
-		routingCtx.SubAlgorithm = subAlgorithm
+		// Retrieve subAlgorithm and iteration from cached headers instead of JSON body
+		if cachedHeaders, ok := s.requestHeaders.Load(requestID); ok {
+			headerMap := cachedHeaders.(map[string]string)
 
-		if iterationValue, exists := jsonMap["iteration"]; exists {
-			strValue, ok := iterationValue.(string)
-			if !ok {
-				klog.ErrorS(nil, "iteration is not a string", "requestID", requestID, "value", iterationValue)
-				iteration = -2
+			// Get subAlgorithm from headers
+			if subAlgValue, exists := headerMap["subAlgorithm"]; exists && subAlgValue != "" {
+				subAlgorithm = subAlgValue
+				klog.InfoS("subAlgorithm from header", "requestID", requestID, "subAlgorithm", subAlgorithm)
+			} else {
+				subAlgorithm = ""
+				klog.InfoS("subAlgorithm not present in header, set it empty string", "requestID", requestID)
 			}
-			iteration, err = strconv.Atoi(strValue)
+			routingCtx.SubAlgorithm = subAlgorithm
+
+			// Get iteration from headers
+			if iterValue, exists := headerMap["iteration"]; exists && iterValue != "" {
+				iteration, err = strconv.Atoi(iterValue)
+				if err != nil {
+					klog.ErrorS(err, "iteration is not a valid integer", "requestID", requestID, "value", iterValue)
+					iteration = -2
+				}
+			} else {
+				iteration = -3
+				klog.ErrorS(nil, "iteration not present in request. set it -3", "requestID", requestID)
+			}
+			routingCtx.Iteration = iteration
 		} else {
+			// Fallback: headers not cached
+			subAlgorithm = ""
 			iteration = -3
-			klog.ErrorS(nil, "iteration not present in request. set it -3", "requestID", requestID)
+			klog.ErrorS(nil, "request headers not cached", "requestID", requestID)
+			routingCtx.SubAlgorithm = subAlgorithm
+			routingCtx.Iteration = iteration
 		}
-		routingCtx.Iteration = iteration
 
 		// klog.V(5).InfoS("New routing context created", "requestID", requestID, "isDone", routingCtx.Err() != nil)
 
