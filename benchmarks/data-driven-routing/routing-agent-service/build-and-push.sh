@@ -2,18 +2,14 @@
 
 build=$1
 
-if [ -z "$build" ]; then
-  echo "Please provide a build (e.g., 'remote' or 'local')."
-  exit 1
-fi
-
 # docker buildx build --platform ${platform} --no-cache -t aibrix/gangmuk-routing-agent:${tag} .
 
 if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
-    sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
-    sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
-    sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+    docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+    docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+    kubectl set image deployment/routing-agent-service routing-agent=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     # kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
 else
     if [ "$build" == "local-linux" ]; then

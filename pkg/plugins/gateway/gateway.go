@@ -62,6 +62,7 @@ type Server struct {
 	statusCode          sync.Map // Map to track status codes per request: requestID -> statusCode
 	selectedPodIP       sync.Map // Map to track target pod per request: requestID -> podIP
 	routingContexts     sync.Map // Map to store routing contexts for each request: requestID -> *types.RoutingContext
+	requestHeaders      sync.Map // Map to cache request headers per request: requestID -> map[string]string
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {

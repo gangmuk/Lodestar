@@ -523,7 +523,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						}
 					}
 				} else { // none or latency_predictor
-					klog.Infof("Unknown sub-algorithm: %s, means rl-routing or latency_predictor. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
+					klog.Infof("Unknown sub-algorithm: %s other than scalable_rl_agent, rl_agent or latency_predictor. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				}
 				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {

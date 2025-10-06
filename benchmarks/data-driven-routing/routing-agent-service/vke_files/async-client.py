@@ -58,7 +58,7 @@ async def load_workload(workload_path: str) -> List[Dict[str, Any]]:
 
 async def send_request_streaming(client, model, prompt, output_file, request_id,
                                 session_id, target_time, max_tokens,
-                                temperature, routing_strategy, results_lock, history_lock):
+                                temperature, routing_strategy, results_lock, history_lock, iteration):
     """Send a streaming request asynchronously"""
     start_time = asyncio.get_running_loop().time()
     first_response_time = None
@@ -104,12 +104,12 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         
         # Set additional headers if needed
         extra_headers = {}
-        if routing_strategy:
-            extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
         extra_headers["request-id"] = str(request_id)
+        extra_headers["subAlgorithm"] = args.subAlgorithm
         
         # Patch the client to capture headers
-        transport = patch_openai_client(client)
 
         # Send streaming request
         response_stream = await client.chat.completions.create(
@@ -120,13 +120,11 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
             stream=True,
             stream_options={"include_usage": True},
             extra_headers=extra_headers,
-            extra_body={"subAlgorithm": args.subAlgorithm},
         )
         
         # Extract headers
+        transport = patch_openai_client(client)
         headers_data = extract_headers_data(transport.captured_headers)
-        # print(f"Request {request_id}, headers_data: {headers_data}")
-        # Process streaming response
         text_chunks = []
         prompt_tokens = 0
         output_tokens = 0
@@ -248,7 +246,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
 
 async def send_request_with_token_ids(client, model, token_ids, output_file, request_id,
                                    session_id, target_time, max_tokens,
-                                   temperature, routing_strategy, results_lock, history_lock):
+                                   temperature, routing_strategy, results_lock, history_lock, iteration):
     """Send a request with directly sampled token IDs (bypasses text tokenization)"""
     start_time = asyncio.get_running_loop().time()
     selected_pod_ip = ""
@@ -281,13 +279,9 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
 
         # Set additional headers if needed
         extra_headers = {}
-        if routing_strategy:
-            extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
         extra_headers["request-id"] = str(request_id)
-
-        # Patch the client to capture headers
-        transport = patch_openai_client(client)
-
         try:
             # Send request using completions endpoint with prompt_token_ids
             response = await client.completions.create(
@@ -296,7 +290,6 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
                 max_tokens=max_tokens,
                 temperature=temperature,
                 extra_headers=extra_headers,
-                extra_body={"subAlgorithm": args.subAlgorithm},
             )
 
             # Validate response
@@ -304,6 +297,7 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
                 raise ValueError("Incomplete or invalid response received")
 
             # Extract headers data
+            transport = patch_openai_client(client)
             headers_data = extract_headers_data(transport.captured_headers)
             print(f"Request {request_id}, headers_data: {headers_data}")
             # Extract response time and token counts
@@ -702,9 +696,12 @@ async def create_client(api_key, endpoint, max_retries, timeout, routing_strateg
     
     return client
 
+# async def send_request_batch(client, model, prompt, output_file, request_id,
+#                              session_id, target_time, max_tokens,
+#                              temperature=0.0, routing_strategy=None):
 async def send_request_batch(client, model, prompt, output_file, request_id,
-                             session_id, target_time, max_tokens,
-                             temperature=0.0, routing_strategy=None):
+                                session_id, target_time, max_tokens,
+                                temperature, routing_strategy, results_lock, history_lock, iteration):
     """Send a batch (non-streaming) request asynchronously"""
     start_time = asyncio.get_running_loop().time()
     selected_pod_ip = ""
@@ -748,23 +745,21 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
         logger.debug(f"Request {request_id}: Formatted prompt: {prompt}")
         
         # Set additional headers if needed
+        # Set additional headers if needed
         extra_headers = {}
-        if routing_strategy:
-            extra_headers["routing-strategy"] = routing_strategy
-
-        # Patch the client to capture headers
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
+        extra_headers["request-id"] = str(request_id)
         transport = patch_openai_client(client)
 
         try:
             # Send request using the OpenAI client
             response = await client.chat.completions.create(
-                subAlgorithm=args.subAlgorithm,
                 model=model,
                 messages=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 extra_headers=extra_headers,
-                extra_body={"subAlgorithm": args.subAlgorithm},
             )
             
             # Validate response
@@ -843,13 +838,11 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                     
                     # Retry with simplified format
                     response = await client.chat.completions.create(
-                        subAlgorithm=args.subAlgorithm,
                         model=model,
                         messages=simple_prompt,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         extra_headers=extra_headers,
-                        extra_body={"subAlgorithm": args.subAlgorithm},
                     )
                     
                     # Process response as before
@@ -948,7 +941,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
 
 
-async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, prompt_type="chat"):
+async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, iteration, prompt_type="chat"):
     """Schedule and execute tasks based on their target times with true concurrency"""
     # Sort tasks by target_time
     tasks.sort(key=lambda t: t["target_time"])
@@ -989,6 +982,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
                     routing_strategy=routing_strategy,
                     results_lock=results_lock,
                     history_lock=history_lock,
+                    iteration=iteration,
                 )
             )
         else:
@@ -1008,6 +1002,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
                     routing_strategy=routing_strategy,
                     results_lock=results_lock,
                     history_lock=history_lock,
+                    iteration=iteration,
                 )
             )
         
@@ -1027,7 +1022,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
     return results
 
 async def schedule_task(delay, target_time, request_id, send_func, client, model, prompt,
-                        output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+                        output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, iteration):
     """Schedule and execute a single task at the specified time"""
     task_start = time.time()
 
@@ -1057,12 +1052,13 @@ async def schedule_task(delay, target_time, request_id, send_func, client, model
         routing_strategy=routing_strategy,
         results_lock=results_lock,
         history_lock=history_lock,
+        iteration=iteration,
     )
 
     return result
 
 async def schedule_task_token_ids(delay, target_time, request_id, client, model, token_ids,
-                                output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock):
+                                output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, iteration):
     """Schedule and execute a single token-ids task at the specified time"""
     task_start = time.time()
 
@@ -1092,6 +1088,7 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
         routing_strategy=routing_strategy,
         results_lock=results_lock,
         history_lock=history_lock,
+        iteration=iteration,
     )
 
     return result
@@ -1135,24 +1132,18 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 if args.prompt_type == "token-ids":
                     # Parse token IDs from workload file
                     try:
-                        if isinstance(request["prompt"], list):
+                        # Expect prompt field to contain a list of token IDs like "[123, 456, 789, ...]"
+                        if isinstance(request["prompt"], str):
+                            # Parse string representation of list
+                            token_ids = json.loads(request["prompt"])
+                        elif isinstance(request["prompt"], list):
                             # Already a list
                             token_ids = request["prompt"]
-                        elif isinstance(request["prompt"], str):
-                            # Try to parse as JSON array first
-                            try:
-                                token_ids = json.loads(request["prompt"])
-                            except json.JSONDecodeError:
-                                # If not JSON, try space-separated integers
-                                try:
-                                    token_ids = [int(x.strip()) for x in request["prompt"].split() if x.strip()]
-                                except ValueError:
-                                    raise ValueError(f"Cannot parse as token IDs: {request['prompt']}")
                         else:
                             raise ValueError(f"Invalid token_ids format: {request['prompt']}")
 
                         prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
-                    except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    except (json.JSONDecodeError, KeyError) as e:
                         logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
                         raise
                 else:
@@ -1174,6 +1165,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 request_id += 1
         
         logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
         
         # Execute only this iteration's tasks
         start_time = time.time()
@@ -1187,6 +1179,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             routing_strategy=routing_strategy,
             results_lock=results_lock,
             history_lock=history_lock,
+            iteration=iteration,
             prompt_type=args.prompt_type,
         )
         end_time = time.time()
@@ -1206,7 +1199,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         # Free up memory
         iteration_tasks = None
         results = None
-        
+
         # # Add a small buffer before next iteration if not the last iteration
         # if iteration < iterations - 1:
         #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
@@ -1232,10 +1225,10 @@ async def main(args):
     # Initialize CSV file
     with open(output_csv_file_name, 'w', encoding='utf-8') as f:
         f.write("")  # Create empty file
-    
+
     # Load workload
     load_struct = await load_workload(args.workload_path)
-    
+
     results_lock = asyncio.Lock()  # Async lock for result writing
     history_lock = asyncio.Lock()  # Async lock for session history
 
@@ -1273,6 +1266,7 @@ def write_experiment_config_to_file(output_dir, args):
         return config_file
 
 if __name__ == "__main__":
+    print(f"starting async-client.py")
     """Main entry point for the script"""
     parser = argparse.ArgumentParser(description='Async Workload Generator')
     parser.add_argument("--workload_path", type=str, required=True, help="File path to the workload file.")

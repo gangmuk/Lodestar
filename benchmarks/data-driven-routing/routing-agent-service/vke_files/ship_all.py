@@ -27,7 +27,8 @@ class K8sHotDeployer:
     def __init__(self, namespace="default", app_label="routing-agent-service"):
         self.namespace = namespace
         self.app_label = app_label
-        kube_config_file = os.path.expanduser('~/.kube/config')
+        # kube_config_file = os.path.expanduser('~/.kube/config')
+        kube_config_file = os.path.expanduser('~/.kube/vke-config')
         if not os.path.exists(kube_config_file):
             print(f"Error: {kube_config_file} does not exist")
             assert False
@@ -333,6 +334,8 @@ def main():
             "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
             "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
+            "../agent_codes/rwlock.py": "/app/rwlock.py",
+            "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
             "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
             "../agent_codes/logger.py": "/app/logger.py",

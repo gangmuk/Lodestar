@@ -38,6 +38,65 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+// HTTP client for async RL agent completion notifications
+var (
+	httpClientForRLCompletion = &http.Client{
+		Timeout: 1000 * time.Millisecond,
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     30 * time.Second,
+		},
+	}
+)
+
+// notifyRLAgentRequestComplete sends async completion notification for scalable RL agent
+func notifyRLAgentRequestComplete(routerCtx *types.RoutingContext, ttftMs int64, avgTpotMs int64) {
+	// Only notify for scalable_rl_agent
+	if routerCtx == nil || routerCtx.SubAlgorithm != "scalable_rl_agent" {
+		return
+	}
+
+	completionData := map[string]interface{}{
+		"request_id":   routerCtx.RequestID,
+		"ttft":         ttftMs,
+		"tpot":         avgTpotMs,
+		"selected_pod": routerCtx.TargetAddressWithoutPort(),
+	}
+
+	reqBody, err := json.Marshal(completionData)
+	if err != nil {
+		klog.Errorf("Failed to marshal completion data for request %s: %v", routerCtx.RequestID, err)
+		return
+	}
+
+	// Send async (don't block response to client)
+	go func() {
+		// Use the same routing agent URL as in rl_routing.go
+		url := "http://routing-agent-service.default.svc.cluster.local:8080/request_complete"
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+		if err != nil {
+			klog.V(5).Infof("Failed to create completion request for %s: %v", routerCtx.RequestID, err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := httpClientForRLCompletion.Do(req)
+		if err != nil {
+			klog.V(5).Infof("Failed to notify RL agent completion for %s: %v", routerCtx.RequestID, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			klog.V(5).Infof("RL agent completion notification returned %d for %s", resp.StatusCode, routerCtx.RequestID)
+		} else {
+			klog.V(5).Infof("✅ Notified scalable RL agent of completion for %s (ttft=%dms, tpot=%dms)",
+				routerCtx.RequestID, ttftMs, avgTpotMs)
+		}
+	}()
+}
+
 func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) (openai.CompletionUsage, bool, *extProcPb.ProcessingResponse) {
 	lines := strings.Split(string(responseBody), "\n")
 	existingUsageRaw, _ := s.streamingUsageCache.LoadOrStore(requestID, openai.CompletionUsage{})
@@ -276,6 +335,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
+			s.requestHeaders.Delete(routerCtx.RequestID) // Clean up cached request headers
 		}
 	}
 	if usage.TotalTokens > 0 {
@@ -695,6 +755,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	// 	explorationEnabled,
 	// )
 	klog.Infof("%s", logMessage)
+
+	// Notify scalable RL agent of request completion (async, non-blocking)
+	notifyRLAgentRequestComplete(routerCtx, ttftMs, avgTpotMs)
+
 	return headers, logMessage
 }
 
