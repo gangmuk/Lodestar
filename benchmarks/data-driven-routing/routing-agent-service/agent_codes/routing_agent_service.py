@@ -47,13 +47,7 @@ from rwlock import RWLock
 # INCLUDE_GPU_IN_FEATURE = True
 
 app = Flask(__name__)
-
-
 hyperparameter_file_path = '/app/final_model/model_config.json'
-
-excluded_pod_feature = ["kv_hit_ratio"]
-
-
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 final_model_dir = "/app/final_model"
@@ -66,16 +60,18 @@ stats_instance = None
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
-
+PRINT_ONCE_AT_THE_FIRST_REQUEST = True
 # RL agent globals
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
 SCALABLE_RL_AGENT = None  # New scalable RL agent (pod-independent) - for 'scalable_rl_agent' subAlgorithm
+LATENCY_PREDICTOR = None  # Latency predictor model - for 'latency_predictor' subAlgorithm
 # RWLock enables concurrent predictions (readers) with exclusive updates (writer)
 # - Predictions: use rwlock.read() for high concurrency
 # - Updates: use rwlock.write() for exclusive access
 # - Initialization: use rwlock.write() for exclusive access
 RL_AGENT_LOCK = RWLock()
 SCALABLE_RL_AGENT_LOCK = RWLock()
+LATENCY_PREDICTOR_LOCK = RWLock()
 
 # RL agent async update queue
 RL_UPDATE_QUEUE = queue.Queue(maxsize=1000)  # Bounded queue to prevent memory issues
@@ -87,8 +83,12 @@ PENDING_REQUESTS = {}  # request_id → (route_time, selected_pod_idx)
 PENDING_REQUESTS_LOCK = threading.Lock()
 
 MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 1000))
-POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama-3-8b-instruct")
-ENABLE_ONLINE_LEARNING = os.getenv("ENABLE_ONLINE_LEARNING", "false").lower() == "true"
+POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama3-1-8b")
+logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
+if POD_LABEL_SELECTOR == "":
+    logger.error(f"POD_LABEL_SELECTOR is empty")
+    assert False
+ENABLE_ONLINE_LEARNING = int(os.getenv("ENABLE_ONLINE_LEARNING", 0))
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
 TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 RL_MODEL_HYPERPARAMETERS = None
@@ -176,11 +176,11 @@ def handle_flush():
         ##################################################
         logger.info(f"wrote {len(log_data)} entries to {raw_data_path}, took {time.time() - ts_write_raw_data} seconds")
 
-        replaced_data_path = utils.replace_pod_ip_with_generalpodid(raw_data_path)
+        podip_replaced_data_path = utils.replace_pod_ip_with_generalpodid(raw_data_path)
         ts_preprocess = time.time()
         ##################################################
         ## Preprocess
-        processed_df, sorted_all_pod_ids, _ = preprocess.main(replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
+        processed_df, sorted_all_pod_ids, _ = preprocess.main(podip_replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
         ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
         
@@ -188,11 +188,13 @@ def handle_flush():
         if stats_instance.get_max_count() == 0:
             logger.error(f"No normalization statistics available for training")
             assert False
+        
+        ##################################################
+        ## Normalization
+        ## NOTE: This is actually very critical. Normalization stats (mean, std, count) has been updated here. Note that this is /flush endpoint which is separate from training. (ENABLE_FLUSH != ENABLE_ONLINE_LEARNING). If the flush happens frequently, then intermediatelly it can cause big bias on the mean and std, resulting in improper normalization and unreasonable inference. As a temporary fix, we just don't update the stats_instance (mean, std). Use the same stats for normalization. Note that normalization is still needed. When _normalize_single_feature is called with is_training=True, it updates the stats_instance (mean, std, count). So I will change it to is_training=False as temporary fix.
         for feature in normalizable_features:
-            ##################################################
-            ## Normalize
-            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=True)
-            ##################################################
+            # data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=True)
+            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False)
         if stats_instance is not None:
             stats_instance.write_stats_to_file(feature_normalization_stats_file)
         else:
@@ -221,7 +223,7 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS
+    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST
     handle_infer_overhead_summary = {}
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
@@ -265,7 +267,9 @@ def handle_infer():
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
         processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
-        logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
+        if PRINT_ONCE_AT_THE_FIRST_REQUEST:
+            logger.info(f"processed_df.columns: {list(processed_df.columns)}")
+            logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
         normalize_start = time.time()
@@ -313,10 +317,45 @@ def handle_infer():
         # Route to appropriate model based on model type
         # model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
-        logger.info(f"subAlgorithm: {subAlgorithm}")
         if subAlgorithm == 'latency_predictor':
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using latency predictor model for inference (request_id: {request_id})")
-            result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids)
+            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
+
+            global LATENCY_PREDICTOR
+
+            # Check if initialization needed without blocking
+            if LATENCY_PREDICTOR is None:
+                with LATENCY_PREDICTOR_LOCK.write():
+                    # Double-check after acquiring lock
+                    if LATENCY_PREDICTOR is None:
+                        state_dims = {
+                            'pod_features': tensor_data['pod_features_with_staleness'].shape[2],
+                            'kv_hit_ratios': tensor_data['kv_hit_ratios'].shape[2],
+                            'request_features': tensor_data['request_features'].shape[1],
+                            'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
+                        }
+                        
+                        logger.info(f"Initializing latency predictor with state_dims={state_dims}")
+                        LATENCY_PREDICTOR = latency_predictor.LatencyPredictor(state_dims, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+
+                        # Load pretrained model
+                        model_path = os.path.join(final_model_dir, 'latency_predictor.pth')
+                        if os.path.exists(model_path):
+                            try:
+                                LATENCY_PREDICTOR.load(final_model_dir)
+                                logger.info(f"Loaded latency predictor from {final_model_dir}")
+                            except Exception as e:
+                                logger.error(f"Failed to load latency predictor: {e}")
+                        else:
+                            logger.warning(f"No pretrained latency predictor found at {model_path}, using untrained model")
+
+            # Inference with read lock (allows concurrent requests)
+            with LATENCY_PREDICTOR_LOCK.read():
+                result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor_with_model(
+                    predictor=LATENCY_PREDICTOR,
+                    tensor_data=tensor_data,
+                    request_id=request_id,
+                    sorted_all_pod_ids=sorted_all_pod_ids
+                )
         elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
             logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
@@ -324,7 +363,7 @@ def handle_infer():
             result['chosen_pod_predicted_latency'] = -1
         elif subAlgorithm == 'rl_agent':
             # === OLD RL AGENT (entire cluster as input state) ===
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference (request_id: {request_id})")
+            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
             
             global RL_AGENT
             
@@ -391,7 +430,7 @@ def handle_infer():
             
         elif subAlgorithm == 'scalable_rl_agent':
             # === NEW SCALABLE RL AGENT (pod-count independent) ===
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference (request_id: {request_id})")
+            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
             
             global SCALABLE_RL_AGENT
             
@@ -440,13 +479,10 @@ def handle_infer():
                 agent_lock=None  # New agent doesn't need lock for prediction
             )
         else:
-            logger.info(f"Using contextual bandit model for inference (request_id: {request_id})")
+            logger.info(f"requestID: {request_id}, contextual bandit model for inference")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
-        if MODEL_UPDATED:
-            logger.info("Model updated flag consumed, resetting to False")
-            MODEL_UPDATED = False
         handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
         
         
@@ -454,7 +490,7 @@ def handle_infer():
         result["requestID"] = request_id
         result["num_trains"] = NUM_TRAINS
         result["request_timestamp"] = time.time() - first_request_starting_time
-        logger.info(f"Inference result: {result}")
+        logger.info(f"requestID: {request_id}, inference result: {result}")
         
         # Map the pod index back to the actual pod ID
         selected_pod_index = result['selected_pod_index']
@@ -462,9 +498,13 @@ def handle_infer():
             logger.error(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
             assert False
         selected_pod_generalpodid = sorted_all_pod_ids[selected_pod_index]
+        if selected_pod_generalpodid not in RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']:
+            logger.error(f"selected_pod_generalpodid: {selected_pod_generalpodid} not found in RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']")
+            logger.error(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+            assert False
         selected_pod_ip = RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'][selected_pod_generalpodid]
             
-        logger.info(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
+        logger.debug(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
         
         handle_infer_overhead_summary['remaining_work'] = time.time() - remaining_work_start
         handle_infer_overhead_summary["end_to_end"] = time.time() - handle_infer_start_time
@@ -493,6 +533,7 @@ def handle_infer():
             "predicted_latencies": result['predicted_latencies'],
             "chosen_pod_predicted_latency": result['chosen_pod_predicted_latency'],
         }
+        PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         return jsonify(response), 200
         
     except Exception as e:
@@ -504,36 +545,42 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
     if NUM_NEW_DATA < MIN_NUM_TRAINING_DATA:
-        logger.info(f"Not enough training data available (NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}). Wait until more data comes in.")
+        logger.info(f"Not enough training data available, NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
         return
     TRAINING_RIGHT_NOW = True
     training_start_time = time.time()
-    logger.info(f"Start {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
+    logger.info(f"Start online_train_routine, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
     try:
         # Route to appropriate training function based on model type
-        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
-        
+        model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
         if model_type == 'latency_predictor':
             logger.info(f"Training with latency predictor model")
             latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+            logger.info(f"train_latency_predictor done")
+            
+            # Reload model in training thread (non-blocking for inference)
+            with LATENCY_PREDICTOR_LOCK.write():
+                if LATENCY_PREDICTOR is not None:
+                    LATENCY_PREDICTOR.load(final_model_dir)
+                    logger.info(f"Reloaded latency predictor after training")
         else:
             logger.info(f"Training with contextual bandit model")
             simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
-            
+            logger.info(f"train_contextual_bandit done")
     except Exception as e:
         logger.error(f"Error during training: {e}")
         TRAINING_RIGHT_NOW = False
         return
+    logger.info(f"Successfully completed online_train_routine done, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data, took {time.time() - training_start_time} seconds")
     MODEL_UPDATED = True
+    TRAINING_RIGHT_NOW = False
     NUM_TRAINS += 1
     NUM_NEW_DATA = 0
-    TRAINING_RIGHT_NOW = False
-    logger.info(f"Successfully completed {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data, took {time.time() - training_start_time} seconds")
 
 
 def test_kubernetes_permissions():
@@ -787,42 +834,37 @@ def init():
         RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         logger.info("Loading RL hyperparameters from model_config.json")
         utils.load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
-        
-        # Log the model type that will be used
         model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
-        logger.info(f"🤖 Model type configured: {model_type}")
+        logger.info(f"Model type configured: {model_type}")
         if model_type == 'latency_predictor':
             latency_metric = RL_MODEL_HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
-            logger.info(f"📊 Latency metric for prediction: {latency_metric}")
+            logger.info(f"Latency metric for prediction: {latency_metric}")
         else:
-            logger.info(f"🎯 Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
+            logger.info(f"Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
         # Test permissions first
         logger.info("Testing Kubernetes API permissions...")
         if not test_kubernetes_permissions():
             logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
             assert False
-
-        running_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
-
-        sorted_running_pod_ips = utils.fetch_running_pod_ips(running_pods)
-        
+        running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
+        sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
         pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
         generalpodid_to_pod_ip = {}
         for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
             generalpodid_to_pod_ip[generalpodid] = pod_ip
-
-        generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_pods, pod_ip_to_generalpodid)
-
+        generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
         pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
         
-        logger.debug(f"sorted_running_pod_ips: {sorted_running_pod_ips}")
-        logger.debug(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
-        logger.debug(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
-        logger.debug(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
-        logger.debug(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
+        logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
+        logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
+        logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
+        logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
+        logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
+        logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
 
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+        logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
         RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded

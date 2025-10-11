@@ -111,7 +111,7 @@ def run_command(command, required=True, print_error=True, nonblock=False):
             return False, e.output.strip()
 
 
-def check_deployment_ready_kubernetes(deployment_name, namespace):
+def check_deployment_ready_kubernetes(deployment_name, k8s_cluster, namespace):
     """
     Checks if all pods of a deployment and all their containers are in a ready state using the Kubernetes Python client.
 
@@ -123,7 +123,10 @@ def check_deployment_ready_kubernetes(deployment_name, namespace):
         bool: True if all pods and their containers are ready, False otherwise (will keep checking).
     """
     try:
-        kube_config_file = os.path.expanduser('~/.kube/config')
+        if k8s_cluster == "vke":
+            kube_config_file = os.path.expanduser('~/.kube/config-vke')
+        else:
+            kube_config_file = os.path.expanduser('~/.kube/config')
         if not os.path.exists(kube_config_file):
             logger.error(f"Error: {kube_config_file} does not exist")
             assert False

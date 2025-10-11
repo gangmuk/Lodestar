@@ -113,10 +113,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			// Get subAlgorithm from headers
 			if subAlgValue, exists := headerMap["subAlgorithm"]; exists && subAlgValue != "" {
 				subAlgorithm = subAlgValue
-				klog.InfoS("subAlgorithm from header", "requestID", requestID, "subAlgorithm", subAlgorithm)
 			} else {
 				subAlgorithm = ""
-				klog.InfoS("subAlgorithm not present in header, set it empty string", "requestID", requestID)
+				klog.WarningS("subAlgorithm not present in header, set it empty string", "requestID", requestID)
 			}
 			routingCtx.SubAlgorithm = subAlgorithm
 
@@ -174,7 +173,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		utils.StoreInflightRequestsForTheRequest(routingCtx.RequestID)
 		targetMetrics := [...]string{
 			utils.MetricGPUCacheUsagePerc,
-			utils.MetricCPUCacheUsagePerc,
+			// utils.MetricCPUCacheUsagePerc,
 			utils.MetricNumRequestsRunning,
 			utils.MetricNumRequestsWaiting,
 		}

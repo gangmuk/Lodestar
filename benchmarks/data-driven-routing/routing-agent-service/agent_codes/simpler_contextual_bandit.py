@@ -2128,10 +2128,6 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
     except Exception as e:
         logger.error(f"Error plotting training metrics: {e}")
         assert False
-
-    # with open(os.path.join(final_model_dir, 'model_config.json'), 'w') as f:
-    #     json.dump(HYPERPARAMETERS, f, indent=4, default=str)
-    #     logger.info(f"Saved model configuration to {os.path.join(final_model_dir, 'model_config.json')}")
     # return saved_plot_path
 
 # Global cache for agent instance (for inference)

@@ -1634,6 +1634,8 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 
 	if !exists {
 		klog.Errorf("Error, Metric %s not found for pod %s", metricName, pod.Status.PodIP)
+		klog.Errorf("Error, metricFamily: %+v", metricFamily)
+		klog.Errorf("Error, allMetrics: %+v", allMetrics)
 		metricMutex.Lock()
 		if _, ok := metricStorage[requestID]; !ok {
 			metricStorage[requestID] = make(map[string]float64)
@@ -1698,6 +1700,7 @@ func GetvLLMCPUKVCacheUsageForTheRequestForAllPods(requestID string) (map[string
 		}
 		return result, nil
 	}
+	klog.Errorf("Error, vLLM CPU KV cache usage not found for request ID %s", requestID)
 	return nil, fmt.Errorf("vLLM CPU KV cache usage not found for request ID %s", requestID)
 }
 

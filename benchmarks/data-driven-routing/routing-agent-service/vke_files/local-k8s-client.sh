@@ -34,9 +34,9 @@ api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
 output_jsonl_path="./output.jsonl"
 model="llama2-7b"
 
-port=80
-# ipaddr=101.126.41.102 # external-ip of vke cluster's envoy-aibrix-system-aibrix-eg-903790dc svc in envoy-gateway-system namespace
+# ipaddr=115.190.180.7 # external-ip of vke cluster's envoy-aibrix-system-aibrix-eg-903790dc svc in envoy-gateway-system namespace
 ipaddr=10.102.24.174
+port=80
 
 workload_path="${workload_dir}/workload.jsonl"
 if [ ! -f "${workload_path}" ]; then
@@ -55,4 +55,5 @@ python3 async-client.py \
         --max_tokens ${max_tokens} \
         --output_dir ${experiment_result_output_dir} \
         --iterations ${iterations} \
-        --streaming &> ${experiment_result_output_dir}/"client.log.txt"
+        --streaming
+        # --streaming &> ${experiment_result_output_dir}/"client.log.txt"

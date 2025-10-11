@@ -186,14 +186,15 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         
         # Calculate total elapsed time
         total_elapsed = completion_time - actual_start_time
-        tpot = (completion_time - first_token_time) if first_response_time else 0
-        tpot_per_token = tpot / output_tokens if output_tokens > 0 else 0
+        total_decode_time = (completion_time - first_token_time) if first_response_time else 0
+        avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
-        logger.info(f"Request {request_id}: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+        logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
                     f"Elapsed: {total_elapsed:.3f}s, "
                     f"Tokens: {prompt_tokens} in / {output_tokens} out, "
-                    f"TPOT: {tpot:.3f}s ({tpot_per_token*1000:.2f}ms/token), "
-                    f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+                    f"Total_decode_time: {total_decode_time:.3f}s, "
+                    f"Avg_tpot: {avg_tpot*1000:.2f}ms/token, "
+                    f"E2E_latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
         
         # Log scheduling information
         if scheduled_time:
@@ -331,7 +332,7 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
             # Calculate total elapsed time
             total_elapsed = completion_time - actual_start_time
 
-            logger.info(f"Request {request_id}: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+            logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
                        f"Elapsed: {total_elapsed:.3f}s, "
                        f"Tokens: {prompt_tokens} in / {output_tokens} out, "
                        f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
@@ -800,7 +801,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
             # Calculate total elapsed time
             total_elapsed = completion_time - actual_start_time
             
-            logger.info(f"Request {request_id}: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+            logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
                        f"Elapsed: {total_elapsed:.3f}s, "
                        f"Tokens: {prompt_tokens} in / {output_tokens} out, "
                        f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")

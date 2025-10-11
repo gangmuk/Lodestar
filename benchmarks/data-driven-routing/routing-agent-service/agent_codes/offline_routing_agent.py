@@ -9,7 +9,6 @@ import preprocess
 import threading
 import argparse
 import json
-import random_forest
 import torch
 import data_normalizer
 import model_and_data_analysis_helper
@@ -69,7 +68,7 @@ RL_MODEL_HYPERPARAMETERS = {}
 NUM_TRAINS = 0
 MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
-POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
+POD_LABEL_SELECTOR="model.aibrix.ai/name=llama3-1-8b"
 TOTAL_NUM_DATA = 0
 MIN_NUM_TRAINING_DATA = 50  # Reduced for testing with smaller datasets
 LOCK_TRAINING_DATA = threading.Lock()
@@ -157,6 +156,27 @@ def create_test_data_from_processed_csv(processed_csv_file):
         waiting_requests = {pod: 0 for pod in all_pod_ids}
         prefill_tokens = {pod: 5000 for pod in all_pod_ids}
         decode_tokens = {pod: 50000 for pod in all_pod_ids}
+        
+        # Reflect EXCLUDED_POD_FEATURES in the generated log by blanking those maps
+        excluded = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+        if 'none' in excluded or 'None' in excluded:
+            excluded = set()
+        if 'kv_hit_ratio' in excluded:
+            kv_cache_ratios = {}
+        if 'inflight_requests' in excluded:
+            inflight_requests = {}
+        if 'gpu_kv_cache' in excluded:
+            gpu_cache_usage = {}
+        if 'cpu_kv_cache' in excluded:
+            cpu_cache_usage = {}
+        if 'running_requests' in excluded:
+            running_requests = {}
+        if 'waiting_requests' in excluded:
+            waiting_requests = {}
+        if 'prefill_tokens' in excluded:
+            prefill_tokens = {}
+        if 'decode_tokens' in excluded:
+            decode_tokens = {}
         
         # Convert to JSON strings
         kv_cache_json = json.dumps(kv_cache_ratios)
