@@ -183,9 +183,9 @@ def replace_pod_ip_with_generalpodid(data_input):
             assert False
         
         all_pod_ips_from_log = sorted(list(pod_ips))
-        logger.info(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
+        logger.debug(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_log)
-        logger.info(f"Deterministic mapping: {pod_ip_to_generalpodid}")
+        logger.debug(f"Deterministic mapping: {pod_ip_to_generalpodid}")
         
         content = data_input
         for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
@@ -251,7 +251,7 @@ def extract_pod_ips_from_content(content):
         if len(parts) == 4 and all(0 <= int(part) <= 255 for part in parts if part.isdigit()):
             validated_ips.add(ip)
     
-    logger.info(f"Extracted {len(validated_ips)} unique pod IPs: {sorted(validated_ips)}")
+    logger.debug(f"Extracted {len(validated_ips)} unique pod IPs: {sorted(validated_ips)}")
     return validated_ips
 
 def create_pod_ip_to_generalpodid_mapping(unique_pod_ips):
@@ -268,7 +268,7 @@ def create_pod_ip_to_generalpodid_mapping(unique_pod_ips):
         else:
             logger.error(f"Too many pods ({len(sorted_unique_pod_ips)}) to map to generalpodid, only supporting up to 1000 pods")
             assert False
-    logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
+    logger.debug(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
     return pod_ip_to_generalpodid
 
 
@@ -298,7 +298,7 @@ def create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_gene
             assert False
     return pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded
 
-def get_running_pods_by_label(label_selector):
+def get_running_pods_by_label(POD_LABEL_SELECTOR):
     # kube_config_file = '~/.kube/config'
     # if not os.path.exists(kube_config_file):
     #     logger.info(f"Error: {kube_config_file} does not exist")
@@ -306,7 +306,7 @@ def get_running_pods_by_label(label_selector):
     # config.load_kube_config(config_file=kube_config_file)
     config.load_incluster_config()
     v1 = client.CoreV1Api()
-    return v1.list_pod_for_all_namespaces(label_selector=label_selector)
+    return v1.list_pod_for_all_namespaces(label_selector=POD_LABEL_SELECTOR)
     
 def fetch_running_pod_ips(running_pods: client.V1PodList):
     pod_ips = []

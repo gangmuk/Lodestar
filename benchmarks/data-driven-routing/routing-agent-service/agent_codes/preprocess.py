@@ -17,10 +17,10 @@ import utils as utils
 # INCLUDE_GPU_IN_FEATURE = True
 
 def parse_json_columns(df, json_columns):
-        for col in json_columns:
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
-        return df
+    for col in json_columns:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+    return df
 
 def parse_log_file(file_path):
     data = []
@@ -290,10 +290,9 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     """
     num_rows = len(parsed_df)
     processing_type = "batch" if num_rows > 1 else "single row"
-    logger.info(f"Processing {num_rows} rows ({processing_type}) with is_training={is_training}")
+    logger.debug(f"Processing {num_rows} rows ({processing_type}) with is_training={is_training}")
     
     # Pre-parse all JSON columns once to avoid repeated parsing
-    logger.info("Pre-parsing JSON columns...")
     json_columns = [
         'allPodsKvCacheHitRatios', 
         'numInflightRequestsAllPods', 
@@ -351,8 +350,14 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'numPrefillTokensForAllPods',
         'numDecodeTokensForAllPods',
         # 'GPU_model',
-        'subAlgorithm',
+        'subAlgorithm', # old training data does not have it... so...
     ]
+    
+    ###########################################
+    ## HARDCODE TEMPORARY FIX FOR OLD TRAINING DATA
+    if 'subAlgorithm' not in parsed_df.columns:
+        parsed_df['subAlgorithm'] = None
+    ###########################################
 
     if INCLUDE_GPU_IN_FEATURE:
         def get_gpu_model_encoded(selected_pod):
@@ -365,6 +370,8 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
     if missing_columns:
         logger.error(f"Error: Missing expected columns: {missing_columns}")
+        logger.error(f"parsed_df.columns: {parsed_df.columns}")
+        logger.error(f"expected_columns: {expected_columns}")
         assert False
     
     # Check for unknown columns
@@ -498,18 +505,26 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
-    excluded = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+    excluded_pod_features = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+    if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
+        excluded_pod_features = set()
     for pod_id in sorted_all_pod_ids:
         # Vectorized extraction for each pod across all rows
-        base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
-        base_data[f"{pod_id}-inflight_requests"] = [data.get(pod_id, 0) for data in all_inflight]
-        base_data[f"{pod_id}-gpu_kv_cache"] = [data.get(pod_id, 0) for data in all_gpu_cache]
-        base_data[f"{pod_id}-cpu_kv_cache"] = [data.get(pod_id, 0) for data in all_cpu_cache]
-        base_data[f"{pod_id}-running_requests"] = [data.get(pod_id, 0) for data in all_running]
-        base_data[f"{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
-        if 'prefill_tokens' not in excluded:
+        if 'kv_hit_ratio' not in excluded_pod_features:
+            base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
+        if 'inflight_requests' not in excluded_pod_features:
+            base_data[f"{pod_id}-inflight_requests"] = [data.get(pod_id, 0) for data in all_inflight]
+        if 'gpu_kv_cache' not in excluded_pod_features:
+            base_data[f"{pod_id}-gpu_kv_cache"] = [data.get(pod_id, 0) for data in all_gpu_cache]
+        if 'cpu_kv_cache' not in excluded_pod_features:
+            base_data[f"{pod_id}-cpu_kv_cache"] = [data.get(pod_id, 0) for data in all_cpu_cache]
+        if 'running_requests' not in excluded_pod_features:
+            base_data[f"{pod_id}-running_requests"] = [data.get(pod_id, 0) for data in all_running]
+        if 'waiting_requests' not in excluded_pod_features:
+            base_data[f"{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
+        if 'prefill_tokens' not in excluded_pod_features:
             base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
-        if 'decode_tokens' not in excluded:
+        if 'decode_tokens' not in excluded_pod_features:
             base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
         if INCLUDE_GPU_IN_FEATURE:
             if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
@@ -647,8 +662,6 @@ def parse_log_message(log_message):
     i = 0
     while i < len(parts) - 1:
         key = parts[i]
-        if key == "numInputTokens":
-            logger.info(f"")
         value = parts[i + 1]
         # Fast JSON detection and parsing
         if value and value[0] == '{' and value[-1] == '}':

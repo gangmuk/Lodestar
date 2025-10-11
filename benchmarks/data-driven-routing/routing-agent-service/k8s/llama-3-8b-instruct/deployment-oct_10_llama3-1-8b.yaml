@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: llama3-1-8b
+    model.aibrix.ai/port: "8000"
+  name: llama3-1-8b
+  namespace: default
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 7
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: llama3-1-8b
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        model.aibrix.ai/name: llama3-1-8b
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: machine.cluster.vke.volcengine.com/gpu-name
+                operator: In
+                values:
+                - NVIDIA-L20
+      containers:
+      - command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        - --port
+        - "8000"
+        - --uvicorn-log-level
+        - warning
+        - --model
+        - /models/llama-3.1-8b-instruct/
+        - --served-model-name
+        - llama3-1-8b
+        - --max-model-len
+        - "32000"
+        - --enable-prefix-caching
+        - --disable-fastapi-docs
+        - --trust-remote-code
+        - --no-enable-chunked-prefill
+        - --disable-log-requests
+        - --swap-space
+        - "0"
+        env:
+        - name: VLLM_RPC_TIMEOUT
+          value: "1000000"
+        image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5
+        imagePullPolicy: Always
+        name: vllm-openai
+        resources:
+          limits:
+            cpu: "10"
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: "10"
+            nvidia.com/gpu: "1"
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - aibrix_download
+        - --model-uri
+        - tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/
+        - --local-dir
+        - /models/
+        env:
+        - name: DOWNLOADER_NUM_THREADS
+          value: "16"
+        - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+          value: json, safetensors
+        - name: TOS_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              key: TOS_ACCESS_KEY
+              name: tos-credential
+        - name: TOS_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: TOS_SECRET_KEY
+              name: tos-credential
+        - name: TOS_ENDPOINT
+          value: https://tos-s3-cn-beijing.ivolces.com
+        - name: TOS_REGION
+          value: cn-beijing
+        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0
+        imagePullPolicy: IfNotPresent
+        name: init-model
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - hostPath:
+          path: /root/models
+          type: DirectoryOrCreate
+        name: model-hostpath

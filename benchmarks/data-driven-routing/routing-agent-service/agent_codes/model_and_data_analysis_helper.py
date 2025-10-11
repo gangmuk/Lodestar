@@ -7,7 +7,6 @@ import encoding
 import simpler_contextual_bandit
 from logger import logger
 import preprocess
-import random_forest
 import torch
 import data_normalizer
 import offline_routing_agent

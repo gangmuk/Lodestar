@@ -75,14 +75,14 @@ def process_raw_data_to_csv(input_file,
     processed_df['reward_function_used'] = HYPERPARAMETERS['REWARD_FUNCTION']
     
     # Step 5: Optionally drop excluded per-pod features (e.g., prefill_tokens)
-    excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
-    if excluded:
+    excluded_pod_features = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+    if excluded_pod_features:
         drop_cols = []
-        for feat in excluded:
+        for feat in excluded_pod_features:
             suffix = f"-{feat}"
             drop_cols.extend([c for c in processed_df.columns if c.startswith('pod_') and c.endswith(suffix)])
         if drop_cols:
-            logger.info(f"Excluding {len(drop_cols)} columns due to EXCLUDED_POD_FEATURES: {sorted(list(excluded))}")
+            logger.info(f"Excluding {len(drop_cols)} columns due to EXCLUDED_POD_FEATURES: {sorted(list(excluded_pod_features))}")
             processed_df = processed_df.drop(columns=drop_cols, errors='ignore')
 
     # Step 6: Save to CSV
@@ -103,7 +103,7 @@ def process_raw_data_to_csv(input_file,
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
-        'excluded_pod_features': list(excluded),
+        'excluded_pod_features': list(excluded_pod_features),
     }
     
     # Save summary

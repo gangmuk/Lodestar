@@ -1281,7 +1281,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         actual_col = 'e2e'
         metric_name = 'E2E Latency'
         ylabel = 'E2E Latency (ms)'
-        title_scatter = 'Actual vs Predicted Latency Comparison'
+        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
         title_timeseries = 'E2E Latency Time Series with Predictions'
 
     # Define the prediction analysis plots (rows 20-21)

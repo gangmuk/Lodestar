@@ -98,18 +98,15 @@ func FlushLogMessageToRLAgent() {
 						continue // Skip this iteration and check again on the next tick
 					}
 					if len(utils.RequestToLogMessage) > minNumLogMessagesToFlush {
-						klog.Infof("Starting %dth flushing for %d number of log messages", numFlush+1, len(utils.RequestToLogMessage))
-
+						klog.Infof("Starting flushing %dth flush for %d number of log messages", utils.GetNumFlush(), len(utils.RequestToLogMessage))
 						// utils.RequestToLogMessageMutex.Lock()
 						reqBody, err := json.Marshal(utils.RequestToLogMessage)
 						// utils.RequestToLogMessageMutex.Unlock()
-
 						if err != nil {
 							klog.Errorf("Failed flush. failed marshal RequestToLogMessage: %v", err)
 							utils.CleanupAllRequestLogMessage()
 							continue
 						}
-
 						url := fmt.Sprintf("%s%s", routingAgentURL, flushEndpoint)
 						req, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 						if reqErr != nil {
@@ -345,7 +342,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return ctx.TargetAddress(), nil
 	}
 
-	var log string
+	var logMessage string
 	log_construction_start_time := time.Now()
 	if useRealRequest == 1 {
 		// Prepare for JSON strings to use in logging
@@ -401,7 +398,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
 		jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
 		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s`
-		log = fmt.Sprintf(
+		logMessage = fmt.Sprintf(
 			logFormat,
 			ctx.RequestID,
 			time.Now().UnixMicro(),
@@ -420,16 +417,15 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			ctx.SubAlgorithm,
 		)
 	} else { // useRealRequest == 0
-		log = utils.GenerateLogMessages(allPodIPs, 1)[0]
+		logMessage = utils.GenerateLogMessages(allPodIPs, 1)[0]
 	}
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
-	reqBody, err := json.Marshal(log)
+	reqBody, err := json.Marshal(logMessage)
 	if err != nil {
 		klog.Errorf("Failed to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)
 	}
 	request_prepare_overhead := time.Since(route_start_time).Milliseconds()
-
 	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
 	http_req_to_routing_agent, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 	if reqErr != nil {
@@ -437,14 +433,11 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)
 	}
 	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
-
 	////////////////////////////////////////////////////////////////////
 	/////////////////// Send HTTP Request to RL Agent //////////////////
 	////////////////////////////////////////////////////////////////////
 	klog.Infof("Sending request to RL agent: %s, requestID: %s", url, ctx.RequestID)
 	resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
-	/////////////////////////////////////////////////////////////////////
-
 	if sendErr != nil {
 		klog.Errorf("Request failed!!: %v, requestID: %s", sendErr, ctx.RequestID)
 		targetPod, _ = r.fallbackRouting(ctx, readyPods)

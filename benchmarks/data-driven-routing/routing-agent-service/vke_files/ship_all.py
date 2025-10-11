@@ -23,12 +23,12 @@ from logger import logger, INCLUDE_GPU_IN_FEATURE
 # logger = logging.getLogger(__name__)
 
 
-class K8sHotDeployer:
+class K8sDeployment:
     def __init__(self, namespace="default", app_label="routing-agent-service"):
         self.namespace = namespace
         self.app_label = app_label
         # kube_config_file = os.path.expanduser('~/.kube/config')
-        kube_config_file = os.path.expanduser('~/.kube/vke-config')
+        kube_config_file = os.path.expanduser('~/.kube/config-vke')
         if not os.path.exists(kube_config_file):
             print(f"Error: {kube_config_file} does not exist")
             assert False
@@ -102,30 +102,23 @@ class K8sHotDeployer:
             # Step 2: Create empty remote directory
             print(f"Creating remote directory {remote_dir}")
             result = self.execute_command(pod_name, f"mkdir -p {remote_dir}")
-            
+            print(f"Created remote directory {remote_dir}")
             # Step 3: Copy each file individually
             success_count = 0
             for file_path in files_to_copy:
-                # Calculate relative path to preserve directory structure
                 rel_path = file_path.relative_to(local_path)
                 remote_file_path = f"{remote_dir}/{rel_path}"
-                
-                # Create parent directory if needed
                 remote_parent_dir = os.path.dirname(remote_file_path)
                 if remote_parent_dir != remote_dir:
                     self.execute_command(pod_name, f"mkdir -p {remote_parent_dir}")
-                
-                # Copy the individual file
                 if self.copy_file_to_pod(pod_name, str(file_path), remote_file_path):
                     success_count += 1
                     # print(f"Copied: {file_path} -> {remote_file_path}")
-                    # print(f"Copied: {file_path}")
+                    print(f"Copied: {file_path}")
                 else:
                     logger.error(f"Failed to copy: {file_path}")
                     return False
-            
             print(f"✅ Successfully copied {success_count}/{len(files_to_copy)} files to {pod_name}:{remote_dir}")
-            
             # Verify by listing some files
             result = self.execute_command(pod_name, f"find {remote_dir} -type f | head -10")
             current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -251,7 +244,7 @@ class K8sHotDeployer:
             print(f"Process check: {ps_output}")
             return False
     
-    def deploy_to_pods(self, file_mappings, directory_mappings):
+    def deploy_to_pods(self, agent_related_files, final_model_dir):
         """Deploy files, directories and optionally restart Flask"""
         pods = self.get_pods()
         
@@ -267,7 +260,7 @@ class K8sHotDeployer:
             
             # Copy individual files
             files_copied = 0
-            for local_path, remote_path in file_mappings.items():
+            for local_path, remote_path in agent_related_files.items():
                 if self.copy_file_to_pod(pod_name, local_path, remote_path):
                     print(f"Copied {local_path}")
                     files_copied += 1
@@ -277,9 +270,9 @@ class K8sHotDeployer:
                     exit()
             
             # Copy directories
-            exclude_dir_or_file_list = ['weights_csv']
+            exclude_dir_or_file_list = ['weights_csv', 'checkpoints', 'tensor_dataset.pt']
             dirs_copied = 0
-            for local_dir, remote_dir in directory_mappings.items():
+            for local_dir, remote_dir in final_model_dir.items():
                 print(f"Copying directory {local_dir} to {pod_name}:{remote_dir}")
                 if self.copy_directory_to_pod(pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
                     dirs_copied += 1
@@ -287,7 +280,7 @@ class K8sHotDeployer:
                     logger.error(f"Failed to copy directory {local_dir} to {pod_name}:{remote_dir}")
                     logger.error(f"Exiting...")
                     exit()
-            total_expected = len(file_mappings) + len(directory_mappings)
+            total_expected = len(agent_related_files) + len(final_model_dir)
             total_copied = files_copied + dirs_copied
             
             if total_copied == total_expected:
@@ -305,6 +298,7 @@ def main():
     parser.add_argument('--ship_code', type=int, default=1, help='ship_code')
     parser.add_argument('--ship_model', type=int, default=1, help='ship_model')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
+    parser.add_argument('--k8s_cluster', type=str, default='vke', choices=['vke', 'local'], help='Kubernetes cluster')
     args = parser.parse_args()
     
     if args.ship_code == 0 and args.ship_model == 0:
@@ -315,56 +309,16 @@ def main():
     os.system("kubectl rollout restart deployment routing-agent-service -n default & kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system")
     time.sleep(3)
     print("Check if routing-agent-service is ready")
-    utils.check_deployment_ready_kubernetes('routing-agent-service', 'default')
+    utils.check_deployment_ready_kubernetes('routing-agent-service', args.k8s_cluster, 'default')
     time.sleep(2)
 
-    # Configuration
     NAMESPACE = "default"
     APP_LABEL = "routing-agent-service"
-    
-    # Individual files to deploy
-    DIRECTORIES_TO_DEPLOY = {}
-    FILES_TO_DEPLOY = {}
-    if args.ship_code == 1:
-        print("Shipping all files and directories")
-        FILES_TO_DEPLOY = {
-            "../agent_codes/routing_agent_service.py": "/app/routing_agent_service.py",
-            "../agent_codes/preprocess.py": "/app/preprocess.py",
-            "../agent_codes/data_processor.py": "/app/data_processor.py",
-            "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
-            "../agent_codes/encoding.py": "/app/encoding.py",
-            "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
-            "../agent_codes/rwlock.py": "/app/rwlock.py",
-            "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
-            "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
-            "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
-            "../agent_codes/logger.py": "/app/logger.py",
-            "../agent_codes/utils.py": "/app/utils.py",
-        }
-    if args.ship_model == 1:
-        print("Shipping only final_model directory")
-        DIRECTORIES_TO_DEPLOY = {f"./{args.final_model_dir}": "/app/final_model"}
-    # Check if files exist
-    missing_files = [f for f in FILES_TO_DEPLOY.keys() if not os.path.exists(f)]
-    if missing_files:
-        logger.error(f"Missing files: {missing_files}")
-        sys.exit(1)
-    
-    # Check if directories exist
-    missing_dirs = [d for d in DIRECTORIES_TO_DEPLOY.keys() if not os.path.exists(d)]
-    if missing_dirs:
-        logger.error(f"Missing directories: {missing_dirs}")
-        sys.exit(1)
-    
-    restart = False
-    
-    # Deploy
-    deployer = K8sHotDeployer(namespace=NAMESPACE, app_label=APP_LABEL)
-    
+    deployment = K8sDeployment(namespace=NAMESPACE, app_label=APP_LABEL)
     iter = 0
     pod_name = None
     while True:
-        pods = deployer.get_pods()
+        pods = deployment.get_pods()
         if len(pods) == 0:
             logger.error("❌ No running pods found. Please ensure the routing-agent-service is deployed.")
             sys.exit(1)
@@ -380,37 +334,61 @@ def main():
             sys.exit(1)
         iter += 1
     assert pod_name is not None
-    print("🚀 Starting deployment...")
-    print(f"Files: {list(FILES_TO_DEPLOY.keys())}")
-    print(f"Directories: {list(DIRECTORIES_TO_DEPLOY.keys())}")
-    print(f"Restart Flask: {restart}")
     
-    if deployer.deploy_to_pods(FILES_TO_DEPLOY, DIRECTORIES_TO_DEPLOY):
-        if restart:
-            if deployer.restart_flask_safely(pod_name):
-                print(f"✅ Successfully deployed and restarted Flask in {pod_name}")
-            else:
-                logger.error(f"❌ Failed to restart Flask in {pod_name}")
-                sys.exit(1)
-        else:
-            print(f"✅ Files and directories copied to {pod_name} (no restart)")
-        print("\n🎉 Deployment completed successfully!")
-        if restart:
-            print("Flask has been restarted with new code and models.")
-        else:
-            print("Files and directories copied. Flask still running with old code.")
-
-        if deployer.kill_routing_service(pod_name):
-            print(f"✅ Successfully killed routing_agent_service.py in {pod_name}")
-        else:
-            logger.error(f"❌ Failed to kill routing_agent_service.py in {pod_name}. Exiting...")
-            sys.exit(1)
-
-        print(f"\n🔧 Executing additional commands in {pod_name}")
-        deployer.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
+    # Individual files to deploy
+    agent_related_files = {}
+    if args.ship_code == 1:
+        print("Shipping all files and directories")
+        agent_related_files = {
+            "../agent_codes/routing_agent_service.py": "/app/routing_agent_service.py",
+            "../agent_codes/preprocess.py": "/app/preprocess.py",
+            "../agent_codes/data_processor.py": "/app/data_processor.py",
+            "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
+            "../agent_codes/encoding.py": "/app/encoding.py",
+            "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
+            "../agent_codes/rwlock.py": "/app/rwlock.py",
+            "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
+            "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",
+            "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
+            "../agent_codes/logger.py": "/app/logger.py",
+            "../agent_codes/utils.py": "/app/utils.py",
+        }
+    FINAL_MODEL_DIR = {}
+    if args.ship_model == 1:
+        print("Shipping only final_model directory")
+        FINAL_MODEL_DIR = {f"./{args.final_model_dir}": "/app/final_model"}
+    # Check if files exist
+    missing_files = [f for f in agent_related_files.keys() if not os.path.exists(f)]
+    if missing_files:
+        logger.error(f"Missing files: {missing_files}")
+        sys.exit(1)
+    missing_dirs = [d for d in FINAL_MODEL_DIR.keys() if not os.path.exists(d)]
+    if missing_dirs:
+        logger.error(f"Missing directories: {missing_dirs}")
+        sys.exit(1)
+    print(f"Files: {list(agent_related_files.keys())}")
+    print(f"final_model_dir: {list(FINAL_MODEL_DIR.keys())}")
+    if deployment.deploy_to_pods(agent_related_files, FINAL_MODEL_DIR):
+        print(f"✅ Files and directories copied to {pod_name} (no restart)")
     else:
         logger.error("\n💥 Deployment failed!")
         sys.exit(1)
+    restart = False
+    if restart:
+        print("🚀 Restarting Flask server process in the routing-agent-service pod...")
+        if deployment.restart_flask_safely(pod_name):
+            print(f"✅ Successfully restarted Flask in {pod_name}")
+        else:
+            logger.error(f"❌ Failed to restart Flask in {pod_name}")
+            sys.exit(1)
+    print("\n🎉 Deployment completed successfully!")
+    if deployment.kill_routing_service(pod_name):
+        print(f"✅ Successfully killed routing_agent_service.py in {pod_name}")
+    else:
+        logger.error(f"❌ Failed to kill routing_agent_service.py in {pod_name}. Exiting...")
+        sys.exit(1)
+    print(f"\n🔧 Executing additional commands in {pod_name}")
+    deployment.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
 
 if __name__ == "__main__":
     main()

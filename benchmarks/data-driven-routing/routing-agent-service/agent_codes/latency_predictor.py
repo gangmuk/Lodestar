@@ -421,11 +421,23 @@ class LatencyPredictor:
         }, model_path)
         
         # Save hyperparameters
-        config_path = os.path.join(final_model_dir, 'latency_predictor_config.json')
+        config_path = os.path.join(final_model_dir, 'newly_saved_model_config.json')
         config = self.HYPERPARAMETERS.copy()
         config['latency_metric'] = self.latency_metric
         config['state_dims'] = self.state_dims
-        
+
+        # Convert non-JSON-serializable types (sets, etc.) to lists
+        def make_json_serializable(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            elif isinstance(obj, dict):
+                return {k: make_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_json_serializable(item) for item in obj]
+            return obj
+
+        config = make_json_serializable(config)
+
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
         
@@ -581,9 +593,73 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
     return plot_path
 
 
+def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids):
+    """
+    Inference function using a cached latency predictor model.
+
+    Args:
+        predictor: Cached LatencyPredictor instance
+        tensor_data: Input tensor data
+        request_id: Request identifier
+        sorted_all_pod_ids: List of pod IDs in same order as predictions
+
+    Returns:
+        Dict with prediction results. predicted_latencies will be a dict {pod_id: latency}
+    """
+    overhead_summary = {}
+
+    # Prepare input tensors
+    prepare_start = time.time()
+    pod_features = tensor_data['pod_features_with_staleness'].to(device)
+    kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
+    request_features = tensor_data['request_features'].to(device)
+
+    # Ensure batch format
+    if len(pod_features.shape) == 2:
+        pod_features = pod_features.unsqueeze(0)
+    if len(kv_hit_ratios.shape) == 2:
+        kv_hit_ratios = kv_hit_ratios.unsqueeze(0)
+    if len(request_features.shape) == 1:
+        request_features = request_features.unsqueeze(0)
+    overhead_summary['prepare_tensors'] = time.time() - prepare_start
+
+    # Make prediction
+    predict_start = time.time()
+    result = predictor.predict(pod_features, kv_hit_ratios, request_features)
+    overhead_summary['model_inference'] = time.time() - predict_start
+
+    # Format result for compatibility
+    format_start = time.time()
+    selected_pod_index = result['selected_pod_index'][0].item()
+    predicted_latencies_tensor = result['predicted_latencies'][0]  # Keep as tensor
+    predicted_latencies = predicted_latencies_tensor.cpu().numpy()
+    confidence = float(result['confidence'].item() if result['confidence'].numel() == 1 else result['confidence'][0].item())
+
+    # Apply softmax to convert latencies to probabilities (lower latency = higher probability)
+    softmax_probs = torch.softmax(-predicted_latencies_tensor, dim=0).cpu().numpy()
+
+    # Format predicted_latencies as dict
+    predicted_latencies_formatted = {sorted_all_pod_ids[i]: float(latency.item()) for i, latency in enumerate(predicted_latencies)}
+    chosen_pod_predicted_latency = float(predicted_latencies_formatted[sorted_all_pod_ids[selected_pod_index]])
+    overhead_summary['format_results'] = time.time() - format_start
+
+    return {
+        'selected_pod_index': selected_pod_index,
+        'predicted_latencies': predicted_latencies_formatted,
+        'chosen_pod_predicted_latency': chosen_pod_predicted_latency,
+        'confidence': confidence,
+        'pod_probabilities': [float(p) for p in softmax_probs.tolist()],
+        'latency_metric': predictor.latency_metric,
+        'explore_mask': 0  # Latency predictor always uses exploitation (no exploration)
+    }, overhead_summary
+
+
 def infer_latency_predictor(tensor_data, request_id, model_updated, HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids):
     """
-    Inference function for latency predictor.
+    Legacy inference function for latency predictor (creates new model each time).
+
+    DEPRECATED: Use infer_latency_predictor_with_model() with a cached model instead.
+    This function is kept for backward compatibility but is inefficient.
 
     Args:
         tensor_data: Input tensor data
@@ -600,57 +676,18 @@ def infer_latency_predictor(tensor_data, request_id, model_updated, HYPERPARAMET
     # Load model if needed
     state_dims = {
         'pod_features': tensor_data['pod_features_with_staleness'].shape[2],
-        'kv_hit_ratios': tensor_data['kv_hit_ratios'].shape[2], 
+        'kv_hit_ratios': tensor_data['kv_hit_ratios'].shape[2],
         'request_features': tensor_data['request_features'].shape[1],
         'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
     }
-    
+
     predictor = LatencyPredictor(state_dims, HYPERPARAMETERS, final_model_dir)
-    
+
     # FAIL FAST - Let any loading errors propagate up
     predictor.load(final_model_dir)
-    
-    # Prepare input tensors
-    pod_features = tensor_data['pod_features_with_staleness'].to(device)
-    kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
-    request_features = tensor_data['request_features'].to(device)
-    
-    # Ensure batch format
-    if len(pod_features.shape) == 2:
-        pod_features = pod_features.unsqueeze(0)
-    if len(kv_hit_ratios.shape) == 2:
-        kv_hit_ratios = kv_hit_ratios.unsqueeze(0)
-    if len(request_features.shape) == 1:
-        request_features = request_features.unsqueeze(0)
-    
-    # Make prediction
-    result = predictor.predict(pod_features, kv_hit_ratios, request_features)
-    
-    # Format result for compatibility
-    selected_pod_index = result['selected_pod_index'][0].item()
-    predicted_latencies_tensor = result['predicted_latencies'][0]  # Keep as tensor
-    predicted_latencies = predicted_latencies_tensor.cpu().numpy()
-    confidence = float(result['confidence'].item() if result['confidence'].numel() == 1 else result['confidence'][0].item())  # Convert tensor to Python float
-    
-    # Apply softmax to convert latencies to probabilities (lower latency = higher probability)
-    # We need to negate latencies so lower values become higher probabilities
-    softmax_probs = torch.softmax(-predicted_latencies_tensor, dim=0).cpu().numpy()
 
-    # Format predicted_latencies as dict if pod IDs are provided
-    # print(f"predicted_latencies: {predicted_latencies}")
-    # print(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
-    # print(f"selected_pod_index: {selected_pod_index}")
-    predicted_latencies_formatted = {sorted_all_pod_ids[i]: float(latency.item()) for i, latency in enumerate(predicted_latencies)}
-    chosen_pod_predicted_latency = float(predicted_latencies_formatted[sorted_all_pod_ids[selected_pod_index]])
-    return {
-        'selected_pod_index': selected_pod_index,
-        'predicted_latencies': predicted_latencies_formatted,
-        'chosen_pod_predicted_latency': chosen_pod_predicted_latency,
-        'confidence': confidence,
-        'pod_probabilities': [float(p) for p in softmax_probs.tolist()],
-        'latency_metric': predictor.latency_metric,
-        'explore_mask': 0  # Latency predictor always uses exploitation (no exploration)
-    }, {}
+    # Use the new cached inference function
+    return infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids)
 
 
 def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_dir):

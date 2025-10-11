@@ -8,13 +8,15 @@ set -e
 NAMESPACE=${NAMESPACE:-default}
 POD_NAME=${POD_NAME:-client-service}
 CONTAINER_NAME=${CONTAINER_NAME:-client}
+k8s_cluster="vke"
 
-# Client parameters (hardcoded)
-routing_policy="scalable_rl_agent"
-workload_name="ten_request"
-ENABLE_ONLINE_LEARNING="false"
-iterations=1
-max_tokens=1000
+# routing_policy="scalable_rl_agent"
+routing_policy="latency_predictor"
+# workload_name="ten_request"
+# workload_name="SharingRatio71%"
+# workload_name="SharingRatio47%"
+workload_name="SharingRatio28%"
+# workload_name="SharingRatio9%"
 
 # Parameters are now hardcoded above
 # To change them, edit the values at the top of this script
@@ -24,6 +26,64 @@ delimiter="+"
 config="rl-online-router${delimiter}${routing_policy}"
 routing="${config%%${delimiter}*}"
 subAlgorithm="${config#*${delimiter}}"
+
+
+EXPLORATION_ENABLED="0"
+ENABLE_ONLINE_LEARNING="1"
+MIN_NUM_TRAINING_DATA="1000"
+ENABLE_FLUSH="1"
+FLUSH_PERIOD="10"
+MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
+iterations=2
+max_tokens=1000
+
+# Configuration for the client
+api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
+# POD_LABEL_SELECTOR="llama2-7b"
+# POD_LABEL_SELECTOR="tinyllama"
+POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
+llm_model="llama-3-8b-instruct"
+# POD_LABEL_SELECTOR="model.aibrix.ai/name=llama3-1-8b"
+# llm_model="llama3-1-8b"
+
+
+## External IP of client-service svc
+ipaddr="115.190.180.7" # vke cluster
+## CLUSTER-IP of client-service svc
+# ipaddr="10.102.24.174" # local cluster
+port=80
+
+
+python3 update_k8s_env.py \
+    --deployment routing-agent-service \
+    --namespace default \
+    --container routing-agent \
+    --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
+    --env MIN_NUM_TRAINING_DATA=${MIN_NUM_TRAINING_DATA} \
+    --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
+    --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR}
+
+python3 update_k8s_env.py \
+    --deployment aibrix-gateway-plugins \
+    --namespace aibrix-system \
+    --container gateway-plugin \
+    --env ENABLE_FLUSH=${ENABLE_FLUSH} \
+    --env FLUSH_PERIOD=${FLUSH_PERIOD} \
+    --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH} \
+    --env useRealRequest=1
+
+ship_model=1
+ship_code=1
+final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft"
+# final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft-withoutprefilltoken"
+
+if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
+    echo "Error: Final model directory does not exist: ${final_model_dir}"
+    echo "Exiting..."
+    exit 1
+fi
+python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
+sleep 5
 
 echo "========================================="
 echo "Running Client in K8s Pod"
@@ -58,17 +118,6 @@ kubectl wait --for=condition=ready pod/${ACTUAL_POD} -n ${NAMESPACE} --timeout=6
     exit 1
 }
 
-# Configuration for the client
-api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
-# model="llama2-7b"
-# model="tinyllama"
-model="llama-3-8b-instruct"
-port=80
-
-# CLUSTER-IP of client-service svc
-# ipaddr="10.102.24.174" # local cluster
-ipaddr="192.168.76.255" # vke cluster
-
 workload_path="/app/workload/${workload_name}/workload.jsonl"
 output_dir="/app/output/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
 output_jsonl_path="${output_dir}/output.jsonl"
@@ -87,12 +136,32 @@ kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- test -f ${wor
 }
 
 # Create local experiment result output directory
-experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
-mkdir -p "${experiment_result_output_dir}"
+timestamp=$(date +%Y%m%d_%H%M%S)
+experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
+if [ "${subAlgorithm}" == "rl_agent" ]; then
+    postfix="iter${iterations}"
+    experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
+elif [ "${subAlgorithm}" == "rl_naive" ]; then
+    trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+    used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+    hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
+    hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
+    postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-iter${iterations}"
+    experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
+elif [ "${subAlgorithm}" == "latency_predictor" ]; then
+    trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+    prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
+    used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+    postfix="trained_on_${trained_model_data_name}_${used_data_name}-iter${iterations}"
+    experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}-${postfix}"
+fi
 
-###################
-## Start logging ##
-###################
+experiment_result_output_dir="${experiment_result_output_dir}-${timestamp}"
+echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
+if [ ! -d "${experiment_result_output_dir}" ]; then
+    mkdir -p "${experiment_result_output_dir}"
+fi
+
 echo "Starting log collection..."
 kubectl logs -f -n aibrix-system $(kubectl get pods -n aibrix-system | grep aibrix-gateway-plugins | awk '{print $1}') > ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt &
 pid_1=$!
@@ -106,7 +175,7 @@ echo "Output will be saved to: ${output_dir}"
 kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
     python3 /app/async-client.py \
         --workload_path ${workload_path} \
-        --model ${model} \
+        --model ${llm_model} \
         --endpoint http://${ipaddr}:${port} \
         --api_key ${api_key} \
         --output_file_path ${output_jsonl_path} \
@@ -115,7 +184,8 @@ kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
         --max_tokens ${max_tokens} \
         --output_dir ${output_dir} \
         --iterations ${iterations} \
-        --streaming
+        --streaming \
+        2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
 echo ""
 echo "========================================="
@@ -138,12 +208,12 @@ cat ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt | grep "*
 echo "* all gateway log: ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt"
 echo "* filtered gateway log: ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv"
 echo "* routing agent log: ${experiment_result_output_dir}/all-routing-agent-service.log.txt"
+echo "* client log: ${experiment_result_output_dir}/client.log.txt"
 if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
     echo "* checkpoints: ${experiment_result_output_dir}/checkpoints/"
 fi
-# python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
+python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
 kill $pid_1
 kill $pid_2
 
-
-
+kubectl rollout restart deployment client-service

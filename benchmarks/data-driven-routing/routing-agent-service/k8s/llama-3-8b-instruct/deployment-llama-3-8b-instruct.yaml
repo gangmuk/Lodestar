@@ -1,19 +1,12 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  annotations:
-    deployment.kubernetes.io/revision: "10"
-    kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"model.aibrix.ai/name":"llama-3-8b-instruct","model.aibrix.ai/port":"8000"},"name":"llama-3-8b-instruct","namespace":"default"},"spec":{"progressDeadlineSeconds":600,"replicas":1,"selector":{"matchLabels":{"model.aibrix.ai/name":"llama-3-8b-instruct"}},"strategy":{"type":"Recreate"},"template":{"metadata":{"annotations":{"prometheus.io/path":"/metrics","prometheus.io/port":"8000","prometheus.io/scrape":"true"},"creationTimestamp":null,"labels":{"model.aibrix.ai/name":"llama-3-8b-instruct"}},"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"machine.cluster.vke.volcengine.com/gpu-name","operator":"In","values":["NVIDIA-L20"]}]}]}}},"containers":[{"command":["python3","-m","vllm.entrypoints.openai.api_server","--host","0.0.0.0","--port","8000","--uvicorn-log-level","warning","--model","/models/llama-3.1-8b-instruct/","--served-model-name","llama-3-8b-instruct","--trust-remote-code","--api-key","sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi","--dtype","float16","--disable-fastapi-docs","--enable-prefix-caching","--max-model-len","4096"],"image":"aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.5","imagePullPolicy":"IfNotPresent","lifecycle":{"preStop":{"exec":{"command":["/bin/sh","-c","while true; do\n  RUNNING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_running' | grep -v '#' | awk '{print $2}')\n  WAITING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_waiting' | grep -v '#' | awk '{print $2}')\n  if [ \"$RUNNING\" = \"0.0\" ] \u0026\u0026 [ \"$WAITING\" = \"0.0\" ]; then\n    echo \"Terminating: No active or waiting requests, safe to terminate\" \u003e\u003e /proc/1/fd/1\n    exit 0\n  else\n    echo \"Terminating: Running: $RUNNING, Waiting: $WAITING\" \u003e\u003e /proc/1/fd/1\n    sleep 5\n  fi\ndone\n"]}}},"livenessProbe":{"failureThreshold":3,"httpGet":{"path":"/health","port":8000,"scheme":"HTTP"},"initialDelaySeconds":90,"periodSeconds":5,"successThreshold":1,"timeoutSeconds":1},"name":"vllm-openai","ports":[{"containerPort":8000,"protocol":"TCP"}],"readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/health","port":8000,"scheme":"HTTP"},"initialDelaySeconds":90,"periodSeconds":5,"successThreshold":1,"timeoutSeconds":1},"resources":{"limits":{"nvidia.com/gpu":"1"},"requests":{"nvidia.com/gpu":"1"}},"terminationMessagePath":"/dev/termination-log","terminationMessagePolicy":"File","volumeMounts":[{"mountPath":"/models","name":"model-hostpath"},{"mountPath":"/dev/shm","name":"dshm"}]},{"command":["aibrix_runtime","--port","8080"],"env":[{"name":"INFERENCE_ENGINE","value":"vllm"},{"name":"INFERENCE_ENGINE_ENDPOINT","value":"http://localhost:8000"}],"image":"aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0","imagePullPolicy":"IfNotPresent","livenessProbe":{"failureThreshold":3,"httpGet":{"path":"/healthz","port":8080,"scheme":"HTTP"},"initialDelaySeconds":3,"periodSeconds":2,"successThreshold":1,"timeoutSeconds":1},"name":"aibrix-runtime","ports":[{"containerPort":8080,"protocol":"TCP"}],"readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/ready","port":8080,"scheme":"HTTP"},"initialDelaySeconds":5,"periodSeconds":10,"successThreshold":1,"timeoutSeconds":1},"resources":{},"terminationMessagePath":"/dev/termination-log","terminationMessagePolicy":"File","volumeMounts":[{"mountPath":"/models","name":"model-hostpath"}]}],"dnsPolicy":"ClusterFirst","initContainers":[{"command":["aibrix_download","--model-uri","tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/","--local-dir","/models/"],"env":[{"name":"DOWNLOADER_MODEL_NAME","value":"llama-3.1-8b-instruct"},{"name":"DOWNLOADER_NUM_THREADS","value":"16"},{"name":"DOWNLOADER_ALLOW_FILE_SUFFIX","value":"json, safetensors, bin"},{"name":"TOS_ACCESS_KEY","valueFrom":{"secretKeyRef":{"key":"TOS_ACCESS_KEY","name":"tos-credential"}}},{"name":"TOS_SECRET_KEY","valueFrom":{"secretKeyRef":{"key":"TOS_SECRET_KEY","name":"tos-credential"}}},{"name":"TOS_ENDPOINT","value":"https://tos-s3-cn-beijing.ivolces.com"},{"name":"TOS_REGION","value":"cn-beijing"}],"image":"aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0","imagePullPolicy":"IfNotPresent","name":"init-model","resources":{},"terminationMessagePath":"/dev/termination-log","terminationMessagePolicy":"File","volumeMounts":[{"mountPath":"/models","name":"model-hostpath"}]}],"restartPolicy":"Always","schedulerName":"default-scheduler","securityContext":{},"terminationGracePeriodSeconds":60,"volumes":[{"hostPath":{"path":"/root/models","type":"DirectoryOrCreate"},"name":"model-hostpath"},{"emptyDir":{"medium":"Memory","sizeLimit":"4Gi"},"name":"dshm"}]}}}}
-  creationTimestamp: "2025-04-10T05:46:01Z"
   generation: 17
   labels:
     model.aibrix.ai/name: llama-3-8b-instruct
     model.aibrix.ai/port: "8000"
   name: llama-3-8b-instruct
   namespace: default
-  resourceVersion: "234705816"
-  uid: c22652c7-31d4-44db-b641-93dea4470ac7
 spec:
   progressDeadlineSeconds: 600
   replicas: 7
@@ -26,7 +19,6 @@ spec:
   template:
     metadata:
       annotations:
-        kubectl.kubernetes.io/restartedAt: "2025-04-24T18:33:26-07:00"
         prometheus.io/path: /metrics
         prometheus.io/port: "8000"
         prometheus.io/scrape: "true"
@@ -216,22 +208,3 @@ spec:
           medium: Memory
           sizeLimit: 4Gi
         name: dshm
-status:
-  availableReplicas: 7
-  conditions:
-  - lastTransitionTime: "2025-04-10T05:46:01Z"
-    lastUpdateTime: "2025-05-05T10:12:45Z"
-    message: ReplicaSet "llama-3-8b-instruct-785975c76d" has successfully progressed.
-    reason: NewReplicaSetAvailable
-    status: "True"
-    type: Progressing
-  - lastTransitionTime: "2025-06-14T19:00:39Z"
-    lastUpdateTime: "2025-06-14T19:00:39Z"
-    message: Deployment has minimum availability.
-    reason: MinimumReplicasAvailable
-    status: "True"
-    type: Available
-  observedGeneration: 17
-  readyReplicas: 7
-  replicas: 7
-  updatedReplicas: 7
