@@ -27,7 +27,7 @@ import numpy as np
 
 from logger import logger
 
-from 00_agents import ScalableRLRoutingAgent
+from agents import ScalableRLRoutingAgent
 
 # WANYU 10/07/2025
 # 1. Restructured RL modules 
@@ -44,17 +44,21 @@ from 00_agents import ScalableRLRoutingAgent
 #    2.1 By default, PrioritizedReplayBuffer is not used
 #    2.2 Add train() function for offline RL training
 
+
 # WANYU 10/11/2025
-# 1. Rewrite RL networks ()
-#    1.1 Problems of orginal implementation: Feature extractor defines nns but doesn't execute them, this is because
-#        the scorer is not a part of the feature extractor, putting here complicates the logic.
+# 1. Rewrite RL agent
+#    1.1 Problems of orginal implementation: Score NNs are defined in feature extractor, although it doesn't execute them, but this complicates the logic.
 #    1.2 New implementation:
-#        1.2.1 Feature extractor concatenates cluster statistics and request features (this actually should be move out)
-#        1.2.2 Add a new network class (PodScorer) that will be used for policy and value function; feature extractor 
+#        1.2.1 Feature extractor only concatenates cluster statistics and request features
+#        1.2.2 Add a new NN class PodScorer, which replace sb3's mlp_extractor
+
+# WANYU 10/12/2025
+# 1. Add rl parameter to control the RL algorithm, support PG and PPO
 # 
 # ============================================================================
 # Factory and Inference Functions
 # ============================================================================
+
 
 def create_scalable_rl_agent(per_pod_dim: int = 11, request_dim: int = 3, 
                              max_pods: int = 100, **hyperparameters):
@@ -65,7 +69,7 @@ def create_scalable_rl_agent(per_pod_dim: int = 11, request_dim: int = 3,
         per_pod_dim: Features per pod (pod_features + kv_hit_ratios)
         request_dim: Request features
         max_pods: Maximum expected pods
-        hyperparameters: PPO and training hyperparameters
+        hyperparameters: training hyperparameters
     
     Returns:
         ScalableRLRoutingAgent instance
@@ -214,6 +218,8 @@ def on_request_complete_callback(rl_agent, request_id, current_cluster_state,
     )
     
     logger.debug(f"✅ Completed experience for {request_id}: reward={reward:.3f}")
+
+
 
 
 # ============================================================================
