@@ -53,7 +53,7 @@ class ScalableRoutingEnvironment(gym.Env):
         logger.info(f"  Per-pod features: {per_pod_dim}")
         logger.info(f"  Request features: {request_dim}")
 
-    ## TODO: Implement reward function
+    ## TODO: Implement reward function, read the total number of requests from state
     def compute_reward(self, state):
         """Compute reward for the action"""
         return 0.0
