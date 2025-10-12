@@ -1,7 +1,7 @@
 # WANYU
 # Example usage:
 # in main()
-# env = ActionRepeat(RealTimeWrapper(env, period_s=0.1), repeat=4)
+# env = RealTimeWrapper(env, period_s=0.1)
 
 
 import time
@@ -38,18 +38,4 @@ class RealTimeWrapper(gym.Wrapper):
         info.update({"step_time_s": now - start, "neg_slack_s": jitter})
         return obs, r, term, trunc, info
 
-class ActionRepeat(gym.Wrapper):
-    def __init__(self, env, repeat=1):
-        super().__init__(env)
-        self.repeat = repeat
-
-    def step(self, action):
-        total_reward, terminated, truncated = 0, False, False
-        for _ in range(self.repeat):
-            obs, r, term, trunc, info = self.env.step(action)
-            total_reward += r
-            terminated, truncated = term, trunc
-            if term or trunc:
-                break
-        return obs, total_reward, terminated, truncated, info
 
