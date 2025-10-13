@@ -1,6 +1,10 @@
 import gymnasium as gym
+import torch.nn as nn
 
 from typing import Callable
+from stable_baselines3.common.distributions import CategoricalDistribution
+from stable_baselines3.common.type_aliases import Schedule
+
 from stable_baselines3.common.policies import ActorCriticPolicy
 
 from nets import PodFeatExtractor, PodScorer
@@ -27,9 +31,10 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         **kwargs):
         
         self.num_pods = num_pods
-        self.per_pod_dim = per_pod_dim
-        self.request_dim = request_dim
-        # self.hidden_dim = hidden_dim
+        # self.per_pod_dim = per_pod_dim
+        # self.request_dim = request_dim
+        self.feature_dim = per_pod_dim * 5 + request_dim # 5: mean, std, max, min and raw
+        self.hidden_dim = hidden_dim
         self.last_layer_dim_pi = last_layer_dim_pi
         self.last_layer_dim_vf = last_layer_dim_vf
         
@@ -49,7 +54,25 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
 
     def _build_mlp_extractor(self) -> None:
         """
+        https://github.com/DLR-RM/stable-baselines3/blob/d487f2d2355a6cf81ea26a0bbbdf1a727ca2a886/stable_baselines3/common/policies.py#L570
+        
         forward: https://github.com/DLR-RM/stable-baselines3/blob/d487f2d2355a6cf81ea26a0bbbdf1a727ca2a886/stable_baselines3/common/policies.py#L636
         """
         
-        self.mlp_extractor = PodScorer(self.num_pods, self.feature_dim, self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
+        self.mlp_extractor = PodScorer(self.num_pods, self.feature_dim, \
+            self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
+
+
+    def _build(self, lr_schedule: Schedule) -> None:
+        """
+        Create the networks and the optimizer.
+
+        :param lr_schedule: Learning rate schedule
+            lr_schedule(1) is the initial learning rate
+        """
+        super()._build(lr_schedule)
+        assert isinstance(self.action_dist, (CategoricalDistribution))
+        self.action_net = nn.Idendity() # Original sb3 implementation is action_logits = nn.Linear(latent_dim, self.action_dim)
+        # self.value_net = nn.Idendity()
+
+
