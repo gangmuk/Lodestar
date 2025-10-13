@@ -1,4 +1,4 @@
-from .ppo_rout_agent import ScalableRLRoutingAgent
+from .rout_agent import ScalableRLRoutingAgent
 from .replay_buffer import PrioritizedReplayBuffer
 from .tracker import EpisodeTracker
 

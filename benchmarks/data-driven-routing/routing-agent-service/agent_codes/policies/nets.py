@@ -53,6 +53,7 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         # Shape: [batch, 44]
         
         return cluster_stats
+
     
     
     def forward(self, observations):
@@ -102,7 +103,8 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         
         return features
 
-
+## TODO: Support fixed sized value network, this needs to change PodFeatExtractor forward 
+# to remove concat of pod features.
 class PodScorer(nn.Module):
     """
     Custom network for policy and value function (mlp_extractor).
