@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,127 @@ var (
 		},
 	}
 )
+
+// Latency metrics log file writer configuration
+var (
+	// LatencyMetricsLogPath is the file path where latency metrics will be written
+	// Can be set via environment variable LATENCY_METRICS_LOG_PATH
+	LatencyMetricsLogPath = getEnvOrDefault("LATENCY_METRICS_LOG_PATH", "/tmp/latency_metrics.log")
+
+	// Channel buffer size for latency metrics log messages
+	latencyMetricsLogBufferSize = 100000
+
+	bufferFlushSize = 500
+
+	// logMessageChan is the channel for async log writing
+	logMessageChan chan string
+
+	// flushInterval defines how often to flush the log file
+	flushInterval = 5 * time.Second
+
+	// logWriterOnce ensures the log writer is initialized only once
+	logWriterOnce sync.Once
+)
+
+// getEnvOrDefault returns the environment variable value or default if not set
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// initLatencyMetricsLogWriter initializes the background log writer goroutine
+func initLatencyMetricsLogWriter() {
+	logWriterOnce.Do(func() {
+		logMessageChan = make(chan string, latencyMetricsLogBufferSize)
+		go latencyMetricsLogWriter()
+		klog.Infof("Latency metrics log writer initialized, writing to: %s", LatencyMetricsLogPath)
+	})
+}
+
+// latencyMetricsLogWriter runs in background and writes log messages to file
+func latencyMetricsLogWriter() {
+	var file *os.File
+	var err error
+	var buffer []string
+
+	// Open/create log file
+	file, err = os.OpenFile(LatencyMetricsLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		klog.Errorf("Failed to open latency metrics log file %s: %v", LatencyMetricsLogPath, err)
+		return
+	}
+	defer file.Close()
+
+	klog.Infof("latency metrics log writer ticker started, flush interval: %s, buffer flush size: %d, max buffer size: %d", flushInterval, bufferFlushSize, latencyMetricsLogBufferSize)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case msg, ok := <-logMessageChan:
+			if !ok {
+				// Channel closed, flush remaining and exit
+				if len(buffer) > 0 {
+					klog.Errorf("Flush buffer, Channel closed, flush remaining logs size: %d", len(buffer))
+					flushBuffer(file, buffer)
+				}
+				return
+			}
+			buffer = append(buffer, msg)
+
+			// Flush if buffer gets too large (prevent memory buildup)
+			if len(buffer) >= bufferFlushSize {
+				klog.Infof("Flush buffer, buffer reached the flush size: %d", bufferFlushSize)
+				flushBuffer(file, buffer)
+				buffer = buffer[:0] // Reset buffer
+			}
+
+		case <-ticker.C:
+			// Periodic flush
+			if len(buffer) > 0 {
+				klog.Infof("Flush buffer, flushInterval, buffer size: %d, flushInterval: %s", len(buffer), flushInterval)
+				flushBuffer(file, buffer)
+				buffer = buffer[:0] // Reset buffer
+			}
+		}
+	}
+}
+
+// flushBuffer writes all buffered messages to file
+func flushBuffer(file *os.File, buffer []string) {
+	klog.Infof("Flushing buffer, size: %d", len(buffer))
+	numLogWrites := 0
+	for _, msg := range buffer {
+		if _, err := file.WriteString(msg + "\n"); err != nil {
+			klog.Errorf("Failed to write latency metrics log: %v, message: %s", err, msg)
+		} else {
+			klog.V(5).Infof("Wrote latency metrics log: %s", msg)
+		}
+		numLogWrites++
+	}
+	// Sync to ensure data is written to disk
+	if err := file.Sync(); err != nil {
+		klog.Errorf("Failed to sync latency metrics log file: %v", err)
+	}
+	klog.Infof("Flushed to the file (%s), %d logs", file.Name(), numLogWrites)
+}
+
+// writeLatencyMetricsLog writes a latency metrics log message asynchronously
+func writeLatencyMetricsLog(message string) {
+	// Initialize log writer on first use
+	initLatencyMetricsLogWriter()
+
+	// Non-blocking write to channel
+	select {
+	case logMessageChan <- message:
+		// Successfully queued
+	default:
+		// Channel full, drop message to avoid blocking
+		klog.ErrorS(nil, "Latency metrics log channel full, dropping message. max buffer size", "max_buffer_size", latencyMetricsLogBufferSize)
+	}
+}
 
 // notifyRLAgentRequestComplete sends async completion notification for scalable RL agent
 func notifyRLAgentRequestComplete(routerCtx *types.RoutingContext, ttftMs int64, avgTpotMs int64) {
@@ -645,13 +767,15 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["vllmGPUKVCacheUsage"] = "{}"
 	}
 
-	// 4. CPU KV cache usage
-	vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(routerCtx.RequestID)
-	if err == nil {
-		headers, jsonStrings["vllmCPUKVCacheUsage"] = addMetricToHeaders(headers, HeadervLLMCPUKVCacheUsage, vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
-	} else {
-		jsonStrings["vllmCPUKVCacheUsage"] = "{}"
-	}
+	// // 4. CPU KV cache usage
+	// vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(routerCtx.RequestID)
+	// if err == nil {
+	// 	headers, jsonStrings["vllmCPUKVCacheUsage"] = addMetricToHeaders(headers, HeadervLLMCPUKVCacheUsage, vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
+	// } else {
+	// 	klog.ErrorS(err, "error to get vllm cpu kv cache usage, fill vllmCPUKVCacheUsage with empty map {}", "requestID", routerCtx.RequestID)
+	// 	jsonStrings["vllmCPUKVCacheUsage"] = "{}"
+	// }
+	jsonStrings["vllmCPUKVCacheUsage"] = "{}"
 
 	// 5. Number of running requests
 	vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(routerCtx.RequestID)
@@ -756,6 +880,9 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	// 	explorationEnabled,
 	// )
 	klog.Infof("%s", logMessage)
+
+	// Write to file asynchronously (non-blocking)
+	writeLatencyMetricsLog(logMessage)
 
 	// Notify scalable RL agent of request completion (async, non-blocking)
 	notifyRLAgentRequestComplete(routerCtx, ttftMs, avgTpotMs)

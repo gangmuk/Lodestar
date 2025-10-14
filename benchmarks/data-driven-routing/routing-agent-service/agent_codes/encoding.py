@@ -1023,10 +1023,19 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
 
     # Basic data quality checks
     logger.info("Performing data quality checks...")
-    missing_col_pct = processed_df.isnull().mean() * 100
-    high_missing = missing_col_pct[missing_col_pct > 20].index.tolist()
-    if high_missing:
-        logger.error(f"Columns with >20% missing values: {len(high_missing)} columns")
+    # Only consider numeric columns for missing-value thresholding to avoid metadata columns
+    numeric_df = processed_df.select_dtypes(include=[np.number])
+    missing_col_pct = numeric_df.isnull().mean() * 100
+    high_missing = missing_col_pct[missing_col_pct > 20]
+    if len(high_missing) > 0:
+        # Log detailed diagnostics before failing
+        sorted_high_missing = high_missing.sort_values(ascending=False)
+        top_list = [(col, round(pct, 1)) for col, pct in list(sorted_high_missing.items())[:20]]
+        logger.error(f"Columns with >20% missing values: {len(sorted_high_missing)} columns. Top offenders: {top_list}")
+        # Additional hint for dynamic pod columns
+        pod_cols = [c for c in sorted_high_missing.index if c.startswith('pod_')]
+        if pod_cols:
+            logger.error(f"High-missing pod columns detected (sample): {pod_cols[:10]}")
         assert False
         
     logger.info("Processing training data...")

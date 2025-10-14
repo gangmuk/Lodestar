@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-service
+  namespace: default
+  labels:
+    app: client-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-service
+  template:
+    metadata:
+      labels:
+        app: client-service
+    spec:
+      # Bind pod to specific node
+      nodeSelector:
+        kubernetes.io/hostname: "10.0.1.10"
+        ## nodes without GPUs
+        # 10.0.0.66 - instance type: ecs.g3il.xlarge
+        # 10.0.0.8 - instance type: ecs.g3il.xlarge
+        # 10.0.0.9 - instance type: ecs.g3il.xlarge
+        # 10.0.1.10 - instance type: ecs.g3il.2xlarge
+      # Alternative: use nodeName for direct binding
+      # nodeName: 10.0.1.10
+      containers:
+      - name: client
+        image: gangmuk/gangmuk-client:latest-linux  # Update based on your build
+        imagePullPolicy: Always
+        command: ["sleep", "infinity"]
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: output
+          mountPath: /app/output
+      volumes:
+      - name: output
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: client-service
+  namespace: default
+spec:
+  selector:
+    app: client-service
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+

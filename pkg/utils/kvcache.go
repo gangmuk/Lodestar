@@ -833,7 +833,7 @@ func SetExploration(exploration int, explorationEnabled int, requestID string) {
 	defer ExplorationEnabledMutex.Unlock()
 	Exploration[requestID] = exploration
 	ExplorationEnabled[requestID] = explorationEnabled
-	klog.Infof("SetExploration, requestID: %s, exploration: %d, explorationEnabled: %d", requestID, exploration, explorationEnabled)
+	klog.V(5).Infof("SetExploration, requestID: %s, exploration: %d, explorationEnabled: %d", requestID, exploration, explorationEnabled)
 }
 
 func GetExploration(requestID string) (int, int) {
@@ -1004,7 +1004,7 @@ func AddRequestLogMessage(requestID string, logMessage string) {
 
 	if _, exists := RequestToLogMessage[requestID]; !exists {
 		RequestToLogMessage[requestID] = logMessage
-		klog.Infof("AddRequestLogMessage for request ID: %s, total number of log messages: %d", requestID, len(RequestToLogMessage))
+		klog.V(5).Infof("AddRequestLogMessage for request ID: %s, total number of log messages: %d", requestID, len(RequestToLogMessage))
 	} else {
 		klog.Errorf("Error, Request ID %s already exists in RequestToLogMessage", requestID)
 	}
@@ -1249,7 +1249,7 @@ func SetHashOfPrefixHashesForRequest(requestID string, hash uint64) {
 		return
 	}
 	requestToHashOfPrefixHashes[requestID] = hash
-	klog.Infof("SetHashOfPrefixHashesForRequest, Set hash for request ID %s: %d", requestID, hash)
+	klog.V(5).Infof("SetHashOfPrefixHashesForRequest, Set hash for request ID %s: %d", requestID, hash)
 }
 
 func GetHashOfPrefixHashesForRequest(requestID string) (uint64, bool) {
@@ -1288,7 +1288,7 @@ func GetNumOutputTokensForPrefix(hash_of_prefixHashes uint64) (int, bool) {
 		klog.Warningf("GetNumOutputTokensForPrefix, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
 		return DefaultNumOutputTokens, false
 	}
-	klog.Infof("GetNumOutputTokensForPrefix, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)
+	klog.V(5).Infof("GetNumOutputTokensForPrefix, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)
 	return numOutputTokens, true
 }
 

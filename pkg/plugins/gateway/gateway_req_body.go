@@ -115,7 +115,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				subAlgorithm = subAlgValue
 			} else {
 				subAlgorithm = ""
-				klog.WarningS("subAlgorithm not present in header, set it empty string", "requestID", requestID)
+				klog.ErrorS(nil, "subAlgorithm not present in header, set it empty string", "requestID", requestID)
 			}
 			routingCtx.SubAlgorithm = subAlgorithm
 
@@ -207,7 +207,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		utils.IncrementNumInflightForPod(routingCtx.RequestID, targetPodIPWithPort)
 
 		ret := utils.IncrementNumPrefillTokensForPod(targetPodIPWithPort, prefill_token_len)
-		klog.Infof("IncrementNumPrefillTokensForPod(%s) by %d, %d", targetPodIPWithPort, prefill_token_len, ret)
+		klog.V(5).Infof("IncrementNumPrefillTokensForPod(%s) by %d, %d", targetPodIPWithPort, prefill_token_len, ret)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
 			return generateErrorResponse(

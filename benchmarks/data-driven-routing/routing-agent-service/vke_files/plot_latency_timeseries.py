@@ -1147,16 +1147,15 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     ax8.legend(fontsize=8)
     
     # New subplots for numTrains analysis (updated indices)
-    ax9 = fig.add_subplot(gs[19, 0])  # TTFT CDF by numTrains
-    ax10 = fig.add_subplot(gs[19, 1])  # TPOT CDF by numTrains  
-    ax11 = fig.add_subplot(gs[19, 2])  # Trend plot
+    # Create a 2-column grid for row 19
+    gs_row19 = gs[19, :].subgridspec(1, 2, wspace=0.3)
+    ax9 = fig.add_subplot(gs_row19[0])  # TTFT CDF by numTrains (left half - 50% width)
+    ax10 = fig.add_subplot(gs_row19[1])  # TPOT CDF by numTrains (right half - 50% width)
     
-    # Get unique num_trains values
+    # Get unique num_trains values and use same colors for both TTFT and TPOT
     unique_num_trains = sorted(df['num_trains'].unique())
-    ttft_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
-    tpot_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_num_trains)))
-    num_trains_ttft_colors = dict(zip(unique_num_trains, ttft_colors))
-    num_trains_tpot_colors = dict(zip(unique_num_trains, tpot_colors))
+    num_trains_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
+    num_trains_color_map = dict(zip(unique_num_trains, num_trains_colors))
     
     # TTFT CDF by numTrains (ax9)
     for num_trains in unique_num_trains:
@@ -1170,12 +1169,8 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
             p99_ttft = np.percentile(subset['ttft'], 99)
             
             # Plot CDF line with combined label
-            ax9.plot(sorted_ttft, y, color=num_trains_ttft_colors[num_trains], 
+            ax9.plot(sorted_ttft, y, color=num_trains_color_map[num_trains], 
                     linewidth=linewidth, alpha=alpha, label=f'numTrains={num_trains}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms')
-            
-            # Add vertical lines without labels
-            ax9.axvline(avg_ttft, color=num_trains_ttft_colors[num_trains], linestyle='-', alpha=alpha, linewidth=linewidth)
-            ax9.axvline(p99_ttft, color=num_trains_ttft_colors[num_trains], linestyle='--', alpha=alpha, linewidth=linewidth)
     
     ax9.set_xlabel('TTFT (ms)', fontsize=10)
     ax9.set_ylabel('CDF', fontsize=10, fontweight='bold')
@@ -1195,12 +1190,8 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
             p99_tpot = np.percentile(subset['avg_tpot'], 99)
             
             # Plot CDF line with combined label
-            ax10.plot(sorted_tpot, y, color=num_trains_tpot_colors[num_trains], 
+            ax10.plot(sorted_tpot, y, color=num_trains_color_map[num_trains], 
                      linewidth=linewidth, alpha=alpha, label=f'numTrains={num_trains}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms')
-            
-            # Add vertical lines without labels
-            ax10.axvline(avg_tpot, color=num_trains_tpot_colors[num_trains], linestyle='-', alpha=alpha, linewidth=linewidth)
-            ax10.axvline(p99_tpot, color=num_trains_tpot_colors[num_trains], linestyle='--', alpha=alpha, linewidth=linewidth)
     
     ax10.set_xlabel('TPOT (ms)', fontsize=10)
     ax10.set_ylabel('CDF', fontsize=10, fontweight='bold')
@@ -1208,7 +1199,54 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     ax10.grid(True, alpha=alpha)
     ax10.legend(fontsize=6)
     
-    # Trend plot: avg TTFT, p99 TTFT, avg TPOT, p99 TPOT vs numTrains (ax11)
+    return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10]
+
+def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy):
+    """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
+    # Determine the target latency metric based on routing policy
+    if 'latency_predictor_ttft' in routing_policy:
+        actual_col = 'ttft'
+        metric_name = 'TTFT'
+        ylabel = 'TTFT (ms)'
+        title_scatter = 'Actual vs Predicted TTFT Comparison'
+        title_timeseries = 'TTFT Time Series with Predictions'
+    elif 'latency_predictor_avg_tpot' in routing_policy:
+        actual_col = 'avg_tpot'
+        metric_name = 'TPOT'
+        ylabel = 'TPOT (ms)'
+        title_scatter = 'Actual vs Predicted TPOT Comparison'
+        title_timeseries = 'TPOT Time Series with Predictions'
+    elif 'latency_predictor_e2e_latency' in routing_policy:
+        actual_col = 'e2e'
+        metric_name = 'E2E Latency'
+        ylabel = 'E2E Latency (ms)'
+        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
+        title_timeseries = 'E2E Latency Time Series with Predictions'
+    else:
+        # Fallback to E2E for any other latency predictor
+        actual_col = 'e2e'
+        metric_name = 'E2E Latency'
+        ylabel = 'E2E Latency (ms)'
+        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
+        title_timeseries = 'E2E Latency Time Series with Predictions'
+
+    # Define the prediction analysis plots (rows 20-22)
+    # Row 20: Split into two halves
+    gs_row20 = gs[20, :].subgridspec(1, 2, wspace=0.3)
+    ax11 = fig.add_subplot(gs_row20[0])  # Latency Trends by numTrains (left half)
+    ax_pred_bar = fig.add_subplot(gs_row20[1])  # Prediction Accuracy Bar Chart (right half)
+    
+    # Row 21: Centered scatter plot (bigger, square)
+    ax_pred_scatter = fig.add_subplot(gs[21, :])  # Actual vs Predicted Scatter Plot (full width, will use aspect ratio)
+    
+    # Row 22: Time series
+    ax_pred_timeseries = fig.add_subplot(gs[22, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
+
+    # SUBPLOT: Latency Trends by numTrains (ax11)
+    # Get unique num_trains values
+    unique_num_trains = sorted(df['num_trains'].unique())
+    
+    # Trend plot: avg TTFT, p99 TTFT, avg TPOT, p99 TPOT vs numTrains
     num_trains_stats = []
     for num_trains in unique_num_trains:
         subset = df[df['num_trains'] == num_trains]
@@ -1243,6 +1281,9 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
         ax11_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
         ax11_right.tick_params(axis='y', labelcolor='green')
         
+        ax11.set_ylim(0, max(p99_ttft_vals) * 1.4)
+        ax11_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
+        
         ax11.set_title('Latency Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
         ax11.grid(True, alpha=alpha)
         ax11.set_xticks(num_trains_vals)
@@ -1250,45 +1291,9 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
         # Combine legends from both axes
         lines1, labels1 = ax11.get_legend_handles_labels()
         lines2, labels2 = ax11_right.get_legend_handles_labels()
-        ax11.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left')
-    
-    
-    return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10, ax11]
+        ax11.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
 
-def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy):
-    """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
-    # Determine the target latency metric based on routing policy
-    if 'latency_predictor_ttft' in routing_policy:
-        actual_col = 'ttft'
-        metric_name = 'TTFT'
-        ylabel = 'TTFT (ms)'
-        title_scatter = 'Actual vs Predicted TTFT Comparison'
-        title_timeseries = 'TTFT Time Series with Predictions'
-    elif 'latency_predictor_avg_tpot' in routing_policy:
-        actual_col = 'avg_tpot'
-        metric_name = 'TPOT'
-        ylabel = 'TPOT (ms)'
-        title_scatter = 'Actual vs Predicted TPOT Comparison'
-        title_timeseries = 'TPOT Time Series with Predictions'
-    elif 'latency_predictor_e2e_latency' in routing_policy:
-        actual_col = 'e2e'
-        metric_name = 'E2E Latency'
-        ylabel = 'E2E Latency (ms)'
-        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
-        title_timeseries = 'E2E Latency Time Series with Predictions'
-    else:
-        # Fallback to E2E for any other latency predictor
-        actual_col = 'e2e'
-        metric_name = 'E2E Latency'
-        ylabel = 'E2E Latency (ms)'
-        title_scatter = 'Actual vs Predicted E2E Latency Comparison'
-        title_timeseries = 'E2E Latency Time Series with Predictions'
-
-    # Define the prediction analysis plots (rows 20-21)
-    ax_pred_scatter = fig.add_subplot(gs[20, :])  # Actual vs Predicted Latency Scatter Plot (full width)
-    ax_pred_timeseries = fig.add_subplot(gs[21, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
-
-    # SUBPLOT 1: Actual vs Predicted Latency Scatter Plot (ax_pred_scatter)
+    # SUBPLOT: Prediction Accuracy Bar Chart by numTrains (ax_pred_bar)
     # Filter out entries where predicted latency is None or 0 (no prediction made)
     valid_predictions = df[(df['chosen_pod_predicted_latency'].notna()) &
                           (df['chosen_pod_predicted_latency'] > 0) &
@@ -1296,79 +1301,136 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
                           (df[actual_col] > 0)]
 
     if not valid_predictions.empty:
-        # Scatter plot of actual vs predicted
-        ax_pred_scatter.scatter(valid_predictions[actual_col], valid_predictions['chosen_pod_predicted_latency'],
-                               s=10, color='tab:pink', alpha=0.6, marker='.',
-                               label='Predictions')
+        # Calculate accuracy metrics for each numTrains group
+        unique_num_trains = sorted(valid_predictions['num_trains'].unique())
+        num_trains_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
+        
+        mae_values = []
+        mape_values = []
+        rmse_values = []
+        count_values = []
+        
+        for num_trains in unique_num_trains:
+            subset = valid_predictions[valid_predictions['num_trains'] == num_trains]
+            if len(subset) > 0:
+                # Calculate metrics
+                mae = (subset[actual_col] - subset['chosen_pod_predicted_latency']).abs().mean()
+                mape = ((subset[actual_col] - subset['chosen_pod_predicted_latency']).abs() / subset[actual_col]).mean() * 100
+                rmse = np.sqrt(((subset[actual_col] - subset['chosen_pod_predicted_latency']) ** 2).mean())
+                
+                mae_values.append(mae)
+                mape_values.append(mape)
+                rmse_values.append(rmse)
+                count_values.append(len(subset))
+        
+        # Create bar chart with grouped bars for MAE and MAPE
+        x = np.arange(len(unique_num_trains))
+        width = 0.35
+        
+        # Create twin axis for MAPE (percentage)
+        ax_pred_bar_right = ax_pred_bar.twinx()
+        
+        # Plot MAE bars (left axis)
+        bars1 = ax_pred_bar.bar(x - width/2, mae_values, width, 
+                                    color=[num_trains_colors[i] for i in range(len(unique_num_trains))],
+                                    alpha=0.8, edgecolor=edgecolor, label='MAE (ms)')
+        
+        # Plot MAPE bars (right axis)
+        bars2 = ax_pred_bar_right.bar(x + width/2, mape_values, width,
+                                         color=[num_trains_colors[i] for i in range(len(unique_num_trains))],
+                                         alpha=0.5, edgecolor=edgecolor, hatch='//', label='MAPE (%)')
+        
+        # Add value labels on bars
+        for i, (bar1, bar2, mae, mape, count) in enumerate(zip(bars1, bars2, mae_values, mape_values, count_values)):
+            # MAE label
+            ax_pred_bar.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + max(mae_values)*0.02,
+                               f'{mae:.0f}', ha='center', va='bottom', fontsize=9, rotation=90)
+            # MAPE label
+            ax_pred_bar_right.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + max(mape_values)*0.02,
+                                      f'{mape:.0f}%', ha='center', va='bottom', fontsize=9, rotation=90)
+            # Count label at bottom
+            ax_pred_bar.text(i, 0, f'n={count}', ha='center', va='bottom', fontsize=8, color='black')
+        
+        # Set labels and title
+        ax_pred_bar.set_xlabel('numTrains', fontsize=14, fontweight='bold')
+        ax_pred_bar.set_ylabel('MAE (ms)', fontsize=12, fontweight='bold', color='navy')
+        ax_pred_bar_right.set_ylabel('MAPE (%)', fontsize=12, fontweight='bold', color='darkred')
+        ax_pred_bar.set_title(f'Prediction Accuracy by Training Iteration ({metric_name})', 
+                                 fontsize=16, fontweight='bold', pad=10)
+        
+        # Set x-axis
+        ax_pred_bar.set_xticks(x)
+        ax_pred_bar.set_xticklabels([f'{nt}' for nt in unique_num_trains], fontsize=11)
+        
+        # Set y-axis colors
+        ax_pred_bar.tick_params(axis='y', labelcolor='navy', labelsize=11)
+        ax_pred_bar_right.tick_params(axis='y', labelcolor='darkred', labelsize=11)
+        
+        # Add grid
+        ax_pred_bar.grid(True, alpha=0.3, axis='y')
+        
+        # Add legends
+        lines1, labels1 = ax_pred_bar.get_legend_handles_labels()
+        lines2, labels2 = ax_pred_bar_right.get_legend_handles_labels()
+        ax_pred_bar.legend(lines1 + lines2, labels1 + labels2, fontsize=10, loc='upper left', ncol=2)
+        
+        # Set y-limits for both axes with same relative padding (20% extra space on top)
+        ax_pred_bar.set_ylim(0, max(mae_values) * 1.4)
+        ax_pred_bar_right.set_ylim(0, max(mape_values) * 1.4)
+        
+        # SUBPLOT 2: Actual vs Predicted Scatter Plot (ax_pred_scatter)
+        # Create color map for scatter plot
+        num_trains_color_map = dict(zip(unique_num_trains, num_trains_colors))
+        
+        # Scatter plot of actual vs predicted, colored by numTrains
+        for num_trains in unique_num_trains:
+            subset = valid_predictions[valid_predictions['num_trains'] == num_trains]
+            if len(subset) > 0:
+                ax_pred_scatter.scatter(subset[actual_col], subset['chosen_pod_predicted_latency'],
+                                       s=10, color=num_trains_color_map[num_trains], alpha=0.4, marker='.',
+                                       label=f'{num_trains}')
 
         # Add diagonal line for perfect prediction
         max_val = max(valid_predictions[actual_col].max(), valid_predictions['chosen_pod_predicted_latency'].max())
         min_val = min(valid_predictions[actual_col].min(), valid_predictions['chosen_pod_predicted_latency'].min())
-        ax_pred_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=linewidth, alpha=alpha, label='Perfect Prediction')
-
-        ## Add regression line (optional)
-        # try:
-        #     b, m = polyfit(valid_predictions[actual_col], valid_predictions['chosen_pod_predicted_latency'], 1)
-        #     x_range = np.linspace(min_val, max_val, 100)
-        #     ax_pred_scatter.plot(x_range, m * x_range + b, 'g-', linewidth=linewidth, alpha=alpha, label=f'Linear Fit: y={m:.2f}x+{b:.2f}')
-        # except:
-        #     pass  # Skip regression if it fails
+        ax_pred_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=linewidth, alpha=alpha, label='Perfect')
 
         # Set same range for x and y axes, starting from 0
         ax_pred_scatter.set_xlim(0, max_val)
         ax_pred_scatter.set_ylim(0, max_val)
 
         # Set same grid intervals for both axes to create square grid cells
-        # Calculate a reasonable number of grid lines (around 10-15 total)
         import math
-        n_grid_lines = 10
-        grid_interval = math.ceil(max_val / n_grid_lines / 1000) * 1000  # Round to nearest 1000ms
+        n_grid_lines = 5  # Fewer grid lines for smaller subplot
+        grid_interval = math.ceil(max_val / n_grid_lines / 1000) * 1000
 
-        # Create explicit tick positions that are exactly the same for both axes
         tick_positions = [i * grid_interval for i in range(0, int(max_val / grid_interval) + 2)]
         tick_positions = [pos for pos in tick_positions if pos <= max_val]
 
-        # Clear any existing locators and formatters
-        ax_pred_scatter.xaxis.set_major_locator(ticker.NullLocator())
-        ax_pred_scatter.yaxis.set_major_locator(ticker.NullLocator())
-
-        # Set exact same tick positions for both axes
         ax_pred_scatter.set_xticks(tick_positions)
         ax_pred_scatter.set_yticks(tick_positions)
+        ax_pred_scatter.set_xticklabels([f'{int(tick)}' for tick in tick_positions], fontsize=9)
+        ax_pred_scatter.set_yticklabels([f'{int(tick)}' for tick in tick_positions], fontsize=9)
 
-        # Force the same tick labels
-        ax_pred_scatter.set_xticklabels([f'{int(tick)}' for tick in tick_positions])
-        ax_pred_scatter.set_yticklabels([f'{int(tick)}' for tick in tick_positions])
-
-        # Use FixedLocator to prevent matplotlib from changing ticks
         ax_pred_scatter.xaxis.set_major_locator(ticker.FixedLocator(tick_positions))
         ax_pred_scatter.yaxis.set_major_locator(ticker.FixedLocator(tick_positions))
 
         ax_pred_scatter.set_xlabel(f'Actual {metric_name} (ms)', fontsize=10, fontweight='bold')
-        ax_pred_scatter.set_ylabel('Predicted Latency (ms)', fontsize=10, fontweight='bold')
-        ax_pred_scatter.set_title(title_scatter, fontsize=16, fontweight='bold', pad=10)
-        ax_pred_scatter.grid(True, alpha=alpha, which='major')
-        ax_pred_scatter.legend(fontsize=8, loc='upper right')
-
-        # Rotate x-axis tick labels by 45 degrees
-        ax_pred_scatter.tick_params(axis='x', rotation=45)
-
-        # Calculate and display prediction accuracy metrics
-        mse = ((valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']) ** 2).mean()
-        mae = (valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']).abs().mean()
-        mape = ((valid_predictions[actual_col] - valid_predictions['chosen_pod_predicted_latency']).abs() / valid_predictions[actual_col]).mean() * 100
-
-        # ax_pred_scatter.text(0.02, 0.98, '.2f',
-        #                     transform=ax_pred_scatter.transAxes, fontsize=10, verticalalignment='top',
-        #                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=alpha))
-
-        # Set equal aspect ratio for better visualization
+        ax_pred_scatter.set_ylabel('Predicted (ms)', fontsize=10, fontweight='bold')
+        ax_pred_scatter.set_title(title_scatter, fontsize=14, fontweight='bold', pad=10)
+        ax_pred_scatter.grid(True, alpha=0.3, which='major')
+        # ax_pred_scatter.legend(fontsize=7, loc='upper left', title='numTrains', title_fontsize=7)
+        ax_pred_scatter.tick_params(axis='x', rotation=45, labelsize=9)
         ax_pred_scatter.set_aspect('equal', adjustable='box')
 
     else:
+        ax_pred_bar.text(0.5, 0.5, 'No Valid Prediction Data Available', transform=ax_pred_bar.transAxes,
+                            ha='center', va='center', fontsize=16, alpha=alpha)
+        ax_pred_bar.set_title(f'Prediction Accuracy by Training Iteration ({metric_name})', 
+                                 fontsize=16, fontweight='bold', pad=10)
         ax_pred_scatter.text(0.5, 0.5, 'No Valid Prediction Data Available', transform=ax_pred_scatter.transAxes,
                             ha='center', va='center', fontsize=16, alpha=alpha)
-        ax_pred_scatter.set_title(title_scatter, fontsize=16, fontweight='bold', pad=10)
+        ax_pred_scatter.set_title(title_scatter, fontsize=14, fontweight='bold', pad=10)
 
     # SUBPLOT 2: Prediction Time Series (ax_pred_timeseries)
     # Plot actual target latency metric for each pod (following same format as other time series)
@@ -1413,7 +1475,186 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     legend_elements.append(Line2D([0], [0], color='tab:orange', linewidth=linewidth+0.5, label=f'Avg {metric_name} (per sec)'))
     ax_pred_timeseries.legend(handles=legend_elements, fontsize=10, loc='upper left')
 
-    return ax_pred_scatter, ax_pred_timeseries
+    # ========== ITERATION-BASED ANALYSIS ==========
+    # Define the iteration analysis plots (rows 23-24)
+    # Row 23: Split into two halves
+    gs_row23 = gs[23, :].subgridspec(1, 2, wspace=0.3)
+    ax_iter_trends = fig.add_subplot(gs_row23[0])  # Latency Trends by Iterations (left half)
+    ax_iter_pred_bar = fig.add_subplot(gs_row23[1])  # Prediction Accuracy by Iterations (right half)
+    
+    # Row 24: Centered scatter plot (bigger, square)
+    ax_iter_pred_scatter = fig.add_subplot(gs[24, :])  # Actual vs Predicted Scatter Plot by Iterations (full width)
+    
+    # Get unique iterations
+    unique_iterations = sorted(df['iteration'].unique())
+    
+    # Define colors for iterations (used across all iteration plots)
+    iteration_colors = plt.cm.tab20(np.linspace(0, 1, len(unique_iterations)))
+    iteration_color_map = dict(zip(unique_iterations, iteration_colors))
+    
+    # SUBPLOT: Latency Trends by Iterations (ax_iter_trends)
+    iter_stats = []
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            avg_ttft = subset['ttft'].mean()
+            p99_ttft = np.percentile(subset['ttft'], 99)
+            avg_tpot = subset['avg_tpot'].mean()
+            p99_tpot = np.percentile(subset['avg_tpot'], 99)
+            iter_stats.append((iteration, avg_ttft, p99_ttft, avg_tpot, p99_tpot))
+    
+    if iter_stats:
+        iter_vals, avg_ttft_vals, p99_ttft_vals, avg_tpot_vals, p99_tpot_vals = zip(*iter_stats)
+        
+        # Compute overall statistics for legend
+        overall_avg_ttft = df['ttft'].mean()
+        overall_p99_ttft = np.percentile(df['ttft'], 99)
+        overall_avg_tpot = df['avg_tpot'].mean()
+        overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
+        
+        # Create dual y-axis plot
+        # Left axis for TTFT
+        ax_iter_trends.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg TTFT: {overall_avg_ttft:.1f}ms')
+        ax_iter_trends.plot(iter_vals, p99_ttft_vals, marker='x', linestyle='--', color='blue', linewidth=linewidth, alpha=alpha, label=f'P99 TTFT: {overall_p99_ttft:.1f}ms')
+        ax_iter_trends.set_xlabel('Iteration', fontsize=10)
+        ax_iter_trends.set_ylabel('TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
+        ax_iter_trends.tick_params(axis='y', labelcolor='blue')
+        
+        # Right axis for TPOT
+        ax_iter_trends_right = ax_iter_trends.twinx()
+        ax_iter_trends_right.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg TPOT: {overall_avg_tpot:.1f}ms')
+        ax_iter_trends_right.plot(iter_vals, p99_tpot_vals, marker='x', linestyle='--', color='green', linewidth=linewidth, alpha=alpha, label=f'P99 TPOT: {overall_p99_tpot:.1f}ms')
+        ax_iter_trends_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
+        ax_iter_trends_right.tick_params(axis='y', labelcolor='green')
+        
+        ax_iter_trends.set_ylim(0, max(p99_ttft_vals) * 1.4)
+        ax_iter_trends_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
+        
+        ax_iter_trends.set_title('Latency Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
+        ax_iter_trends.grid(True, alpha=alpha)
+        
+        # Combine legends from both axes
+        lines1, labels1 = ax_iter_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_iter_trends_right.get_legend_handles_labels()
+        ax_iter_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+    
+    # SUBPLOT: Prediction Accuracy Bar Chart by Iterations (ax_iter_pred_bar)
+    if not valid_predictions.empty:
+        # Calculate accuracy metrics for each iteration
+        mae_values_iter = []
+        mape_values_iter = []
+        count_values_iter = []
+        
+        for iteration in unique_iterations:
+            subset = valid_predictions[valid_predictions['iteration'] == iteration]
+            if len(subset) > 0:
+                mae = (subset[actual_col] - subset['chosen_pod_predicted_latency']).abs().mean()
+                mape = ((subset[actual_col] - subset['chosen_pod_predicted_latency']).abs() / subset[actual_col]).mean() * 100
+                
+                mae_values_iter.append(mae)
+                mape_values_iter.append(mape)
+                count_values_iter.append(len(subset))
+        
+        if mae_values_iter:
+            # Create bar chart with grouped bars for MAE and MAPE
+            x = np.arange(len(unique_iterations))
+            width = 0.35
+            
+            # Create twin axis for MAPE
+            ax_iter_pred_bar_right = ax_iter_pred_bar.twinx()
+            
+            # Plot MAE bars (left axis)
+            bars1 = ax_iter_pred_bar.bar(x - width/2, mae_values_iter, width, 
+                                        color=[iteration_colors[i] for i in range(len(unique_iterations))],
+                                        alpha=0.8, edgecolor=edgecolor, label='MAE (ms)')
+            
+            # Plot MAPE bars (right axis)
+            bars2 = ax_iter_pred_bar_right.bar(x + width/2, mape_values_iter, width,
+                                             color=[iteration_colors[i] for i in range(len(unique_iterations))],
+                                             alpha=0.5, edgecolor=edgecolor, hatch='//', label='MAPE (%)')
+            
+            # Add value labels on bars
+            for i, (bar1, bar2, mae, mape, count) in enumerate(zip(bars1, bars2, mae_values_iter, mape_values_iter, count_values_iter)):
+                # MAE label
+                ax_iter_pred_bar.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + max(mae_values_iter)*0.02,
+                                   f'{mae:.0f}', ha='center', va='bottom', fontsize=9, rotation=90)
+                # MAPE label
+                ax_iter_pred_bar_right.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + max(mape_values_iter)*0.02,
+                                          f'{mape:.0f}%', ha='center', va='bottom', fontsize=9, rotation=90)
+                # Count label at bottom
+                ax_iter_pred_bar.text(i, 0, f'n={count}', ha='center', va='bottom', fontsize=8, color='black')
+            
+            # Set labels and title
+            ax_iter_pred_bar.set_xlabel('Iteration', fontsize=14, fontweight='bold')
+            ax_iter_pred_bar.set_ylabel('MAE (ms)', fontsize=12, fontweight='bold', color='navy')
+            ax_iter_pred_bar_right.set_ylabel('MAPE (%)', fontsize=12, fontweight='bold', color='darkred')
+            ax_iter_pred_bar.set_title(f'Prediction Accuracy by Iterations ({metric_name})', 
+                                     fontsize=16, fontweight='bold', pad=10)
+            
+            # Set x-axis
+            ax_iter_pred_bar.set_xticks(x)
+            ax_iter_pred_bar.set_xticklabels([f'{it}' for it in unique_iterations], fontsize=11)
+            
+            # Set y-axis colors
+            ax_iter_pred_bar.tick_params(axis='y', labelcolor='navy', labelsize=11)
+            ax_iter_pred_bar_right.tick_params(axis='y', labelcolor='darkred', labelsize=11)
+            
+            # Add grid
+            ax_iter_pred_bar.grid(True, alpha=0.3, axis='y')
+            
+            # Add legends
+            lines1, labels1 = ax_iter_pred_bar.get_legend_handles_labels()
+            lines2, labels2 = ax_iter_pred_bar_right.get_legend_handles_labels()
+            ax_iter_pred_bar.legend(lines1 + lines2, labels1 + labels2, fontsize=10, loc='upper left', ncol=2)
+            
+            # Set y-limits for both axes with same relative padding
+            ax_iter_pred_bar.set_ylim(0, max(mae_values_iter) * 1.4)
+            ax_iter_pred_bar_right.set_ylim(0, max(mape_values_iter) * 1.4)
+    
+    # SUBPLOT: Actual vs Predicted Scatter Plot colored by Iterations (ax_iter_pred_scatter)
+    if not valid_predictions.empty:
+        # Scatter plot of actual vs predicted, colored by iteration
+        for iteration in unique_iterations:
+            subset = valid_predictions[valid_predictions['iteration'] == iteration]
+            if len(subset) > 0:
+                ax_iter_pred_scatter.scatter(subset[actual_col], subset['chosen_pod_predicted_latency'],
+                                       s=10, color=iteration_color_map[iteration], alpha=0.4, marker='.',
+                                       label=f'{iteration}')
+        
+        # Add diagonal line for perfect prediction
+        max_val = max(valid_predictions[actual_col].max(), valid_predictions['chosen_pod_predicted_latency'].max())
+        min_val = min(valid_predictions[actual_col].min(), valid_predictions['chosen_pod_predicted_latency'].min())
+        ax_iter_pred_scatter.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=linewidth, alpha=alpha, label='Perfect')
+        
+        # Set same range for x and y axes
+        ax_iter_pred_scatter.set_xlim(0, max_val)
+        ax_iter_pred_scatter.set_ylim(0, max_val)
+        
+        # Set same grid intervals for both axes
+        import math
+        n_grid_lines = 5
+        grid_interval = math.ceil(max_val / n_grid_lines / 1000) * 1000
+        
+        tick_positions = [i * grid_interval for i in range(0, int(max_val / grid_interval) + 2)]
+        tick_positions = [pos for pos in tick_positions if pos <= max_val]
+        
+        ax_iter_pred_scatter.set_xticks(tick_positions)
+        ax_iter_pred_scatter.set_yticks(tick_positions)
+        ax_iter_pred_scatter.set_xticklabels([f'{int(tick)}' for tick in tick_positions], fontsize=9)
+        ax_iter_pred_scatter.set_yticklabels([f'{int(tick)}' for tick in tick_positions], fontsize=9)
+        
+        ax_iter_pred_scatter.xaxis.set_major_locator(ticker.FixedLocator(tick_positions))
+        ax_iter_pred_scatter.yaxis.set_major_locator(ticker.FixedLocator(tick_positions))
+        
+        ax_iter_pred_scatter.set_xlabel(f'Actual {metric_name} (ms)', fontsize=10, fontweight='bold')
+        ax_iter_pred_scatter.set_ylabel('Predicted (ms)', fontsize=10, fontweight='bold')
+        ax_iter_pred_scatter.set_title(f'Actual vs Predicted {metric_name} by Iterations', fontsize=14, fontweight='bold', pad=10)
+        ax_iter_pred_scatter.grid(True, alpha=0.3, which='major')
+        ax_iter_pred_scatter.legend(fontsize=5, loc='upper left', title='Iteration', title_fontsize=7, ncol=4)
+        ax_iter_pred_scatter.tick_params(axis='x', rotation=45, labelsize=9)
+        ax_iter_pred_scatter.set_aspect('equal', adjustable='box')
+
+    return ax11, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_trends, ax_iter_pred_bar, ax_iter_pred_scatter
 
 
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy):
@@ -1427,6 +1668,11 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     df['ttft_reward'] = df['ttft'].apply(lambda x: calculate_ttft_reward(x, slo_ttft))
     df['tpot_reward'] = df['avg_tpot'].apply(lambda x: calculate_tpot_reward(x, slo_tpot))
     df['total_reward'] = df['ttft_reward'] + df['tpot_reward']
+    
+    # Create iteration bins (group requests into iterations based on order)
+    # Each iteration represents a batch of requests (e.g., every 100 requests)
+    iteration_size = max(100, len(df) // 20)  # At least 100 requests per iteration, or divide into ~20 iterations
+    df['iteration'] = df.index // iteration_size
     
     # Now calculate cluster statistics (which need total_reward column)
     cluster_stats = calculate_cluster_wise_metrics(df)
@@ -1449,13 +1695,13 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
 
     # Determine number of rows based on whether prediction plots are needed
     if 'latency_predictor' in routing_policy:
-        n_rows = 22
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0]
-        fig_height = 55
+        n_rows = 25  # Added 2 more rows for iteration-based analysis
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 3.0]  # Row 21 & 24 (scatter plots) are 3.0
+        fig_height = 63
     else:
-        n_rows = 20  # Skip the last 2 rows for prediction plots
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0]
-        fig_height = 50
+        n_rows = 21  # Skip the last 2 rows for prediction plots
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0]
+        fig_height = 52
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
     fig = plt.figure(figsize=(15, fig_height))
@@ -1479,7 +1725,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
 
     # Unpack prediction axes for conditional formatting below (only if prediction plots were created)
     if prediction_axes is not None:
-        ax_pred_scatter, ax_pred_timeseries = prediction_axes
+        ax11, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_trends, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
 
     # Set font sizes for tick labels
     all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes
@@ -1531,7 +1777,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     plt_pdf_fn = f"{log_dir}/latency_metrics_analysis.pdf"
     plt_png_fn = f"{log_dir}/latency_metrics_analysis.png"
     plt.savefig(plt_pdf_fn, bbox_inches='tight')
-    plt.savefig(plt_png_fn, bbox_inches='tight')
+    plt.savefig(plt_png_fn, bbox_inches='tight', dpi=200)
     print(f"*****************************")
     print(f"** Saving plot to: {plt_pdf_fn}")
     print(f"** Saving plot to: {plt_png_fn}")
