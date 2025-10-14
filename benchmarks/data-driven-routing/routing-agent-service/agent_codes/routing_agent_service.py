@@ -56,10 +56,14 @@ NUM_TRAINS = 0
 MODEL_UPDATED = True
 LOCK_TRAINING_DATA = threading.Lock()
 first_request_starting_time = None
-stats_instance = None 
+stats_instance = None
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
+
+# Training data accumulation (offline + online)
+TRAINING_DF = None  # Holds all training data (offline CSV + online appended data)
+TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
 PRINT_ONCE_AT_THE_FIRST_REQUEST = True
 # RL agent globals
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
@@ -158,7 +162,7 @@ def handle_request_complete():
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance
+    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance, TRAINING_DF
     NUM_FLUSH += 1
     flush_start_time = time.time()
     log_data = request.json
@@ -167,7 +171,7 @@ def handle_flush():
         if not os.path.exists("raw_training_data"):
             os.mkdir("raw_training_data")
         raw_data_path = f"raw_training_data/batch_{NUM_FLUSH}.csv"
-        
+
         # Write raw data to file
         ts_write_raw_data = time.time()
         ##################################################
@@ -183,36 +187,24 @@ def handle_flush():
         processed_df, sorted_all_pod_ids, _ = preprocess.main(podip_replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
         ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
-        
-        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
-        if stats_instance.get_max_count() == 0:
-            logger.error(f"No normalization statistics available for training")
-            assert False
-        
-        ##################################################
-        ## Normalization
-        ## NOTE: This is actually very critical. Normalization stats (mean, std, count) has been updated here. Note that this is /flush endpoint which is separate from training. (ENABLE_FLUSH != ENABLE_ONLINE_LEARNING). If the flush happens frequently, then intermediatelly it can cause big bias on the mean and std, resulting in improper normalization and unreasonable inference. As a temporary fix, we just don't update the stats_instance (mean, std). Use the same stats for normalization. Note that normalization is still needed. When _normalize_single_feature is called with is_training=True, it updates the stats_instance (mean, std, count). So I will change it to is_training=False as temporary fix.
-        for feature in normalizable_features:
-            # data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=True)
-            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False)
-        if stats_instance is not None:
-            stats_instance.write_stats_to_file(feature_normalization_stats_file)
-        else:
-            logger.error("stats_instance is None. Cannot save stats")
-            assert False
 
-        ##################################################
-        ## Encode
-        encoded_data_subdir = f"{ENCODED_DATA_DIR}/batch_{NUM_FLUSH}"
-        encoding.encode_for_train(sorted_all_pod_ids, processed_df, encoded_data_subdir, request_features_train, RL_MODEL_HYPERPARAMETERS)
-        ##################################################
-        
+        # Append preprocessed data to TRAINING_DF for online learning
+        if ENABLE_ONLINE_LEARNING:
+            with TRAINING_DF_LOCK:
+                if TRAINING_DF is None:
+                    TRAINING_DF = processed_df.copy()
+                    logger.info(f"Initialized TRAINING_DF with {len(processed_df)} samples")
+                else:
+                    old_size = len(TRAINING_DF)
+                    TRAINING_DF = pd.concat([TRAINING_DF, processed_df], ignore_index=True)
+                    logger.info(f"Appended {len(processed_df)} samples to TRAINING_DF (total: {old_size} → {len(TRAINING_DF)})")
+
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TOTAL_NUM_DATA += len(log_data)
         NUM_NEW_DATA += len(log_data)
-            
+
         return jsonify({"status": "success", "message": f"Successfully processed {len(log_data)} log messages"}), 200
-        
+
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
@@ -546,7 +538,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -555,26 +547,88 @@ def online_train_routine():
         return
     TRAINING_RIGHT_NOW = True
     training_start_time = time.time()
-    logger.info(f"Start online_train_routine, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
+    logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
     try:
         # Route to appropriate training function based on model type
         model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
         if model_type == 'latency_predictor':
-            logger.info(f"Training with latency predictor model")
-            latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
-            logger.info(f"train_latency_predictor done")
+            logger.info(f"Training with latency predictor model on entire dataset (offline + online)")
+
+            # Get a copy of TRAINING_DF for training (thread-safe)
+            with TRAINING_DF_LOCK:
+                if TRAINING_DF is None or len(TRAINING_DF) == 0:
+                    logger.error("TRAINING_DF is empty, cannot train")
+                    TRAINING_RIGHT_NOW = False
+                    return
+                training_df_copy = TRAINING_DF.copy()
+                total_samples = len(training_df_copy)
+
+            # logger.info(f"Training on (offline data: {ENCODED_DATA_DIR}, online data: {ENCODED_DATA_DIR}, total data: {total_samples}")
+            logger.info(f"Training on total data: {total_samples}")
+
+            # Drop non-numeric metadata columns from offline CSV that are absent online
+            metadata_cols_to_drop = ['source_file', 'reward_function_used']
+            cols_present_to_drop = [c for c in metadata_cols_to_drop if c in training_df_copy.columns]
+            if cols_present_to_drop:
+                logger.info(f"Dropping metadata columns not used for training: {cols_present_to_drop}")
+                training_df_copy = training_df_copy.drop(columns=cols_present_to_drop)
+
+            ############################################################################
+            # Handle missing values proactively to avoid intermittent failures due to dynamic pod columns
+            try:
+                import numpy as np
+                numeric_columns = training_df_copy.select_dtypes(include=[np.number]).columns
+                total_missing_numeric = int(training_df_copy[numeric_columns].isna().sum().sum()) if len(numeric_columns) > 0 else 0
+                if total_missing_numeric > 0:
+                    logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0 for training consistency")
+                    training_df_copy[numeric_columns] = training_df_copy[numeric_columns].fillna(0)
+                # Optional: warn about numeric columns with high missing rates (diagnostics only)
+                missing_pct = training_df_copy[numeric_columns].isnull().mean() * 100 if len(numeric_columns) > 0 else pd.Series()
+                high_missing = missing_pct[missing_pct > 5].sort_values(ascending=False)
+                if len(high_missing) > 0:
+                    topk = list(high_missing.head(10).items())
+                    logger.error(f"High-missing columns (>5%) detected (top 10): {[(k, round(v,1)) for k,v in topk]}")
+            except Exception as e:
+                logger.warning(f"NaN handling diagnostics failed: {e}")
+            ############################################################################
             
+            # Normalize the entire dataset
+            normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(
+                training_df_copy, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+
+            for feature in normalizable_features:
+                data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, is_training=False)
+
+            # Get sorted pod IDs from the training data (preprocessed CSV format)
+            sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
+            logger.info(f"Training with pods: {sorted_all_pod_ids}")
+
+            # Encode the entire dataset
+            encode_start_time = time.time()
+            os.makedirs(ENCODED_DATA_DIR, exist_ok=True)
+            encoded_training_dir = os.path.join(ENCODED_DATA_DIR, "full_training_data")
+            encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
+            logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
+
+            # Train on the encoded dataset
+            train_start_time = time.time()
+            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+            logger.info(f"train_latency_predictor done, train time: {time.time() - train_start_time} seconds")
+
             # Reload model in training thread (non-blocking for inference)
             with LATENCY_PREDICTOR_LOCK.write():
                 if LATENCY_PREDICTOR is not None:
+                    load_start_time = time.time()
                     LATENCY_PREDICTOR.load(final_model_dir)
-                    logger.info(f"Reloaded latency predictor after training")
+                    logger.info(f"Reloaded latency predictor after training, load time: {time.time() - load_start_time} seconds")
         else:
             logger.info(f"Training with contextual bandit model")
             simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
             logger.info(f"train_contextual_bandit done")
     except Exception as e:
+        import traceback
         logger.error(f"Error during training: {e}")
+        logger.error(traceback.format_exc())
         TRAINING_RIGHT_NOW = False
         return
     logger.info(f"Successfully completed online_train_routine done, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data, took {time.time() - training_start_time} seconds")
@@ -925,6 +979,27 @@ def init():
     os.makedirs(checkpoint_dir, exist_ok=True)
     logger.info(f"Checkpoint directory: {checkpoint_dir}")
     logger.info(f"Checkpointing every {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
+
+    # Load offline training data for online learning
+    global TRAINING_DF
+    if ENABLE_ONLINE_LEARNING:
+        offline_csv_path = "/app/offline_training_data.csv"
+        if os.path.exists(offline_csv_path):
+            try:
+                with TRAINING_DF_LOCK:
+                    TRAINING_DF = pd.read_csv(offline_csv_path)
+                    logger.info(f"✅ Loaded offline training data: {len(TRAINING_DF)} samples from {offline_csv_path}")
+                    logger.info(f"   Columns: {list(TRAINING_DF.columns[:10])}...")  # Show first 10 columns
+            except Exception as e:
+                logger.error(f"Failed to load offline training data: {e}")
+                TRAINING_DF = pd.DataFrame()
+                logger.warning("Starting with empty training dataframe")
+        else:
+            logger.warning(f"Offline training data not found at {offline_csv_path}")
+            logger.warning("Online learning will start from scratch with only new data")
+            TRAINING_DF = pd.DataFrame()
+    else:
+        logger.info("Online learning disabled, skipping offline data load")
 
 
 def periodic_checkpoint_scalable_rl():

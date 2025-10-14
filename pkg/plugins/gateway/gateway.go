@@ -195,7 +195,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 	utils.SyncPodRegistry(readyPods)
 
-	klog.Infof("selectTargetPod, done with InitPodKey. context state, requestID: %s, ctx.Err(): %v", ctx.RequestID, ctx.Err())
+	klog.V(5).Infof("selectTargetPod, done with InitPodKey. context state, requestID: %s, ctx.Err(): %v", ctx.RequestID, ctx.Err())
 
 	ts := time.Now()
 	selectedPodAddress, err := router.Route(ctx, &utils.PodArray{Pods: readyPods})

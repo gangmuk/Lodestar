@@ -303,8 +303,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// input_message, _ := utils.GetRawMessageForRequest(ctx.RequestID)
 
 	var podIPsWithMatchingRatios map[string]int
-	var allPrefixHashes []uint64
-	var matchedPrefixHashes []uint64
+	var allPrefixHashes []uint64     // allPrefixHashes is used to store all prefix hashes for the request
+	var matchedPrefixHashes []uint64 // matchedPrefixHashes is used to store matched prefix hashes for the request
 
 	// podIPsWithMatchingRatios, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
 
@@ -365,13 +365,20 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			jsonStrings["vllmGPUKVCacheUsage"] = "{}"
 		}
 
-		// 4. CPU KV cache usage
-		vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(ctx.RequestID)
-		if err == nil {
-			jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
-		} else {
-			jsonStrings["vllmCPUKVCacheUsage"] = "{}"
-		}
+		// // 4. CPU KV cache usage
+		// vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(ctx.RequestID)
+		// if err == nil {
+		// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
+		// } else {
+		// 	klog.ErrorS(err, "error to get vllm cpu kv cache usage, fill vllmCPUKVCacheUsage with empty map {}", "requestID", ctx.RequestID)
+		// 	// create 0 value map for all pods, with type map[string]float64
+		// 	vllmCPUKVCacheUsage = make(map[string]float64)
+		// 	for _, pod := range readyPods {
+		// 		vllmCPUKVCacheUsage[pod.Status.PodIP] = 0.0
+		// 	}
+		// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
+		// }
+		jsonStrings["vllmCPUKVCacheUsage"] = "{}"
 
 		// 5. Number of running requests
 		vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(ctx.RequestID)
@@ -436,7 +443,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	////////////////////////////////////////////////////////////////////
 	/////////////////// Send HTTP Request to RL Agent //////////////////
 	////////////////////////////////////////////////////////////////////
-	klog.Infof("Sending request to RL agent: %s, requestID: %s", url, ctx.RequestID)
+	klog.V(5).Infof("Sending request to RL agent: %s, requestID: %s", url, ctx.RequestID)
 	resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
 	if sendErr != nil {
 		klog.Errorf("Request failed!!: %v, requestID: %s", sendErr, ctx.RequestID)
@@ -515,9 +522,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 							klog.Errorf("prefix_cache_2, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 						}
 					}
-				} else { // none or latency_predictor
-					klog.Infof("Unknown sub-algorithm: %s other than scalable_rl_agent, rl_agent or latency_predictor. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				}
+				// else { // rl, or latency_predictor
+				// 	klog.Infof("Unknown sub-algorithm: %s other than scalable_rl_agent, rl_agent or latency_predictor. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
+				// }
 				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {
 					utils.SetNumTrains(routeResponse.NumTrains)
@@ -530,16 +538,16 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
-				klog.Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+				klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
 			}
 		}
 	}
 
 	if len(allPrefixHashes) > 0 {
-		klog.Infof("Adding prefix hashes to cache. pod: %s", targetPod.Status.PodIP)
+		klog.V(5).Infof("Adding prefix hashes to cache. pod: %s", targetPod.Status.PodIP)
 		r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
 	} else {
-		klog.Infof("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
+		klog.Warningf("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
 	}
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil

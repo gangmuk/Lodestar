@@ -30,16 +30,13 @@ csv_filename="data_replaced.csv" # "data_replaced.csv", "data.csv"
 
 lr_scheduler_type="exponential" # "exponential", "plateau", "gradient_adaptive"
 lr_scheduler_gamma=0.95
-excluded_pod_features="prefill_tokens" # "prefill_tokens", "none"
+excluded_pod_features="prefill_tokens" # "prefill_tokens", "none", "cpu_kv_cache"
 no_normalize_features="none" # "kv_hit_ratio", "none"
-
 model_type="latency_predictor" # "contextual_bandit", "latency_predictor", "rl_agent"
-latency_metric="avg_tpot" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
-
+latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 use_sampled_data=false # true, false
-analyze_behavior=true # true, false
+analyze_behavior=false # true, false
 analyze_dataset=false # true, false
-
 reward_decay_factor=0.91
 hidden_dim=64 # 64, 128, 256
 ttft_slo=1000
@@ -47,6 +44,7 @@ avg_tpot_slo=50
 ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
 REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
 offline_learning_rate=0.001
+time_stamp=$(date +%Y%m%d_%H%M%S)
 
 for workload_dataset in "${workload_dataset_list[@]}"; do
     for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; do
@@ -93,7 +91,7 @@ for workload_dataset in "${workload_dataset_list[@]}"; do
         if [ "${model_type}" == "latency_predictor" ]; then
             final_model_dir="${final_model_dir}_${latency_metric}"
         fi
-
+        final_model_dir=${final_model_dir}-${time_stamp}
         if [ -d "${final_model_dir}" ]; then
             rm -rf "${final_model_dir}"
         fi

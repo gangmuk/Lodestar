@@ -15,9 +15,9 @@ fi
 
 if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
-    docker buildx build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
-    docker tag aibrix/gateway-plugins:nightly aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
-    docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
+    sudo docker buildx build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
+    sudo docker tag aibrix/gateway-plugins:nightly aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
+    sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
 else
     if [ "$build" == "local-linux" ]; then
         tag=latest-linux
@@ -25,8 +25,8 @@ else
         tag=latest-mac
     fi
     make docker-build-gateway-plugins # it will build based on the current machine's type
-    docker tag aibrix/gateway-plugins:nightly gangmuk/gateway-plugins:${tag}
-    docker push gangmuk/gateway-plugins:${tag} # dockerhub
+    sudo docker tag aibrix/gateway-plugins:nightly gangmuk/gateway-plugins:${tag}
+    sudo docker push gangmuk/gateway-plugins:${tag} # dockerhub
     kubectl set image deployment/aibrix-gateway-plugins gateway-plugin=gangmuk/gateway-plugins:${tag} -n aibrix-system
     kubectl patch deployment aibrix-gateway-plugins -n aibrix-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"gateway-plugin","imagePullPolicy":"Always"}]}}}}'
     kubectl rollout restart deployment/aibrix-gateway-plugins -n aibrix-system

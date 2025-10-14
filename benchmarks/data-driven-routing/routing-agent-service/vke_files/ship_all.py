@@ -54,7 +54,8 @@ class K8sDeployment:
                 return False
             with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as temp_tar:
                 with tarfile.open(temp_tar.name, 'w') as tar:
-                    tar.add(local_path, arcname=os.path.basename(local_path))
+                    # Use the desired remote filename, not the local basename
+                    tar.add(local_path, arcname=os.path.basename(remote_path))
                 command = ['sh', '-c', f'tar -xmf - -C {os.path.dirname(remote_path)}']
                 resp = stream(
                     self.v1.connect_get_namespaced_pod_exec,
@@ -302,7 +303,7 @@ def main():
     args = parser.parse_args()
     
     if args.ship_code == 0 and args.ship_model == 0:
-        logger.info("Nothing to ship")
+        print("Nothing to ship")
         return 
 
     print("Restarting gateway and routing-agent-service")
@@ -356,7 +357,20 @@ def main():
     FINAL_MODEL_DIR = {}
     if args.ship_model == 1:
         print("Shipping only final_model directory")
-        FINAL_MODEL_DIR = {f"./{args.final_model_dir}": "/app/final_model"}
+        # Convert to absolute path for consistency
+        final_model_abs_path = os.path.abspath(args.final_model_dir)
+        FINAL_MODEL_DIR = {final_model_abs_path: "/app/final_model"}
+
+        # NEW: Ship offline training CSV for online learning
+        offline_csv_path = os.path.join(os.path.dirname(final_model_abs_path), "data_replaced-processed.csv")
+        print(f"offline training CSV path: source in host: {offline_csv_path}, destination in pod: /app/offline_training_data.csv")
+        if os.path.exists(offline_csv_path):
+            agent_related_files[offline_csv_path] = "/app/offline_training_data.csv"
+            print(f"✅ Will ship offline training CSV: {offline_csv_path}")
+        else:
+            logger.warning(f"⚠️  offline training CSV not found at {offline_csv_path}")
+            logger.warning("Online learning will start from scratch with only new data")
+
     # Check if files exist
     missing_files = [f for f in agent_related_files.keys() if not os.path.exists(f)]
     if missing_files:
