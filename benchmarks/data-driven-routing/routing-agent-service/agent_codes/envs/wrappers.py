@@ -1,11 +1,43 @@
-# WANYU
-# Example usage:
-# in main()
-# env = RealTimeWrapper(env, period_s=0.1)
-
-
 import time
 import gymnasium as gym
+
+
+class EpisodeLengthWrapper(gym.Wrapper):
+    def __init__(self, env, horizon: int):
+        super().__init__(env)
+        self.horizon = horizon
+        self._ts = 0
+
+    def reset(self, **kwargs):
+        self._ts = 0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        obs, rew, term, trunc, info = self.env.step(action)
+        self._ts += 1
+        if self._ts >= self.horizon:
+            term = True  # end episode every `horizon` steps
+        return obs, rew, term, trunc, info
+
+
+class EpisodeCounterWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self._episode_count = 0
+    
+    def reset(self, **kwargs):
+        self._episode_count += 1
+        obs, info = self.env.reset(**kwargs)
+        info = dict(info or {})
+        info['episode_count'] = self._episode_count
+        return obs, info
+    
+    def step(self, action):
+        obs, rew, term, trunc, info = self.env.step(action)
+        info = dict(info or {})
+        info['episode_count'] = self._episode_count
+        return obs, rew, term, trunc, info
+
 
 class RealTimeWrapper(gym.Wrapper):
     def __init__(self, env, period_s: float):

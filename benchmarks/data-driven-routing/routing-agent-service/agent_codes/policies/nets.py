@@ -154,19 +154,25 @@ class PodScorer(nn.Module):
                 nn.Linear(hidden_dim // 2, last_layer_dim_vf)                   # 32 → last_layer_dim_vf (score)
             )
 
+        self.latent_dim_pi = last_layer_dim_pi # for easy actor rewrite _build(), no use
+        self.latent_dim_vf = last_layer_dim_vf # for easy actor rewrite _build(), no use
+
+        print('feature_dim: ', feature_dim, 'hidden_dim: ', hidden_dim, 'last_layer_dim_pi: ', last_layer_dim_pi, 'last_layer_dim_vf: ', last_layer_dim_vf)
+      
         self.action_mask = None ## TODO: current implementation doesn't support action_mask
 
     
-    def forward(self, features: torch.Tensore) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.pod_scorer_vf is None:
-            return self.forward_policy(features)
+            return self.forward_actor(features)
         else:
-            return self.forward_policy(features), self.forward_value(features)
+            return self.forward_actor(features), self.forward_critic(features)
 
 
-    def forward_policy(self, features: torch.Tensor) -> torch.Tensor:
-        policy_pod_scores = self.pod_scorer(features)  # [batch*num_pods, 1]
-        policy_pod_scores = policy_pod_scores.view(-1, self.num_pods * self.last_layer_dim_pi)  # [batch, num_pods*last_layer_dim_pi]
+    def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
+        policy_pod_scores = self.pod_scorer_pi(features)  # [batch*num_pods, 1]
+        batch_size = features.shape[0] // self.num_pods
+        policy_pod_scores = policy_pod_scores.view(batch_size, -1)  # [batch, num_pods*last_layer_dim_pi]
         
         # === STEP 7: Apply action masking (unhealthy pod filtering) ===
         if self.action_mask is not None:
@@ -175,12 +181,14 @@ class PodScorer(nn.Module):
         
         return policy_pod_scores
 
-    def forward_value(self, features: torch.Tensor) -> torch.Tensor:
+    def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
         if self.pod_scorer_vf is None:
             raise ValueError("pod_scorer_vf is not initialized")
 
         value_pod_scores = self.pod_scorer_vf(features)  # [batch*num_pods, 1]
-        value_pod_scores = value_pod_scores.view(-1, self.num_pods * self.last_layer_dim_vf)  # [batch, num_pods*last_layer_dim_vf]
+        batch_size = features.shape[0] // self.num_pods
+        value_pod_scores = value_pod_scores.view(batch_size, -1)  # [batch, num_pods*last_layer_dim_vf]
+        value_pod_scores = value_pod_scores.mean(dim=1, keepdim=True)  # [batch, 1]
         
         # === STEP 7: Apply action masking (unhealthy pod filtering) ===
         if self.action_mask is not None:
