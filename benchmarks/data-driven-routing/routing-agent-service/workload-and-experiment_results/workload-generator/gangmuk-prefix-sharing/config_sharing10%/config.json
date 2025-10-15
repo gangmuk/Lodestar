@@ -1,0 +1,37 @@
+{
+    "arrival": { "rps": 10 },
+    "workloads": [
+        {
+            "prompt_length": 1000,
+            "prompt_length_std": 50,
+            "shared_proportion": 0.1,
+            "shared_proportion_std": 0.02,
+            "num_requests_per_prefix": 10,
+            "num_diff_prefix": 25
+        },
+        {
+            "prompt_length": 2000,
+            "prompt_length_std": 100,
+            "shared_proportion": 0.1,
+            "shared_proportion_std": 0.02,
+            "num_requests_per_prefix": 10,
+            "num_diff_prefix": 25
+        },
+        {
+            "prompt_length": 4000,
+            "prompt_length_std": 200,
+            "shared_proportion": 0.1,
+            "shared_proportion_std": 0.02,
+            "num_requests_per_prefix": 10,
+            "num_diff_prefix": 25
+        },
+        {
+            "prompt_length": 8000,
+            "prompt_length_std": 400,
+            "shared_proportion": 0.1,
+            "shared_proportion_std": 0.02,
+            "num_requests_per_prefix": 10,
+            "num_diff_prefix": 25
+        }
+    ]
+}

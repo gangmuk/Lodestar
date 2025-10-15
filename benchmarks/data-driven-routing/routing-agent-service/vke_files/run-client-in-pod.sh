@@ -23,11 +23,11 @@ routing="${config%%${delimiter}*}"
 subAlgorithm="${config#*${delimiter}}"
 
 
-iterations=10
+iterations=5
 EXPLORATION_ENABLED="0"
-ENABLE_ONLINE_LEARNING="1"
+ENABLE_ONLINE_LEARNING="0"
 MIN_NUM_TRAINING_DATA="100"
-ENABLE_FLUSH="1"
+ENABLE_FLUSH="0"
 FLUSH_PERIOD="10"
 MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
 max_tokens=1000
@@ -51,10 +51,11 @@ port=80
 # workload_name="ten_request"
 
 workload_name_list=(
+    "MixedSharingRatio10_30_50_70%"
     # "SharingRatio71%"
-    "SharingRatio47%"
-    "SharingRatio28%"
-    "SharingRatio9%"
+    # "SharingRatio47%"
+    # "SharingRatio28%"
+    # "SharingRatio9%"
 )
 
 
