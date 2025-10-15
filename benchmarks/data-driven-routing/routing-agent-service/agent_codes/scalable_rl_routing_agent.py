@@ -60,7 +60,7 @@ from agents import ScalableRLRoutingAgent
 # ============================================================================
 
 
-def create_scalable_rl_agent(per_pod_dim: int = 11, request_dim: int = 3, 
+def create_scalable_rl_agent(num_pods: int, per_pod_dim: int = 11, request_dim: int = 3, 
                              max_pods: int = 100, **hyperparameters):
     """
     Factory function to create scalable RL routing agent.
@@ -74,13 +74,8 @@ def create_scalable_rl_agent(per_pod_dim: int = 11, request_dim: int = 3,
     Returns:
         ScalableRLRoutingAgent instance
     """
-    return ScalableRLRoutingAgent(per_pod_dim, request_dim, max_pods, **hyperparameters)
+    return ScalableRLRoutingAgent(num_pods, per_pod_dim, request_dim, max_pods, **hyperparameters)
 
-
-## TODO: implement offline RL training
-# Check interface
-def train_scalable_rl_agent(rl_agent, hyperparameters):
-    rl_agent.train(hyperparameters)
 
 def infer_scalable_rl_agent(tensor_data, request_id, sorted_all_pod_ids, processed_df,
                             rl_agent, hyperparameters, agent_lock=None):
@@ -227,57 +222,77 @@ def on_request_complete_callback(rl_agent, request_id, current_cluster_state,
 # ============================================================================
 
 if __name__ == "__main__":
+    from agents.rout_agent import BROKER
+    import threading
+
     logger.info("🧪 Testing ScalableRLRoutingAgent...")
     
     # Create agent
     agent = create_scalable_rl_agent(
+        num_pods=4,
         per_pod_dim=11,
         request_dim=3,
         max_pods=10,
         learning_rate=3e-4,
-        reward_decay_factor=0.95,
+        reward_decay_factor=1,
         gae_lambda=0.95,
-        episode_duration=1.0
+        # episode_duration=1.0,
+        n_steps=5,
+        horizon=10,
+        batch_size=2,
+        last_layer_dim_vf=1,
     )
     
     # Simulate routing workflow
+    train_thread = threading.Thread(
+        target=agent.train,
+        kwargs={"total_timesteps": 200_000, "save_path": "scalable_rl_agent.pth"},
+        daemon=True,   # dies with the main process
+    )
+    train_thread.start()
+    logger.info("🏋️ Training RL agent...")
+
     for i in range(20):
         # Generate random state
-        num_pods = np.random.randint(4, 9)  # Variable pods!
-        pod_features = np.random.randn(num_pods, 10).astype(np.float32)
-        kv_hit_ratios = np.random.rand(num_pods, 1).astype(np.float32)
-        request_features = np.random.randn(3).astype(np.float32)
+        # num_pods = np.random.randint(4, 9)  # Variable pods!
+        num_pods = 4
         
         # Predict
         request_id = f"req_{i}"
-        action, probs = agent.predict(pod_features, kv_hit_ratios, request_features)
-        
-        # Create pending experience
-        agent.create_pending_experience(
-            request_id, pod_features, kv_hit_ratios, request_features,
-            action, probs
-        )
+
+        pod_features = np.random.randn(num_pods, 10).astype(np.float32)
+        kv_hit_ratios = np.random.rand(num_pods, 1).astype(np.float32)
+        request_features = np.random.randn(3).astype(np.float32)
+        temporal_features = np.array([], dtype=np.float32)
+
+        state = {
+            'obs': {
+                'pod_features': pod_features,
+                'kv_hit_ratios': kv_hit_ratios,
+                'request_features': request_features,
+                'temporal_features': temporal_features,
+            }
+        }
+        prev_reward = i
+
+        # Submit the incoming request with the *previous* reward
+        pending = BROKER.submit(request_id=request_id, state=state, prev_reward=prev_reward)
+
+        # Wait for agent decision (with timeout fallback)
+        decision_timeout_s = 5.0
+        pod_idx = BROKER.wait_for_decision(request_id, timeout=decision_timeout_s)
+        if pod_idx is None:
+            # fallback policy (your existing logic)
+            pod_idx = 0
+            BROKER.set_decision(request_id, pod_idx)
         
         # Simulate completion (in real system, this happens asynchronously)
         time.sleep(0.01)
-        
-        # Get next state (after request completes)
-        next_pod_features = np.random.randn(num_pods, 10).astype(np.float32)
-        next_kv_hit = np.random.rand(num_pods, 1).astype(np.float32)
-        next_request = np.random.randn(3).astype(np.float32)
-        
-        # Random reward
-        reward = np.random.randn() * 2.0
-        
-        # Complete experience
-        agent.complete_experience(
-            request_id, next_pod_features, next_kv_hit, next_request, reward
-        )
-        
-        logger.info(f"Step {i}: action={action}, reward={reward:.2f}, "
-                   f"num_pods={num_pods}, done={agent.episode_tracker.check_episode_end()}")
+    
+        logger.info(f"Step {i}: action={pod_idx}, prev_reward={prev_reward:.2f}, "
+                   f"num_pods={num_pods}")
     
     # Check metrics
-    metrics = agent.get_metrics()
-    logger.info(f"📊 Final metrics: {metrics}")
+    # metrics = agent.get_metrics()
+    # logger.info(f"📊 Final metrics: {metrics}")
     logger.info("✅ Test completed successfully!")

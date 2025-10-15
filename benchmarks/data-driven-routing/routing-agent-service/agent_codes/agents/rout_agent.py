@@ -1,42 +1,35 @@
-import time
-import numpy as np
-import torch
 import pickle
 import os
-import threading
 
 from logger import logger
 from stable_baselines3 import PPO
+from stable_baselines3.common.monitor import Monitor
 
 from policies import ActorCriticRoutingPolicy
-from envs import ScalableRoutingEnvironment, RealTimeWrapper
-from agents import EpisodeTracker, PrioritizedReplayBuffer
+from envs.rout_env import ScalableRoutingEnvironment 
+from envs.wrappers import EpisodeLengthWrapper, EpisodeCounterWrapper
+from envs.broker import RequestBroker
+from envs.request_source_gateway import GatewayRequestSource
 
+from .replay_buffer import PrioritizedReplayBuffer
+
+BROKER = RequestBroker()
+SOURCE = GatewayRequestSource(BROKER)
 
 # ============================================================================
 # Scalable RL Routing Agent
 # ============================================================================
 
 class ScalableRLRoutingAgent:
-    """
-    Scalable RL Routing Agent with proper multi-step credit assignment.
-    
-    Key improvements over old version:
-    1. Pod-count independent (works with 4 to 1000+ pods)
-    2. Async experience completion (next_obs at completion time)
-    3. Episode boundaries (proper temporal structure)
-    4. Prioritized replay (2-3x sample efficiency)
-    5. Cluster statistics (relative context)
-    6. Action masking (unhealthy pod filtering)
-    """
+
     def __init__(
         self, 
+        num_pods: int,
         per_pod_dim: int = 11, 
         request_dim: int = 3, 
         max_pods: int = 100, 
         inference_mode: bool = False,
-        rl: str = 'PG',
-        period_s: float = 0.1, 
+        rl: str = 'PPO',
         use_prioritized_replay: bool = False, 
         **hyperparameters
         ):
@@ -47,20 +40,58 @@ class ScalableRLRoutingAgent:
             max_pods: Maximum expected pods (for space allocation)
             hyperparameters: PPO and training hyperparameters
         """
+
+        self.num_pods = num_pods
         self.per_pod_dim = per_pod_dim
         self.request_dim = request_dim
-        self.max_pods = max_pods
+        self.max_pods = max_pods # XXX: useless
         self.hyperparameters = hyperparameters
         
         # Create environment
-        self.env = ScalableRoutingEnvironment(per_pod_dim, request_dim, max_pods)
-        if not inference_mode:
-            self.env = RealTimeWrapper(self.env, period_s)
+        # self.env = ScalableRoutingEnvironment(per_pod_dim, request_dim, max_pods)
+        self.env = self.make_env(hyperparameters.get('horizon', 1024))
+        # self.env = ScalableRoutingEnvironment(num_pods, per_pod_dim, request_dim, max_pods)
+
+        self.setup_model(rl, per_pod_dim, request_dim, hyperparameters)
         
+        # === Prioritized Experience Replay ===
+        if use_prioritized_replay:
+            self.experience_buffer = PrioritizedReplayBuffer(
+                maxlen=hyperparameters.get('buffer_size', 1000),
+                alpha=hyperparameters.get('priority_alpha', 0.6),
+                beta=hyperparameters.get('priority_beta', 0.4)
+            )
+        
+        
+        # === Training statistics ===
+        self.total_steps = 0
+        self.total_episodes = 0
+    
+        logger.info(f"ScalableRLRoutingAgent initialization complete")
+
+
+    def make_env(self, horizon: int):
+        env = ScalableRoutingEnvironment(
+            num_pods=self.num_pods,
+            num_requests=10_000_000_000_000, # effectively infinite; EpisodeLengthWrapper handles resets
+            per_pod_dim=self.per_pod_dim,
+            request_dim=self.request_dim,
+            source = SOURCE,
+        )
+        env = Monitor(env)
+        env = EpisodeLengthWrapper(env, horizon=horizon)
+        env = EpisodeCounterWrapper(env)
+
+        logger.info(f"Environment created with horizon {horizon}") ## XXX: change to steps to time
+
+        return env
+        
+
+    def setup_model(self, rl: str, per_pod_dim: int, request_dim: int, hyperparameters: dict):
         # Extract hyperparameters
         learning_rate = hyperparameters.get('learning_rate', 3e-4)
         hidden_dim = hyperparameters.get('hidden_dim', 64)
-        gamma = hyperparameters.get('reward_decay_factor', 0.95)
+        gamma = hyperparameters.get('reward_decay_factor', 1)
         gae_lambda = hyperparameters.get('gae_lambda', 0.95)
 
         if rl == 'PG':
@@ -71,7 +102,7 @@ class ScalableRLRoutingAgent:
                 ActorCriticRoutingPolicy,
                 self.env,
                 learning_rate=learning_rate,
-                n_steps=hyperparameters.get('n_steps', 2048),
+                n_steps=hyperparameters.get('n_steps', 256), # number of env steps per policy update, must less that horizon
                 batch_size=hyperparameters.get('batch_size', 64),
                 n_epochs=hyperparameters.get('n_epochs', 10),
                 gamma=gamma,                    # Discount factor
@@ -83,336 +114,31 @@ class ScalableRLRoutingAgent:
                 policy_kwargs={
                     'per_pod_dim': per_pod_dim,
                     'request_dim': request_dim,
-                    'hidden_dim': hidden_dim
+                    'hidden_dim': hidden_dim,
+                    'last_layer_dim_pi': hyperparameters.get('last_layer_dim_pi', 1),
+                    'last_layer_dim_vf': hyperparameters.get('last_layer_dim_vf', 0),
                 },
                 verbose=1
             )
         else:
             raise ValueError(f"{rl} not supported")
-        
-        # === Prioritized Experience Replay ===
-        if use_prioritized_replay:
-            self.experience_buffer = PrioritizedReplayBuffer(
-                maxlen=hyperparameters.get('buffer_size', 1000),
-                alpha=hyperparameters.get('priority_alpha', 0.6),
-                beta=hyperparameters.get('priority_beta', 0.4)
-            )
-        
-        # === Pending experiences (awaiting completion) ===
-        self.pending_experiences = {}  # request_id → Experience
-        self.pending_lock = threading.Lock()
-        
-        # === Episode tracker ===
-        self.episode_tracker = EpisodeTracker(
-            episode_duration=hyperparameters.get('episode_duration', 1.0)
-        )
-        
-        # === Training statistics ===
-        self.total_steps = 0
-        self.total_episodes = 0
-        
-        # === Performance tracking (for comprehensive metrics) ===
-        from collections import deque
-        self.reward_history = deque(maxlen=1000)  # Last 1000 rewards
-        self.episode_rewards = []  # Cumulative reward per episode
-        self.recent_decisions = deque(maxlen=100)  # Track recent decision quality
-        self.checkpoint_counter = 0  # For periodic checkpointing
-        
-        logger.info(f"ScalableRLRoutingAgent initialized:")
-        logger.info(f"  Gamma: {gamma}, GAE Lambda: {gae_lambda}")
-        logger.info(f"  Episode duration: {self.episode_tracker.episode_duration}s")
-        logger.info(f"  Prioritized replay: α={self.experience_buffer.alpha}, β={self.experience_buffer.beta}")
-        
     
-    def train(self):
-        self.model.learn(total_timesteps=self.total_steps, progress_bar=True)
-        self.save('') ## TODO: get path
+
+    def train(self, total_timesteps: int, save_path: str):
+        self.model.learn(total_timesteps=total_timesteps, progress_bar=True)
+        self.total_steps = total_timesteps
+        self.save(save_path) ## TODO: match
+
 
     def predict_sb3(self, pod_features, kv_hit_ratios, request_features):
-        # Track actual number of pods
-        num_actual_pods = pod_features.shape[0]
+        assert self.num_pods == pod_features.shape[0]
         
         # Build observation dict (this pads to max_pods internally)
-        obs = self._build_observation(pod_features, kv_hit_ratios, request_features)
-        
-        # Compute action mask for actual pods
-        action_mask = self.compute_action_mask(pod_features, kv_hit_ratios)
-        
-        # Predict with model
-        obs_tensor = self._obs_to_tensor(obs)
-        action, _states = self.model.predict(obs_tensor)
+        obs = build_observation(self.num_pods, pod_features, kv_hit_ratios, request_features)
+        action, _ = self.model.predict(obs)
 
-        ## TODO: mask?
-
-        return int(action), action_mask.cpu().numpy()
-
+        return int(action)
     
-    def predict(self, pod_features, kv_hit_ratios, request_features, 
-                temporal_features=None, deterministic=False):
-        """
-        Predict action for given state.
-        
-        Args:
-            pod_features: [num_pods, 10]
-            kv_hit_ratios: [num_pods, 1]
-            request_features: [3]
-            temporal_features: Optional dict (unused in v1)
-            deterministic: If True, use greedy policy
-        
-        Returns:
-            action: Selected pod index
-            action_probs: Probability distribution over ACTUAL pods (not padded)
-        """
-        # Track actual number of pods
-        num_actual_pods = pod_features.shape[0]
-        
-        # Build observation dict (this pads to max_pods internally)
-        obs = self._build_observation(pod_features, kv_hit_ratios, request_features)
-        
-        # Compute action mask for actual pods
-        action_mask = self.compute_action_mask(pod_features, kv_hit_ratios)
-        
-        # Predict with model
-        obs_tensor = self._obs_to_tensor(obs)
-        
-        with torch.no_grad():
-            # Get action probabilities for all pods (including padding)
-            features_extractor = self.model.policy.features_extractor
-            action_probs_full = features_extractor.score_pods(obs_tensor, action_mask=None)
-            
-            # Extract only actual pods (remove padding)
-            action_probs = action_probs_full[0, :num_actual_pods]
-            
-            # Apply action mask (only for actual pods)
-            action_mask_tensor = torch.from_numpy(action_mask).to(action_probs.device)
-            masked_probs = action_probs * action_mask_tensor
-            
-            # Check if all masked (safety)
-            if masked_probs.sum() == 0:
-                logger.warning("All pods masked! Using uniform distribution")
-                masked_probs = torch.ones_like(action_probs)
-            
-            masked_probs = masked_probs / masked_probs.sum()  # Renormalize
-            
-            if deterministic:
-                action = torch.argmax(masked_probs).item()
-            else:
-                dist = torch.distributions.Categorical(probs=masked_probs)
-                action = dist.sample().item()
-        
-        return int(action), masked_probs.cpu().numpy()
-
-    def compute_action_mask(self, pod_features, kv_hit_ratios):
-        """
-        Compute action mask for unhealthy pod filtering.
-        
-        TODO: Implement domain-specific logic based on availability, queue, etc.
-        For now, returns all valid (no masking).
-        
-        Args:
-            pod_features: [num_pods, 10]
-            kv_hit_ratios: [num_pods, 1]
-        
-        Returns:
-            action_mask: [num_pods] - 1=valid, 0=invalid
-        """
-        num_pods = pod_features.shape[0]
-        
-        # Placeholder: all pods valid
-        # TODO: Implement logic like:
-        # availability = pod_features[:, 9]  # Assuming column 9 is availability
-        # not_overloaded = pod_features[:, 1] < 100  # Queue length < threshold
-        # action_mask = (availability == 1) & not_overloaded
-        
-        action_mask = np.ones(num_pods, dtype=np.float32)
-        
-        # Safety: if all masked, unmask all 
-        ## Wanyu: when would all masked happen?
-        if action_mask.sum() == 0:
-            action_mask = np.ones(num_pods, dtype=np.float32)
-        
-        return action_mask
-
-    
-    def create_pending_experience(self, request_id, pod_features, kv_hit_ratios, 
-                                  request_features, action, action_probs):
-        """
-        Create pending experience when request is routed.
-        
-        Will be completed asynchronously when request finishes.
-        
-        Args:
-            request_id: Unique request identifier
-            pod_features, kv_hit_ratios, request_features: State components
-            action: Selected pod index
-            action_probs: Action probability distribution
-        """
-        num_actual_pods = pod_features.shape[0]
-        obs = self._build_observation(pod_features, kv_hit_ratios, request_features)
-        
-        experience = {
-            'request_id': request_id,
-            'obs': obs,
-            'action': action,
-            'action_probs': action_probs,
-            'route_time': time.time(),
-            'num_actual_pods': num_actual_pods,  # Track actual pods for proper handling
-            
-            # To be filled at completion:
-            'next_obs': None,
-            'reward': None,
-            'done': False,
-            'complete_time': None,
-            'is_complete': False
-        }
-        
-        with self.pending_lock:
-            self.pending_experiences[request_id] = experience
-        
-        logger.debug(f"Created pending experience for request {request_id} (num_pods={num_actual_pods})")
-    
-    def complete_experience(self, request_id, next_pod_features, next_kv_hit_ratios, 
-                           next_request_features, reward):
-        """
-        Complete pending experience when request finishes.
-        
-        This is the CRITICAL fix: next_obs captured at completion time!
-        
-        Args:
-            request_id: Request identifier
-            next_pod_features, next_kv_hit_ratios, next_request_features: Next state
-            reward: Computed reward based on latency
-        """
-        with self.pending_lock:
-            if request_id not in self.pending_experiences:
-                logger.warning(f"⚠️  Request {request_id} not found in pending experiences")
-                return
-            
-            exp = self.pending_experiences.pop(request_id)
-        
-        # Build next observation (state AFTER request completion)
-        next_obs = self._build_observation(
-            next_pod_features, next_kv_hit_ratios, next_request_features
-        )
-        
-        # Check episode boundary
-        done = self.episode_tracker.check_episode_end()
-        
-        # Fill in completion data
-        exp['next_obs'] = next_obs
-        exp['reward'] = reward
-        exp['done'] = done
-        exp['complete_time'] = time.time()
-        exp['is_complete'] = True
-        
-        # Add to prioritized replay buffer
-        self.experience_buffer.add(exp)
-        
-        # === Track performance metrics ===
-        self.reward_history.append(reward)
-        
-        # Track decision quality (action confidence + outcome)
-        action_confidence = float(max(exp['action_probs'])) if len(exp['action_probs']) > 0 else 0.0
-        self.recent_decisions.append({
-            'reward': reward,
-            'confidence': action_confidence,
-            'latency_ms': (exp['complete_time'] - exp['route_time']) * 1000  # convert to ms
-        })
-        
-        # Track episode
-        self.episode_tracker.increment_request()
-        if done:
-            self.episode_tracker.reset_episode()
-            self.total_episodes += 1
-        
-        self.total_steps += 1
-        
-        logger.debug(f"✅ Completed experience for request {request_id}: "
-                    f"reward={reward:.3f}, done={done}")
-    
-    def update_online(self, n_steps: int = None):
-        """
-        Perform online learning update using prioritized replay.
-        
-        Args:
-            n_steps: Number of experiences to use (default: batch_size)
-        """
-        batch_size = self.hyperparameters.get('batch_size', 64)
-        
-        if len(self.experience_buffer) < batch_size:
-            logger.debug(f"Not enough experiences: {len(self.experience_buffer)} < {batch_size}")
-            return
-        
-        # Sample prioritized batch
-        batch, indices, weights = self.experience_buffer.sample(batch_size)
-        
-        if not batch:
-            return
-        
-        # TODO: Implement actual PPO update with prioritized samples
-        # This requires customizing SB3's training loop
-        # For now, log that update would happen
-        
-        logger.info(f"🎓 Online update: {len(batch)} experiences, "
-                   f"priority weights range [{weights.min():.2f}, {weights.max():.2f}]")
-        
-        # Compute TD errors for priority updates (simplified)
-        # In full implementation, these would come from actual value function
-        td_errors = np.random.rand(len(indices))  # Placeholder
-        self.experience_buffer.update_priorities(indices, td_errors)
-    
-    def _build_observation(self, pod_features, kv_hit_ratios, request_features, 
-                          temporal_features=None):
-        """
-        Build observation dict from components.
-        
-        Handles variable number of pods by padding to max_pods.
-        """
-        num_pods = pod_features.shape[0]
-        
-        # Check if exceeds max_pods
-        if num_pods > self.max_pods:
-            logger.warning(f"Number of pods ({num_pods}) exceeds max_pods ({self.max_pods}). "
-                          f"Consider increasing max_pods in initialization.")
-            # Truncate to max_pods (use first max_pods)
-            pod_features = pod_features[:self.max_pods]
-            kv_hit_ratios = kv_hit_ratios[:self.max_pods]
-            num_pods = self.max_pods
-        
-        # Pad to max_pods if needed
-        if num_pods < self.max_pods:
-            pad_size = self.max_pods - num_pods
-            pod_features = np.vstack([
-                pod_features,
-                np.zeros((pad_size, pod_features.shape[1]), dtype=np.float32)
-            ])
-            kv_hit_ratios = np.vstack([
-                kv_hit_ratios,
-                np.zeros((pad_size, kv_hit_ratios.shape[1]), dtype=np.float32)
-            ])
-        
-        obs = {
-            'pod_features': pod_features.astype(np.float32),
-            'kv_hit_ratios': kv_hit_ratios.astype(np.float32),
-            'request_features': request_features.astype(np.float32),
-            'temporal_features': np.array([], dtype=np.float32)  # Placeholder
-        }
-        
-        return obs
-    
-    def _obs_to_tensor(self, obs):
-        """Convert observation dict to tensor dict for model"""
-        tensor_obs = {}
-        for key, value in obs.items():
-            if isinstance(value, np.ndarray):
-                tensor = torch.from_numpy(value).float()
-                # Add batch dimension
-                tensor = tensor.unsqueeze(0)
-                tensor_obs[key] = tensor.to(self.model.device)
-            else:
-                tensor_obs[key] = value
-        
-        return tensor_obs
     
     def save(self, path: str, save_buffer: bool = False):
         """
@@ -440,32 +166,32 @@ class ScalableRLRoutingAgent:
             # === Training Hyperparameters ===
             'hyperparameters': self.hyperparameters,
             
-            # === Training Progress ===
-            'training_progress': {
-                'total_steps': self.total_steps,
-                'total_episodes': self.total_episodes,
-                'current_episode_id': self.episode_tracker.episode_id,
-                'episode_request_count': self.episode_tracker.episode_request_count,
-            },
+            # # === Training Progress ===
+            # 'training_progress': {
+            #     'total_steps': self.total_steps,
+            #     'total_episodes': self.total_episodes,
+            #     'current_episode_id': self.episode_tracker.episode_id,
+            #     'episode_request_count': self.episode_tracker.episode_request_count,
+            # },
             
-            # === Buffer Statistics ===
-            'buffer_stats': {
-                'buffer_size': len(self.experience_buffer),
-                'buffer_capacity': self.experience_buffer.buffer.maxlen,
-                'pending_experiences': len(self.pending_experiences),
-                'priority_alpha': self.experience_buffer.alpha,
-                'priority_beta': self.experience_buffer.beta,
-                'max_priority': self.experience_buffer.max_priority,
-            },
+            # # === Buffer Statistics ===
+            # 'buffer_stats': {
+            #     'buffer_size': len(self.experience_buffer),
+            #     'buffer_capacity': self.experience_buffer.buffer.maxlen,
+            #     'pending_experiences': len(self.pending_experiences),
+            #     'priority_alpha': self.experience_buffer.alpha,
+            #     'priority_beta': self.experience_buffer.beta,
+            #     'max_priority': self.experience_buffer.max_priority,
+            # },
             
-            # === Episode Configuration ===
-            'episode_config': {
-                'episode_duration': self.episode_tracker.episode_duration,
-                'episode_start_time': self.episode_tracker.episode_start_time,
-            },
+            # # === Episode Configuration ===
+            # 'episode_config': {
+            #     'episode_duration': self.episode_tracker.episode_duration,
+            #     'episode_start_time': self.episode_tracker.episode_start_time,
+            # },
             
-            # === Model Performance (if tracked) ===
-            'performance_metrics': self.get_metrics(),
+            # # === Model Performance (if tracked) ===
+            # 'performance_metrics': self.get_metrics(),
             
             # === Checkpoint Metadata ===
             'checkpoint_info': {
@@ -493,10 +219,10 @@ class ScalableRLRoutingAgent:
             # Convert to JSON-serializable format
             json_metadata = {
                 'model_architecture': metadata['model_architecture'],
-                'training_progress': metadata['training_progress'],
-                'buffer_stats': metadata['buffer_stats'],
-                'episode_config': metadata['episode_config'],
-                'performance_metrics': metadata['performance_metrics'],
+                # 'training_progress': metadata['training_progress'],
+                # 'buffer_stats': metadata['buffer_stats'],
+                # 'episode_config': metadata['episode_config'],
+                # 'performance_metrics': metadata['performance_metrics'],
                 'checkpoint_info': metadata['checkpoint_info'],
             }
             with open(json_metadata_path, 'w') as f:
@@ -505,24 +231,25 @@ class ScalableRLRoutingAgent:
         except Exception as e:
             logger.warning(f"Could not save JSON metadata: {e}")
         
-        # Optionally save experience buffer (can be large!)
-        if save_buffer and len(self.experience_buffer) > 0:
-            buffer_path = f"{path}_buffer.pkl"
-            try:
-                with self.experience_buffer.lock:
-                    buffer_data = {
-                        'experiences': list(self.experience_buffer.buffer),
-                        'priorities': list(self.experience_buffer.priorities),
-                    }
-                with open(buffer_path, 'wb') as f:
-                    pickle.dump(buffer_data, f)
-                logger.info(f"Saved experience buffer to {buffer_path} ({len(buffer_data['experiences'])} experiences)")
-            except Exception as e:
-                logger.warning(f"Could not save buffer: {e}")
+        # # Optionally save experience buffer (can be large!)
+        # if save_buffer and len(self.experience_buffer) > 0:
+        #     buffer_path = f"{path}_buffer.pkl"
+        #     try:
+        #         with self.experience_buffer.lock:
+        #             buffer_data = {
+        #                 'experiences': list(self.experience_buffer.buffer),
+        #                 'priorities': list(self.experience_buffer.priorities),
+        #             }
+        #         with open(buffer_path, 'wb') as f:
+        #             pickle.dump(buffer_data, f)
+        #         logger.info(f"Saved experience buffer to {buffer_path} ({len(buffer_data['experiences'])} experiences)")
+        #     except Exception as e:
+        #         logger.warning(f"Could not save buffer: {e}")
         
         logger.info(f"Model checkpoint saved to {path}")
-        logger.info(f"   Total steps: {self.total_steps}, Episodes: {self.total_episodes}")
-        logger.info(f"   Buffer size: {len(self.experience_buffer)}/{self.experience_buffer.buffer.maxlen}")
+        # logger.info(f"   Total steps: {self.total_steps}, Episodes: {self.total_episodes}")
+        # logger.info(f"   Buffer size: {len(self.experience_buffer)}/{self.experience_buffer.buffer.maxlen}")
+   
     
     def load(self, path: str, load_buffer: bool = False):
         """
@@ -542,34 +269,34 @@ class ScalableRLRoutingAgent:
                 with open(f"{path}_metadata.pkl", 'rb') as f:
                     metadata = pickle.load(f)
                 
-                # Restore training progress
-                training_progress = metadata.get('training_progress', {})
-                self.total_steps = training_progress.get('total_steps', 0)
-                self.total_episodes = training_progress.get('total_episodes', 0)
+                # # Restore training progress
+                # training_progress = metadata.get('training_progress', {})
+                # self.total_steps = training_progress.get('total_steps', 0)
+                # self.total_episodes = training_progress.get('total_episodes', 0)
                 
-                # Restore episode tracker state
-                episode_config = metadata.get('episode_config', {})
-                if 'episode_duration' in episode_config:
-                    self.episode_tracker.episode_duration = episode_config['episode_duration']
+                # # Restore episode tracker state
+                # episode_config = metadata.get('episode_config', {})
+                # if 'episode_duration' in episode_config:
+                #     self.episode_tracker.episode_duration = episode_config['episode_duration']
                 
                 # Store loaded metadata for inspection
                 self.loaded_metadata = metadata
                 
                 # Log checkpoint info
                 checkpoint_info = metadata.get('checkpoint_info', {})
-                buffer_stats = metadata.get('buffer_stats', {})
+                # buffer_stats = metadata.get('buffer_stats', {})
                 
                 logger.info(f"📊 Loaded checkpoint metadata:")
                 logger.info(f"   - Created: {checkpoint_info.get('save_time', 'unknown')}")
-                logger.info(f"   - Total steps: {self.total_steps}")
-                logger.info(f"   - Total episodes: {self.total_episodes}")
-                logger.info(f"   - Buffer was at: {buffer_stats.get('buffer_size', 0)} experiences")
+                # logger.info(f"   - Total steps: {self.total_steps}")
+                # logger.info(f"   - Total episodes: {self.total_episodes}")
+                # logger.info(f"   - Buffer was at: {buffer_stats.get('buffer_size', 0)} experiences")
                 
-                # Display performance metrics if available
-                perf_metrics = metadata.get('performance_metrics', {})
-                if perf_metrics:
-                    logger.info(f"   - Last avg reward: {perf_metrics.get('avg_reward_recent', 'N/A')}")
-                    logger.info(f"   - Success rate: {perf_metrics.get('success_rate', 'N/A')}")
+                # # Display performance metrics if available
+                # perf_metrics = metadata.get('performance_metrics', {})
+                # if perf_metrics:
+                #     logger.info(f"   - Last avg reward: {perf_metrics.get('avg_reward_recent', 'N/A')}")
+                #     logger.info(f"   - Success rate: {perf_metrics.get('success_rate', 'N/A')}")
                     
             except FileNotFoundError:
                 logger.warning("Metadata file not found, using defaults")
@@ -600,79 +327,79 @@ class ScalableRLRoutingAgent:
             logger.error(f"❌ Failed to load model: {e}")
             raise
     
-    def get_metrics(self):
-        """
-        Get comprehensive training and performance metrics.
+    # def get_metrics(self):
+    #     """
+    #     Get comprehensive training and performance metrics.
         
-        Returns:
-            dict: Comprehensive metrics including training progress, performance, and model quality
-        """
-        import numpy as np
+    #     Returns:
+    #         dict: Comprehensive metrics including training progress, performance, and model quality
+    #     """
+    #     import numpy as np
         
-        # Basic training metrics
-        metrics = {
-            'total_steps': self.total_steps,
-            'total_episodes': self.total_episodes,
-            'buffer_size': len(self.experience_buffer),
-            'pending_experiences': len(self.pending_experiences),
-            'current_episode': self.episode_tracker.episode_id,
-            'episode_request_count': self.episode_tracker.episode_request_count,
-        }
+    #     # Basic training metrics
+    #     metrics = {
+    #         'total_steps': self.total_steps,
+    #         'total_episodes': self.total_episodes,
+    #         'buffer_size': len(self.experience_buffer),
+    #         'pending_experiences': len(self.pending_experiences),
+    #         'current_episode': self.episode_tracker.episode_id,
+    #         'episode_request_count': self.episode_tracker.episode_request_count,
+    #     }
         
-        # Reward statistics (recent 100 and all)
-        if len(self.reward_history) > 0:
-            rewards = list(self.reward_history)
-            recent_100 = rewards[-100:] if len(rewards) >= 100 else rewards
+    #     # Reward statistics (recent 100 and all)
+    #     if len(self.reward_history) > 0:
+    #         rewards = list(self.reward_history)
+    #         recent_100 = rewards[-100:] if len(rewards) >= 100 else rewards
             
-            metrics['reward_stats'] = {
-                'avg_reward_recent': float(np.mean(recent_100)),
-                'std_reward_recent': float(np.std(recent_100)),
-                'max_reward_recent': float(np.max(recent_100)),
-                'min_reward_recent': float(np.min(recent_100)),
-                'avg_reward_all': float(np.mean(rewards)),
-                'num_samples': len(rewards),
-            }
+    #         metrics['reward_stats'] = {
+    #             'avg_reward_recent': float(np.mean(recent_100)),
+    #             'std_reward_recent': float(np.std(recent_100)),
+    #             'max_reward_recent': float(np.max(recent_100)),
+    #             'min_reward_recent': float(np.min(recent_100)),
+    #             'avg_reward_all': float(np.mean(rewards)),
+    #             'num_samples': len(rewards),
+    #         }
             
-            # Success rate (reward > 0 means good routing decision)
-            success_count = sum(1 for r in recent_100 if r > 0)
-            metrics['success_rate'] = success_count / len(recent_100) if len(recent_100) > 0 else 0.0
-        else:
-            metrics['reward_stats'] = None
-            metrics['success_rate'] = None
+    #         # Success rate (reward > 0 means good routing decision)
+    #         success_count = sum(1 for r in recent_100 if r > 0)
+    #         metrics['success_rate'] = success_count / len(recent_100) if len(recent_100) > 0 else 0.0
+    #     else:
+    #         metrics['reward_stats'] = None
+    #         metrics['success_rate'] = None
         
-        # Decision quality metrics
-        if len(self.recent_decisions) > 0:
-            decisions = list(self.recent_decisions)
-            confidences = [d['confidence'] for d in decisions]
-            latencies = [d['latency_ms'] for d in decisions]
-            rewards = [d['reward'] for d in decisions]
+    #     # Decision quality metrics
+    #     if len(self.recent_decisions) > 0:
+    #         decisions = list(self.recent_decisions)
+    #         confidences = [d['confidence'] for d in decisions]
+    #         latencies = [d['latency_ms'] for d in decisions]
+    #         rewards = [d['reward'] for d in decisions]
             
-            metrics['decision_quality'] = {
-                'avg_confidence': float(np.mean(confidences)),
-                'avg_latency_ms': float(np.mean(latencies)),
-                'p50_latency_ms': float(np.percentile(latencies, 50)),
-                'p95_latency_ms': float(np.percentile(latencies, 95)),
-                'p99_latency_ms': float(np.percentile(latencies, 99)),
-                'high_confidence_success_rate': self._compute_high_confidence_success(decisions),
-            }
-        else:
-            metrics['decision_quality'] = None
+    #         metrics['decision_quality'] = {
+    #             'avg_confidence': float(np.mean(confidences)),
+    #             'avg_latency_ms': float(np.mean(latencies)),
+    #             'p50_latency_ms': float(np.percentile(latencies, 50)),
+    #             'p95_latency_ms': float(np.percentile(latencies, 95)),
+    #             'p99_latency_ms': float(np.percentile(latencies, 99)),
+    #             'high_confidence_success_rate': self._compute_high_confidence_success(decisions),
+    #         }
+    #     else:
+    #         metrics['decision_quality'] = None
         
-        # Learning progress (compare first 100 vs last 100 rewards)
-        if len(self.reward_history) >= 200:
-            rewards = list(self.reward_history)
-            first_100 = rewards[:100]
-            last_100 = rewards[-100:]
-            improvement = np.mean(last_100) - np.mean(first_100)
-            metrics['learning_progress'] = {
-                'reward_improvement': float(improvement),
-                'first_100_avg': float(np.mean(first_100)),
-                'last_100_avg': float(np.mean(last_100)),
-            }
-        else:
-            metrics['learning_progress'] = None
+    #     # Learning progress (compare first 100 vs last 100 rewards)
+    #     if len(self.reward_history) >= 200:
+    #         rewards = list(self.reward_history)
+    #         first_100 = rewards[:100]
+    #         last_100 = rewards[-100:]
+    #         improvement = np.mean(last_100) - np.mean(first_100)
+    #         metrics['learning_progress'] = {
+    #             'reward_improvement': float(improvement),
+    #             'first_100_avg': float(np.mean(first_100)),
+    #             'last_100_avg': float(np.mean(last_100)),
+    #         }
+    #     else:
+    #         metrics['learning_progress'] = None
         
-        return metrics
+    #     return metrics
     
     def _compute_high_confidence_success(self, decisions, confidence_threshold=0.7):
         """

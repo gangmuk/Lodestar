@@ -7,7 +7,7 @@ from stable_baselines3.common.type_aliases import Schedule
 
 from stable_baselines3.common.policies import ActorCriticPolicy
 
-from nets import PodFeatExtractor, PodScorer
+from .nets import PodFeatExtractor, PodScorer
 
 
 class ActorCriticRoutingPolicy(ActorCriticPolicy):
@@ -18,7 +18,6 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
     """
     def __init__(
         self,
-        num_pods: int,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space, 
         lr_schedule: Callable[[float], float],
@@ -27,10 +26,9 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         hidden_dim: int = 64, 
         last_layer_dim_pi: int = 1,
         last_layer_dim_vf: int = 1,
-        *args, 
         **kwargs):
         
-        self.num_pods = num_pods
+        self.num_pods = action_space.n
         # self.per_pod_dim = per_pod_dim
         # self.request_dim = request_dim
         self.feature_dim = per_pod_dim * 5 + request_dim # 5: mean, std, max, min and raw
@@ -48,7 +46,6 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
                 'request_dim': request_dim,
                 # 'hidden_dim': hidden_dim
             },
-            *args,
             **kwargs
         )
 
@@ -72,7 +69,7 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         """
         super()._build(lr_schedule)
         assert isinstance(self.action_dist, (CategoricalDistribution))
-        self.action_net = nn.Idendity() # Original sb3 implementation is action_logits = nn.Linear(latent_dim, self.action_dim)
-        # self.value_net = nn.Idendity()
+        self.action_net = nn.Identity() # Original sb3 implementation is action_logits = nn.Linear(latent_dim, self.action_dim)
+        # self.value_net = nn.Identity()
 
 
