@@ -275,6 +275,10 @@ if __name__ == "__main__":
         }
         prev_reward = i
 
+        ##### WANYU: the following part could be put in routing_agent_service.py /infer (not sure)
+        # from agents.rout_agent import BROKER
+        # BROKER is new RL interface exposed for submitting request and waiting for decision
+
         # Submit the incoming request with the *previous* reward
         pending = BROKER.submit(request_id=request_id, state=state, prev_reward=prev_reward)
 
@@ -285,6 +289,8 @@ if __name__ == "__main__":
             # fallback policy (your existing logic)
             pod_idx = 0
             BROKER.set_decision(request_id, pod_idx)
+
+        ##### END
         
         # Simulate completion (in real system, this happens asynchronously)
         time.sleep(0.01)
