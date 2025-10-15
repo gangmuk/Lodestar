@@ -19,11 +19,11 @@ import encoding
 import simpler_contextual_bandit
 import latency_predictor
 from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
-from scalable_rl_routing_agent import (
-    create_scalable_rl_agent,
-    infer_scalable_rl_agent,
-    on_request_complete_callback
-)
+# from scalable_rl_routing_agent import (
+#     create_scalable_rl_agent,
+#     infer_scalable_rl_agent,
+#     on_request_complete_callback
+# )
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -421,56 +421,57 @@ def handle_infer():
             infer_from_tensor_overhead_summary['online_update'] = update_overhead
         ####################################################################################
         ## look at this
-        elif subAlgorithm == 'scalable_rl_agent':
-            # === NEW SCALABLE RL AGENT (pod-count independent) ===
-            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
+        # elif subAlgorithm == 'scalable_rl_agent':
+        #     # === NEW SCALABLE RL AGENT (pod-count independent) ===
+        #     logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
             
-            global SCALABLE_RL_AGENT
+        #     global SCALABLE_RL_AGENT
             
-            with SCALABLE_RL_AGENT_LOCK.write():
-                if SCALABLE_RL_AGENT is None:
-                    # Initialize ONCE - works for any number of pods!
-                    pod_features_t = tensor_data['pod_features']
-                    per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
-                    kv_hit_t = tensor_data['kv_hit_ratios']
-                    kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
-                    req_features_t = tensor_data['request_features']
-                    req_dim = int(req_features_t.shape[1])  # e.g., 3
+        #     with SCALABLE_RL_AGENT_LOCK.write():
+        #         if SCALABLE_RL_AGENT is None:
+        #             # Initialize ONCE - works for any number of pods!
+        #             pod_features_t = tensor_data['pod_features']
+        #             per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
+        #             kv_hit_t = tensor_data['kv_hit_ratios']
+        #             kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
+        #             req_features_t = tensor_data['request_features']
+        #             req_dim = int(req_features_t.shape[1])  # e.g., 3
                     
-                    # Per-pod dimension = pod_features + kv_hit_ratios
-                    total_per_pod_dim = per_pod_dim + kv_dim
+        #             # Per-pod dimension = pod_features + kv_hit_ratios
+        #             total_per_pod_dim = per_pod_dim + kv_dim
                     
-                    SCALABLE_RL_AGENT = create_scalable_rl_agent(
-                        per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
-                        request_dim=req_dim,             # 3
-                        max_pods=100,                    # Max expected pods
-                        **RL_MODEL_HYPERPARAMETERS
-                    )
+        #             SCALABLE_RL_AGENT = create_scalable_rl_agent(
+        #                 per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
+        #                 request_dim=req_dim,             # 3
+        #                 max_pods=100,                    # Max expected pods
+        #                 **RL_MODEL_HYPERPARAMETERS
+        #             )
                     
-                    # Load checkpoint if available
-                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-                    if ckpt_path and os.path.exists(ckpt_path):
-                        try:
-                            SCALABLE_RL_AGENT.load(ckpt_path)
-                            logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
-                        except Exception as e:
-                            logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
+        #             # Load checkpoint if available
+        #             ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+        #             if ckpt_path and os.path.exists(ckpt_path):
+        #                 try:
+        #                     SCALABLE_RL_AGENT.load(ckpt_path)
+        #                     logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
+        #                 except Exception as e:
+        #                     logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
                     
-                    logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
-                              f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
+        #             logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
+        #                       f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
                 
-                current_agent = SCALABLE_RL_AGENT
+        #         current_agent = SCALABLE_RL_AGENT
             
-            # Inference (no lock needed - thread-safe in new design)
-            current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
-                tensor_data=tensor_data,
-                request_id=request_id,
-                sorted_all_pod_ids=sorted_all_pod_ids,
-                processed_df=processed_df,
-                rl_agent=current_agent,
-                hyperparameters=RL_MODEL_HYPERPARAMETERS,
-                agent_lock=None  # New agent doesn't need lock for prediction
-            )
+        #     # Inference (no lock needed - thread-safe in new design)
+        #     current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
+        #         tensor_data=tensor_data,
+        #         request_id=request_id,
+        #         sorted_all_pod_ids=sorted_all_pod_ids,
+        #         processed_df=processed_df,
+        #         rl_agent=current_agent,
+        #         hyperparameters=RL_MODEL_HYPERPARAMETERS,
+        #         agent_lock=None  # New agent doesn't need lock for prediction
+        #     )
+        ####################################################################################
         else:
             logger.info(f"requestID: {request_id}, contextual bandit model for inference")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
