@@ -4,6 +4,7 @@ import os
 from logger import logger
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from policies import ActorCriticRoutingPolicy
 from envs.rout_env import ScalableRoutingEnvironment 
@@ -48,9 +49,7 @@ class ScalableRLRoutingAgent:
         self.hyperparameters = hyperparameters
         
         # Create environment
-        # self.env = ScalableRoutingEnvironment(per_pod_dim, request_dim, max_pods)
         self.env = self.make_env(hyperparameters.get('horizon', 1024))
-        # self.env = ScalableRoutingEnvironment(num_pods, per_pod_dim, request_dim, max_pods)
 
         self.setup_model(rl, per_pod_dim, request_dim, hyperparameters)
         
@@ -81,8 +80,9 @@ class ScalableRLRoutingAgent:
         env = Monitor(env)
         env = EpisodeLengthWrapper(env, horizon=horizon)
         env = EpisodeCounterWrapper(env)
+        env = DummyVecEnv([lambda: env])
 
-        logger.info(f"Environment created with horizon {horizon}") ## XXX: change to steps to time
+        logger.info(f"Environment created with horizon {horizon}, this should be the number of requests per episode.")
 
         return env
         

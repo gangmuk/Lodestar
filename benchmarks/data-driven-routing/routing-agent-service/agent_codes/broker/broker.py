@@ -14,8 +14,8 @@ class PendingReq:
 class RequestBroker:
     def __init__(self, maxsize: int = 10000):
         '''
-        _by_id access is protected by _lock
-        This is for AsyncVectorEnv, where multiple workers independently, but off-policy only
+        _by_id access is protected by _lock.
+        This is for sb3 SubprocVecEnv, where multiple workers run independently (XXX)
         '''
         self._queue = queue.Queue(maxsize=maxsize)
         self._by_id: Dict[str, PendingReq] = {}
