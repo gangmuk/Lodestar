@@ -55,7 +55,7 @@ class K8sDeployment:
             
             # Create parent directory if it doesn't exist
             remote_dir = os.path.dirname(remote_path)
-            if remote_dir:
+            if remote_dir and remote_dir != '/app':
                 self.execute_command(pod_name, f"mkdir -p {remote_dir}")
             
             with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as temp_tar:
@@ -251,6 +251,46 @@ class K8sDeployment:
             print(f"Process check: {ps_output}")
             return False
     
+    def copy_files_batch(self, pod_name, files_dict, base_remote_dir="/app"):
+        """Copy multiple files in a single tar - much simpler and faster than individual copies!"""
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as temp_tar:
+                tar_path = temp_tar.name
+                
+            # Create one tar with all files, preserving directory structure
+            with tarfile.open(tar_path, 'w') as tar:
+                for local_path, remote_path in files_dict.items():
+                    # Get path relative to base_remote_dir
+                    rel_path = remote_path.replace(base_remote_dir + "/", "").replace(base_remote_dir, "")
+                    if rel_path.startswith("/"):
+                        rel_path = rel_path[1:]
+                    
+                    # Add file with correct path in archive
+                    tar.add(local_path, arcname=rel_path)
+            
+            print(f"📦 Created tar with {len(files_dict)} files ({Path(tar_path).stat().st_size / 1024:.1f} KB)")
+            
+            # Copy tar to pod and extract in one command
+            command = ['sh', '-c', f'tar -xmf - -C {base_remote_dir}']
+            resp = stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                pod_name, self.namespace, command=command,
+                stderr=True, stdin=True, stdout=True, tty=False, _preload_content=False
+            )
+            with open(tar_path, 'rb') as tar_data:
+                resp.write_stdin(tar_data.read())
+            resp.close()
+            
+            os.unlink(tar_path)
+            print(f"✅ Copied and extracted {len(files_dict)} files to {base_remote_dir}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to copy files batch to {pod_name}: {e}")
+            if os.path.exists(tar_path):
+                os.unlink(tar_path)
+            return False
+
     def deploy_to_pods(self, agent_related_files, final_model_dir):
         """Deploy files, directories and optionally restart Flask"""
         pods = self.get_pods()
@@ -265,14 +305,13 @@ class K8sDeployment:
         for pod_name in pods:
             print(f"\n🚀 Deploying to pod: {pod_name}")
             
-            # Copy individual files
-            files_copied = 0
-            for local_path, remote_path in agent_related_files.items():
-                if self.copy_file_to_pod(pod_name, local_path, remote_path):
-                    print(f"Copied {local_path}")
-                    files_copied += 1
+            # Copy all files in one batch (much faster!)
+            if agent_related_files:
+                print(f"Copying {len(agent_related_files)} files in one batch...")
+                if self.copy_files_batch(pod_name, agent_related_files, "/app"):
+                    print(f"✅ Copied {len(agent_related_files)} files in one operation")
                 else:
-                    logger.error(f"Failed to copy {local_path} to {pod_name}:{remote_path}")
+                    logger.error(f"Failed to copy files batch to {pod_name}")
                     logger.error(f"Exiting...")
                     exit()
             
@@ -287,8 +326,10 @@ class K8sDeployment:
                     logger.error(f"Failed to copy directory {local_dir} to {pod_name}:{remote_dir}")
                     logger.error(f"Exiting...")
                     exit()
-            total_expected = len(agent_related_files) + len(final_model_dir)
-            total_copied = files_copied + dirs_copied
+            
+            files_copied = len(agent_related_files) if agent_related_files else 0
+            total_expected = (1 if agent_related_files else 0) + len(final_model_dir)
+            total_copied = (1 if agent_related_files else 0) + dirs_copied
             
             if total_copied == total_expected:
                 print(f"✅ Copied {files_copied} files and {dirs_copied} directories to {pod_name}")

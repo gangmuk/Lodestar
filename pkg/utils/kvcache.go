@@ -713,6 +713,8 @@ var (
 func init() {
 	NumTrains = 0
 	NumFlush = 0
+	PrevRewardForRequest = make(map[string]float64)
+	PrevRewardForRequestMutex = sync.RWMutex{}
 
 	// CleanupRoutineForpodMetrics()
 	RunningPodRegistry = make(map[string]string)
@@ -790,6 +792,31 @@ func init() {
 	GPUModel = make(map[string]string) // podIP -> GPU model
 	GPUModelMutex = sync.RWMutex{}
 	klog.Info("Initialized global variables for AIBRIX RL Router")
+}
+
+var PrevRewardForRequest map[string]float64
+var PrevRewardForRequestMutex sync.RWMutex
+
+func SetPrevRewardForRequest(requestID string, prevReward float64) {
+	PrevRewardForRequestMutex.Lock()
+	defer PrevRewardForRequestMutex.Unlock()
+	PrevRewardForRequest[requestID] = prevReward
+}
+
+func GetPrevRewardForRequest(requestID string) float64 {
+	PrevRewardForRequestMutex.RLock()
+	defer PrevRewardForRequestMutex.RUnlock()
+	if val, ok := PrevRewardForRequest[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetPrevRewardForRequest for request ID: %s, not found, returning -9999", requestID)
+	return -9999
+}
+
+func CleanupPrevRewardForRequest(requestID string) {
+	PrevRewardForRequestMutex.Lock()
+	defer PrevRewardForRequestMutex.Unlock()
+	delete(PrevRewardForRequest, requestID)
 }
 
 func SetGPUModel(podIP string, gpuModel string) {

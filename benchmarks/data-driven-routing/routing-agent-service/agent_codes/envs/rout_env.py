@@ -69,7 +69,8 @@ class ScalableRoutingEnvironment(gym.Env):
         
         return observation, info
     
-
+    # TODO: action probabilities for debugging
+    # this is the entry point. I think it is gym's internal function... how can we get the action probabilities?
     def step(self, action: int):
         self._request.route(action)
 

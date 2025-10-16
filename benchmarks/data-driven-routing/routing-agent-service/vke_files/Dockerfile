@@ -21,6 +21,7 @@ COPY vke_files/logger.py .
 
 # Create workload directory structure
 RUN mkdir -p /app/workload/ten_request \
+    /app/workload/hundred_request \
     /app/workload/SharingRatio71% \
     /app/workload/SharingRatio47% \
     /app/workload/SharingRatio28% \
@@ -30,6 +31,7 @@ RUN mkdir -p /app/workload/ten_request \
 # Copy workload files from parent directory
 # Build context is set to parent directory in build-and-push.sh
 COPY workload-and-experiment_results/ten_request/workload.jsonl /app/workload/ten_request/
+COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
 COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workload/SharingRatio71%/
 COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
 COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/

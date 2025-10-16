@@ -273,21 +273,6 @@ def calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, a
 
 ## new - unified preprocessing function
 def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training):
-    """
-    Unified preprocessing function that handles both single row (inference) and batch processing (training).
-    
-    Args:
-        parsed_df: DataFrame with parsed log data
-        ttft_slo: TTFT SLO threshold
-        avg_tpot_slo: Average TPOT SLO threshold  
-        RL_MODEL_HYPERPARAMETERS: Model hyperparameters
-        sorted_all_pod_ids: Sorted list of pod IDs
-        is_training: Whether this is for training (True) or inference (False)
-    
-    Returns:
-        For training: (processed_df, mapping_info, sorted_all_pod_ids, overhead_summary)
-        For inference: (processed_df, sorted_all_pod_ids, overhead_summary)
-    """
     num_rows = len(parsed_df)
     processing_type = "batch" if num_rows > 1 else "single row"
     logger.debug(f"Processing {num_rows} rows ({processing_type}) with is_training={is_training}")
@@ -324,7 +309,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     json_parse_overhead = time.time() - json_parse_start_time
 
     # Collect all unique pod IDs in a single pass
-    logger.info("Collecting all unique pod IDs across the dataset...")
+    logger.debug("Collecting all unique pod IDs across the dataset...")
     logger.debug(f"Original dataset shape: {parsed_df.shape}")
     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
     expected_columns = [
@@ -351,6 +336,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'numDecodeTokensForAllPods',
         # 'GPU_model',
         'subAlgorithm', # old training data does not have it... so...
+        'prev_reward',
     ]
     
     ###########################################
@@ -379,72 +365,6 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     if unknown_columns:
         logger.warning(f"Warning: Unused columns: {unknown_columns}")
 
-    ## deprecating podMetricsLastSecond features
-    # expected_last_second_pod_metrics_keys = [
-    #     'last_second_avg_ttft_ms', 
-    #     'last_second_min_ttft_ms', 
-    #     'last_second_max_ttft_ms', 
-    #     'last_second_p50_ttft_ms', 
-    #     'last_second_p90_ttft_ms', 
-    #     'last_second_p95_ttft_ms', 
-    #     'last_second_p99_ttft_ms', 
-    #     'last_second_ttft_samples', 
-    #     'last_second_avg_tpot_ms', 
-    #     'last_second_min_tpot_ms', 
-    #     'last_second_max_tpot_ms', 
-    #     'last_second_p50_tpot_ms', 
-    #     'last_second_p90_tpot_ms', 
-    #     'last_second_p95_tpot_ms', 
-    #     'last_second_p99_tpot_ms', 
-    #     'last_second_tpot_samples', 
-    #     'last_second_total_requests', 
-    #     'last_second_total_decode_tokens', 
-    #     'last_second_total_prefill_tokens', 
-    #     'last_second_total_tokens',
-    # ]
-    # Filter out rows with empty 'podMetricsLastSecond' - vectorized approach
-    # valid_mask = parsed_df['podMetricsLastSecond'].notna()
-    # non_empty_mask = parsed_df['podMetricsLastSecond'].apply(lambda x: isinstance(x, dict) and len(x) > 0)
-    # parsed_df = parsed_df[valid_mask & non_empty_mask].copy()
-    # num_filter = len(parsed_df) - non_empty_mask.sum()
-    # logger.info(f"Filtered out {num_filter} rows with empty podMetricsLastSecond.")
-    # podmetrics_parse_start_time = time.time()
-    # # Process first row to check podMetricsLastSecond structure (same as before)
-    # if 'podMetricsLastSecond' in parsed_df.columns and len(parsed_df) > 0:
-    #     first_row = parsed_df.iloc[0]
-    #     logger.warning(f"WARNING: We are using the first row only to check podMetricsLastSecond structure")
-    #     pod_metrics = first_row['podMetricsLastSecond']  # Already parsed
-    #     logger.debug(f"features in pod_metrics: {pod_metrics.keys()}")
-    #     try:
-    #         logger.debug(f"features in pod_metrics: {pod_metrics[list(pod_metrics.keys())[0]].keys()}")
-    #     except Exception as e:
-    #         logger.error(f"Error: {e}")
-    #         logger.error(f"first_row['podMetricsLastSecond']: {first_row['podMetricsLastSecond']}")
-    #         logger.error(f"pod_metrics: {pod_metrics}")
-    #         logger.error(f"first_row: {first_row}")
-    #         assert False
-            
-    #     if pod_metrics:
-    #         # Check structure for each pod
-    #         for pod_id, metrics in pod_metrics.items():
-    #             logger.debug(f"metrics: {metrics}")
-    #             # Check for missing expected keys
-    #             missing_keys = [key for key in expected_last_second_pod_metrics_keys if key not in metrics]
-    #             if missing_keys:
-    #                 logger.error(f"Error: Missing expected keys in podMetricsLastSecond for pod {pod_id}: {missing_keys}")
-    #                 assert False
-                
-    #             # Check for unknown keys
-    #             unknown_keys = [key for key in metrics.keys() if key not in expected_last_second_pod_metrics_keys]
-    #             if unknown_keys:
-    #                 logger.error(f"Error: Found unknown keys in podMetricsLastSecond for pod {pod_id}: {unknown_keys}")
-    #                 assert False
-    # else:
-    #     logger.error("Error: podMetricsLastSecond column not found in the DataFrame.")
-    #     assert False
-    # podmetrics_parse_overhead = time.time() - podmetrics_parse_start_time # 0-1ms
-    
-
     numeric_conversion_start_time = time.time()
     # Convert string columns to appropriate types - vectorized
     numeric_columns = [
@@ -456,8 +376,9 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         # 'expectedNumOutputTokens',
         'numOutputTokens',
         'numTotalTokens',
-        'request_start_time',  # NEW: Add to numeric conversion
-        'request_end_time',    # NEW: Add to numeric conversion
+        'request_start_time',
+        'request_end_time',
+        'prev_reward',
     ]
     
     for col in numeric_columns:
@@ -480,9 +401,10 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'ttft': parsed_df['ttft'].values,
         'avg_tpot': parsed_df['avg_tpot'].values,
         'e2e_latency': parsed_df['e2e'].values,
-        'request_start_time': parsed_df['request_start_time'].values,  # NEW: Add request timing
-        'request_end_time': parsed_df['request_end_time'].values,      # NEW: Add request timing
-        'subAlgorithm': parsed_df['subAlgorithm'].values,  # Preserve subAlgorithm column for routing decisions
+        'request_start_time': parsed_df['request_start_time'].values,
+        'request_end_time': parsed_df['request_end_time'].values, 
+        'subAlgorithm': parsed_df['subAlgorithm'].values,
+        'prev_reward': parsed_df['prev_reward'].values,
     }
     if INCLUDE_GPU_IN_FEATURE:
         base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
@@ -532,33 +454,16 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
                 assert False
             gpu_model = RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id]
             base_data[f"{pod_id}-gpu_model"] = [gpu_model] * len(parsed_df)
-        
-        # # Extract key metrics for this pod across all rows
-        # for metric_key in ['last_second_avg_ttft_ms', 'last_second_avg_tpot_ms', 'last_second_p99_ttft_ms', 
-        #                   'last_second_p99_tpot_ms', 'last_second_total_requests', 'last_second_total_tokens',
-        #                   'last_second_total_decode_tokens', 'last_second_total_prefill_tokens']:
-        #     base_data[f"{pod_id}-{metric_key}"] = [
-        #         metrics.get(pod_id, {}).get(metric_key, 0) for metrics in all_pod_metrics
-        #     ]
     get_value_overhead = time.time() - get_value_start_time # 0ms
-
-    # Pre-calculate all derived values before DataFrame creation
     num_rows = len(base_data['request_id'])
-
     pod_index_start_time = time.time()
-    
-    # Training-specific: Create action mappings
     if is_training:
-        # Map pod IDs to integer indices for the action space - do this early with numpy arrays
         unique_pods = np.unique(base_data['selected_pod'])
         pod_to_index = {str(pod): idx for idx, pod in enumerate(unique_pods)}
         index_to_pod = {int(idx): str(pod) for pod, idx in pod_to_index.items()}
-        
-        # Pre-calculate all derived columns as numpy arrays (much faster than pandas operations)
         selected_pods_array = np.array(base_data['selected_pod'])
         action_values = np.array([pod_to_index[str(pod)] for pod in selected_pods_array])
     else:
-        # Inference: no need for action mappings
         pod_to_index = {}
         index_to_pod = {}
         action_values = None
@@ -566,7 +471,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     ttft_values = np.array(base_data['ttft'], dtype=np.float64)
     tpot_values = np.array(base_data['avg_tpot'], dtype=np.float64)
     pod_index_overhead = time.time() - pod_index_start_time
-    
+        
     # Training-specific calculations (rewards and action mapping)
     if is_training:
         # Calculate rewards for training
@@ -584,8 +489,6 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         else:
             logger.error(f"Unknown reward function: {RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION']}")
             assert False
-        
-        
         # Add training-specific columns
         base_data.update({
             'action': action_values,
@@ -595,12 +498,6 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
             'tpot_reward': reward['tpot_rewards'],
             'reward': reward['combined_rewards'],
         })
-    else:
-        # Inference mode: skip reward calculation and action mapping for speed
-        # Only keep essential columns for inference
-        pass
-
-    # Create DataFrame only once with all data
     create_df_start_time = time.time()
     processed_df = pd.DataFrame(base_data)
     create_df_overhead = time.time() - create_df_start_time

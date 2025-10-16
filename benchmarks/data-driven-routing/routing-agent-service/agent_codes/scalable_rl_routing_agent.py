@@ -24,8 +24,10 @@ This solves two critical problems:
 
 import time
 import numpy as np
+import torch
 
 from logger import logger
+import preprocess
 
 from agents import ScalableRLRoutingAgent
 
@@ -34,7 +36,7 @@ from agents import ScalableRLRoutingAgent
 # 2. TODO: Rewrite RoutingAgent
 #   2.1 Seperate deployment and training
 #   2.2 Change control flow to use RL's step() function.
-#       2.2.1 See 00_envs/wrappers.py for example of triggering each step by specifying a time interval
+#       2.2.1 See 00_envs/rl_env_wrappers.py for example of triggering each step by specifying a time interval
 #       2.2.2 Actively read states/obs and set reward
 
 
@@ -77,143 +79,180 @@ def create_scalable_rl_agent(num_pods: int, per_pod_dim: int = 11, request_dim: 
     return ScalableRLRoutingAgent(num_pods, per_pod_dim, request_dim, max_pods, **hyperparameters)
 
 
-def infer_scalable_rl_agent(tensor_data, request_id, sorted_all_pod_ids, processed_df,
-                            rl_agent, hyperparameters, agent_lock=None):
-    """
-    Inference workflow for scalable RL agent.
+# def infer_scalable_rl_agent(tensor_data, request_id, sorted_all_pod_ids, processed_df,
+#                             rl_agent, hyperparameters, agent_lock=None):
+#     """
+#     Inference workflow for scalable RL agent.
     
-    Compatible with existing routing_agent_service.py interface.
+#     Compatible with existing routing_agent_service.py interface.
     
-    Key changes from old version:
-    1. Creates pending experience (not completed yet)
-    2. Completion happens asynchronously in on_request_complete callback
-    3. Proper next_obs and done flags for TD learning
+#     Key changes from old version:
+#     1. Creates pending experience (not completed yet)
+#     2. Completion happens asynchronously in on_request_complete callback
+#     3. Proper next_obs and done flags for TD learning
     
-    Args:
-        tensor_data: Dict with 'pod_features', 'kv_hit_ratios', 'request_features'
-        request_id: Request identifier
-        sorted_all_pod_ids: List of pod IDs
-        processed_df: DataFrame with request data
-        rl_agent: ScalableRLRoutingAgent instance
-        hyperparameters: RL hyperparameters
-        agent_lock: Optional lock (not needed for prediction in new design)
+#     Args:
+#         tensor_data: Dict with 'pod_features', 'kv_hit_ratios', 'request_features'
+#         request_id: Request identifier
+#         sorted_all_pod_ids: List of pod IDs
+#         processed_df: DataFrame with request data
+#         rl_agent: ScalableRLRoutingAgent instance
+#         hyperparameters: RL hyperparameters
+#         agent_lock: Optional lock (not needed for prediction in new design)
     
-    Returns:
-        (agent, result_dict, overhead_summary)
-    """
-    import preprocess
+#     Returns:
+#         (agent, result_dict, overhead_summary)
+#     """
+#     import preprocess
     
-    overhead_summary = {} # logging time for extracting features, predicting, and creating pending experience
-    infer_start = time.time()
+#     overhead_summary = {} # logging time for extracting features, predicting, and creating pending experience
+#     infer_start = time.time()
     
-    # Extract tensors
-    extract_start = time.time()
-    pod_features_t = tensor_data['pod_features']
-    kv_hit_t = tensor_data['kv_hit_ratios']
-    req_features_t = tensor_data['request_features']
+#     # Extract tensors
+#     extract_start = time.time()
+#     pod_features_t = tensor_data['pod_features']
+#     kv_hit_t = tensor_data['kv_hit_ratios']
+#     req_features_t = tensor_data['request_features']
     
-    pod_features_np = pod_features_t.cpu().numpy()[0]  # [num_pods, 10]
-    kv_hit_np = kv_hit_t.cpu().numpy()[0]              # [num_pods, 1]
-    req_features_np = req_features_t.cpu().numpy()[0]  # [3]
+#     pod_features_np = pod_features_t.cpu().numpy()[0]  # [num_pods, 10]
+#     kv_hit_np = kv_hit_t.cpu().numpy()[0]              # [num_pods, 1]
+#     req_features_np = req_features_t.cpu().numpy()[0]  # [3]
     
-    overhead_summary['extract_tensors'] = time.time() - extract_start
+#     overhead_summary['extract_tensors'] = time.time() - extract_start
     
-    # Predict action
-    num_pods = len(sorted_all_pod_ids)
-    assert num_pods <= len(action_probs)
+#     # Predict action
+#     num_pods = len(sorted_all_pod_ids)
+#     assert num_pods <= len(action_probs)
 
-    predict_start = time.time()
-    action_idx, action_probs = rl_agent.predict(
-        pod_features_np, kv_hit_np, req_features_np, deterministic=False
-    )
-    overhead_summary['predict'] = time.time() - predict_start
+#     predict_start = time.time()
+#     action_idx, action_probs = rl_agent.predict(
+#         pod_features_np, kv_hit_np, req_features_np, deterministic=False
+#     )
+#     overhead_summary['predict'] = time.time() - predict_start
     
-    # Create pending experience (will be completed asynchronously)
-    rl_agent.create_pending_experience(
-        request_id, pod_features_np, kv_hit_np, req_features_np,
-        action_idx, action_probs
-    )
+#     # Create pending experience (will be completed asynchronously)
+#     rl_agent.create_pending_experience(
+#         request_id, pod_features_np, kv_hit_np, req_features_np,
+#         action_idx, action_probs
+#     )
     
-    # Build result
-    result_start = time.time()
-    pod_prob_map = {
-        sorted_all_pod_ids[i]: float(action_probs[i]) 
-        for i in range(min(num_pods, len(action_probs)))
+#     # Build result
+#     result_start = time.time()
+#     pod_prob_map = {
+#         sorted_all_pod_ids[i]: float(action_probs[i]) 
+#         for i in range(min(num_pods, len(action_probs)))
+#     }
+    
+#     result = {
+#         'selected_pod_index': int(action_idx),
+#         'pod_probabilities': pod_prob_map,
+#         'confidence': float(np.max(action_probs)), # XXX: double check if this is correct
+#         'explore_mask': 0,
+#         'predicted_latencies': {pod_id: -1 for pod_id in sorted_all_pod_ids},
+#         'chosen_pod_predicted_latency': -1,
+#     }
+#     overhead_summary['build_result'] = time.time() - result_start
+    
+#     overhead_summary['total'] = time.time() - infer_start
+    
+#     logger.info(f"🎯 Scalable RL inference: action={action_idx}, "
+#                f"confidence={result['confidence']:.3f}, "
+#                f"num_pods={num_pods}")
+    
+#     return rl_agent, result, overhead_summary
+
+
+# # Callback for async completion (to be called by routing service)
+# def on_request_complete_callback(rl_agent, request_id, current_cluster_state, 
+#                                  ttft, tpot, hyperparameters):
+#     """
+#     Callback to complete experience when request finishes.
+    
+#     This should be called by routing_agent_service.py when it receives
+#     completion notification.
+    
+#     Args:
+#         rl_agent: ScalableRLRoutingAgent instance
+#         request_id: Request identifier
+#         current_cluster_state: Current pod features, kv ratios (after completion)
+#         ttft, tpot: Latency metrics
+#         hyperparameters: For reward calculation
+#     """
+    
+#     # Extract current state
+#     pod_features, kv_hit_ratios, request_features = current_cluster_state
+    
+#     # Compute reward
+#     ttft_slo = hyperparameters['TTFT_SLO']
+#     avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
+#     ttft_weight = hyperparameters['TTFT_REWARD_WEIGHT']
+#     reward_fn = hyperparameters.get('REWARD_FUNCTION', 'linear_simple')
+    
+#     if reward_fn == 'linear_simple':
+#         reward_res = preprocess.calculate_rewards_simple(
+#             np.array([ttft]), np.array([tpot]),
+#             ttft_slo, avg_tpot_slo, ttft_weight
+#         )
+#     elif reward_fn == 'linear_simple_extended':
+#         reward_res = preprocess.calculate_rewards_simple_extended(
+#             np.array([ttft]), np.array([tpot]),
+#             ttft_slo, avg_tpot_slo, ttft_weight
+#         )
+#     # ... (other reward functions)
+#     else:
+#         logger.warning(f"Unknown reward function {reward_fn}, using linear_simple")
+#         reward_res = preprocess.calculate_rewards_simple(
+#             np.array([ttft]), np.array([tpot]),
+#             ttft_slo, avg_tpot_slo, ttft_weight
+#         )
+    
+#     reward = float(reward_res['combined_rewards'][0])
+    
+#     # Complete the experience
+#     rl_agent.complete_experience(
+#         request_id, pod_features, kv_hit_ratios, request_features, reward
+#     )
+    
+#     logger.debug(f"✅ Completed experience for {request_id}: reward={reward:.3f}")
+
+
+def infer(request_id: str, prev_reward: float, pod_features: np.ndarray, kv_hit_ratios: np.ndarray, request_features: np.ndarray, temporal_features: np.ndarray, BROKER, agent):
+    # Generate random state
+    infer_from_tensor_overhead_summary = {}
+    infer_start_time = time.time()
+    state = {
+        'obs': {
+            'pod_features': pod_features,
+            'kv_hit_ratios': kv_hit_ratios,
+            'request_features': request_features,
+            'temporal_features': temporal_features,
+        }
     }
-    
-    result = {
-        'selected_pod_index': int(action_idx),
-        'pod_probabilities': pod_prob_map,
-        'confidence': float(np.max(action_probs)), # XXX: double check if this is correct
-        'explore_mask': 0,
-        'predicted_latencies': {pod_id: -1 for pod_id in sorted_all_pod_ids},
-        'chosen_pod_predicted_latency': -1,
-    }
-    overhead_summary['build_result'] = time.time() - result_start
-    
-    overhead_summary['total'] = time.time() - infer_start
-    
-    logger.info(f"🎯 Scalable RL inference: action={action_idx}, "
-               f"confidence={result['confidence']:.3f}, "
-               f"num_pods={num_pods}")
-    
-    return rl_agent, result, overhead_summary
 
-
-# Callback for async completion (to be called by routing service)
-def on_request_complete_callback(rl_agent, request_id, current_cluster_state, 
-                                 ttft, tpot, hyperparameters):
-    """
-    Callback to complete experience when request finishes.
+    # obs = state['obs']
+    # with torch.no_grad():
+    #     obs_tensor = agent.model.policy.obs_to_tensor(obs)[0]
+    #     distribution = agent.model.policy.get_distribution(obs_tensor)
+    #     action = distribution.get_actions(deterministic=False)
+    #     action_probs = distribution.distribution.probs.cpu().numpy()[0]  # [num_pods]
+    # pod_idx = int(action.item())
     
-    This should be called by routing_agent_service.py when it receives
-    completion notification.
+    # logger.debug(f"Direct inference for {request_id}: action={pod_idx}, confidence={action_probs[pod_idx]:.3f}")
+    # return pod_idx, action_probs
     
-    Args:
-        rl_agent: ScalableRLRoutingAgent instance
-        request_id: Request identifier
-        current_cluster_state: Current pod features, kv ratios (after completion)
-        ttft, tpot: Latency metrics
-        hyperparameters: For reward calculation
-    """
-    import preprocess
+    pending = BROKER.submit(request_id=request_id, state=state, prev_reward=prev_reward)
+    timeout_in_seconds = 5 # TODO: inference should be made within less than 100ms
+    decision_result = BROKER.wait_for_decision(request_id, timeout=timeout_in_seconds)
     
-    # Extract current state
-    pod_features, kv_hit_ratios, request_features = current_cluster_state
+    if decision_result is None:
+        logger.error(f"Decision timed out (timeout={timeout_in_seconds}), requestID, {request_id}")
+        assert False
+    pod_idx, _ = decision_result
     
-    # Compute reward
-    ttft_slo = hyperparameters['TTFT_SLO']
-    avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
-    ttft_weight = hyperparameters['TTFT_REWARD_WEIGHT']
-    reward_fn = hyperparameters.get('REWARD_FUNCTION', 'linear_simple')
-    
-    if reward_fn == 'linear_simple':
-        reward_res = preprocess.calculate_rewards_simple(
-            np.array([ttft]), np.array([tpot]),
-            ttft_slo, avg_tpot_slo, ttft_weight
-        )
-    elif reward_fn == 'linear_simple_extended':
-        reward_res = preprocess.calculate_rewards_simple_extended(
-            np.array([ttft]), np.array([tpot]),
-            ttft_slo, avg_tpot_slo, ttft_weight
-        )
-    # ... (other reward functions)
-    else:
-        logger.warning(f"Unknown reward function {reward_fn}, using linear_simple")
-        reward_res = preprocess.calculate_rewards_simple(
-            np.array([ttft]), np.array([tpot]),
-            ttft_slo, avg_tpot_slo, ttft_weight
-        )
-    
-    reward = float(reward_res['combined_rewards'][0])
-    
-    # Complete the experience
-    rl_agent.complete_experience(
-        request_id, pod_features, kv_hit_ratios, request_features, reward
-    )
-    
-    logger.debug(f"✅ Completed experience for {request_id}: reward={reward:.3f}")
-
+    BROKER.pop(request_id)
+    infer_from_tensor_overhead_summary['total'] = time.time() - infer_start_time
+    logger.info(f"scalable_rl_routing_agent, infer, request_id={request_id}, action={pod_idx}, took={infer_from_tensor_overhead_summary['total']:.3f}s")
+    return pod_idx, infer_from_tensor_overhead_summary
 
 
 
@@ -227,9 +266,10 @@ if __name__ == "__main__":
 
     logger.info("🧪 Testing ScalableRLRoutingAgent...")
     
+    num_pods = 4
     # Create agent
     agent = create_scalable_rl_agent(
-        num_pods=4,
+        num_pods=num_pods,
         per_pod_dim=11,
         request_dim=3,
         max_pods=10,
@@ -251,52 +291,23 @@ if __name__ == "__main__":
     )
     train_thread.start()
     logger.info("🏋️ Training RL agent...")
-
+    import random
     for i in range(20):
-        # Generate random state
-        # num_pods = np.random.randint(4, 9)  # Variable pods!
-        num_pods = 4
-        
-        # Predict
-        request_id = f"req_{i}"
-
         pod_features = np.random.randn(num_pods, 10).astype(np.float32)
         kv_hit_ratios = np.random.rand(num_pods, 1).astype(np.float32)
         request_features = np.random.randn(3).astype(np.float32)
         temporal_features = np.array([], dtype=np.float32)
-
-        state = {
-            'obs': {
-                'pod_features': pod_features,
-                'kv_hit_ratios': kv_hit_ratios,
-                'request_features': request_features,
-                'temporal_features': temporal_features,
-            }
-        }
-        prev_reward = i
-
-        ##### WANYU: the following part could be put in routing_agent_service.py /infer (not sure)
-        # from agents.rout_agent import BROKER
-        # BROKER is new RL interface exposed for submitting request and waiting for decision
-
-        # Submit the incoming request with the *previous* reward
-        pending = BROKER.submit(request_id=request_id, state=state, prev_reward=prev_reward)
-
-        # Wait for agent decision (with timeout fallback)
-        decision_timeout_s = 5.0
-        pod_idx = BROKER.wait_for_decision(request_id, timeout=decision_timeout_s)
-        if pod_idx is None:
-            # fallback policy (your existing logic)
-            pod_idx = 0
-            BROKER.set_decision(request_id, pod_idx)
-
+        request_id = f"req_{i}"
+        prev_reward = random.random()
+        pod_idx, action_probs = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER)
         ##### END
         
         # Simulate completion (in real system, this happens asynchronously)
         time.sleep(0.01)
-    
+        
+        confidence = action_probs[pod_idx] if action_probs is not None else 0.0
         logger.info(f"Step {i}: action={pod_idx}, prev_reward={prev_reward:.2f}, "
-                   f"num_pods={num_pods}")
+                   f"confidence={confidence:.3f}, num_pods={num_pods}")
     
     # Check metrics
     # metrics = agent.get_metrics()

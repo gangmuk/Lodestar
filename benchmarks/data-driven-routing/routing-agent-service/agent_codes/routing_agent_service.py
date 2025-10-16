@@ -19,11 +19,6 @@ import encoding
 import simpler_contextual_bandit
 import latency_predictor
 from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
-# from scalable_rl_routing_agent import (
-#     create_scalable_rl_agent,
-#     infer_scalable_rl_agent,
-#     on_request_complete_callback
-# )
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -77,6 +72,11 @@ RL_AGENT_LOCK = RWLock()
 SCALABLE_RL_AGENT_LOCK = RWLock()
 LATENCY_PREDICTOR_LOCK = RWLock()
 
+# Scalable RL agent training thread
+SCALABLE_RL_TRAINING_THREAD = None
+SCALABLE_RL_TRAINING_SHUTDOWN = threading.Event()
+
+
 # RL agent async update queue
 RL_UPDATE_QUEUE = queue.Queue(maxsize=1000)  # Bounded queue to prevent memory issues
 RL_UPDATE_THREAD = None
@@ -97,66 +97,68 @@ EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
 TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 RL_MODEL_HYPERPARAMETERS = None
 
+BROKER_LOCK = RWLock()
+
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
-@app.route("/request_complete", methods=["POST"])
-def handle_request_complete():
-    """
-    Endpoint for async request completion notifications (for scalable_rl_agent).
+# @app.route("/request_complete", methods=["POST"])
+# def handle_request_complete():
+#     """
+#     Endpoint for async request completion notifications (for scalable_rl_agent).
     
-    Expected payload:
-    {
-        "request_id": "req_12345",
-        "ttft": 45.6,           # milliseconds
-        "tpot": 12.3,           # milliseconds  
-        "selected_pod": "10.0.1.30"
-    }
-    """
-    global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
+#     Expected payload:
+#     {
+#         "request_id": "req_12345",
+#         "ttft": 45.6,           # milliseconds
+#         "tpot": 12.3,           # milliseconds  
+#         "selected_pod": "10.0.1.30"
+#     }
+#     """
+#     global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
     
-    try:
-        data = request.json
-        request_id = data.get('request_id')
-        ttft = data.get('ttft')
-        tpot = data.get('tpot')
-        selected_pod = data.get('selected_pod')
+#     try:
+#         data = request.json
+#         request_id = data.get('request_id')
+#         ttft = data.get('ttft')
+#         tpot = data.get('tpot')
+#         selected_pod = data.get('selected_pod')
         
-        if not request_id or ttft is None or tpot is None:
-            logger.error(f"Missing required fields in request completion: {data}")
-            return jsonify({"error": "Missing required fields"}), 400
+#         if not request_id or ttft is None or tpot is None:
+#             logger.error(f"Missing required fields in request completion: {data}")
+#             return jsonify({"error": "Missing required fields"}), 400
         
-        if SCALABLE_RL_AGENT is None:
-            logger.debug(f"Scalable RL agent not initialized, ignoring completion for {request_id}")
-            return jsonify({"status": "ok", "message": "agent not initialized"}), 200
+#         if SCALABLE_RL_AGENT is None:
+#             logger.debug(f"Scalable RL agent not initialized, ignoring completion for {request_id}")
+#             return jsonify({"status": "ok", "message": "agent not initialized"}), 200
         
-        # Get current cluster state (after completion)
-        try:
-            pod_features, kv_hit_ratios, request_features = get_current_cluster_features()
-            current_state = (pod_features, kv_hit_ratios, request_features)
+#         # Get current cluster state (after completion)
+#         try:
+#             pod_features, kv_hit_ratios, request_features = get_current_cluster_features()
+#             current_state = (pod_features, kv_hit_ratios, request_features)
             
-            # Complete the experience
-            on_request_complete_callback(
-                rl_agent=SCALABLE_RL_AGENT,
-                request_id=request_id,
-                current_cluster_state=current_state,
-                ttft=ttft,
-                tpot=tpot,
-                hyperparameters=RL_MODEL_HYPERPARAMETERS
-            )
+#             # Complete the experience
+#             on_request_complete_callback(
+#                 rl_agent=SCALABLE_RL_AGENT,
+#                 request_id=request_id,
+#                 current_cluster_state=current_state,
+#                 ttft=ttft,
+#                 tpot=tpot,
+#                 hyperparameters=RL_MODEL_HYPERPARAMETERS
+#             )
             
-            logger.debug(f"✅ Completed experience for request {request_id} (ttft={ttft}ms, tpot={tpot}ms)")
-            return jsonify({"status": "ok"}), 200
+#             logger.debug(f"✅ Completed experience for request {request_id} (ttft={ttft}ms, tpot={tpot}ms)")
+#             return jsonify({"status": "ok"}), 200
             
-        except NotImplementedError:
-            logger.debug(f"⚠️  get_current_cluster_features() not implemented, skipping completion for {request_id}")
-            return jsonify({"status": "ok", "message": "cluster state fetch not implemented"}), 200
+#         except NotImplementedError:
+#             logger.debug(f"⚠️  get_current_cluster_features() not implemented, skipping completion for {request_id}")
+#             return jsonify({"status": "ok", "message": "cluster state fetch not implemented"}), 200
             
-    except Exception as e:
-        logger.error(f"Error in request completion handler: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+#     except Exception as e:
+#         logger.error(f"Error in request completion handler: {e}")
+#         import traceback
+#         logger.error(traceback.format_exc())
+#         return jsonify({"error": str(e)}), 500
 
 
 # Fixed handle_flush function
@@ -262,6 +264,7 @@ def handle_infer():
         if PRINT_ONCE_AT_THE_FIRST_REQUEST:
             logger.info(f"processed_df.columns: {list(processed_df.columns)}")
             logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
+            PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
         normalize_start = time.time()
@@ -420,8 +423,59 @@ def handle_infer():
             
             infer_from_tensor_overhead_summary['online_update'] = update_overhead
         ####################################################################################
-        ## look at this
-        # elif subAlgorithm == 'scalable_rl_agent':
+        ####################################################################################
+        elif subAlgorithm == 'scalable_rl_agent':
+            from agents.rout_agent import BROKER
+            from scalable_rl_routing_agent import infer
+            
+            # === NEW SCALABLE RL AGENT (pod-count independent) ===
+            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
+            
+            # Extract features from tensor_data
+            pod_features = tensor_data['pod_features'].cpu().numpy()[0]  # [num_pods, 10]
+            kv_hit_ratios = tensor_data['kv_hit_ratios'].cpu().numpy()[0]  # [num_pods, 1]
+            request_features = tensor_data['request_features'].cpu().numpy()[0]  # [3]
+            temporal_features = np.array([], dtype=np.float32)  # Empty for now
+            
+            # Get previous reward from processed_df (gateway provides this)
+            if 'prev_reward' in processed_df.columns:
+                prev_reward = float(processed_df['prev_reward'].iloc[0])
+            else:
+                logger.error(f"scalable_rl_routing_agent, prev_reward not found in processed_df for requestID: {request_id}")
+                assert False
+            
+            # Call infer function from scalable_rl_routing_agent
+            infer_start = time.time()
+            pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, SCALABLE_RL_AGENT)
+            infer_from_tensor_overhead_summary['scalable_rl_infer'] = time.time() - infer_start
+            
+            # Build result with actual probabilities
+            num_pods = len(sorted_all_pod_ids)
+            
+            ## TODO: we need action probabilities for debugging
+            # if action_probs is not None:
+            #     # Use actual probabilities from policy
+            #     pod_probabilities = {sorted_all_pod_ids[i]: float(action_probs[i]) for i in range(min(num_pods, len(action_probs)))}
+            #     confidence = float(action_probs[pod_idx])
+            # else:
+            #     # Fallback to uniform
+            #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
+            #     confidence = 1.0/num_pods
+            
+            result = {
+                'selected_pod_index': int(pod_idx),
+                'pod_probabilities': pod_probabilities,
+                'confidence': confidence,
+                'explore_mask': 1,  # RL always explores
+                'predicted_latencies': {pod_id: -1 for pod_id in sorted_all_pod_ids},
+                'chosen_pod_predicted_latency': -1,
+            }
+            
+            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
+            
+        ####################################################################################
+        ####################################################################################
+        # elif subAlgorithm == 'scalable_rl_agent_old':
         #     # === NEW SCALABLE RL AGENT (pod-count independent) ===
         #     logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
             
@@ -527,7 +581,6 @@ def handle_infer():
             "predicted_latencies": result['predicted_latencies'],
             "chosen_pod_predicted_latency": result['chosen_pod_predicted_latency'],
         }
-        PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         return jsonify(response), 200
         
     except Exception as e:
@@ -732,6 +785,75 @@ def stop_rl_update_worker():
             logger.info("RL update worker thread stopped successfully")
 
 
+def scalable_rl_training_worker():
+    """
+    Background worker thread for scalable RL agent training.
+    
+    This continuously runs the RL training loop, which:
+    1. Pulls requests from the environment (blocks until request available from BROKER)
+    2. Predicts action (pod selection)
+    3. Routes request (sets decision in BROKER, unblocking /infer)
+    4. Collects experience and updates policy
+    """
+    global SCALABLE_RL_AGENT, SCALABLE_RL_TRAINING_SHUTDOWN
+    logger.info("🏋️  Scalable RL training worker thread started")
+    
+    try:
+        # Training loop - runs until shutdown
+        while not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
+            if SCALABLE_RL_AGENT is not None:
+                try:
+                    # Run training for a batch of steps
+                    # The agent's learn() will internally call env.step() which pulls from BROKER
+                    total_timesteps = 1000000000  # Effectively infinite
+                    SCALABLE_RL_AGENT.train(
+                        total_timesteps=total_timesteps,
+                        save_path=os.path.join(final_model_dir, 'scalable_rl_agent_checkpoint')
+                    )
+                except Exception as e:
+                    if not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
+                        logger.error(f"Error in scalable RL training loop: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        time.sleep(1)  # Avoid tight error loop
+            else:
+                time.sleep(0.1)  # Wait for agent initialization
+    except Exception as e:
+        logger.error(f"Fatal error in scalable RL training worker: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        logger.info("Scalable RL training worker thread stopped")
+
+
+def start_scalable_rl_training_worker():
+    """Start the scalable RL training worker thread"""
+    global SCALABLE_RL_TRAINING_THREAD
+    if SCALABLE_RL_TRAINING_THREAD is None or not SCALABLE_RL_TRAINING_THREAD.is_alive():
+        SCALABLE_RL_TRAINING_THREAD = threading.Thread(
+            target=scalable_rl_training_worker,
+            daemon=True,
+            name="ScalableRLTraining"
+        )
+        SCALABLE_RL_TRAINING_THREAD.start()
+        logger.info("✅ Started scalable RL training worker thread")
+
+
+def stop_scalable_rl_training_worker():
+    """Stop the scalable RL training worker thread"""
+    global SCALABLE_RL_TRAINING_THREAD
+    if SCALABLE_RL_TRAINING_THREAD and SCALABLE_RL_TRAINING_THREAD.is_alive():
+        logger.info("Stopping scalable RL training worker thread...")
+        SCALABLE_RL_TRAINING_SHUTDOWN.set()
+        
+        # Wait for thread to finish
+        SCALABLE_RL_TRAINING_THREAD.join(timeout=5.0)
+        if SCALABLE_RL_TRAINING_THREAD.is_alive():
+            logger.warning("Scalable RL training worker thread did not stop gracefully")
+        else:
+            logger.info("Scalable RL training worker thread stopped successfully")
+
+
 def queue_rl_update(n_steps=32):
     """Queue an RL agent update request (non-blocking)"""
     if ENABLE_ONLINE_LEARNING and RL_AGENT is not None:
@@ -868,6 +990,9 @@ def graceful_shutdown(sig=None, frame=None):
     # Stop RL update worker
     stop_rl_update_worker()
     
+    # Stop scalable RL training worker
+    stop_scalable_rl_training_worker()
+    
     # Shutdown the scheduler if it exists
     if 'scheduler' in globals() and scheduler:
         try:
@@ -1001,6 +1126,49 @@ def init():
             TRAINING_DF = pd.DataFrame()
     else:
         logger.info("Online learning disabled, skipping offline data load")
+    
+    # Initialize scalable RL agent if configured
+    model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+    if model_type == 'scalable_rl_agent':
+        from agents.rout_agent import BROKER
+        from scalable_rl_routing_agent import create_scalable_rl_agent
+        
+        logger.info("Initializing scalable_rl_agent, scalable RL agent...")
+        global SCALABLE_RL_AGENT, BROKER_LOCK
+        with BROKER_LOCK.write():
+            # Get number of pods from current running pods
+            num_pods = len(sorted_running_pod_ips)
+            logger.info(f"Creating scalable RL agent with {num_pods} pods")
+            
+            # Create agent with hyperparameters
+            SCALABLE_RL_AGENT = create_scalable_rl_agent(
+                num_pods=num_pods,
+                per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 11),
+                request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
+                max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
+                learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
+                reward_decay_factor=RL_MODEL_HYPERPARAMETERS.get('reward_decay_factor', 1.0),
+                gae_lambda=RL_MODEL_HYPERPARAMETERS.get('gae_lambda', 0.95),
+                n_steps=RL_MODEL_HYPERPARAMETERS.get('n_steps', 256),
+                horizon=RL_MODEL_HYPERPARAMETERS.get('horizon', 1024),
+                batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
+                last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
+                rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
+            )
+            logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
+            
+            # Load checkpoint if available
+            checkpoint_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                try:
+                    SCALABLE_RL_AGENT.load(checkpoint_path)
+                    logger.info(f"scalable_rl_routing_agent, Loaded scalable RL checkpoint from {checkpoint_path}")
+                except Exception as e:
+                    logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
+        
+        # Start training thread
+        start_scalable_rl_training_worker()
+        logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
 
 
 def periodic_checkpoint_scalable_rl():
@@ -1035,7 +1203,7 @@ def periodic_checkpoint_scalable_rl():
                 try:
                     # Upgrade to write lock for saving
                     with SCALABLE_RL_AGENT_LOCK.write():
-                        logger.info(f"💾 Checkpointing scalable RL agent at step {total_steps}")
+                        logger.info(f"scalable_rl_routing_agent, Checkpointing scalable RL agent at step {total_steps}")
                         
                         # Save with comprehensive metadata
                         SCALABLE_RL_AGENT.save(
@@ -1046,17 +1214,17 @@ def periodic_checkpoint_scalable_rl():
                         # Log metrics
                         metrics = SCALABLE_RL_AGENT.get_metrics()
                         if metrics.get('reward_stats'):
-                            logger.info(f"  📊 Avg reward (recent 100): {metrics['reward_stats']['avg_reward_recent']:.3f}")
-                            logger.info(f"  ✅ Success rate: {metrics['success_rate']:.2%}")
+                            logger.info(f"scalable_rl_routing_agent, Avg reward (recent 100): {metrics['reward_stats']['avg_reward_recent']:.3f}")
+                            logger.info(f"scalable_rl_routing_agent, Success rate: {metrics['success_rate']:.2%}")
                         
                         # Clean up old checkpoints (keep only last 5)
                         cleanup_old_checkpoints(checkpoint_dir, keep_latest=5)
                         
                 except Exception as e:
-                    logger.error(f"Failed to save checkpoint: {e}")
+                    logger.error(f"scalable_rl_routing_agent, Failed to save checkpoint: {e}")
     
     except Exception as e:
-        logger.error(f"Error in periodic_checkpoint_scalable_rl: {e}")
+        logger.error(f"scalable_rl_routing_agent, Error in periodic_checkpoint_scalable_rl: {e}")
 
 
 def cleanup_old_checkpoints(checkpoint_dir, keep_latest=5):
@@ -1093,11 +1261,11 @@ def cleanup_old_checkpoints(checkpoint_dir, keep_latest=5):
                         file_to_remove = base_path + ext if ext != '.zip' else checkpoint_path
                         if os.path.exists(file_to_remove):
                             os.remove(file_to_remove)
-                            logger.debug(f"  🗑️  Removed old checkpoint: {os.path.basename(file_to_remove)}")
+                            logger.info(f"scalable_rl_routing_agent, Removed old checkpoint: {os.path.basename(file_to_remove)}")
                 except Exception as e:
-                    logger.warning(f"Failed to remove old checkpoint {checkpoint_path}: {e}")
+                    logger.warning(f"scalable_rl_routing_agent, Failed to remove old checkpoint {checkpoint_path}: {e}")
     except Exception as e:
-        logger.error(f"Error cleaning up old checkpoints: {e}")
+        logger.error(f"scalable_rl_routing_agent, Error cleaning up old checkpoints: {e}")
 
 
 if __name__ == "__main__":
@@ -1122,16 +1290,16 @@ if __name__ == "__main__":
     else:
         logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
     
-    # Add periodic checkpointing for scalable RL agent (every 2 minutes)
-    scheduler.add_job(func=periodic_checkpoint_scalable_rl, trigger="interval", seconds=120)
-    logger.info("📆 Periodic checkpointing scheduled (every 2 minutes)")
+    # # Add periodic checkpointing for scalable RL agent (every 2 minutes)
+    # scheduler.add_job(func=periodic_checkpoint_scalable_rl, trigger="interval", seconds=120)
+    # logger.info("Periodic checkpointing scheduled (every 2 minutes)")
     
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown())
     
     # Start RL update worker thread
     start_rl_update_worker()
-    
+        
     # NEW CODE: Add error handling around app.run()
     try:
         logger.info(f"Starting Flask app on port {port}")
