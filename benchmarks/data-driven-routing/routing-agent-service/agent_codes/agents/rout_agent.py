@@ -8,7 +8,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from policies import ActorCriticRoutingPolicy
 from envs.rout_env import ScalableRoutingEnvironment 
-from envs.wrappers import EpisodeLengthWrapper, EpisodeCounterWrapper
+from envs.rl_env_wrappers import EpisodeLengthWrapper, EpisodeCounterWrapper
 from envs.broker import RequestBroker
 from envs.request_source_gateway import GatewayRequestSource
 

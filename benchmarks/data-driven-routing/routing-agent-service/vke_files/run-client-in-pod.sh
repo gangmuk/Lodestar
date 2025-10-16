@@ -10,8 +10,8 @@ POD_NAME=${POD_NAME:-client-service}
 CONTAINER_NAME=${CONTAINER_NAME:-client}
 k8s_cluster="vke"
 
-# routing_policy="scalable_rl_agent"
-routing_policy="latency_predictor"
+routing_policy="scalable_rl_agent"
+# routing_policy="latency_predictor"
 
 # Parameters are now hardcoded above
 # To change them, edit the values at the top of this script
@@ -51,7 +51,9 @@ port=80
 # workload_name="ten_request"
 
 workload_name_list=(
-    "MixedSharingRatio10_30_50_70%"
+    # "ten_request"
+    "hundred_request"
+    # "MixedSharingRatio10_30_50_70%"
     # "SharingRatio71%"
     # "SharingRatio47%"
     # "SharingRatio28%"
@@ -89,7 +91,12 @@ for workload_name in "${workload_name_list[@]}"; do
         echo "Exiting..."
         exit 1
     fi
-    python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
+    ship_start_time=$(date +%s)
+    # python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
+    python ship_all_copy.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
+    ship_end_time=$(date +%s)
+    ship_took=$((ship_end_time - ship_start_time))
+    echo "* ship_all took: ${ship_took}s"
     # python ship_all.py --ship_code 1 --ship_model 1 --final_model_dir "../training_data/merged-data/all/final_model-latency_predictor_ttft" --k8s_cluster vke
     sleep 5
 

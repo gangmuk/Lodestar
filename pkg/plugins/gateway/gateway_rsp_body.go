@@ -823,7 +823,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -851,6 +851,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		utils.GetChosenPodPredictedLatency(routerCtx.RequestID),
 		routerCtx.Iteration,
 		routerCtx.SubAlgorithm,
+		utils.GetPrevRewardForRequest(routerCtx.RequestID),
 	)
 
 	// logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
@@ -884,8 +885,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	// Write to file asynchronously (non-blocking)
 	writeLatencyMetricsLog(logMessage)
 
-	// Notify scalable RL agent of request completion (async, non-blocking)
-	notifyRLAgentRequestComplete(routerCtx, ttftMs, avgTpotMs)
+	// // Notify scalable RL agent of request completion (async, non-blocking)
+	// notifyRLAgentRequestComplete(routerCtx, ttftMs, avgTpotMs)
 
 	return headers, logMessage
 }

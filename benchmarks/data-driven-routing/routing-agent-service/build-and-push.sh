@@ -6,9 +6,9 @@ build=$1
 
 if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
-    docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
-    docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
-    docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+    sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+    sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     kubectl set image deployment/routing-agent-service routing-agent=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     # kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
 else

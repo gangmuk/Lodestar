@@ -15,4 +15,5 @@ class Request:
         return self.pending.state["obs"]
 
     def route(self, pod_idx: int):
+        # TODO: action probabilities for debugging
         self.broker.set_decision(self.pending.request_id, pod_idx)
