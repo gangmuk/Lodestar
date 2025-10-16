@@ -1,5 +1,4 @@
 import gymnasium as gym
-import warnings
 import torch
 import torch.nn as nn
 
@@ -32,9 +31,6 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         last_layer_dim_vf: int = 1,
         **kwargs):
         
-        self.num_pods = action_space.n
-        # self.per_pod_dim = per_pod_dim
-        # self.request_dim = request_dim
         self.feature_dim = per_pod_dim * 5 + request_dim # 5: mean, std, max, min and raw
         self.hidden_dim = hidden_dim
         self.last_layer_dim_pi = last_layer_dim_pi
@@ -59,7 +55,7 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         forward: https://github.com/DLR-RM/stable-baselines3/blob/d487f2d2355a6cf81ea26a0bbbdf1a727ca2a886/stable_baselines3/common/policies.py#L636
         """
         
-        self.mlp_extractor = PodScorer(self.num_pods, self.feature_dim, \
+        self.mlp_extractor = PodScorer(self.feature_dim, \
             self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
         
         # XXX: general color code 
