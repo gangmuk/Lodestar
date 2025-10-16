@@ -5,7 +5,7 @@ import gymnasium as gym
 from typing import Tuple
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from logger import logger
-
+from torchinfo import summary
 
 class PodFeatExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.Space, 
@@ -22,14 +22,11 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         # Use aggregated cluster stats (fixed size)
         cluster_stats_dim = per_pod_dim * 4  # mean, std, max, min
         features_dim = cluster_stats_dim + request_dim  # 44 + 3 = 47
+        self.num_pods = None
         
         super().__init__(observation_space, features_dim)
         
-        
-        logger.info(f"🏗️  ScalableRoutingPolicyNetwork initialized:")
-        # logger.info(f"  Per-pod input: {scorer_input_size} dims (11 pod + 3 req + 44 cluster)")
-        logger.info(f"  Features output: {features_dim} dims (fixed size for critic)")
-        # logger.info(f"  Hidden dim: {hidden_dim}")
+        logger.info(f"🏗️ PodFeatExtractor initialized with feature dimension {features_dim}")
         
 
     def _compute_cluster_statistics(self, combined_pod_features):
@@ -53,8 +50,6 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         # Shape: [batch, 44]
         
         return cluster_stats
-
-    
     
     def forward(self, observations):
         """
@@ -76,6 +71,8 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         
         batch_size = pod_features.shape[0]
         num_pods = pod_features.shape[1]
+        assert num_pods == kv_hit_ratios.shape[1], "Number of pods in pod_features and kv_hit_ratios must match"
+        self.num_pods = num_pods
         
         # === STEP 1: Combine pod features + kv hit ratios ===
         combined_pod_features = torch.cat([pod_features, kv_hit_ratios], dim=2)
@@ -103,8 +100,7 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         
         return features
 
-## TODO: Support fixed sized value network, this needs to change PodFeatExtractor forward 
-# to remove concat of pod features.
+
 class PodScorer(nn.Module):
     """
     Custom network for policy and value function (mlp_extractor).
@@ -120,29 +116,29 @@ class PodScorer(nn.Module):
     """
 
     def __init__(
-        self, 
-        num_pods: int, 
+        self,  
         feature_dim: int, 
         hidden_dim: int = 64, 
         last_layer_dim_pi: int = 1, 
-        last_layer_dim_vf: int = 0, 
+        last_layer_dim_vf: int = 1, 
         ):
 
         super(PodScorer, self).__init__()
         
-        self.num_pods = num_pods
-
-        self.pod_scorer_pi = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),       # 58 → 64
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_dim, hidden_dim // 2),         # 64 → 32
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, last_layer_dim_pi)                   # 32 → last_layer_dim_pi (score)
-        )
-
+        self.pod_scorer_pi = None
         self.pod_scorer_vf = None
+
+        if last_layer_dim_pi > 0:
+            self.pod_scorer_pi = nn.Sequential(
+                nn.Linear(feature_dim, hidden_dim),       # 58 → 64
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(hidden_dim, hidden_dim // 2),         # 64 → 32
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(hidden_dim // 2, last_layer_dim_pi)                   # 32 → last_layer_dim_pi (score)
+            )
+
         if last_layer_dim_vf > 0:
             self.pod_scorer_vf = nn.Sequential(
                 nn.Linear(feature_dim, hidden_dim),       # 58 → 64
@@ -154,30 +150,35 @@ class PodScorer(nn.Module):
                 nn.Linear(hidden_dim // 2, last_layer_dim_vf)                   # 32 → last_layer_dim_vf (score)
             )
 
-        self.latent_dim_pi = last_layer_dim_pi # for easy actor rewrite _build(), no use
-        self.latent_dim_vf = last_layer_dim_vf # for easy actor rewrite _build(), no use
+        self.latent_dim_pi = last_layer_dim_pi # for easy rewrite of _build()
+        self.latent_dim_vf = last_layer_dim_vf # for easy rewrite of _build()
+        self.batch_size = None
+        self.num_pods = None
 
-        print('feature_dim: ', feature_dim, 'hidden_dim: ', hidden_dim, 'last_layer_dim_pi: ', last_layer_dim_pi, 'last_layer_dim_vf: ', last_layer_dim_vf)
-      
-        self.action_mask = None ## TODO: current implementation doesn't support action_mask
 
+    def get_num_pods(self):
+        assert self.num_pods is not None, "num_pods is not set"
+        return self.num_pods
+    
+    def set_num_pods(self, num_pods: int):
+        self.num_pods = num_pods
     
     def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        num_pods = self.get_num_pods()
+        self.batch_size = features.shape[0] // num_pods
         if self.pod_scorer_vf is None:
             return self.forward_actor(features)
+        elif self.pod_scorer_pi is None: 
+            return self.forward_critic(features)
         else:
             return self.forward_actor(features), self.forward_critic(features)
 
-
     def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
+        if self.pod_scorer_pi is None:
+            raise ValueError("pod_scorer_pi is not initialized")
+
         policy_pod_scores = self.pod_scorer_pi(features)  # [batch*num_pods, 1]
-        batch_size = features.shape[0] // self.num_pods
-        policy_pod_scores = policy_pod_scores.view(batch_size, -1)  # [batch, num_pods*last_layer_dim_pi]
-        
-        # === STEP 7: Apply action masking (unhealthy pod filtering) ===
-        if self.action_mask is not None:
-            # Set invalid pod scores to -inf (zero probability after softmax)
-            policy_pod_scores = policy_pod_scores.masked_fill(self.action_mask == 0, float('-inf'))
+        policy_pod_scores = policy_pod_scores.view(self.batch_size, -1)  # [batch, num_pods*last_layer_dim_pi]
         
         return policy_pod_scores
 
@@ -186,14 +187,8 @@ class PodScorer(nn.Module):
             raise ValueError("pod_scorer_vf is not initialized")
 
         value_pod_scores = self.pod_scorer_vf(features)  # [batch*num_pods, 1]
-        batch_size = features.shape[0] // self.num_pods
-        value_pod_scores = value_pod_scores.view(batch_size, -1)  # [batch, num_pods*last_layer_dim_vf]
+        value_pod_scores = value_pod_scores.view(self.batch_size, -1)  # [batch, num_pods*last_layer_dim_vf]
         value_pod_scores = value_pod_scores.mean(dim=1, keepdim=True)  # [batch, 1]
-        
-        # === STEP 7: Apply action masking (unhealthy pod filtering) ===
-        if self.action_mask is not None:
-            # Set invalid pod scores to -inf (zero probability after softmax)
-            value_pod_scores = value_pod_scores.masked_fill(self.action_mask == 0, float('-inf'))
         
         return value_pod_scores
 

@@ -1,7 +1,11 @@
 import gymnasium as gym
+import warnings
+import torch
 import torch.nn as nn
 
-from typing import Callable
+from typing import Callable, Union
+from logger import logger
+from torchinfo import summary
 from stable_baselines3.common.distributions import CategoricalDistribution
 from stable_baselines3.common.type_aliases import Schedule
 
@@ -44,7 +48,6 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
             features_extractor_kwargs={
                 'per_pod_dim': per_pod_dim,
                 'request_dim': request_dim,
-                # 'hidden_dim': hidden_dim
             },
             **kwargs
         )
@@ -58,6 +61,12 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         
         self.mlp_extractor = PodScorer(self.num_pods, self.feature_dim, \
             self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
+        
+        # XXX: general color code 
+        BLUE = "\033[34m"
+        RESET = "\033[0m"
+        model_stats = summary(self.mlp_extractor, input_size=(1, self.feature_dim))
+        logger.log(f"{BLUE}🧠 MLP Extractor Architecture: \n{model_stats}{RESET}")
 
 
     def _build(self, lr_schedule: Schedule) -> None:
@@ -73,3 +82,10 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         # self.value_net = nn.Identity()
 
 
+    def extract_features(self, obs, features_extractor) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+
+        pi_features, vf_features = super().extract_features(obs, features_extractor)
+        num_pods = self.features_extractor.num_pods
+        self.features_extractor.set_num_pods(num_pods)
+
+        return pi_features, vf_features
