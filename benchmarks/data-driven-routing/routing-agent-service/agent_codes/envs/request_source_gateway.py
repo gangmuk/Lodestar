@@ -1,5 +1,5 @@
 from typing import Optional
-from .broker import RequestBroker, PendingReq
+from broker import RequestBroker, PendingReq
 
 class GatewayRequestSource:
     def __init__(self, broker: RequestBroker):
