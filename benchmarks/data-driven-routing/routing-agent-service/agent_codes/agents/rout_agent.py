@@ -9,8 +9,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from policies import ActorCriticRoutingPolicy
 from envs.rout_env import ScalableRoutingEnvironment 
 from envs.rl_env_wrappers import EpisodeLengthWrapper, EpisodeCounterWrapper
-from envs.broker import RequestBroker
+from broker.broker import RequestBroker
 from envs.request_source_gateway import GatewayRequestSource
+from .trainer import Trainer
 
 from .replay_buffer import PrioritizedReplayBuffer
 
@@ -25,7 +26,6 @@ class ScalableRLRoutingAgent:
 
     def __init__(
         self, 
-        num_pods: int,
         per_pod_dim: int = 11, 
         request_dim: int = 3, 
         max_pods: int = 100, 
@@ -42,15 +42,14 @@ class ScalableRLRoutingAgent:
             hyperparameters: PPO and training hyperparameters
         """
 
-        self.num_pods = num_pods
         self.per_pod_dim = per_pod_dim
         self.request_dim = request_dim
         self.max_pods = max_pods # XXX: useless
         self.hyperparameters = hyperparameters
         
         # Create environment
-        self.env = self.make_env(hyperparameters.get('horizon', 1024))
-
+        self.static_num_pods = hyperparameters.get('static_num_pods', False)
+        self.env = self.make_env(hyperparameters.get('horizon', 1024), static_num_pods=self.static_num_pods)
         self.setup_model(rl, per_pod_dim, request_dim, hyperparameters)
         
         # === Prioritized Experience Replay ===
@@ -69,9 +68,8 @@ class ScalableRLRoutingAgent:
         logger.info(f"ScalableRLRoutingAgent initialization complete")
 
 
-    def make_env(self, horizon: int):
+    def make_env(self, horizon: int, static_num_pods: bool = False):
         env = ScalableRoutingEnvironment(
-            num_pods=self.num_pods,
             num_requests=10_000_000_000_000, # effectively infinite; EpisodeLengthWrapper handles resets
             per_pod_dim=self.per_pod_dim,
             request_dim=self.request_dim,
@@ -80,9 +78,11 @@ class ScalableRLRoutingAgent:
         env = Monitor(env)
         env = EpisodeLengthWrapper(env, horizon=horizon)
         env = EpisodeCounterWrapper(env)
-        env = DummyVecEnv([lambda: env])
+        if static_num_pods:
+            env = DummyVecEnv([lambda: env])
 
-        logger.info(f"Environment created with horizon {horizon}, this should be the number of requests per episode.")
+        logger.info(f"Environment created with horizon {horizon}, \
+            this should be the number of requests per workload.")
 
         return env
         
@@ -98,6 +98,7 @@ class ScalableRLRoutingAgent:
             pass
         elif rl == 'PPO':
             # === Create PPO model with our scalable policy ===
+            # TODO: revisit hyperparameters
             self.model = PPO(
                 ActorCriticRoutingPolicy,
                 self.env,
@@ -125,7 +126,11 @@ class ScalableRLRoutingAgent:
     
 
     def train(self, total_timesteps: int, save_path: str):
-        self.model.learn(total_timesteps=total_timesteps, progress_bar=True)
+        if self.static_num_pods:
+            self.model.learn(total_timesteps=total_timesteps, progress_bar=True)
+        else:
+            trainer = Trainer(self.model, self.env, log_dir="./logs")
+            trainer.train(total_timesteps)
         self.total_steps = total_timesteps
         self.save(save_path) ## TODO: match
 

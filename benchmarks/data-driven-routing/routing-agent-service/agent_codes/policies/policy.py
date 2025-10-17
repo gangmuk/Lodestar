@@ -58,12 +58,10 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         self.mlp_extractor = PodScorer(self.feature_dim, \
             self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
         
-        # XXX: general color code 
-        BLUE = "\033[34m"
-        RESET = "\033[0m"
+        self.mlp_extractor.set_num_pods(1)
+        logger.info(f"🧠 MLP Extractor Architecture: \n")
         model_stats = summary(self.mlp_extractor, input_size=(1, self.feature_dim))
-        logger.log(f"{BLUE}🧠 MLP Extractor Architecture: \n{model_stats}{RESET}")
-
+        self.mlp_extractor.set_num_pods(None)
 
     def _build(self, lr_schedule: Schedule) -> None:
         """
