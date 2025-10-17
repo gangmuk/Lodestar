@@ -9,6 +9,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.type_aliases import GymEnv, Schedule
 
+## XXX: This solution is not used because it takes too long to train.
 class Reinforce(OnPolicyAlgorithm):
     """
     Monte Carlo Policy Gradient (REINFORCE) using SB3's infrastructure.

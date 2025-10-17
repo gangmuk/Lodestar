@@ -20,7 +20,7 @@ class ScalableRoutingEnvironment(gym.Env):
     1. Change max_pods to num_pods
     2. Use Request class to manage requests (interface to Gateway)
     """
-    def __init__(self, num_pods: int, num_requests: int, per_pod_dim: int = 11, request_dim: int = 3, source: GatewayRequestSource=None):
+    def __init__(self, num_requests: int, per_pod_dim: int = 11, request_dim: int = 3, source: GatewayRequestSource=None):
         super().__init__()
         
         self.num_requests = num_requests
@@ -28,15 +28,15 @@ class ScalableRoutingEnvironment(gym.Env):
         self.request_dim = request_dim
         self.source = source
 
-        # None shape to support variable number of pods, will break if we call space.sample()
+        # Just a placeholder, first dimension = 1 for initialization, dynamically set for each step
         self.observation_space = spaces.Dict({
-            'pod_features': spaces.Box(-np.inf, np.inf, shape=(None, per_pod_dim - 1), dtype=np.float32),
-            'kv_hit_ratios': spaces.Box(0.0, 1.0, shape=(None, 1), dtype=np.float32),
+            'pod_features': spaces.Box(-np.inf, np.inf, shape=(1, per_pod_dim - 1), dtype=np.float32),
+            'kv_hit_ratios': spaces.Box(0.0, 1.0, shape=(1, 1), dtype=np.float32),
             'request_features': spaces.Box(-np.inf, np.inf, shape=(request_dim,), dtype=np.float32),
-            'temporal_features': spaces.Box(-np.inf, np.inf, shape=(0,), dtype=np.float32)
+            'temporal_features': spaces.Box(-np.inf, np.inf, shape=(1,), dtype=np.float32)
         })
    
-        self.action_space = spaces.Box(0, np.inf, shape=(1,), dtype=np.int32)
+        self.action_space = spaces.Discrete(1)
 
         self.request_count = 0
         self._request: Optional[Request] = None
@@ -56,12 +56,15 @@ class ScalableRoutingEnvironment(gym.Env):
         """Reset environment"""
         super().reset(seed=seed)
 
-        logger.info(f"Resetting environment...")
+        GREEN = '\033[92m'
+        RESET = '\033[0m'
+        logger.info(f"{GREEN}Resetting environment...{RESET}")
 
         self.request_count = 0
         self._request = self._pull()
         self._first_reward = float(self._request.pending.prev_reward or 0.0)
         observation = self._request.get_obs()
+        self.update_space(observation['pod_features'].shape[0])
         info = self._request.state # dict()
 
         logger.info(f"ScalableRoutingEnvironment reset with request {self._request.pending.request_id}, \
@@ -76,6 +79,7 @@ class ScalableRoutingEnvironment(gym.Env):
 
         next_req = self._pull()
         observation = next_req.get_obs()
+        self.update_space(observation['pod_features'].shape[0])
         reward = float(next_req.pending.prev_reward) if self.request_count > 0 else self._first_reward
         info = next_req.state # dict()
         self.request_count += 1
@@ -86,3 +90,8 @@ class ScalableRoutingEnvironment(gym.Env):
         self._request = next_req
         
         return observation, reward, terminated, truncated, info
+
+    def update_space(self, num_pods: int):
+        self.observation_space['pod_features'] = spaces.Box(-np.inf, np.inf, shape=(num_pods, self.per_pod_dim - 1), dtype=np.float32)
+        self.observation_space['kv_hit_ratios'] = spaces.Box(0.0, 1.0, shape=(num_pods, 1), dtype=np.float32)
+        self.action_space = spaces.Discrete(num_pods)
