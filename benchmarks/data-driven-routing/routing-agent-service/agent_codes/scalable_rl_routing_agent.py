@@ -33,16 +33,16 @@ import torch.nn as nn
 
 from tqdm.auto import tqdm
 from gymnasium import spaces
-from torchinfo import summary
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.type_aliases import Schedule
-from stable_baselines3.common.distributions import CategoricalDistribution
+from stable_baselines3.common.type_aliases import Schedule, PyTorchObs
+from stable_baselines3.common.distributions import CategoricalDistribution, Distribution
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.logger import configure
+from stable_baselines3.common.base_class import BasePolicy
 
 
 from dataclasses import dataclass, field
@@ -50,6 +50,8 @@ from typing import Dict, Any, Optional, Tuple, Callable, Union
 
 
 from logger import logger
+
+NUM_PODS = 7
 
 
 # ============================================================================
@@ -87,32 +89,25 @@ def infer(request_id: str, prev_reward: float, pod_features: np.ndarray, kv_hit_
             'temporal_features': temporal_features,
         }
     }
-
-    # obs = state['obs']
-    # with torch.no_grad():
-    #     obs_tensor = agent.model.policy.obs_to_tensor(obs)[0]
-    #     distribution = agent.model.policy.get_distribution(obs_tensor)
-    #     action = distribution.get_actions(deterministic=False)
-    #     action_probs = distribution.distribution.probs.cpu().numpy()[0]  # [num_pods]
-    # pod_idx = int(action.item())
-    
-    # logger.debug(f"Direct inference for {request_id}: action={pod_idx}, confidence={action_probs[pod_idx]:.3f}")
-    # return pod_idx, action_probs
     
     pending = BROKER.submit(request_id=request_id, state=state, prev_reward=prev_reward)
     # timeout_in_seconds = 5 # TODO: inference should be made within less than 100ms
     decision_result = BROKER.wait_for_decision(request_id, timeout=timeout_in_seconds)
     
     if decision_result is None:
-        logger.error(f"Decision timed out (timeout={timeout_in_seconds}), requestID, {request_id}")
-        assert False
-    pod_idx, _ = decision_result
+        RED_COLOR = "\033[91m"
+        RESET_COLOR = "\033[0m" 
+        logger.error(f"{RED_COLOR}Decision timed out (timeout={timeout_in_seconds}), requestID, {request_id}{RESET_COLOR}")
+        # assert False
+        pod_idx = 0
+    else:
+        pod_idx, _ = decision_result
     # if pod_idx is None:
     #     # fallback policy (your existing logic)
     #     pod_idx = 0
     BROKER.set_decision(request_id, pod_idx)
     
-    BROKER.pop(request_id)
+    # BROKER.pop(request_id)
     infer_from_tensor_overhead_summary['total'] = time.time() - infer_start_time
     logger.info(f"scalable_rl_routing_agent, infer, request_id={request_id}, action={pod_idx}, took={infer_from_tensor_overhead_summary['total']:.3f}s")
     return pod_idx, infer_from_tensor_overhead_summary
@@ -157,10 +152,6 @@ class RequestBroker:
         with self._lock:
             pr = self._by_id.get(request_id)
         if pr:
-            RED_COLOR = "\033[91m"
-            RESET_COLOR = "\033[0m" 
-            print(f"{RED_COLOR}set_decision{RESET_COLOR}", action)
-
             pr.decision_action = int(action)
             pr.decision_probs = probs # TODO: actison probabilities for debugging
             pr.decision_event.set()
@@ -217,23 +208,6 @@ class Request:
         self.broker.set_decision(self.pending.request_id, pod_idx)
 
 
-class EpisodeLengthWrapper(gym.Wrapper):
-    def __init__(self, env, horizon: int):
-        super().__init__(env)
-        self.horizon = horizon
-        self._ts = 0
-
-    def reset(self, **kwargs):
-        self._ts = 0
-        return self.env.reset(**kwargs)
-
-    def step(self, action):
-        obs, rew, term, trunc, info = self.env.step(action)
-        self._ts += 1
-        if self._ts >= self.horizon:
-            term = True  # end episode every `horizon` steps
-        return obs, rew, term, trunc, info
-
 
 class EpisodeCounterWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -252,6 +226,9 @@ class EpisodeCounterWrapper(gym.Wrapper):
         info = dict(info or {})
         info['episode_count'] = self._episode_count
         return obs, rew, term, trunc, info
+
+
+# class 
 
 
 class RealTimeWrapper(gym.Wrapper):
@@ -304,11 +281,12 @@ class ScalableRoutingEnvironment(gym.Env):
         self.per_pod_dim = per_pod_dim
         self.request_dim = request_dim
         self.source = source
+        global NUM_PODS
 
         # Just a placeholder, first dimension = 1 for initialization, dynamically set for each step
         self.observation_space = spaces.Dict({
-            'pod_features': spaces.Box(-np.inf, np.inf, shape=(1, per_pod_dim - 1), dtype=np.float32),
-            'kv_hit_ratios': spaces.Box(0.0, 1.0, shape=(1, 1), dtype=np.float32),
+            'pod_features': spaces.Box(-np.inf, np.inf, shape=(NUM_PODS, per_pod_dim - 1), dtype=np.float32),
+            'kv_hit_ratios': spaces.Box(0.0, 1.0, shape=(NUM_PODS, 1), dtype=np.float32),
             'request_features': spaces.Box(-np.inf, np.inf, shape=(request_dim,), dtype=np.float32),
             'temporal_features': spaces.Box(-np.inf, np.inf, shape=(1,), dtype=np.float32)
         })
@@ -552,6 +530,8 @@ class PodScorer(nn.Module):
             return self.forward_actor(features), self.forward_critic(features)
 
     def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
+        num_pods = self.get_num_pods()
+        self.batch_size = features.shape[0] // num_pods
         if self.pod_scorer_pi is None:
             raise ValueError("pod_scorer_pi is not initialized")
 
@@ -599,6 +579,7 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
             observation_space,
             action_space,
             lr_schedule,
+            share_features_extractor=False,
             features_extractor_class=PodFeatExtractor,
             features_extractor_kwargs={
                 'per_pod_dim': per_pod_dim,
@@ -616,11 +597,12 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         
         self.mlp_extractor = PodScorer(self.feature_dim, \
             self.hidden_dim, self.last_layer_dim_pi, self.last_layer_dim_vf)
-        
-        self.mlp_extractor.set_num_pods(1)
-        logger.info(f"🧠 MLP Extractor Architecture: \n")
-        model_stats = summary(self.mlp_extractor, input_size=(1, self.feature_dim))
-        self.mlp_extractor.set_num_pods(None)
+
+        # self.mlp_extractor.set_num_pods(1)
+        # from torchinfo import summary
+        # logger.info(f"🧠 MLP Extractor Architecture: \n")
+        # summary(self.mlp_extractor, input_size=(1, self.feature_dim))
+        # self.mlp_extractor.set_num_pods(None)
 
     def _build(self, lr_schedule: Schedule) -> None:
         """
@@ -635,13 +617,33 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
         # self.value_net = nn.Identity()
 
 
-    def extract_features(self, obs, features_extractor) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def extract_features(self, obs, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
 
+        RED_COLOR = "\033[91m"
+        RESET_COLOR = "\033[0m" 
+        logger.info(f"{RED_COLOR}self.share_features_extractor: {self.share_features_extractor}{RESET_COLOR}")
+        logger.info(f"{RED_COLOR}Extracting features...{RESET_COLOR}")
+        
         pi_features, vf_features = super().extract_features(obs, features_extractor)
-        num_pods = self.features_extractor.num_pods
-        self.features_extractor.set_num_pods(num_pods)
+        num_pods = self.features_extractor.num_pods  # base feature extractor
+        if features_extractor is not None:
+            features_extractor.set_num_pods(num_pods) # mlp feature extractor
 
         return pi_features, vf_features
+
+
+    def get_distribution(self, obs: PyTorchObs) -> Distribution:
+        """
+        Get the current policy distribution given the observations.
+
+        :param obs:
+        :return: the action distribution.
+        """
+        features = super(ActorCriticPolicy, self).extract_features(obs, self.pi_features_extractor)
+        num_pods = self.features_extractor.num_pods  # base feature extractor
+        self.mlp_extractor.set_num_pods(num_pods)
+        latent_pi = self.mlp_extractor.forward_actor(features)
+        return self._get_action_dist_from_latent(latent_pi)
 
 
 
@@ -661,8 +663,7 @@ class ScalableRLRoutingAgent:
     def __init__(
         self, 
         per_pod_dim: int = 11, 
-        request_dim: int = 3, 
-        max_pods: int = 100, 
+        request_dim: int = 3,  
         inference_mode: bool = False,
         rl: str = 'PPO',
         use_prioritized_replay: bool = False, 
@@ -679,12 +680,11 @@ class ScalableRLRoutingAgent:
         RED_COLOR = "\033[91m"
         RESET_COLOR = "\033[0m" 
         logger.info(f"{RED_COLOR}🤖 ScalableRLRoutingAgent initializing... \
-            per_pod_dim={per_pod_dim}, request_dim={request_dim}, max_pods={max_pods}, \
+            per_pod_dim={per_pod_dim}, request_dim={request_dim}\
             hyperparameters={hyperparameters}{RESET_COLOR}")
 
         self.per_pod_dim = per_pod_dim
         self.request_dim = request_dim
-        self.max_pods = max_pods # XXX: useless
         self.hyperparameters = hyperparameters
         
         # Create environment
@@ -723,13 +723,9 @@ class ScalableRLRoutingAgent:
         )
 
         env = Monitor(env)
-        env = EpisodeLengthWrapper(env, horizon=horizon)
         env = EpisodeCounterWrapper(env)
         if self.static_num_pods:
             env = DummyVecEnv([lambda: env])
-
-        logger.info(f"Environment created with horizon {horizon}, \
-            this should be the number of requests per workload.")
 
         return env
         
@@ -780,16 +776,6 @@ class ScalableRLRoutingAgent:
             trainer.train(total_timesteps)
         self.total_steps = total_timesteps
         self.save(save_path) ## TODO: match
-
-
-    def predict_sb3(self, pod_features, kv_hit_ratios, request_features):
-        assert self.num_pods == pod_features.shape[0]
-        
-        # Build observation dict (this pads to max_pods internally)
-        obs = build_observation(self.num_pods, pod_features, kv_hit_ratios, request_features)
-        action, _ = self.model.predict(obs)
-
-        return int(action)
     
     
     def save(self, path: str, save_buffer: bool = False):
@@ -1153,14 +1139,13 @@ class Trainer:
 # Testing
 # ============================================================================
 
-if __name__ == "__main__":
-
+def main():
     logger.info("🧪 Testing ScalableRLRoutingAgent...")
+
+    global NUM_PODS
     
-    num_pods = 4
     # Create agent
     agent = create_scalable_rl_agent(
-        num_pods=num_pods,
         per_pod_dim=11,
         request_dim=3,
         max_pods=10,
@@ -1172,6 +1157,7 @@ if __name__ == "__main__":
         horizon=10,
         batch_size=2,
         last_layer_dim_vf=1,
+        static_num_pods=False,
     )
     
     # Simulate routing workflow
@@ -1184,9 +1170,11 @@ if __name__ == "__main__":
     logger.info("🏋️ Training RL agent...")
     import random
     for i in range(20):
-        pod_features = np.random.randn(num_pods, 10
+        # NUM_PODS = random.randint(4, 10) # comment this to use fixed NUM_PODS
+        print(f"NUM_PODS: {NUM_PODS}")
+        pod_features = np.random.randn(NUM_PODS, 10
         ).astype(np.float32)
-        kv_hit_ratios = np.random.rand(num_pods, 1).astype(np.float32)
+        kv_hit_ratios = np.random.rand(NUM_PODS, 1).astype(np.float32)
         request_features = np.random.randn(3).astype(np.float32)
         temporal_features = np.array([1], dtype=np.float32)
         request_id = f"req_{i}"
@@ -1206,7 +1194,7 @@ if __name__ == "__main__":
         # confidence = action_probs[pod_idx] if action_probs is not None else 0.0
         confidence = 0.0
         logger.info(f"Step {i}: action={pod_idx}, prev_reward={prev_reward:.2f}, "
-                   f"confidence={confidence:.3f}, num_pods={num_pods}")
+                   f"confidence={confidence:.3f}, num_pods={NUM_PODS}")
     
     # Check metrics
     # metrics = agent.get_metrics()
@@ -1214,3 +1202,7 @@ if __name__ == "__main__":
     logger.info("✅ Test completed successfully!")
 
 
+
+
+if __name__ == "__main__":
+    main()
