@@ -22,6 +22,7 @@ This solves two critical problems:
 - Proper RL: Multi-step credit assignment via GAE and episode structure
 """
 
+import os
 import time
 import threading
 import queue
@@ -42,7 +43,7 @@ from stable_baselines3.common.type_aliases import Schedule, PyTorchObs
 from stable_baselines3.common.distributions import CategoricalDistribution, Distribution
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, CallbackList
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.base_class import BasePolicy
+from stable_baselines3.common.callbacks import EvalCallback
 
 
 from dataclasses import dataclass, field
@@ -58,8 +59,7 @@ NUM_PODS = 7
 # Factory and Inference Functions
 # ============================================================================
 
-def create_scalable_rl_agent(per_pod_dim: int = 11, request_dim: int = 3, 
-                             max_pods: int = 100, **hyperparameters):
+def create_scalable_rl_agent(per_pod_dim: int = 8, request_dim: int = 3, max_pods: int = 100, **hyperparameters):
     """
     Factory function to create scalable RL routing agent.
     
@@ -204,7 +204,6 @@ class Request:
         return self.pending.state["obs"]
 
     def route(self, pod_idx: int):
-        # TODO: action probabilities for debugging
         self.broker.set_decision(self.pending.request_id, pod_idx)
 
 
@@ -313,13 +312,12 @@ class ScalableRoutingEnvironment(gym.Env):
 
         GREEN = '\033[92m'
         RESET = '\033[0m'
-        RED = '\033[91m'
         logger.info(f"{GREEN}Resetting environment...{RESET}")
 
         self.request_count = 0
-        print(f"{RED}pulling request{RESET}")
+        print(f"{GREEN}pulling request{RESET}")
         self._request = self._pull()
-        print(f"{RED}request pulled{RESET}")
+        print(f"{GREEN}request pulled{RESET}")
         self._first_reward = float(self._request.pending.prev_reward or 0.0)
         observation = self._request.get_obs()
         self.update_space(observation['pod_features'].shape[0])
@@ -343,6 +341,10 @@ class ScalableRoutingEnvironment(gym.Env):
         reward = float(next_req.pending.prev_reward) if self.request_count > 0 else self._first_reward
         info = next_req.state # dict()
         self.request_count += 1
+
+        YELLOW_COLOR = "\033[93m"
+        RESET_COLOR = "\033[0m" 
+        logger.info(f"{YELLOW_COLOR}request_count: {self.request_count}{RESET_COLOR}")
 
         terminated = (self.request_count == self.num_requests)
         truncated = False
@@ -420,6 +422,7 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         Returns:
             features: [batch, 47] - Fixed size for any #pods
         """
+        
         # observations is a dict (DictObservation)
         pod_features = observations['pod_features']      # [batch, num_pods, 10]
         kv_hit_ratios = observations['kv_hit_ratios']    # [batch, num_pods, 1]
@@ -427,7 +430,7 @@ class PodFeatExtractor(BaseFeaturesExtractor):
         
         batch_size = pod_features.shape[0]
         num_pods = pod_features.shape[1]
-        assert num_pods == kv_hit_ratios.shape[1], "Number of pods in pod_features and kv_hit_ratios must match"
+        assert num_pods == kv_hit_ratios.shape[1], f"Number of pods in pod_features and kv_hit_ratios must match {num_pods} != {kv_hit_ratios.shape[1]}"
         self.num_pods = num_pods
         
         # === STEP 1: Combine pod features + kv hit ratios ===
@@ -618,16 +621,13 @@ class ActorCriticRoutingPolicy(ActorCriticPolicy):
 
 
     def extract_features(self, obs, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-
-        RED_COLOR = "\033[91m"
-        RESET_COLOR = "\033[0m" 
-        logger.info(f"{RED_COLOR}self.share_features_extractor: {self.share_features_extractor}{RESET_COLOR}")
-        logger.info(f"{RED_COLOR}Extracting features...{RESET_COLOR}")
-        
         pi_features, vf_features = super().extract_features(obs, features_extractor)
         num_pods = self.features_extractor.num_pods  # base feature extractor
+
         if features_extractor is not None:
             features_extractor.set_num_pods(num_pods) # mlp feature extractor
+        elif self.mlp_extractor is not None:
+            self.mlp_extractor.set_num_pods(num_pods)
 
         return pi_features, vf_features
 
@@ -689,7 +689,9 @@ class ScalableRLRoutingAgent:
         
         # Create environment
         self.static_num_pods = hyperparameters.get('static_num_pods', False)
-        self.env = self.make_env(hyperparameters.get('horizon', 1024))
+        horizon = hyperparameters.get('horizon', 10_000_000_000_000)
+        self.train_env = self.make_env(horizon)
+        self.eval_env = self.make_env(horizon)
         self.setup_model(rl, per_pod_dim, request_dim, hyperparameters)
         
         # === Prioritized Experience Replay ===
@@ -710,20 +712,19 @@ class ScalableRLRoutingAgent:
 
     def make_env(self, horizon: int):
 
-        RED_COLOR = "\033[91m"
+        GREEN_COLOR = "\033[92m"
         RESET_COLOR = "\033[0m" 
-        logger.info(f"{RED_COLOR}Making environment...{RESET_COLOR}")
-
+        logger.info(f"{GREEN_COLOR}Making environment...{RESET_COLOR}")
 
         env = ScalableRoutingEnvironment(
-            num_requests=10_000_000_000_000, # effectively infinite; EpisodeLengthWrapper handles resets
+            num_requests=horizon,
             per_pod_dim=self.per_pod_dim,
             request_dim=self.request_dim,
             source = SOURCE,
         )
 
         env = Monitor(env)
-        env = EpisodeCounterWrapper(env)
+        env = EpisodeCounterWrapper(env) # track episode count
         if self.static_num_pods:
             env = DummyVecEnv([lambda: env])
 
@@ -736,6 +737,11 @@ class ScalableRLRoutingAgent:
         hidden_dim = hyperparameters.get('hidden_dim', 64)
         gamma = hyperparameters.get('reward_decay_factor', 1)
         gae_lambda = hyperparameters.get('gae_lambda', 0.95)
+        tb_log_dir = hyperparameters.get('tensorboard_log', './tb_logs')
+
+        CYAN_COLOR = "\033[96m"
+        RESET_COLOR = "\033[0m" 
+        logger.info(f"{CYAN_COLOR}Tensorboard log directory: {os.path.abspath(tb_log_dir)}{RESET_COLOR}")
 
         if rl == 'PG':
             pass
@@ -744,7 +750,7 @@ class ScalableRLRoutingAgent:
             # TODO: revisit hyperparameters
             self.model = PPO(
                 ActorCriticRoutingPolicy,
-                self.env,
+                self.train_env,
                 learning_rate=learning_rate,
                 n_steps=hyperparameters.get('n_steps', 256), # number of env steps per policy update, must less that horizon
                 batch_size=hyperparameters.get('batch_size', 64),
@@ -760,20 +766,24 @@ class ScalableRLRoutingAgent:
                     'request_dim': request_dim,
                     'hidden_dim': hidden_dim,
                     'last_layer_dim_pi': hyperparameters.get('last_layer_dim_pi', 1),
-                    'last_layer_dim_vf': hyperparameters.get('last_layer_dim_vf', 0),
+                    'last_layer_dim_vf': hyperparameters.get('last_layer_dim_vf', 1),
                 },
-                verbose=1
+                verbose=1,
+                tensorboard_log=tb_log_dir,
             )
         else:
             raise ValueError(f"{rl} not supported")
+
     
 
-    def train(self, total_timesteps: int, save_path: str):
+    def train(self, total_timesteps: int, save_path: str, eval_freq: int = 5, n_eval_episodes: int = 1):
         if self.static_num_pods:
-            self.model.learn(total_timesteps=total_timesteps, progress_bar=True)
+            eval_callback = EvalCallback(self.eval_env, best_model_save_path=f"./tb_logs/best_model", \
+                log_path=f"./tb_logs/results", eval_freq=eval_freq, n_eval_episodes=n_eval_episodes, deterministic=True, render=False)
+            self.model.learn(total_timesteps=total_timesteps, progress_bar=True, tb_log_name=f'sb3_learn', callback=eval_callback)
         else:
-            trainer = Trainer(self.model, self.env, log_dir="./logs")
-            trainer.train(total_timesteps)
+            trainer = Trainer(self.model, self.train_env, log_dir=f"./tb_logs", eval_env=self.eval_env)
+            trainer.train(total_timesteps, eval_freq=eval_freq, n_eval_episodes=n_eval_episodes)
         self.total_steps = total_timesteps
         self.save(save_path) ## TODO: match
     
@@ -803,33 +813,6 @@ class ScalableRLRoutingAgent:
             
             # === Training Hyperparameters ===
             'hyperparameters': self.hyperparameters,
-            
-            # # === Training Progress ===
-            # 'training_progress': {
-            #     'total_steps': self.total_steps,
-            #     'total_episodes': self.total_episodes,
-            #     'current_episode_id': self.episode_tracker.episode_id,
-            #     'episode_request_count': self.episode_tracker.episode_request_count,
-            # },
-            
-            # # === Buffer Statistics ===
-            # 'buffer_stats': {
-            #     'buffer_size': len(self.experience_buffer),
-            #     'buffer_capacity': self.experience_buffer.buffer.maxlen,
-            #     'pending_experiences': len(self.pending_experiences),
-            #     'priority_alpha': self.experience_buffer.alpha,
-            #     'priority_beta': self.experience_buffer.beta,
-            #     'max_priority': self.experience_buffer.max_priority,
-            # },
-            
-            # # === Episode Configuration ===
-            # 'episode_config': {
-            #     'episode_duration': self.episode_tracker.episode_duration,
-            #     'episode_start_time': self.episode_tracker.episode_start_time,
-            # },
-            
-            # # === Model Performance (if tracked) ===
-            # 'performance_metrics': self.get_metrics(),
             
             # === Checkpoint Metadata ===
             'checkpoint_info': {
@@ -868,21 +851,6 @@ class ScalableRLRoutingAgent:
             logger.info(f"Saved human-readable metadata to {json_metadata_path}")
         except Exception as e:
             logger.warning(f"Could not save JSON metadata: {e}")
-        
-        # # Optionally save experience buffer (can be large!)
-        # if save_buffer and len(self.experience_buffer) > 0:
-        #     buffer_path = f"{path}_buffer.pkl"
-        #     try:
-        #         with self.experience_buffer.lock:
-        #             buffer_data = {
-        #                 'experiences': list(self.experience_buffer.buffer),
-        #                 'priorities': list(self.experience_buffer.priorities),
-        #             }
-        #         with open(buffer_path, 'wb') as f:
-        #             pickle.dump(buffer_data, f)
-        #         logger.info(f"Saved experience buffer to {buffer_path} ({len(buffer_data['experiences'])} experiences)")
-        #     except Exception as e:
-        #         logger.warning(f"Could not save buffer: {e}")
         
         logger.info(f"Model checkpoint saved to {path}")
         # logger.info(f"   Total steps: {self.total_steps}, Episodes: {self.total_episodes}")
@@ -965,80 +933,7 @@ class ScalableRLRoutingAgent:
             logger.error(f"❌ Failed to load model: {e}")
             raise
     
-    # def get_metrics(self):
-    #     """
-    #     Get comprehensive training and performance metrics.
-        
-    #     Returns:
-    #         dict: Comprehensive metrics including training progress, performance, and model quality
-    #     """
-    #     import numpy as np
-        
-    #     # Basic training metrics
-    #     metrics = {
-    #         'total_steps': self.total_steps,
-    #         'total_episodes': self.total_episodes,
-    #         'buffer_size': len(self.experience_buffer),
-    #         'pending_experiences': len(self.pending_experiences),
-    #         'current_episode': self.episode_tracker.episode_id,
-    #         'episode_request_count': self.episode_tracker.episode_request_count,
-    #     }
-        
-    #     # Reward statistics (recent 100 and all)
-    #     if len(self.reward_history) > 0:
-    #         rewards = list(self.reward_history)
-    #         recent_100 = rewards[-100:] if len(rewards) >= 100 else rewards
-            
-    #         metrics['reward_stats'] = {
-    #             'avg_reward_recent': float(np.mean(recent_100)),
-    #             'std_reward_recent': float(np.std(recent_100)),
-    #             'max_reward_recent': float(np.max(recent_100)),
-    #             'min_reward_recent': float(np.min(recent_100)),
-    #             'avg_reward_all': float(np.mean(rewards)),
-    #             'num_samples': len(rewards),
-    #         }
-            
-    #         # Success rate (reward > 0 means good routing decision)
-    #         success_count = sum(1 for r in recent_100 if r > 0)
-    #         metrics['success_rate'] = success_count / len(recent_100) if len(recent_100) > 0 else 0.0
-    #     else:
-    #         metrics['reward_stats'] = None
-    #         metrics['success_rate'] = None
-        
-    #     # Decision quality metrics
-    #     if len(self.recent_decisions) > 0:
-    #         decisions = list(self.recent_decisions)
-    #         confidences = [d['confidence'] for d in decisions]
-    #         latencies = [d['latency_ms'] for d in decisions]
-    #         rewards = [d['reward'] for d in decisions]
-            
-    #         metrics['decision_quality'] = {
-    #             'avg_confidence': float(np.mean(confidences)),
-    #             'avg_latency_ms': float(np.mean(latencies)),
-    #             'p50_latency_ms': float(np.percentile(latencies, 50)),
-    #             'p95_latency_ms': float(np.percentile(latencies, 95)),
-    #             'p99_latency_ms': float(np.percentile(latencies, 99)),
-    #             'high_confidence_success_rate': self._compute_high_confidence_success(decisions),
-    #         }
-    #     else:
-    #         metrics['decision_quality'] = None
-        
-    #     # Learning progress (compare first 100 vs last 100 rewards)
-    #     if len(self.reward_history) >= 200:
-    #         rewards = list(self.reward_history)
-    #         first_100 = rewards[:100]
-    #         last_100 = rewards[-100:]
-    #         improvement = np.mean(last_100) - np.mean(first_100)
-    #         metrics['learning_progress'] = {
-    #             'reward_improvement': float(improvement),
-    #             'first_100_avg': float(np.mean(first_100)),
-    #             'last_100_avg': float(np.mean(last_100)),
-    #         }
-    #     else:
-    #         metrics['learning_progress'] = None
-        
-    #     return metrics
-    
+
     def _compute_high_confidence_success(self, decisions, confidence_threshold=0.7):
         """
         Compute success rate for high-confidence decisions.
@@ -1058,7 +953,7 @@ class Trainer:
     Keeps SB3 logging, callbacks, and progress bar.
     """
 
-    def __init__(self, model, env, log_dir="./logs", eval_env=None):
+    def __init__(self, model, env, log_dir="./tb_logs", eval_env=None):
         self.model = model
         self.env = env
         self.eval_env = eval_env
@@ -1099,9 +994,29 @@ class Trainer:
         pbar = tqdm(total=total_timesteps, desc="Training", unit="steps")
 
         for step in range(total_timesteps):
+
+            # === 1.1 Get action probability distribution ===
+            # obs_tensor = self.model.policy.obs_to_tensor(obs)
+            obs_tensor = {key: torch.as_tensor(_obs, device=self.model.device).unsqueeze(0) for (key, _obs) in obs.items()}
+            dist = self.model.policy.get_distribution(obs_tensor)
+            probs = dist.distribution.probs.detach().cpu().numpy()[0]
+
+            self.model.logger.record("policy/action_probs", probs)
+            logger.info(f"probs: {probs}")
+
+            # Also log entropy and max-prob for diagnostics
+            entropy = dist.distribution.entropy().mean().item()
+            max_prob = float(probs.max())
+            self.model.logger.record("policy/entropy", entropy)
+            self.model.logger.record("policy/max_action_prob", max_prob)
+
             # === 1. Predict ===
             action, _ = self.model.predict(obs, deterministic=False)
+            logger.info(f"action: {action}")
             obs, reward, done, truncated, info = self.env.step(action)
+
+            for i in range(len(probs)):
+                self.model.logger.record(f"policy/action_taken_{i}", 1.0 if i == action else 0.0)
 
             # === 2. Record reward ===
             episode_reward += reward
@@ -1154,26 +1069,25 @@ def main():
         gae_lambda=0.95,
         # episode_duration=1.0,
         n_steps=5,
-        horizon=10,
+        horizon=5,
         batch_size=2,
         last_layer_dim_vf=1,
-        static_num_pods=False,
+        static_num_pods=True,
     )
     
     # Simulate routing workflow
     train_thread = threading.Thread(
         target=agent.train,
-        kwargs={"total_timesteps": 200_000, "save_path": "scalable_rl_agent.pth"},
+        kwargs={"total_timesteps": 200_000, "save_path": "scalable_rl_agent.pth", "eval_freq": 5, "n_eval_episodes": 1},
         daemon=True,   # dies with the main process
     )
     train_thread.start()
     logger.info("🏋️ Training RL agent...")
     import random
-    for i in range(20):
+    for i in range(40):
         # NUM_PODS = random.randint(4, 10) # comment this to use fixed NUM_PODS
         print(f"NUM_PODS: {NUM_PODS}")
-        pod_features = np.random.randn(NUM_PODS, 10
-        ).astype(np.float32)
+        pod_features = np.random.randn(NUM_PODS, 10).astype(np.float32)
         kv_hit_ratios = np.random.rand(NUM_PODS, 1).astype(np.float32)
         request_features = np.random.randn(3).astype(np.float32)
         temporal_features = np.array([1], dtype=np.float32)
@@ -1183,7 +1097,7 @@ def main():
         if i % 10 == 0:
             timeout_in_seconds = 30
         else:
-            timeout_in_seconds = 0.1
+             timeout_in_seconds = 0.1
         pod_idx = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, timeout_in_seconds)
         
         ##### END
