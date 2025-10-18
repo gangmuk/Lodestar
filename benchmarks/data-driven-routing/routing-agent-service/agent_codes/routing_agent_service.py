@@ -39,6 +39,16 @@ import queue
 from collections import deque
 from rwlock import RWLock
 
+
+## colors for logging
+BLUE_COLOR = "\033[94m"
+RED_COLOR = "\033[91m"
+GREEN_COLOR = "\033[92m"
+PURPLE_COLOR = "\033[95m"
+CYAN_COLOR = "\033[96m"
+MAGENTA_COLOR = "\033[95m"
+RESET_COLOR = "\033[0m" 
+
 # INCLUDE_GPU_IN_FEATURE = True
 
 app = Flask(__name__)
@@ -425,8 +435,7 @@ def handle_infer():
         ####################################################################################
         ####################################################################################
         elif subAlgorithm == 'scalable_rl_agent':
-            from agents.rout_agent import BROKER
-            from scalable_rl_routing_agent import infer
+            from scalable_rl_routing_agent import BROKER, infer
             
             # === NEW SCALABLE RL AGENT (pod-count independent) ===
             logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
@@ -435,7 +444,7 @@ def handle_infer():
             pod_features = tensor_data['pod_features'].cpu().numpy()[0]  # [num_pods, 10]
             kv_hit_ratios = tensor_data['kv_hit_ratios'].cpu().numpy()[0]  # [num_pods, 1]
             request_features = tensor_data['request_features'].cpu().numpy()[0]  # [3]
-            temporal_features = np.array([], dtype=np.float32)  # Empty for now
+            temporal_features = np.array([1], dtype=np.float32)  # Empty for now
             
             # Get previous reward from processed_df (gateway provides this)
             if 'prev_reward' in processed_df.columns:
@@ -446,7 +455,8 @@ def handle_infer():
             
             # Call infer function from scalable_rl_routing_agent
             infer_start = time.time()
-            pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, SCALABLE_RL_AGENT)
+            timeout_in_seconds = 5.0  # 5 second timeout for inference
+            pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, timeout_in_seconds)
             infer_from_tensor_overhead_summary['scalable_rl_infer'] = time.time() - infer_start
             
             # Build result with actual probabilities
@@ -462,6 +472,9 @@ def handle_infer():
             #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
             #     confidence = 1.0/num_pods
             
+            # TODO: these are placeholder. we need actual probabilities from the model.
+            pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
+            confidence = 1.0/num_pods
             result = {
                 'selected_pod_index': int(pod_idx),
                 'pod_probabilities': pod_probabilities,
@@ -806,9 +819,10 @@ def scalable_rl_training_worker():
                     # Run training for a batch of steps
                     # The agent's learn() will internally call env.step() which pulls from BROKER
                     total_timesteps = 1000000000  # Effectively infinite
+                    logger.info(f"{PURPLE_COLOR}Training scalable RL agent...{RESET_COLOR}")
                     SCALABLE_RL_AGENT.train(
                         total_timesteps=total_timesteps,
-                        save_path=os.path.join(final_model_dir, 'scalable_rl_agent_checkpoint')
+                        save_path=os.path.join(final_model_dir, RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']),
                     )
                 except Exception as e:
                     if not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
@@ -817,7 +831,7 @@ def scalable_rl_training_worker():
                         logger.error(traceback.format_exc())
                         time.sleep(1)  # Avoid tight error loop
             else:
-                time.sleep(0.1)  # Wait for agent initialization
+                time.sleep(1)  # Wait for agent initialization
     except Exception as e:
         logger.error(f"Fatal error in scalable RL training worker: {e}")
         import traceback
@@ -1009,6 +1023,9 @@ def graceful_shutdown(sig=None, frame=None):
 def init():
     global RL_MODEL_HYPERPARAMETERS, stats_instance
     if RL_MODEL_HYPERPARAMETERS is None:
+
+        logger.info(f"{GREEN_COLOR}RL_MODEL_HYPERPARAMETERS is None{RESET_COLOR}")
+
         RL_MODEL_HYPERPARAMETERS = {}
         RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
         RL_MODEL_HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
@@ -1095,15 +1112,12 @@ def init():
         assert False
     
     # Add checkpointing configuration to hyperparameters
-    if 'CHECKPOINT_INTERVAL_STEPS' not in RL_MODEL_HYPERPARAMETERS:
-        RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
-    if 'CHECKPOINT_DIR' not in RL_MODEL_HYPERPARAMETERS:
-        RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')
+    RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
+    RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')
     
     # Create checkpoint directory if it doesn't exist
-    checkpoint_dir = RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    logger.info(f"Checkpoint directory: {checkpoint_dir}")
+    os.makedirs(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], exist_ok=True)
+    logger.info(f"Checkpoint directory: {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']}")
     logger.info(f"Checkpointing every {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
 
     # Load offline training data for online learning
@@ -1128,10 +1142,13 @@ def init():
         logger.info("Online learning disabled, skipping offline data load")
     
     # Initialize scalable RL agent if configured
-    model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
-    if model_type == 'scalable_rl_agent':
-        from agents.rout_agent import BROKER
-        from scalable_rl_routing_agent import create_scalable_rl_agent
+
+    logger.info(f"{BLUE_COLOR}model_type: {RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
+
+
+    # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+    if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+        from scalable_rl_routing_agent import BROKER, create_scalable_rl_agent
         
         logger.info("Initializing scalable_rl_agent, scalable RL agent...")
         global SCALABLE_RL_AGENT, BROKER_LOCK
@@ -1142,8 +1159,7 @@ def init():
             
             # Create agent with hyperparameters
             SCALABLE_RL_AGENT = create_scalable_rl_agent(
-                num_pods=num_pods,
-                per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 11),
+                per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 8),
                 request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
                 max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
                 learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
@@ -1154,6 +1170,7 @@ def init():
                 batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
                 last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
                 rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
+                static_num_pods=True,
             )
             logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
             
@@ -1167,7 +1184,9 @@ def init():
                     logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
         
         # Start training thread
+        logger.info(f"{GREEN_COLOR}Starte scalable rl training worker in init()...{RESET_COLOR}")
         start_scalable_rl_training_worker()
+        logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
         logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
 
 
@@ -1283,6 +1302,8 @@ if __name__ == "__main__":
     
     init()
 
+    logger.info(f"{RED_COLOR}init() finished in main()...{RESET_COLOR}")
+
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model
     if ENABLE_ONLINE_LEARNING:
@@ -1298,6 +1319,7 @@ if __name__ == "__main__":
     atexit.register(lambda: scheduler.shutdown())
     
     # Start RL update worker thread
+    logger.info(f"{GREEN_COLOR}Starting RL update worker in main()...{RESET_COLOR}")
     start_rl_update_worker()
         
     # NEW CODE: Add error handling around app.run()
