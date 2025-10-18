@@ -821,8 +821,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 
-	cur_time := time.Now()
-	utils.SetRemainingLatencyForCompletedRequest(routerCtx.RequestID, cur_time)
+	cur_time_in_microseconds := time.Now().UnixMicro()
+	utils.SetRemainingLatencyForCompletedRequest(routerCtx.RequestID, cur_time_in_microseconds)
 	utils.RemoveLiveRequest(routerCtx.RequestID)
 
 	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f",
