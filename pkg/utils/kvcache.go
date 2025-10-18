@@ -715,6 +715,10 @@ func init() {
 	NumFlush = 0
 	PrevRewardForRequest = make(map[string]float64)
 	PrevRewardForRequestMutex = sync.RWMutex{}
+	LiveRequestsMutex = sync.RWMutex{}
+	LiveRequests = make(map[string]time.Time)
+	RemainingLatencyMutex = sync.RWMutex{}
+	RemainingLatency = make(map[string]float64)
 
 	// CleanupRoutineForpodMetrics()
 	RunningPodRegistry = make(map[string]string)
@@ -797,10 +801,21 @@ func init() {
 var PrevRewardForRequest map[string]float64
 var PrevRewardForRequestMutex sync.RWMutex
 
+var LiveRequests map[string]time.Time
+var LiveRequestsMutex sync.RWMutex
+
+var RemainingLatency map[string]float64 // in seconds
+var RemainingLatencyMutex sync.RWMutex
+
 func SetPrevRewardForRequest(requestID string, prevReward float64) {
 	PrevRewardForRequestMutex.Lock()
 	defer PrevRewardForRequestMutex.Unlock()
-	PrevRewardForRequest[requestID] = prevReward
+	if _, exists := PrevRewardForRequest[requestID]; !exists {
+		PrevRewardForRequest[requestID] = prevReward
+		klog.Infof("SetPrevRewardForRequest, requestID: %s, prevReward: %f", requestID, prevReward)
+	} else {
+		klog.Errorf("Error, Failed SetPrevRewardForRequest for request ID: %s, already exists", requestID)
+	}
 }
 
 func GetPrevRewardForRequest(requestID string) float64 {
@@ -817,6 +832,60 @@ func CleanupPrevRewardForRequest(requestID string) {
 	PrevRewardForRequestMutex.Lock()
 	defer PrevRewardForRequestMutex.Unlock()
 	delete(PrevRewardForRequest, requestID)
+}
+
+func UpdateLiveRequestLastTime(requestID string, lastTime time.Time) {
+	LiveRequestsMutex.Lock()
+	defer LiveRequestsMutex.Unlock()
+	LiveRequests[requestID] = lastTime
+	klog.Infof("UpdateLiveRequestLastTime, requestID: %s, lastTime: %d", requestID, lastTime.UnixMicro())
+}
+
+func GetLiveRequestLastTime(requestID string) (time.Time, bool) {
+	LiveRequestsMutex.RLock()
+	defer LiveRequestsMutex.RUnlock()
+	if val, ok := LiveRequests[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetLiveRequestLastTime for request ID: %s, not found, returning 0", requestID)
+	return time.Time{}, false
+}
+
+func RemoveLiveRequest(requestID string) {
+	LiveRequestsMutex.Lock()
+	defer LiveRequestsMutex.Unlock()
+	delete(LiveRequests, requestID)
+	klog.Infof("RemoveLiveRequest, requestID: %s", requestID)
+}
+
+func SetRemainingLatencyForCompletedRequest(requestID string, CompletionTime time.Time) {
+	RemainingLatencyMutex.Lock()
+	defer RemainingLatencyMutex.Unlock()
+	lastTime, exists := GetLiveRequestLastTime(requestID)
+	if !exists {
+		klog.Errorf("Error, Failed GetLiveRequestLastTime for request ID: %s, not found, returning 0", requestID)
+		return
+	}
+	remainingLatency := CompletionTime.Sub(lastTime).Seconds() // in seconds
+	RemainingLatency[requestID] = remainingLatency
+	klog.Infof("UpdateCompletedRequestLastTime, requestID: %s, CompletionTime: %d", requestID, CompletionTime.UnixMicro())
+}
+
+func GetRemainingLatenyFromCompletedRequest(requestID string) (float64, bool) {
+	RemainingLatencyMutex.RLock()
+	defer RemainingLatencyMutex.RUnlock()
+	if val, ok := RemainingLatency[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetCompletedRequestLastTime for request ID: %s, not found, returning 0", requestID)
+	return -1, false
+}
+
+func RemoveRemainingLatencyFromCompletedRequest(requestID string) {
+	RemainingLatencyMutex.Lock()
+	defer RemainingLatencyMutex.Unlock()
+	delete(RemainingLatency, requestID)
+	klog.Infof("RemoveCompletedRequest, requestID: %s", requestID)
 }
 
 func SetGPUModel(podIP string, gpuModel string) {
