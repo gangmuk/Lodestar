@@ -78,62 +78,63 @@ class K8sDeployment:
             logger.error(f"❌ Failed to copy {local_path} to {pod_name}: {e}")
             return False
     
-    def copy_directory_to_pod(self, pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
-        """Copy entire directory to pod by copying individual files"""
+    def copy_directory_batch(self, pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
+        """Copy entire directory in one tar - much faster than individual file copies!"""
         try:
             local_path = Path(local_dir)
             if not local_path.exists() or not local_path.is_dir():
                 logger.error(f"Local directory {local_dir} does not exist or is not a directory")
                 return False
             
-            # Get all files in the directory
-            files_to_copy = []
+            # Get all files, excluding specified patterns
+            files_to_include = []
             for file_path in local_path.rglob('*'):
                 if file_path.is_file():
                     rel_path = file_path.relative_to(local_path)
                     if any(part in exclude_dir_or_file_list for part in rel_path.parts):
-                        # print(f"Excluding {file_path} because it is in the exclude list")
                         continue
-                    files_to_copy.append(file_path)
+                    files_to_include.append((file_path, rel_path))
             
-            if not files_to_copy:
+            if not files_to_include:
                 logger.error(f"No files found in {local_dir}")
                 return False
             
-            print(f"Found {len(files_to_copy)} files in {local_dir}")
+            print(f"Found {len(files_to_include)} files in {local_dir} (excluding {exclude_dir_or_file_list})")
             
-            # Step 1: Delete remote directory if it exists
-            print(f"Cleaning up remote directory {remote_dir}")
+            # Clean up and recreate remote directory
             self.execute_command(pod_name, f"rm -rf {remote_dir}")
+            self.execute_command(pod_name, f"mkdir -p {remote_dir}")
             
-            # Step 2: Create empty remote directory
-            print(f"Creating remote directory {remote_dir}")
-            result = self.execute_command(pod_name, f"mkdir -p {remote_dir}")
-            print(f"Created remote directory {remote_dir}")
-            # Step 3: Copy each file individually
-            success_count = 0
-            for file_path in files_to_copy:
-                rel_path = file_path.relative_to(local_path)
-                remote_file_path = f"{remote_dir}/{rel_path}"
-                remote_parent_dir = os.path.dirname(remote_file_path)
-                if remote_parent_dir != remote_dir:
-                    self.execute_command(pod_name, f"mkdir -p {remote_parent_dir}")
-                if self.copy_file_to_pod(pod_name, str(file_path), remote_file_path):
-                    success_count += 1
-                    # print(f"Copied: {file_path} -> {remote_file_path}")
-                    print(f"Copied: {file_path}")
-                else:
-                    logger.error(f"Failed to copy: {file_path}")
-                    return False
-            print(f"✅ Successfully copied {success_count}/{len(files_to_copy)} files to {pod_name}:{remote_dir}")
-            # Verify by listing some files
-            result = self.execute_command(pod_name, f"find {remote_dir} -type f | head -10")
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            self.execute_command(pod_name, f"touch {remote_dir}/copied_from_{local_dir}_at_{current_time}")
+            # Create tar with all files
+            with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as temp_tar:
+                tar_path = temp_tar.name
+                
+            with tarfile.open(tar_path, 'w') as tar:
+                for file_path, rel_path in files_to_include:
+                    tar.add(file_path, arcname=str(rel_path))
+            
+            tar_size_kb = Path(tar_path).stat().st_size / 1024
+            print(f"📦 Created tar with {len(files_to_include)} files ({tar_size_kb:.1f} KB)")
+            
+            # Stream tar directly to pod and extract
+            command = ['sh', '-c', f'tar -xmf - -C {remote_dir}']
+            resp = stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                pod_name, self.namespace, command=command,
+                stderr=True, stdin=True, stdout=True, tty=False, _preload_content=False
+            )
+            with open(tar_path, 'rb') as tar_data:
+                resp.write_stdin(tar_data.read())
+            resp.close()
+            
+            os.unlink(tar_path)
+            print(f"✅ Copied and extracted {len(files_to_include)} files to {remote_dir}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to copy directory {local_dir} to {pod_name}: {e}")
+            logger.error(f"❌ Failed to copy directory batch {local_dir} to {pod_name}: {e}")
+            if 'tar_path' in locals() and os.path.exists(tar_path):
+                os.unlink(tar_path)
             return False
     
     def execute_command(self, pod_name, command):
@@ -315,12 +316,12 @@ class K8sDeployment:
                     logger.error(f"Exiting...")
                     exit()
             
-            # Copy directories
+            # Copy directories in batch
             exclude_dir_or_file_list = ['weights_csv', 'checkpoints', 'tensor_dataset.pt', 'xai_report']
             dirs_copied = 0
             for local_dir, remote_dir in final_model_dir.items():
-                print(f"Copying directory {local_dir} to {pod_name}:{remote_dir}")
-                if self.copy_directory_to_pod(pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
+                print(f"Copying directory {local_dir} to {pod_name}:{remote_dir} in batch...")
+                if self.copy_directory_batch(pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
                     dirs_copied += 1
                 else:
                     logger.error(f"Failed to copy directory {local_dir} to {pod_name}:{remote_dir}")
@@ -400,23 +401,23 @@ def main():
             "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
             "../agent_codes/logger.py": "/app/logger.py",
             "../agent_codes/utils.py": "/app/utils.py",
-            # Agents module
-            "../agent_codes/agents/__init__.py": "/app/agents/__init__.py",
-            "../agent_codes/agents/rout_agent.py": "/app/agents/rout_agent.py",
-            "../agent_codes/agents/reinforce.py": "/app/agents/reinforce.py",
-            "../agent_codes/agents/replay_buffer.py": "/app/agents/replay_buffer.py",
-            "../agent_codes/agents/tracker.py": "/app/agents/tracker.py",
-            # Envs module
-            "../agent_codes/envs/__init__.py": "/app/envs/__init__.py",
-            "../agent_codes/envs/broker.py": "/app/envs/broker.py",
-            "../agent_codes/envs/request.py": "/app/envs/request.py",
-            "../agent_codes/envs/request_source_gateway.py": "/app/envs/request_source_gateway.py",
-            "../agent_codes/envs/rout_env.py": "/app/envs/rout_env.py",
-            "../agent_codes/envs/rl_env_wrappers.py": "/app/envs/rl_env_wrappers.py",
-            # Policies module
-            "../agent_codes/policies/__init__.py": "/app/policies/__init__.py",
-            "../agent_codes/policies/policy.py": "/app/policies/policy.py",
-            "../agent_codes/policies/nets.py": "/app/policies/nets.py",
+            # # Agents module
+            # "../agent_codes/agents/__init__.py": "/app/agents/__init__.py",
+            # "../agent_codes/agents/rout_agent.py": "/app/agents/rout_agent.py",
+            # "../agent_codes/agents/reinforce.py": "/app/agents/reinforce.py",
+            # "../agent_codes/agents/replay_buffer.py": "/app/agents/replay_buffer.py",
+            # "../agent_codes/agents/tracker.py": "/app/agents/tracker.py",
+            # # Envs module
+            # "../agent_codes/envs/__init__.py": "/app/envs/__init__.py",
+            # "../agent_codes/broker/broker.py": "/app/envs/broker.py",
+            # "../agent_codes/envs/request.py": "/app/envs/request.py",
+            # "../agent_codes/envs/request_source_gateway.py": "/app/envs/request_source_gateway.py",
+            # "../agent_codes/envs/rout_env.py": "/app/envs/rout_env.py",
+            # "../agent_codes/envs/rl_env_wrappers.py": "/app/envs/rl_env_wrappers.py",
+            # # Policies module
+            # "../agent_codes/policies/__init__.py": "/app/policies/__init__.py",
+            # "../agent_codes/policies/policy.py": "/app/policies/policy.py",
+            # "../agent_codes/policies/nets.py": "/app/policies/nets.py",
         }
     FINAL_MODEL_DIR = {}
     if args.ship_model == 1:

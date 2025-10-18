@@ -304,6 +304,7 @@ def main():
     parser = argparse.ArgumentParser(description='Ship all files and directories')
     parser.add_argument('--ship_code', type=int, default=1, help='ship_code')
     parser.add_argument('--ship_model', type=int, default=1, help='ship_model')
+    parser.add_argument('--ship_offline_training_data', type=int, default=0, help='ship_offline_training_data')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     parser.add_argument('--k8s_cluster', type=str, default='vke', choices=['vke', 'local'], help='Kubernetes cluster')
     args = parser.parse_args()
@@ -359,23 +360,24 @@ def main():
             "../agent_codes/latency_predictor.py": "/app/latency_predictor.py",
             "../agent_codes/logger.py": "/app/logger.py",
             "../agent_codes/utils.py": "/app/utils.py",
-            # Agents module
-            "../agent_codes/agents/__init__.py": "/app/agents/__init__.py",
-            "../agent_codes/agents/rout_agent.py": "/app/agents/rout_agent.py",
-            "../agent_codes/agents/reinforce.py": "/app/agents/reinforce.py",
-            "../agent_codes/agents/replay_buffer.py": "/app/agents/replay_buffer.py",
-            "../agent_codes/agents/tracker.py": "/app/agents/tracker.py",
-            # Envs module
-            "../agent_codes/envs/__init__.py": "/app/envs/__init__.py",
-            "../agent_codes/envs/broker.py": "/app/envs/broker.py",
-            "../agent_codes/envs/request.py": "/app/envs/request.py",
-            "../agent_codes/envs/request_source_gateway.py": "/app/envs/request_source_gateway.py",
-            "../agent_codes/envs/rout_env.py": "/app/envs/rout_env.py",
-            "../agent_codes/envs/rl_env_wrappers.py": "/app/envs/rl_env_wrappers.py",
-            # Policies module
-            "../agent_codes/policies/__init__.py": "/app/policies/__init__.py",
-            "../agent_codes/policies/policy.py": "/app/policies/policy.py",
-            "../agent_codes/policies/nets.py": "/app/policies/nets.py",
+            
+            # # Agents module
+            # "../agent_codes/agents/__init__.py": "/app/agents/__init__.py",
+            # "../agent_codes/agents/rout_agent.py": "/app/agents/rout_agent.py",
+            # "../agent_codes/agents/reinforce.py": "/app/agents/reinforce.py",
+            # "../agent_codes/agents/replay_buffer.py": "/app/agents/replay_buffer.py",
+            # "../agent_codes/agents/tracker.py": "/app/agents/tracker.py",
+            # # Envs module
+            # "../agent_codes/envs/__init__.py": "/app/envs/__init__.py",
+            # "../agent_codes/envs/broker.py": "/app/envs/broker.py",
+            # "../agent_codes/envs/request.py": "/app/envs/request.py",
+            # "../agent_codes/envs/request_source_gateway.py": "/app/envs/request_source_gateway.py",
+            # "../agent_codes/envs/rout_env.py": "/app/envs/rout_env.py",
+            # "../agent_codes/envs/rl_env_wrappers.py": "/app/envs/rl_env_wrappers.py",
+            # # Policies module
+            # "../agent_codes/policies/__init__.py": "/app/policies/__init__.py",
+            # "../agent_codes/policies/policy.py": "/app/policies/policy.py",
+            # "../agent_codes/policies/nets.py": "/app/policies/nets.py",
         }
     FINAL_MODEL_DIR = {}
     if args.ship_model == 1:
@@ -384,6 +386,7 @@ def main():
         final_model_abs_path = os.path.abspath(args.final_model_dir)
         FINAL_MODEL_DIR = {final_model_abs_path: "/app/final_model"}
 
+    if args.ship_offline_training_data:
         # NEW: Ship offline training CSV for online learning
         offline_csv_path = os.path.join(os.path.dirname(final_model_abs_path), "data_replaced-processed.csv")
         print(f"offline training CSV path: source in host: {offline_csv_path}, destination in pod: /app/offline_training_data.csv")
@@ -391,8 +394,10 @@ def main():
             agent_related_files[offline_csv_path] = "/app/offline_training_data.csv"
             print(f"✅ Will ship offline training CSV: {offline_csv_path}")
         else:
-            logger.warning(f"⚠️  offline training CSV not found at {offline_csv_path}")
-            logger.warning("Online learning will start from scratch with only new data")
+            logger.error(f"❌  offline training CSV not found at {offline_csv_path}")
+            logger.error("Online learning will start from scratch with only new data")
+            logger.error("Exiting...")
+            exit(1)
 
     # Check if files exist
     missing_files = [f for f in agent_related_files.keys() if not os.path.exists(f)]
