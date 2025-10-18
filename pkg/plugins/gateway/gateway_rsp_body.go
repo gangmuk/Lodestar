@@ -644,7 +644,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
-		klog.Infof("request end, requestID: %s - %s", routerCtx.RequestID, requestEnd)
+		klog.V(5).Infof("request end, requestID: %s - %s", routerCtx.RequestID, requestEnd)
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
 	}
@@ -812,9 +812,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 
 	// log_window_end_time := time.Now()
 	// log_window_start_time := time.Now().Add(utils.MetricsTracker.WindowSize * -1)
-	if utils.FirstRequestStartTime == 0 {
-		utils.FirstRequestStartTime = timing.startTime.UnixMicro()
-	}
+
 	normalized_request_start_time := timing.startTime.UnixMicro() - utils.FirstRequestStartTime
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
 	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
@@ -822,6 +820,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	// Get predicted latencies
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
+
+	cur_time := time.Now()
+	utils.SetRemainingLatencyForCompletedRequest(routerCtx.RequestID, cur_time)
+	utils.RemoveLiveRequest(routerCtx.RequestID)
 
 	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f",
 		routerCtx.RequestID,
