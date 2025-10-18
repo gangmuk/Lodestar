@@ -116,6 +116,10 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
             model=model,
             messages=prompt,
             max_tokens=max_tokens,
+            extra_body={
+                "min_tokens": max_tokens,
+                "ignore_eos": True
+            },
             temperature=temperature,
             stream=True,
             stream_options={"include_usage": True},

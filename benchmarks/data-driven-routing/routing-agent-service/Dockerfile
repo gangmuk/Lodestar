@@ -22,9 +22,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agent_codes/*.py .
-COPY agent_codes/agents/*.py .
-COPY agent_codes/envs/*.py .
-COPY agent_codes/policies/*.py .
 COPY start.sh .
 
 ## model
