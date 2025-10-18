@@ -409,33 +409,34 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			utils.FirstRequestStartTime = time.Now().UnixMicro()
 		}
 		prev_reward := 0.0 // total latency in seconds of all live and completed requests
-		cur_time := time.Now()
-		klog.Infof("calculate_prev_reward, requestID: %s", ctx.RequestID)
+		cur_time_in_microseconds := time.Now().UnixMicro()
+		klog.Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
 		for live_request_id := range utils.LiveRequests {
 			live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
 			if !exists {
 				klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests", ctx.RequestID, live_request_id)
 				continue
 			}
-			pass_time := (float64(cur_time.UnixMicro()) - float64(live_request_last_time.UnixMicro())) / 1000000.0 // conversion to seconds
-			prev_reward += pass_time
-			klog.Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, prev_reward: %f, pass_time: %f, cur_time: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, prev_reward, pass_time, cur_time.UnixMicro(), live_request_last_time.UnixMicro())
-			utils.UpdateLiveRequestLastTime(live_request_id, cur_time)
+			pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
+			prev_reward += pass_time_in_second
+			klog.Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
+			utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
 		}
 
 		// utils.RemainingLatencyMutex.RLock()
-		for completed_request_id := range utils.RemainingLatency {
-			remaining_latency, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
+		for completed_request_id := range utils.RemainingLatencyInMicroseconds {
+			remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
 			if !exists {
-				klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatency", ctx.RequestID, completed_request_id)
+				klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
 				continue
 			}
-			prev_reward += remaining_latency
-			klog.Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, prev_reward: %f, remaining_latency: %f", ctx.RequestID, completed_request_id, prev_reward, remaining_latency)
+			pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
+			prev_reward += pass_time_in_second
+			klog.Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
 			utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
 		}
 		// utils.RemainingLatencyMutex.RUnlock()
-		utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time)
+		utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
 
 		klog.Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
 		utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
