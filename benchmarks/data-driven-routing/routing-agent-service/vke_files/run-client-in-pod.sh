@@ -43,10 +43,15 @@ config="rl-online-router${delimiter}${routing_policy}"
 routing="${config%%${delimiter}*}"
 subAlgorithm="${config#*${delimiter}}"
 
-num_iterations=5
-num_episode_for_training=10 # num_episodes_per_iteration x num_iterations
-num_episode_for_evaluation=5 # n_eval_episodes x num_iterations
-total_num_episodes=15 # num_episode_for_training + num_episode_for_evaluation
+# batch_size=256
+# training_epochs=4
+# num_requests_per_episode=4000 # it is the number of requests in the chosen workload file
+# num_iterations=10
+# num_episodes_per_iteration=5
+# num_episode_for_training=50 # num_episodes_per_iteration x num_iterations
+# n_eval_episodes=5
+# num_episode_for_evaluation=50 # n_eval_episodes x num_iterations
+total_num_episodes=4 # num_episode_for_training + num_episode_for_evaluation
 
 EXPLORATION_ENABLED="0"
 ENABLE_ONLINE_LEARNING="0"
@@ -75,16 +80,16 @@ port=80
 # workload_name="ten_request"
 
 workload_name_list=(
-    "ten_request"
+    # "ten_request"
     # "hundred_request"
-    # "MixedSharingRatio10_30_50_70%"
+    "MixedSharingRatio10_30_50_70%"
     # "SharingRatio71%"
     # "SharingRatio47%"
     # "SharingRatio28%"
     # "SharingRatio9%"
 )
-
-
+timestamp=$(date +%Y%m%d_%H%M%S)
+test_tb_logs_dir="test_tb_logs_${timestamp}"
 for workload_name in "${workload_name_list[@]}"; do
     python3 update_k8s_env.py \
         --deployment routing-agent-service \
@@ -197,7 +202,6 @@ for workload_name in "${workload_name_list[@]}"; do
     }
 
     # Create local experiment result output directory
-    timestamp=$(date +%Y%m%d_%H%M%S)
     experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
     if [ "${subAlgorithm}" == "rl_agent" ]; then
         postfix="num_episodes${total_num_episodes}"
@@ -232,21 +236,47 @@ for workload_name in "${workload_name_list[@]}"; do
     echo "Starting client in pod..."
     echo "Output will be saved to: ${output_dir}"
 
+    sleep 5
+    echo "curl start"
+    bash curl.sh
+    echo "curl end"
     # Run the client using kubectl exec
-    kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
-        python3 /app/async-client.py \
-            --workload_path ${workload_path} \
-            --model ${llm_model} \
-            --endpoint http://${ipaddr}:${port} \
-            --api_key ${api_key} \
-            --output_file_path ${output_jsonl_path} \
-            --routing_strategy ${routing} \
-            --subAlgorithm ${subAlgorithm} \
-            --max_tokens ${max_tokens} \
-            --output_dir ${output_dir} \
-            --iterations ${total_num_episodes} \
-            --streaming \
-            2>&1 | tee ${experiment_result_output_dir}/client.log.txt
+    echo "Will run ${total_num_episodes} episodes"
+    for iteration in $(seq 1 ${total_num_episodes}); do
+        if [ ! -d "${experiment_result_output_dir}/iteration1" ]; then
+            mkdir -p "${experiment_result_output_dir}/iteration${iteration}"
+        fi
+        echo "Starting ${iteration} episode"
+        kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
+            python3 /app/async-client.py \
+                --workload_path ${workload_path} \
+                --model ${llm_model} \
+                --endpoint http://${ipaddr}:${port} \
+                --api_key ${api_key} \
+                --output_file_path ${output_jsonl_path} \
+                --routing_strategy ${routing} \
+                --subAlgorithm ${subAlgorithm} \
+                --max_tokens ${max_tokens} \
+                --output_dir ${output_dir} \
+                --iteration ${iteration} \
+                --streaming \
+                2>&1 | tee ${experiment_result_output_dir}/iteration${iteration}/client.log.txt
+
+        echo "Done with ${iteration} episode"
+
+
+        # ts=$(date +%Y%m%d_%H%M%S)
+        echo "Starting copying checkpoints for ${iteration} episode"
+        python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints/tb_logs ${test_tb_logs_dir}/tb_logs_at_episode_${iteration} routing-agent-service default &
+        # copy_latency=$(( $(date +%s) - ts ))
+        # echo "Done copying checkpoints for ${iteration} episode. took ${copy_latency} seconds"
+
+        # echo "Starting copying checkpoints for ${iteration} episode"
+        # ts=$(date +%Y%m%d_%H%M%S)
+        # python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints/scalable_rl_agent.zip "test_tb_logs/scalable_rl_agent_${iteration}.zip" routing-agent-service default
+        # copy_latency=$(( $(date +%s) - ts ))
+        # echo "Done copying checkpoints for ${iteration} episode. took ${copy_latency} seconds"
+    done
 
     echo ""
     echo "========================================="
