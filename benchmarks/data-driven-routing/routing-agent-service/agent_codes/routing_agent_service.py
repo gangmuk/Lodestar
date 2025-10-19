@@ -818,12 +818,16 @@ def scalable_rl_training_worker():
                 try:
                     # Run training for a batch of steps
                     # The agent's learn() will internally call env.step() which pulls from BROKER
-                    total_timesteps = 1000000000  # Effectively infinite
                     logger.info(f"{PURPLE_COLOR}Training scalable RL agent...{RESET_COLOR}")
+                    # Create proper checkpoint file path (not just directory)
+                    checkpoint_file = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'scalable_rl_agent')
+                    
+                    eval_freq = RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'] * RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
                     SCALABLE_RL_AGENT.train(
-                        total_timesteps=total_timesteps,
-                        save_path=os.path.join(final_model_dir, RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']),
-                    )
+                        save_path=checkpoint_file,
+                        eval_freq=eval_freq,
+                        n_eval_episodes=RL_MODEL_HYPERPARAMETERS['n_eval_episodes'],
+                        )
                 except Exception as e:
                     if not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
                         logger.error(f"Error in scalable RL training loop: {e}")
@@ -1148,7 +1152,8 @@ def init():
 
     # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
     if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-        from scalable_rl_routing_agent import BROKER, create_scalable_rl_agent
+        import scalable_rl_routing_agent
+        from scalable_rl_routing_agent import BROKER
         
         logger.info("Initializing scalable_rl_agent, scalable RL agent...")
         global SCALABLE_RL_AGENT, BROKER_LOCK
@@ -1157,21 +1162,50 @@ def init():
             num_pods = len(sorted_running_pod_ips)
             logger.info(f"Creating scalable RL agent with {num_pods} pods")
             
-            # Create agent with hyperparameters
-            SCALABLE_RL_AGENT = create_scalable_rl_agent(
-                per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 8),
-                request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
-                max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
-                learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
-                reward_decay_factor=RL_MODEL_HYPERPARAMETERS.get('reward_decay_factor', 1.0),
-                gae_lambda=RL_MODEL_HYPERPARAMETERS.get('gae_lambda', 0.95),
-                n_steps=RL_MODEL_HYPERPARAMETERS.get('n_steps', 256),
-                horizon=RL_MODEL_HYPERPARAMETERS.get('horizon', 1024),
-                batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
-                last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
-                rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
-                static_num_pods=True,
-            )
+            # # Create agent with hyperparameters
+            # SCALABLE_RL_AGENT = create_scalable_rl_agent(
+            #     per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 8),
+            #     request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
+            #     max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
+            #     learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
+            #     reward_decay_factor=RL_MODEL_HYPERPARAMETERS.get('reward_decay_factor', 1.0),
+            #     gae_lambda=RL_MODEL_HYPERPARAMETERS.get('gae_lambda', 0.95),
+            #     n_steps=RL_MODEL_HYPERPARAMETERS.get('n_steps', 256),
+            #     horizon=RL_MODEL_HYPERPARAMETERS.get('horizon', 1024),
+            #     batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
+            #     last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
+            #     rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
+            #     static_num_pods=True,
+            # )
+            
+            SCALABLE_RL_AGENT = scalable_rl_routing_agent.ScalableRLRoutingAgent(
+                per_pod_dim=8, 
+                # per_pod_dim=11, 
+                request_dim=3, 
+                max_pods=100, 
+                num_requests_per_episode=RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'], 
+                num_episodes_per_iteration=RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'],
+                num_iterations=RL_MODEL_HYPERPARAMETERS['num_iterations'],   
+                rl=RL_MODEL_HYPERPARAMETERS['rl_algorithm'], 
+                static_num_pods=True, 
+                learning_rate=3e-4, 
+                hidden_dim=RL_MODEL_HYPERPARAMETERS['hidden_dim'], 
+                gamma=1.0, 
+                gae_lambda=0.95, 
+                tb_log_dir=os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
+                batch_size=RL_MODEL_HYPERPARAMETERS['batch_size'], 
+                n_epochs=RL_MODEL_HYPERPARAMETERS['training_epochs'], 
+                clip_range=0.2, 
+                entropy_coeff=0.01, 
+                vf_coef=0.5, 
+                max_grad_norm=0.5, 
+                last_layer_dim_pi=1, 
+                last_layer_dim_vf=1, 
+                use_prioritized_replay=False, 
+                buffer_size=1000, 
+                priority_alpha=0.6, 
+                priority_beta=0.4)
+            
             logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
             
             # Load checkpoint if available
@@ -1214,10 +1248,9 @@ def periodic_checkpoint_scalable_rl():
             
             # Checkpoint at regular intervals
             if total_steps > 0 and total_steps % checkpoint_interval < 64:  # 64 = typical batch size
-                checkpoint_dir = RL_MODEL_HYPERPARAMETERS.get('CHECKPOINT_DIR')
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 checkpoint_name = f"scalable_rl_step_{total_steps}_{timestamp}"
-                checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+                checkpoint_path = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], checkpoint_name)
                 
                 try:
                     # Upgrade to write lock for saving
@@ -1237,7 +1270,7 @@ def periodic_checkpoint_scalable_rl():
                             logger.info(f"scalable_rl_routing_agent, Success rate: {metrics['success_rate']:.2%}")
                         
                         # Clean up old checkpoints (keep only last 5)
-                        cleanup_old_checkpoints(checkpoint_dir, keep_latest=5)
+                        # cleanup_old_checkpoints(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], keep_latest=5)
                         
                 except Exception as e:
                     logger.error(f"scalable_rl_routing_agent, Failed to save checkpoint: {e}")

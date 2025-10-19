@@ -4,6 +4,27 @@
 
 set -e
 
+
+
+####################################################################
+## Q: How many times of workload should I send for RL experiment? ##
+####################################################################
+# "num_requests_per_episode": 20,
+# "num_episodes_per_iteration": 2,
+# "num_iterations": 5,
+# "n_eval_episodes": 1,
+
+# Total training episodes = num_episodes_per_iteration x num_iterations
+# = 2 x 5 = 10 episodes
+
+# Total evaluation episodes = n_eval_episodes x num_iterations
+# = 1 x 5 = 5 episodes
+
+# Total number of times to send the workload for training and evaluation = Total training episodes + Total evaluation episodes
+# = Total training episodes + Total evaluation episodes
+# = 10 + 5 = 15 times
+#########################################################################
+
 # Configuration
 NAMESPACE=${NAMESPACE:-default}
 POD_NAME=${POD_NAME:-client-service}
@@ -22,15 +43,18 @@ config="rl-online-router${delimiter}${routing_policy}"
 routing="${config%%${delimiter}*}"
 subAlgorithm="${config#*${delimiter}}"
 
+num_iterations=5
+num_episode_for_training=10 # num_episodes_per_iteration x num_iterations
+num_episode_for_evaluation=5 # n_eval_episodes x num_iterations
+total_num_episodes=15 # num_episode_for_training + num_episode_for_evaluation
 
-iterations=5
 EXPLORATION_ENABLED="0"
 ENABLE_ONLINE_LEARNING="0"
 MIN_NUM_TRAINING_DATA="100"
 ENABLE_FLUSH="0"
 FLUSH_PERIOD="10"
 MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
-max_tokens=1000
+max_tokens=100
 
 # Configuration for the client
 api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
@@ -81,12 +105,33 @@ for workload_name in "${workload_name_list[@]}"; do
         --env useRealRequest=1
         # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
-    ship_model=1
-    ship_code=1
+
     final_model_dir="../training_data/scalable_rl_agent/final_model"
     # final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft"
     # final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft-withoutprefilltoken"
+    
+    ##########################################################
+    ## TODO: automation
+    # num_requests_per_episode=$(wc -l < /app/workload/${workload_name}/workload.jsonl)
+    # num_requests_per_episode=20
+    # num_episodes_per_iteration=2
+    # num_iterations=5
+    # n_eval_episodes=1
+    # num_episode_for_training=$((num_episodes_per_iteration * num_iterations))
+    # num_episode_for_evaluation=$((n_eval_episodes * num_iterations))
+    # num_episode_for_training_and_evaluation=$((num_episode_for_training + num_episode_for_evaluation))
+    # model_config_path="${final_model_dir}/model_config.json"
+    # python update_model_config_json.py --model_config_path ${model_config_path} \
+    #     --num_requests_per_episode ${num_requests_per_episode} \
+    #     --num_episodes_per_iteration ${num_episodes_per_iteration} \
+    #     --num_iterations ${num_iterations} \
+    #     --n_eval_episodes ${n_eval_episodes} \
+    #     --training_epochs ${training_epochs}
+    ##########################################################
 
+
+    ship_model=1
+    ship_code=1
     if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
         echo "Error: Final model directory does not exist: ${final_model_dir}"
         echo "Exiting..."
@@ -111,7 +156,7 @@ for workload_name in "${workload_name_list[@]}"; do
     echo "Sub-Algorithm:       ${subAlgorithm}"
     echo "Workload:            ${workload_name}"
     echo "Online Learning:     ${ENABLE_ONLINE_LEARNING}"
-    echo "Iterations:          ${iterations}"
+    echo "Total Episodes:      ${total_num_episodes}"
     echo "Max Tokens:          ${max_tokens}"
     echo "========================================="
 
@@ -155,20 +200,20 @@ for workload_name in "${workload_name_list[@]}"; do
     timestamp=$(date +%Y%m%d_%H%M%S)
     experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
     if [ "${subAlgorithm}" == "rl_agent" ]; then
-        postfix="iter${iterations}"
+        postfix="num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
     elif [ "${subAlgorithm}" == "rl_naive" ]; then
         trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
         used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
         hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
         hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
-        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-iter${iterations}"
+        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
     elif [ "${subAlgorithm}" == "latency_predictor" ]; then
         trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
         prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
         used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
-        postfix="trained_on_${trained_model_data_name}_${used_data_name}-iter${iterations}"
+        postfix="trained_on_${trained_model_data_name}_${used_data_name}-num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}-${postfix}"
     fi
 
@@ -199,7 +244,7 @@ for workload_name in "${workload_name_list[@]}"; do
             --subAlgorithm ${subAlgorithm} \
             --max_tokens ${max_tokens} \
             --output_dir ${output_dir} \
-            --iterations ${iterations} \
+            --iterations ${total_num_episodes} \
             --streaming \
             2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
