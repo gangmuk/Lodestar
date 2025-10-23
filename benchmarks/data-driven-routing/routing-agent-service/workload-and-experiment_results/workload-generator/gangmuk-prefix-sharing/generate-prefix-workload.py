@@ -816,59 +816,22 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
     if len(all_prompts_combined) > 0:
         if has_timestamps:
             import numpy as _np
-            
-            # Group prompts by repetition to process sequentially
-            prompts_by_repetition = {}
-            for prompt in all_prompts_combined:
-                rep_id = prompt.get("repetition_id", 0)
-                if rep_id not in prompts_by_repetition:
-                    prompts_by_repetition[rep_id] = []
-                prompts_by_repetition[rep_id].append(prompt)
-            
-            # Process each repetition sequentially
-            current_time = arrival_start_time
-            final_prompts = []
-            
-            for rep_id in sorted(prompts_by_repetition.keys()):
-                rep_prompts = prompts_by_repetition[rep_id]
-                num_rep_requests = len(rep_prompts)
-                
-                # Calculate RPS for this repetition
-                if isinstance(arrival_rps, list):
-                    # Find which segment(s) of RPS apply to this repetition
-                    num_segments = len(arrival_rps)
-                    rep_rps = arrival_rps
-                else:
-                    # Single RPS value
-                    rep_rps = arrival_rps
-                
-                # Generate timestamps for this repetition
-                global_np_random = _np.random.RandomState(base_seed + 55555 + rep_id)
-                rep_timestamps = generate_poisson_arrival_times(
-                    num_requests=num_rep_requests,
-                    rps=rep_rps,
-                    start_time=current_time,
-                    np_random=global_np_random,
-                )
-                
-                # Shuffle timestamps within this repetition to mix configs/prefix groups
-                shuffle_rng_rep = random.Random(base_seed + 999999 + rep_id)
-                shuffle_rng_rep.shuffle(rep_timestamps)
-                
-                # Assign timestamps to prompts
-                for i, prompt in enumerate(rep_prompts):
-                    prompt["timestamp"] = rep_timestamps[i]
-                
-                # Sort this repetition's prompts by timestamp
-                rep_prompts.sort(key=lambda x: x["timestamp"])
-                final_prompts.extend(rep_prompts)
-                
-                # Update start time for next repetition
-                if rep_timestamps:
-                    current_time = max(rep_timestamps) + 1
-            
-            # Replace all_prompts_combined with sequentially ordered prompts
-            all_prompts_combined = final_prompts
+            global_np_random = _np.random.RandomState(base_seed + 55555)
+            global_timestamps = generate_poisson_arrival_times(
+                num_requests=len(all_prompts_combined),
+                rps=arrival_rps,
+                start_time=arrival_start_time,
+                np_random=global_np_random,
+            )
+
+            # Shuffle which prompt gets which timestamp to mix configs/prefix groups
+            shuffle_rng.shuffle(global_timestamps)
+
+            for i, prompt in enumerate(all_prompts_combined):
+                prompt["timestamp"] = global_timestamps[i]
+
+            # Sort by timestamp
+            all_prompts_combined.sort(key=lambda x: x["timestamp"])
 
             # Update per-config start/end times based on assigned timestamps
             start_end_by_config = {}
@@ -991,9 +954,6 @@ def get_configurations(args):
 
     # Resolve config.json path from provided directory
     config_json_path = args.config_file
-    if os.path.isdir(config_json_path):
-        config_json_path = os.path.join(config_json_path, "config.json")
-    
     if not os.path.exists(config_json_path):
         raise FileNotFoundError(f"Config file not found: {config_json_path}")
 
@@ -1179,25 +1139,23 @@ def main(args):
     if repetitions < 1:
         raise ValueError("Repetitions must be at least 1")
     
-    # Save original RPS for use in each repetition
+    # Save original RPS for directory naming (before expansion)
     original_arrival_rps = arrival_rps
     
     if repetitions > 1:
         print(f"Generating workload with {repetitions} repetitions")
-        # Note: We pass the ORIGINAL RPS to process_workload_configs
-        # Each repetition will use the same RPS pattern sequentially in time
+        # If RPS is a list, repeat it for each repetition
+        if isinstance(arrival_rps, list):
+            arrival_rps = arrival_rps * repetitions
+            print(f"Expanded RPS pattern for {repetitions} repetitions: {arrival_rps}")
     
-    workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=original_arrival_rps, arrival_start_time=0, repetitions=repetitions)
+    workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=arrival_rps, arrival_start_time=0, repetitions=repetitions)
     print(f"workload_data['overall_sharing_ratio']: {workload_data['overall_sharing_ratio']}")
 
     avg_prompt_length = int(sum(config['prompt_length'] for config in prefix_workload_configs) / len(prefix_workload_configs))
-    # config_file could be a directory (e.g., "config_sharing10%") or a file path
-    if os.path.isdir(args.config_file):
-        config_dir = args.config_file
-    else:
-        config_dir = os.path.dirname(args.config_file)
+    config_dir = os.path.dirname(args.config_file)
     
-    # Generate output directory name based on RPS configuration
+    # Generate output directory name based on ORIGINAL RPS configuration (before expansion)
     rep_str = f"_rep{repetitions}" if repetitions > 1 else ""
     
     if original_arrival_rps == -1:
@@ -1206,10 +1164,7 @@ def main(args):
     elif isinstance(original_arrival_rps, list):
         rps_str = "-".join(str(int(r)) for r in original_arrival_rps)
         output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_multirps{rps_str}{rep_str}"
-        if repetitions > 1:
-            print(f"Using multi-segment arrival rates: {original_arrival_rps} (repeats {repetitions} times sequentially)")
-        else:
-            print(f"Using multi-segment arrival rates: {original_arrival_rps}")
+        print(f"Using multi-segment arrival rates (per repetition): {original_arrival_rps}")
     else:
         output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_globalrps{int(original_arrival_rps)}{rep_str}"
     final_output_dir = os.path.join(config_dir, output_dir)
