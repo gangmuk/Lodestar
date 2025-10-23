@@ -223,8 +223,8 @@ def handle_infer():
         
         # Use fake pod IDs from our fake mappings
         sorted_all_pod_ids = [
-            "10.0.0.39", "10.0.0.40", "10.0.0.41", "10.0.0.42",
-            "10.0.1.119", "10.0.1.120", "10.0.1.121"
+            "pod_0000-10.0.0.39", "pod_0001-10.0.0.40", "pod_0002-10.0.0.41", "pod_0003-10.0.0.42",
+            "pod_0004-10.0.1.119", "pod_0005-10.0.1.120", "pod_0006-10.0.1.121"
         ]
         
         # Call preprocessing with fake mappings
