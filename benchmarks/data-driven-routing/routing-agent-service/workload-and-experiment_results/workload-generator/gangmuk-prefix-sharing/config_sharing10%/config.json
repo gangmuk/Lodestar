@@ -7,7 +7,9 @@
             "shared_proportion": 0.1,
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
-            "num_diff_prefix": 25
+            "num_diff_prefix": 25,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 2000,
@@ -15,7 +17,9 @@
             "shared_proportion": 0.1,
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
-            "num_diff_prefix": 25
+            "num_diff_prefix": 25,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 4000,
@@ -23,7 +27,9 @@
             "shared_proportion": 0.1,
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
-            "num_diff_prefix": 25
+            "num_diff_prefix": 25,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 8000,
@@ -31,7 +37,9 @@
             "shared_proportion": 0.1,
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
-            "num_diff_prefix": 25
+            "num_diff_prefix": 25,
+            "output_length_mean": 100,
+            "output_length_std": 10
         }
     ]
 }

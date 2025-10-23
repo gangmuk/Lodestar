@@ -1,0 +1,16 @@
+{
+    "arrival": { "rps": 10 },
+    "workloads": [
+        {
+            "prompt_length": 2285,
+            "prompt_length_std": 471,
+            "shared_proportion": 0.97,
+            "shared_proportion_std": 0.14,
+            "num_requests_per_prefix": 48,
+            "num_diff_prefix": 20,
+            "output_length_mean": 16,
+            "output_length_std": 13
+        }
+    ]
+}
+
