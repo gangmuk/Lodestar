@@ -115,63 +115,7 @@ BROKER_LOCK = RWLock()
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
 
-# @app.route("/request_complete", methods=["POST"])
-# def handle_request_complete():
-#     """
-#     Endpoint for async request completion notifications (for scalable_rl_agent).
-    
-#     Expected payload:
-#     {
-#         "request_id": "req_12345",
-#         "ttft": 45.6,           # milliseconds
-#         "tpot": 12.3,           # milliseconds  
-#         "selected_pod": "10.0.1.30"
-#     }
-#     """
-#     global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
-    
-#     try:
-#         data = request.json
-#         request_id = data.get('request_id')
-#         ttft = data.get('ttft')
-#         tpot = data.get('tpot')
-#         selected_pod = data.get('selected_pod')
-        
-#         if not request_id or ttft is None or tpot is None:
-#             logger.error(f"Missing required fields in request completion: {data}")
-#             return jsonify({"error": "Missing required fields"}), 400
-        
-#         if SCALABLE_RL_AGENT is None:
-#             logger.debug(f"Scalable RL agent not initialized, ignoring completion for {request_id}")
-#             return jsonify({"status": "ok", "message": "agent not initialized"}), 200
-        
-#         # Get current cluster state (after completion)
-#         try:
-#             pod_features, kv_hit_ratios, request_features = get_current_cluster_features()
-#             current_state = (pod_features, kv_hit_ratios, request_features)
-            
-#             # Complete the experience
-#             on_request_complete_callback(
-#                 rl_agent=SCALABLE_RL_AGENT,
-#                 request_id=request_id,
-#                 current_cluster_state=current_state,
-#                 ttft=ttft,
-#                 tpot=tpot,
-#                 hyperparameters=RL_MODEL_HYPERPARAMETERS
-#             )
-            
-#             logger.debug(f"✅ Completed experience for request {request_id} (ttft={ttft}ms, tpot={tpot}ms)")
-#             return jsonify({"status": "ok"}), 200
-            
-#         except NotImplementedError:
-#             logger.debug(f"⚠️  get_current_cluster_features() not implemented, skipping completion for {request_id}")
-#             return jsonify({"status": "ok", "message": "cluster state fetch not implemented"}), 200
-            
-#     except Exception as e:
-#         logger.error(f"Error in request completion handler: {e}")
-#         import traceback
-#         logger.error(traceback.format_exc())
-#         return jsonify({"error": str(e)}), 500
+
 
 
 # Fixed handle_flush function
@@ -259,9 +203,12 @@ def handle_infer():
         # Extract request ID for logging purposes
         request_id = "default"  # or extract from log_message
         replace_podid_start_time = time.time()
-        log_message = utils.replace_pod_ip_with_generalpodid(log_message)
-        # logger.info(f"log_message_with_replaced_pod_id: {log_message}")
+        
+        # SIMPLIFIED: Skip pod ID replacement for local testing
+        # log_message = utils.replace_pod_ip_with_generalpodid(log_message)
+        logger.info(f"Using original log_message for local testing: {log_message[:100]}...")
         handle_infer_overhead_summary["replace_podid_overhead"] = time.time() - replace_podid_start_time
+        
         parts = log_message.split("requestID@")
         if len(parts) > 1:
             request_id_parts = parts[1].split("@")
@@ -271,12 +218,21 @@ def handle_infer():
             logger.warning("No request ID found in log message, using default 'default'")
         handle_infer_overhead_summary["request_prepare"] = time.time() - request_prepare_start_time
         
-        # Use the existing preprocessing function to parse the log
+        # SIMPLIFIED: Use fake pod IDs directly for local testing
         preprocess_start_time = time.time()
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
+        
+        # Use fake pod IDs from our fake mappings
+        sorted_all_pod_ids = [
+            "10.0.0.39", "10.0.0.40", "10.0.0.41", "10.0.0.42",
+            "10.0.1.119", "10.0.1.120", "10.0.1.121"
+        ]
+        
+        # Call preprocessing with fake mappings
+        processed_df, _, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
+        
         if PRINT_ONCE_AT_THE_FIRST_REQUEST:
             logger.info(f"processed_df.columns: {list(processed_df.columns)}")
-            logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
+            logger.info(f"sorted_all_pod_ids (fake): {sorted_all_pod_ids}")
             PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
 
@@ -315,7 +271,7 @@ def handle_infer():
             ##################################################
         handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
 
-        ## Encode data (normalization already done)
+        ## SIMPLIFIED: Encode data with fake mappings
         encode_start_time = time.time()
         tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
@@ -365,12 +321,7 @@ def handle_infer():
                     request_id=request_id,
                     sorted_all_pod_ids=sorted_all_pod_ids
                 )
-        elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
-            result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
-            result['chosen_pod_predicted_latency'] = -1
-        elif subAlgorithm == 'rl_agent':
+
             # === OLD RL AGENT (entire cluster as input state) ===
             logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
             
@@ -438,111 +389,10 @@ def handle_infer():
             infer_from_tensor_overhead_summary['online_update'] = update_overhead
         ####################################################################################
         ####################################################################################
-        elif subAlgorithm == 'scalable_rl_agent':
-            from scalable_rl_routing_agent import BROKER, infer
+   
+
             
-            # === NEW SCALABLE RL AGENT (pod-count independent) ===
-            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
-            
-            # Extract features from tensor_data
-            pod_features = tensor_data['pod_features'].cpu().numpy()[0]  # [num_pods, 10]
-            kv_hit_ratios = tensor_data['kv_hit_ratios'].cpu().numpy()[0]  # [num_pods, 1]
-            request_features = tensor_data['request_features'].cpu().numpy()[0]  # [3]
-            temporal_features = np.array([1], dtype=np.float32)  # Empty for now
-            
-            # Get previous reward from processed_df (gateway provides this)
-            if 'prev_reward' in processed_df.columns:
-                prev_reward = float(processed_df['prev_reward'].iloc[0])
-            else:
-                logger.error(f"scalable_rl_routing_agent, prev_reward not found in processed_df for requestID: {request_id}")
-                assert False
-            
-            # Call infer function from scalable_rl_routing_agent
-            infer_start = time.time()
-            timeout_in_seconds = 5.0  # 5 second timeout for inference
-            pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, timeout_in_seconds)
-            infer_from_tensor_overhead_summary['scalable_rl_infer'] = time.time() - infer_start
-            
-            # Build result with actual probabilities
-            num_pods = len(sorted_all_pod_ids)
-            
-            ## TODO: we need action probabilities for debugging
-            # if action_probs is not None:
-            #     # Use actual probabilities from policy
-            #     pod_probabilities = {sorted_all_pod_ids[i]: float(action_probs[i]) for i in range(min(num_pods, len(action_probs)))}
-            #     confidence = float(action_probs[pod_idx])
-            # else:
-            #     # Fallback to uniform
-            #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
-            #     confidence = 1.0/num_pods
-            
-            # TODO: these are placeholder. we need actual probabilities from the model.
-            pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
-            confidence = 1.0/num_pods
-            result = {
-                'selected_pod_index': int(pod_idx),
-                'pod_probabilities': pod_probabilities,
-                'confidence': confidence,
-                'explore_mask': 1,  # RL always explores
-                'predicted_latencies': {pod_id: -1 for pod_id in sorted_all_pod_ids},
-                'chosen_pod_predicted_latency': -1,
-            }
-            
-            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
-            
-        ####################################################################################
-        ####################################################################################
-        # elif subAlgorithm == 'scalable_rl_agent_old':
-        #     # === NEW SCALABLE RL AGENT (pod-count independent) ===
-        #     logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
-            
-        #     global SCALABLE_RL_AGENT
-            
-        #     with SCALABLE_RL_AGENT_LOCK.write():
-        #         if SCALABLE_RL_AGENT is None:
-        #             # Initialize ONCE - works for any number of pods!
-        #             pod_features_t = tensor_data['pod_features']
-        #             per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
-        #             kv_hit_t = tensor_data['kv_hit_ratios']
-        #             kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
-        #             req_features_t = tensor_data['request_features']
-        #             req_dim = int(req_features_t.shape[1])  # e.g., 3
-                    
-        #             # Per-pod dimension = pod_features + kv_hit_ratios
-        #             total_per_pod_dim = per_pod_dim + kv_dim
-                    
-        #             SCALABLE_RL_AGENT = create_scalable_rl_agent(
-        #                 per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
-        #                 request_dim=req_dim,             # 3
-        #                 max_pods=100,                    # Max expected pods
-        #                 **RL_MODEL_HYPERPARAMETERS
-        #             )
-                    
-        #             # Load checkpoint if available
-        #             ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-        #             if ckpt_path and os.path.exists(ckpt_path):
-        #                 try:
-        #                     SCALABLE_RL_AGENT.load(ckpt_path)
-        #                     logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
-        #                 except Exception as e:
-        #                     logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
-                    
-        #             logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
-        #                       f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
-                
-        #         current_agent = SCALABLE_RL_AGENT
-            
-        #     # Inference (no lock needed - thread-safe in new design)
-        #     current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
-        #         tensor_data=tensor_data,
-        #         request_id=request_id,
-        #         sorted_all_pod_ids=sorted_all_pod_ids,
-        #         processed_df=processed_df,
-        #         rl_agent=current_agent,
-        #         hyperparameters=RL_MODEL_HYPERPARAMETERS,
-        #         agent_lock=None  # New agent doesn't need lock for prediction
-        #     )
-        ####################################################################################
+
         else:
             logger.info(f"requestID: {request_id}, contextual bandit model for inference")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
@@ -709,171 +559,6 @@ def online_train_routine():
     NUM_NEW_DATA = 0
 
 
-def test_kubernetes_permissions():
-    """Test if we have the required Kubernetes permissions"""
-    try:
-        config.load_incluster_config()
-        
-        v1 = client.CoreV1Api()
-        
-        # Test 1: Can we list pods?
-        try:
-            pods = v1.list_pod_for_all_namespaces(label_selector=POD_LABEL_SELECTOR, limit=1)
-            logger.info("✅ Successfully listed pods - pod permissions OK")
-        except Exception as e:
-            logger.error(f"❌ Cannot list pods: {e}")
-            return False
-            
-        # Test 2: Can we read nodes?
-        try:
-            nodes = v1.list_node(limit=1)
-            logger.info("✅ Successfully listed nodes - node permissions OK")
-        except Exception as e:
-            logger.error(f"❌ Cannot list nodes: {e}")
-            return False
-            
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Kubernetes API access failed: {e}")
-        return False
-
-def rl_update_worker():
-    """Background worker thread for RL agent updates"""
-    global RL_AGENT, RL_AGENT_LOCK
-    logger.info("RL update worker thread started")
-    
-    while not RL_UPDATE_SHUTDOWN.is_set():
-        try:
-            # Wait for update request with timeout
-            update_request = RL_UPDATE_QUEUE.get(timeout=1.0)
-            
-            if update_request is None:  # Shutdown signal
-                break
-                
-            # Perform the update with WRITE lock (exclusive access)
-            # This blocks concurrent predictions to prevent PyTorch read+write races
-            with RL_AGENT_LOCK.write():
-                if RL_AGENT is not None:
-                    try:
-                        n_steps = update_request.get('n_steps', 32)
-                        RL_AGENT.update_online(n_steps=n_steps)
-                        logger.debug(f"RL agent updated with {n_steps} steps")
-                    except Exception as e:
-                        logger.error(f"Error updating RL agent: {e}")
-            
-            RL_UPDATE_QUEUE.task_done()
-            
-        except queue.Empty:
-            continue  # Timeout, check shutdown flag
-        except Exception as e:
-            logger.error(f"Error in RL update worker: {e}")
-    
-    logger.info("RL update worker thread stopped")
-
-
-def start_rl_update_worker():
-    """Start the RL update worker thread"""
-    global RL_UPDATE_THREAD
-    if RL_UPDATE_THREAD is None or not RL_UPDATE_THREAD.is_alive():
-        RL_UPDATE_THREAD = threading.Thread(target=rl_update_worker, daemon=True)
-        RL_UPDATE_THREAD.start()
-        logger.info("Started RL update worker thread")
-
-
-def stop_rl_update_worker():
-    """Stop the RL update worker thread"""
-    global RL_UPDATE_THREAD
-    if RL_UPDATE_THREAD and RL_UPDATE_THREAD.is_alive():
-        logger.info("Stopping RL update worker thread...")
-        RL_UPDATE_SHUTDOWN.set()
-        
-        # Send shutdown signal
-        try:
-            RL_UPDATE_QUEUE.put(None, timeout=1.0)
-        except queue.Full:
-            pass
-        
-        # Wait for thread to finish
-        RL_UPDATE_THREAD.join(timeout=5.0)
-        if RL_UPDATE_THREAD.is_alive():
-            logger.warning("RL update worker thread did not stop gracefully")
-        else:
-            logger.info("RL update worker thread stopped successfully")
-
-
-def scalable_rl_training_worker():
-    """
-    Background worker thread for scalable RL agent training.
-    
-    This continuously runs the RL training loop, which:
-    1. Pulls requests from the environment (blocks until request available from BROKER)
-    2. Predicts action (pod selection)
-    3. Routes request (sets decision in BROKER, unblocking /infer)
-    4. Collects experience and updates policy
-    """
-    global SCALABLE_RL_AGENT, SCALABLE_RL_TRAINING_SHUTDOWN
-    logger.info("🏋️  Scalable RL training worker thread started")
-    
-    try:
-        # Training loop - runs until shutdown
-        while not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
-            if SCALABLE_RL_AGENT is not None:
-                try:
-                    # Run training for a batch of steps
-                    # The agent's learn() will internally call env.step() which pulls from BROKER
-                    logger.info(f"{PURPLE_COLOR}Training scalable RL agent...{RESET_COLOR}")
-                    # Create proper checkpoint file path (not just directory)
-                    checkpoint_file = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'scalable_rl_agent')
-                    
-                    eval_freq = (RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'] + 1) * RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
-                    SCALABLE_RL_AGENT.train(
-                        save_path=checkpoint_file,
-                        eval_freq=eval_freq,
-                        n_eval_episodes=RL_MODEL_HYPERPARAMETERS['n_eval_episodes'],
-                        )
-                except Exception as e:
-                    if not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
-                        logger.error(f"Error in scalable RL training loop: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
-                        time.sleep(1)  # Avoid tight error loop
-            else:
-                time.sleep(1)  # Wait for agent initialization
-    except Exception as e:
-        logger.error(f"Fatal error in scalable RL training worker: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    finally:
-        logger.info("Scalable RL training worker thread stopped")
-
-
-def start_scalable_rl_training_worker():
-    """Start the scalable RL training worker thread"""
-    global SCALABLE_RL_TRAINING_THREAD
-    if SCALABLE_RL_TRAINING_THREAD is None or not SCALABLE_RL_TRAINING_THREAD.is_alive():
-        SCALABLE_RL_TRAINING_THREAD = threading.Thread(
-            target=scalable_rl_training_worker,
-            daemon=True,
-            name="ScalableRLTraining"
-        )
-        SCALABLE_RL_TRAINING_THREAD.start()
-        logger.info("✅ Started scalable RL training worker thread")
-
-
-def stop_scalable_rl_training_worker():
-    """Stop the scalable RL training worker thread"""
-    global SCALABLE_RL_TRAINING_THREAD
-    if SCALABLE_RL_TRAINING_THREAD and SCALABLE_RL_TRAINING_THREAD.is_alive():
-        logger.info("Stopping scalable RL training worker thread...")
-        SCALABLE_RL_TRAINING_SHUTDOWN.set()
-        
-        # Wait for thread to finish
-        SCALABLE_RL_TRAINING_THREAD.join(timeout=5.0)
-        if SCALABLE_RL_TRAINING_THREAD.is_alive():
-            logger.warning("Scalable RL training worker thread did not stop gracefully")
-        else:
-            logger.info("Scalable RL training worker thread stopped successfully")
 
 
 def queue_rl_update(n_steps=32):
@@ -1047,19 +732,34 @@ def init():
             logger.info(f"Latency metric for prediction: {latency_metric}")
         else:
             logger.info(f"Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
-        # # Test permissions first
-        # logger.info("Testing Kubernetes API permissions...")
-        # if not test_kubernetes_permissions():
-        #     logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
-        #     assert False
-        running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
-        sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
-        pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
+        # FAKE MAPPINGS FOR LOCAL TESTING (bypassing Kubernetes API)
+        logger.info("Using fake pod mappings for local testing...")
+        
+        # Define fake pod IPs (matching the 7 pods in test_request.json)
+        sorted_running_pod_ips = [
+            "10.0.0.39", "10.0.0.40", "10.0.0.41", "10.0.0.42",
+            "10.0.1.119", "10.0.1.120", "10.0.1.121"
+        ]
+        
+        # Create fake mappings
+        pod_ip_to_generalpodid = {}
         generalpodid_to_pod_ip = {}
-        for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
+        generalpodid_to_gpu_model = {}
+        pod_ip_to_gpu_model = {}
+        pod_ip_to_gpu_model_encoded = {}
+        
+        # Assign fake generalpodids and GPU models
+        gpu_models = ['NVIDIA-A100', 'NVIDIA-H100', 'NVIDIA-L40', 'NVIDIA-A10', 'NVIDIA-L20', 'NVIDIA-A100', 'NVIDIA-H100']
+        
+        for i, pod_ip in enumerate(sorted_running_pod_ips):
+            generalpodid = f"pod-{i+1}"
+            gpu_model = gpu_models[i]
+            
+            pod_ip_to_generalpodid[pod_ip] = generalpodid
             generalpodid_to_pod_ip[generalpodid] = pod_ip
-        generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
-        pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
+            generalpodid_to_gpu_model[generalpodid] = gpu_model
+            pod_ip_to_gpu_model[pod_ip] = gpu_model
+            pod_ip_to_gpu_model_encoded[pod_ip] = i % 5  # Encode as 0-4
         
         logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
         logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
@@ -1149,87 +849,7 @@ def init():
     else:
         logger.info("Online learning disabled, skipping offline data load")
     
-    # Initialize scalable RL agent if configured
-
-    # logger.info(f"{BLUE_COLOR}model_type: {RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
-
-
-    # # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-    # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-    #     import scalable_rl_routing_agent
-    #     from scalable_rl_routing_agent import BROKER
-        
-    #     logger.info("Initializing scalable_rl_agent, scalable RL agent...")
-    #     global SCALABLE_RL_AGENT, BROKER_LOCK
-    #     with BROKER_LOCK.write():
-    #         # Get number of pods from current running pods
-    #         num_pods = len(sorted_running_pod_ips)
-    #         logger.info(f"Creating scalable RL agent with {num_pods} pods")
-            
-    #         # # Create agent with hyperparameters
-    #         # SCALABLE_RL_AGENT = create_scalable_rl_agent(
-    #         #     per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 8),
-    #         #     request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
-    #         #     max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
-    #         #     learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
-    #         #     reward_decay_factor=RL_MODEL_HYPERPARAMETERS.get('reward_decay_factor', 1.0),
-    #         #     gae_lambda=RL_MODEL_HYPERPARAMETERS.get('gae_lambda', 0.95),
-    #         #     n_steps=RL_MODEL_HYPERPARAMETERS.get('n_steps', 256),
-    #         #     horizon=RL_MODEL_HYPERPARAMETERS.get('horizon', 1024),
-    #         #     batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
-    #         #     last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
-    #         #     rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
-    #         #     static_num_pods=True,
-    #         # )
-            
-    #         SCALABLE_RL_AGENT = scalable_rl_routing_agent.ScalableRLRoutingAgent(
-    #             per_pod_dim=8, 
-    #             # per_pod_dim=11, 
-    #             request_dim=3, 
-    #             max_pods=100, 
-    #             num_requests_per_episode=RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'], 
-    #             num_episodes_per_iteration=RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'],
-    #             num_iterations=RL_MODEL_HYPERPARAMETERS['num_iterations'],   
-    #             rl=RL_MODEL_HYPERPARAMETERS['rl_algorithm'], 
-    #             static_num_pods=True, 
-    #             learning_rate=RL_MODEL_HYPERPARAMETERS['rl_learning_rate'], 
-    #             hidden_dim=RL_MODEL_HYPERPARAMETERS['hidden_dim'], 
-    #             gamma=RL_MODEL_HYPERPARAMETERS['gamma'], 
-    #             gae_lambda=RL_MODEL_HYPERPARAMETERS['gae_lambda'], 
-    #             tb_log_dir=os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
-    #             batch_size=RL_MODEL_HYPERPARAMETERS['batch_size'], 
-    #             n_epochs=RL_MODEL_HYPERPARAMETERS['training_epochs'], 
-    #             clip_range=RL_MODEL_HYPERPARAMETERS['clip_range'], 
-    #             entropy_coeff=RL_MODEL_HYPERPARAMETERS['entropy_coeff'], 
-    #             vf_coef=RL_MODEL_HYPERPARAMETERS['vf_coef'], 
-    #             max_grad_norm=RL_MODEL_HYPERPARAMETERS['max_grad_norm'], 
-    #             last_layer_dim_pi=RL_MODEL_HYPERPARAMETERS['last_layer_dim_pi'], 
-    #             last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS['last_layer_dim_vf'], 
-    #             use_prioritized_replay=False, 
-    #             buffer_size=RL_MODEL_HYPERPARAMETERS['buffer_size'], 
-    #             priority_alpha=RL_MODEL_HYPERPARAMETERS['priority_alpha'], 
-    #             priority_beta=RL_MODEL_HYPERPARAMETERS['priority_beta'],
-    #             lr_scheduler_type=RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'],
-    #             load_tb_best='/app/final_model/init_model/best_model.zip',
-    #             )
-            
-    #         logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
-            
-    #         # Load checkpoint if available
-    #         checkpoint_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-    #         if checkpoint_path and os.path.exists(checkpoint_path):
-    #             try:
-    #                 SCALABLE_RL_AGENT.load(checkpoint_path)
-    #                 logger.info(f"scalable_rl_routing_agent, Loaded scalable RL checkpoint from {checkpoint_path}")
-    #             except Exception as e:
-    #                 logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
-        
-    #     # Start training thread
-    #     logger.info(f"{GREEN_COLOR}Starte scalable rl training worker in init()...{RESET_COLOR}")
-    #     start_scalable_rl_training_worker()
-    #     logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
-    #     logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
-
+   
 
 def periodic_checkpoint_scalable_rl():
     """
