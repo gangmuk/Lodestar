@@ -1,0 +1,29 @@
+[
+    {
+        "prompt_length": 3997,
+        "prompt_length_std": 17,
+        "shared_proportion": 0.95,
+        "shared_proportion_std": 0.00001,
+        "num_requests_per_prefix": 12,
+        "num_diff_prefix": 10,
+        "rps": 10
+    },
+    {
+        "prompt_length": 5868,
+        "prompt_length_std": 28,
+        "shared_proportion": 0.97,
+        "shared_proportion_std": 0.00001,
+        "num_requests_per_prefix": 8,
+        "num_diff_prefix": 10,
+        "rps": 10
+    },
+    {
+        "prompt_length": 2617,
+        "prompt_length_std": 1338,
+        "shared_proportion": 0.03,
+        "shared_proportion_std": 0.00001,
+        "num_requests_per_prefix": 79,
+        "num_diff_prefix": 10,
+        "rps": 10
+    }
+]

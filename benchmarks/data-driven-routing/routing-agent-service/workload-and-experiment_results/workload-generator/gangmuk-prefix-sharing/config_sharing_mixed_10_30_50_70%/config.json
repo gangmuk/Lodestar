@@ -8,7 +8,9 @@
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 10
+            "rps": 10,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 2000,
@@ -17,7 +19,9 @@
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 8
+            "rps": 8,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 4000,
@@ -26,7 +30,9 @@
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 8
+            "rps": 8,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 8000,
@@ -35,7 +41,9 @@
             "shared_proportion_std": 0.02,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 3
+            "rps": 3,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 1000,
@@ -44,7 +52,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 10
+            "rps": 10,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 2000,
@@ -53,7 +63,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 8
+            "rps": 8,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 4000,
@@ -62,7 +74,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 8
+            "rps": 8,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 8000,
@@ -71,7 +85,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 3
+            "rps": 3,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 1000,
@@ -80,7 +96,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 12
+            "rps": 12,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 2000,
@@ -89,7 +107,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 10
+            "rps": 10,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 4000,
@@ -98,7 +118,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 10
+            "rps": 10,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 8000,
@@ -107,7 +129,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 5
+            "rps": 5,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 1000,
@@ -116,7 +140,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 15
+            "rps": 15,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 2000,
@@ -125,7 +151,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 12
+            "rps": 12,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 4000,
@@ -134,7 +162,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 10
+            "rps": 10,
+            "output_length_mean": 100,
+            "output_length_std": 10
         },
         {
             "prompt_length": 8000,
@@ -143,7 +173,9 @@
             "shared_proportion_std": 0.05,
             "num_requests_per_prefix": 10,
             "num_diff_prefix": 25,
-            "rps": 5
+            "rps": 5,
+            "output_length_mean": 100,
+            "output_length_std": 10
         }
     ]
 }

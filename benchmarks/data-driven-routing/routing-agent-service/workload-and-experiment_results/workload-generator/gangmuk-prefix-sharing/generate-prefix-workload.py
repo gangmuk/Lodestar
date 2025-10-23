@@ -642,10 +642,27 @@ def process_single_config(tokenizer, config, config_id, base_seed):
 
     # Create flattened prompt data with prefix group information
     flat_prompts_data = []
+    
+    # Get output length parameters from config (with defaults for backward compatibility)
+    output_length_mean = config_copy.get("output_length_mean", 100)
+    output_length_std = config_copy.get("output_length_std", 0)
+    
     for prefix_idx, prompt_list in enumerate(prompts):
         for j, prompt in enumerate(prompt_list):
-            # output_token = sample_token_length(avg=100, std=1, min_=100, max_=100)
-            output_token = 100
+            # Sample output token length from normal distribution
+            if output_length_std > 0:
+                # Use truncated normal to ensure positive values
+                # min = max(1, mean - 3*std), max = mean + 3*std
+                min_output = max(1, int(output_length_mean - 3 * output_length_std))
+                max_output = int(output_length_mean + 3 * output_length_std)
+                
+                # Sample until we get a value in valid range
+                output_token = int(np.round(config_np_random.normal(output_length_mean, output_length_std)))
+                output_token = max(min_output, min(output_token, max_output))
+            else:
+                # If std is 0, use the mean as fixed value
+                output_token = int(output_length_mean)
+            
             flat_prompts_data.append({
                 "prompt": prompt,
                 "token_count": token_counts[prefix_idx][j],
@@ -877,7 +894,7 @@ def get_configurations(args):
     """
 
     # Resolve config.json path from provided directory
-    config_json_path = os.path.join(args.config_dir, "config.json")
+    config_json_path = args.config_file
     if not os.path.exists(config_json_path):
         raise FileNotFoundError(f"Config file not found: {config_json_path}")
 
@@ -1048,7 +1065,8 @@ def main(args):
 
     avg_prompt_length = int(sum(config['prompt_length'] for config in prefix_workload_configs) / len(prefix_workload_configs))
     output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_globalrps{int(arrival_rps)}"
-    final_output_dir = os.path.join(args.config_dir, output_dir)
+    config_dir = os.path.dirname(args.config_file)
+    final_output_dir = os.path.join(config_dir, output_dir)
     print(f"Output directory: {final_output_dir}")
     os.makedirs(final_output_dir, exist_ok=True)
 
@@ -1165,8 +1183,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate LLM inference workload with prefix sharing patterns.")
     
     # Configuration source (JSON file or command line)
-    parser.add_argument("--config-dir", type=str, required=True,
-                       help="Path to directory containing config.json. Outputs will be written inside this directory.")
+    parser.add_argument("config_file", type=str, help="Path to directory containing config.json. Outputs will be written inside this directory.")
     
     # # Workload configuration parameters (used only if --config-file is not provided)
     # parser.add_argument("--prompt-length", type=str, default="2000", 
