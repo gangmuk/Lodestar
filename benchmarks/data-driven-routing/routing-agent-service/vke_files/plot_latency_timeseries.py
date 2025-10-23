@@ -15,6 +15,7 @@ from numpy.polynomial.polynomial import polyfit
 # from logger import logger
 
 linewidth = 1.5
+transition_linewidth = 0.5
 edgecolor = 'gray'
 alpha = 0.7
 marker_size = 50
@@ -620,7 +621,7 @@ def extract_pod_specific_data(df, unique_pods):
 def add_transition_lines(ax, train_transitions, flush_transitions):
     """Add vertical lines for numTrains transitions only (numFlush transitions removed)"""
     for transition in train_transitions:
-        ax.axvline(x=transition['relative_time'], color='purple', linewidth=linewidth, alpha=alpha, zorder=5)
+        ax.axvline(x=transition['relative_time'], color='purple', linewidth=transition_linewidth, alpha=alpha, zorder=5)
 
 def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_transitions, unique_pods, pod_colors):
     """Plot the request rate analysis subplots"""
@@ -1202,6 +1203,173 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     
     return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10]
 
+def plot_iteration_analysis_subplots(fig, gs, df, start_row):
+    """Plot iteration-based latency trends and CDFs for all routing policies"""
+    linewidth = 1.5
+    alpha = 0.7
+    
+    # Get unique iterations
+    unique_iterations = sorted(df['iteration'].unique())
+    
+    # Define colors for iterations (used across all iteration plots)
+    iteration_colors = plt.cm.tab20(np.linspace(0, 1, len(unique_iterations)))
+    iteration_color_map = dict(zip(unique_iterations, iteration_colors))
+    
+    # Row start_row: TTFT Trends (Avg + P99 with dual y-axis) | TTFT CDF
+    gs_row_ttft = gs[start_row, :].subgridspec(1, 2, wspace=0.3)
+    ax_iter_ttft_trends = fig.add_subplot(gs_row_ttft[0])
+    ax_iter_ttft_cdf = fig.add_subplot(gs_row_ttft[1])
+    
+    # Row start_row+1: TPOT Trends (Avg + P99 with dual y-axis) | TPOT CDF
+    gs_row_tpot = gs[start_row+1, :].subgridspec(1, 2, wspace=0.3)
+    ax_iter_tpot_trends = fig.add_subplot(gs_row_tpot[0])
+    ax_iter_tpot_cdf = fig.add_subplot(gs_row_tpot[1])
+    
+    # Row start_row+2: E2E Trends (Avg + P99 with dual y-axis) | E2E CDF
+    gs_row_e2e = gs[start_row+2, :].subgridspec(1, 2, wspace=0.3)
+    ax_iter_e2e_trends = fig.add_subplot(gs_row_e2e[0])
+    ax_iter_e2e_cdf = fig.add_subplot(gs_row_e2e[1])
+    
+    # Calculate iteration statistics
+    iter_stats = []
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            iter_stats.append({
+                'iteration': iteration,
+                'avg_ttft': subset['ttft'].mean(),
+                'p99_ttft': np.percentile(subset['ttft'], 99),
+                'avg_tpot': subset['avg_tpot'].mean(),
+                'p99_tpot': np.percentile(subset['avg_tpot'], 99),
+                'avg_e2e': subset['e2e'].mean(),
+                'p99_e2e': np.percentile(subset['e2e'], 99),
+            })
+    
+    if iter_stats:
+        iter_vals = [s['iteration'] for s in iter_stats]
+        avg_ttft_vals = [s['avg_ttft'] for s in iter_stats]
+        p99_ttft_vals = [s['p99_ttft'] for s in iter_stats]
+        avg_tpot_vals = [s['avg_tpot'] for s in iter_stats]
+        p99_tpot_vals = [s['p99_tpot'] for s in iter_stats]
+        avg_e2e_vals = [s['avg_e2e'] for s in iter_stats]
+        p99_e2e_vals = [s['p99_e2e'] for s in iter_stats]
+        
+        # Compute overall statistics for legend
+        overall_avg_ttft = df['ttft'].mean()
+        overall_p99_ttft = np.percentile(df['ttft'], 99)
+        overall_avg_tpot = df['avg_tpot'].mean()
+        overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
+        overall_avg_e2e = df['e2e'].mean()
+        overall_p99_e2e = np.percentile(df['e2e'], 99)
+        
+        # TTFT Trends (Avg + P99 with dual y-axis)
+        ax_iter_ttft_trends.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
+        ax_iter_ttft_trends.set_xlabel('Iteration', fontsize=10)
+        ax_iter_ttft_trends.set_ylabel('Average TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
+        ax_iter_ttft_trends.tick_params(axis='y', labelcolor='blue')
+        
+        ax_iter_ttft_trends_right = ax_iter_ttft_trends.twinx()
+        ax_iter_ttft_trends_right.plot(iter_vals, p99_ttft_vals, marker='x', linestyle='--', color='darkblue', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_ttft:.1f}ms')
+        ax_iter_ttft_trends_right.set_ylabel('P99 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
+        ax_iter_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
+        
+        ax_iter_ttft_trends.set_ylim(0, max(avg_ttft_vals) * 1.4)
+        ax_iter_ttft_trends_right.set_ylim(0, max(p99_ttft_vals) * 1.4)
+        ax_iter_ttft_trends.set_title('TTFT Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
+        ax_iter_ttft_trends.grid(True, alpha=alpha)
+        
+        lines1, labels1 = ax_iter_ttft_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_iter_ttft_trends_right.get_legend_handles_labels()
+        ax_iter_ttft_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        
+        # TPOT Trends (Avg + P99 with dual y-axis)
+        ax_iter_tpot_trends.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_tpot:.1f}ms')
+        ax_iter_tpot_trends.set_xlabel('Iteration', fontsize=10)
+        ax_iter_tpot_trends.set_ylabel('Average TPOT (ms)', fontsize=10, fontweight='bold', color='green')
+        ax_iter_tpot_trends.tick_params(axis='y', labelcolor='green')
+        
+        ax_iter_tpot_trends_right = ax_iter_tpot_trends.twinx()
+        ax_iter_tpot_trends_right.plot(iter_vals, p99_tpot_vals, marker='x', linestyle='--', color='darkgreen', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_tpot:.1f}ms')
+        ax_iter_tpot_trends_right.set_ylabel('P99 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
+        ax_iter_tpot_trends_right.tick_params(axis='y', labelcolor='darkgreen')
+        
+        ax_iter_tpot_trends.set_ylim(0, max(avg_tpot_vals) * 1.4)
+        ax_iter_tpot_trends_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
+        ax_iter_tpot_trends.set_title('TPOT Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
+        ax_iter_tpot_trends.grid(True, alpha=alpha)
+        
+        lines1, labels1 = ax_iter_tpot_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_iter_tpot_trends_right.get_legend_handles_labels()
+        ax_iter_tpot_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        
+        # E2E Trends (Avg + P99 with dual y-axis)
+        ax_iter_e2e_trends.plot(iter_vals, avg_e2e_vals, marker='o', linestyle='-', color='purple', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_e2e:.1f}ms')
+        ax_iter_e2e_trends.set_xlabel('Iteration', fontsize=10)
+        ax_iter_e2e_trends.set_ylabel('Average E2E (ms)', fontsize=10, fontweight='bold', color='purple')
+        ax_iter_e2e_trends.tick_params(axis='y', labelcolor='purple')
+        
+        ax_iter_e2e_trends_right = ax_iter_e2e_trends.twinx()
+        ax_iter_e2e_trends_right.plot(iter_vals, p99_e2e_vals, marker='x', linestyle='--', color='indigo', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_e2e:.1f}ms')
+        ax_iter_e2e_trends_right.set_ylabel('P99 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
+        ax_iter_e2e_trends_right.tick_params(axis='y', labelcolor='indigo')
+        
+        ax_iter_e2e_trends.set_ylim(0, max(avg_e2e_vals) * 1.4)
+        ax_iter_e2e_trends_right.set_ylim(0, max(p99_e2e_vals) * 1.4)
+        ax_iter_e2e_trends.set_title('E2E Latency Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
+        ax_iter_e2e_trends.grid(True, alpha=alpha)
+        
+        lines1, labels1 = ax_iter_e2e_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_iter_e2e_trends_right.get_legend_handles_labels()
+        ax_iter_e2e_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+    
+    # TTFT CDF by Iterations
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            sorted_ttft = np.sort(subset['ttft'])
+            cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
+            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}',
+                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
+    
+    ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
+    ax_iter_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_iter_ttft_cdf.set_title('TTFT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
+    ax_iter_ttft_cdf.grid(True, alpha=0.3)
+    ax_iter_ttft_cdf.legend(fontsize=7, loc='lower right', ncol=2)
+    
+    # TPOT CDF by Iterations
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            sorted_tpot = np.sort(subset['avg_tpot'])
+            cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
+            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}',
+                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
+    
+    ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
+    ax_iter_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_iter_tpot_cdf.set_title('TPOT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
+    ax_iter_tpot_cdf.grid(True, alpha=0.3)
+    ax_iter_tpot_cdf.legend(fontsize=7, loc='lower right', ncol=2)
+    
+    # E2E CDF by Iterations
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            sorted_e2e = np.sort(subset['e2e'])
+            cdf = np.arange(1, len(sorted_e2e) + 1) / len(sorted_e2e)
+            ax_iter_e2e_cdf.plot(sorted_e2e, cdf, label=f'Iter {iteration}',
+                                 color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
+    
+    ax_iter_e2e_cdf.set_xlabel('E2E Latency (ms)', fontsize=10, fontweight='bold')
+    ax_iter_e2e_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_iter_e2e_cdf.set_title('E2E CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
+    ax_iter_e2e_cdf.grid(True, alpha=0.3)
+    ax_iter_e2e_cdf.legend(fontsize=7, loc='lower right', ncol=2)
+    
+    return ax_iter_ttft_trends, ax_iter_tpot_trends, ax_iter_e2e_trends, ax_iter_ttft_cdf, ax_iter_tpot_cdf, ax_iter_e2e_cdf
+
+
 def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy):
     """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
     # Determine the target latency metric based on routing policy
@@ -1500,138 +1668,19 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     legend_elements.append(Line2D([0], [0], color='tab:orange', linewidth=linewidth+0.5, label=f'Avg {metric_name} (per sec)'))
     ax_pred_timeseries.legend(handles=legend_elements, fontsize=10, loc='upper left')
 
-    # ========== ITERATION-BASED ANALYSIS ==========
-    # Define the iteration analysis plots (rows 24-27)
-    # Row 24: Avg and P99 Latency Trends by Iterations side by side
-    gs_row24 = gs[24, :].subgridspec(1, 2, wspace=0.3)
-    ax_iter_trends_avg = fig.add_subplot(gs_row24[0])  # Avg Latency Trends by Iterations (left half)
-    ax_iter_trends_p99 = fig.add_subplot(gs_row24[1])  # P99 Latency Trends by Iterations (right half)
+    # ========== PREDICTION ACCURACY BY ITERATIONS ==========
+    # Row 27: Prediction Accuracy by Iterations (full width)
+    ax_iter_pred_bar = fig.add_subplot(gs[27, :])
     
-    # Row 25: Prediction Accuracy by Iterations (full width)
-    ax_iter_pred_bar = fig.add_subplot(gs[25, :])
-    
-    # Row 26: TTFT and TPOT CDF by Iterations (split 50/50)
-    gs_row26 = gs[26, :].subgridspec(1, 2, wspace=0.3)
-    ax_iter_ttft_cdf = fig.add_subplot(gs_row26[0])  # TTFT CDF by Iterations (left half)
-    ax_iter_tpot_cdf = fig.add_subplot(gs_row26[1])  # TPOT CDF by Iterations (right half)
-    
-    # Row 27: Centered scatter plot (bigger, square)
-    ax_iter_pred_scatter = fig.add_subplot(gs[27, :])  # Actual vs Predicted Scatter Plot by Iterations (full width)
+    # Row 28: Centered scatter plot (bigger, square)
+    ax_iter_pred_scatter = fig.add_subplot(gs[28, :])  # Actual vs Predicted Scatter Plot by Iterations (full width)
     
     # Get unique iterations
     unique_iterations = sorted(df['iteration'].unique())
     
-    # Define colors for iterations (used across all iteration plots)
+    # Define colors for iterations (used across prediction plots)
     iteration_colors = plt.cm.tab20(np.linspace(0, 1, len(unique_iterations)))
     iteration_color_map = dict(zip(unique_iterations, iteration_colors))
-    
-    # SUBPLOT: Latency Trends by Iterations
-    iter_stats = []
-    for iteration in unique_iterations:
-        subset = df[df['iteration'] == iteration]
-        if len(subset) > 0:
-            avg_ttft = subset['ttft'].mean()
-            p99_ttft = np.percentile(subset['ttft'], 99)
-            avg_tpot = subset['avg_tpot'].mean()
-            p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            iter_stats.append((iteration, avg_ttft, p99_ttft, avg_tpot, p99_tpot))
-    
-    if iter_stats:
-        iter_vals, avg_ttft_vals, p99_ttft_vals, avg_tpot_vals, p99_tpot_vals = zip(*iter_stats)
-        
-        # Compute overall statistics for legend
-        overall_avg_ttft = df['ttft'].mean()
-        overall_p99_ttft = np.percentile(df['ttft'], 99)
-        overall_avg_tpot = df['avg_tpot'].mean()
-        overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
-        
-        # SUBPLOT 1: Average Latency Trends (ax_iter_trends_avg)
-        ax_iter_trends_avg.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg TTFT: {overall_avg_ttft:.1f}ms')
-        ax_iter_trends_avg.set_xlabel('Iteration', fontsize=10)
-        ax_iter_trends_avg.set_ylabel('TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
-        ax_iter_trends_avg.tick_params(axis='y', labelcolor='blue')
-        
-        # Right axis for TPOT
-        ax_iter_trends_avg_right = ax_iter_trends_avg.twinx()
-        ax_iter_trends_avg_right.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg TPOT: {overall_avg_tpot:.1f}ms')
-        ax_iter_trends_avg_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
-        ax_iter_trends_avg_right.tick_params(axis='y', labelcolor='green')
-        
-        ax_iter_trends_avg.set_ylim(0, max(avg_ttft_vals) * 1.4)
-        ax_iter_trends_avg_right.set_ylim(0, max(avg_tpot_vals) * 1.4)
-        
-        ax_iter_trends_avg.set_title('Average Latency Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
-        ax_iter_trends_avg.grid(True, alpha=alpha)
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax_iter_trends_avg.get_legend_handles_labels()
-        lines2, labels2 = ax_iter_trends_avg_right.get_legend_handles_labels()
-        ax_iter_trends_avg.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
-        
-        # SUBPLOT 2: P99 Latency Trends (ax_iter_trends_p99)
-        ax_iter_trends_p99.plot(iter_vals, p99_ttft_vals, marker='x', linestyle='--', color='blue', linewidth=linewidth, alpha=alpha, label=f'P99 TTFT: {overall_p99_ttft:.1f}ms')
-        ax_iter_trends_p99.set_xlabel('Iteration', fontsize=10)
-        ax_iter_trends_p99.set_ylabel('TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
-        ax_iter_trends_p99.tick_params(axis='y', labelcolor='blue')
-        
-        # Right axis for TPOT
-        ax_iter_trends_p99_right = ax_iter_trends_p99.twinx()
-        ax_iter_trends_p99_right.plot(iter_vals, p99_tpot_vals, marker='x', linestyle='--', color='green', linewidth=linewidth, alpha=alpha, label=f'P99 TPOT: {overall_p99_tpot:.1f}ms')
-        ax_iter_trends_p99_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
-        ax_iter_trends_p99_right.tick_params(axis='y', labelcolor='green')
-        
-        ax_iter_trends_p99.set_ylim(0, max(p99_ttft_vals) * 1.4)
-        ax_iter_trends_p99_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
-        
-        ax_iter_trends_p99.set_title('P99 Latency Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
-        ax_iter_trends_p99.grid(True, alpha=alpha)
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax_iter_trends_p99.get_legend_handles_labels()
-        lines2, labels2 = ax_iter_trends_p99_right.get_legend_handles_labels()
-        ax_iter_trends_p99.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
-    
-    # SUBPLOT: TTFT CDF by Iterations (ax_iter_ttft_cdf)
-    for iteration in unique_iterations:
-        subset = df[df['iteration'] == iteration]
-        if len(subset) > 0:
-            sorted_ttft = np.sort(subset['ttft'])
-            y = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
-            
-            # Calculate stats
-            avg_ttft = subset['ttft'].mean()
-            p99_ttft = np.percentile(subset['ttft'], 99)
-            
-            # Plot CDF line with combined label
-            ax_iter_ttft_cdf.plot(sorted_ttft, y, color=iteration_color_map[iteration], 
-                    linewidth=linewidth, alpha=alpha, label=f'Iter={iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms')
-    
-    ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10)
-    ax_iter_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
-    ax_iter_ttft_cdf.set_title('TTFT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
-    ax_iter_ttft_cdf.grid(True, alpha=alpha)
-    ax_iter_ttft_cdf.legend(fontsize=6)
-    
-    # SUBPLOT: TPOT CDF by Iterations (ax_iter_tpot_cdf)
-    for iteration in unique_iterations:
-        subset = df[df['iteration'] == iteration]
-        if len(subset) > 0:
-            sorted_tpot = np.sort(subset['avg_tpot'])
-            y = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
-            
-            # Calculate stats
-            avg_tpot = subset['avg_tpot'].mean()
-            p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            
-            # Plot CDF line with combined label
-            ax_iter_tpot_cdf.plot(sorted_tpot, y, color=iteration_color_map[iteration], 
-                     linewidth=linewidth, alpha=alpha, label=f'Iter={iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms')
-    
-    ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10)
-    ax_iter_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
-    ax_iter_tpot_cdf.set_title('TPOT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
-    ax_iter_tpot_cdf.grid(True, alpha=alpha)
-    ax_iter_tpot_cdf.legend(fontsize=6)
     
     # SUBPLOT: Prediction Accuracy Bar Chart by Iterations (ax_iter_pred_bar)
     if not valid_predictions.empty:
@@ -1749,7 +1798,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         ax_iter_pred_scatter.tick_params(axis='x', rotation=45, labelsize=9)
         ax_iter_pred_scatter.set_aspect('equal', adjustable='box')
 
-    return ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_trends_avg, ax_iter_trends_p99, ax_iter_ttft_cdf, ax_iter_tpot_cdf, ax_iter_pred_bar, ax_iter_pred_scatter
+    return ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter
 
 
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy):
@@ -1794,13 +1843,13 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
 
     # Determine number of rows based on whether prediction plots are needed
     if 'latency_predictor' in routing_policy:
-        n_rows = 28  # Added 1 more row for iteration CDFs
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Row 22 & 27 (scatter plots) are 3.0
-        fig_height = 70
+        n_rows = 29  # Includes iteration analysis + prediction plots
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Row 22 & 28 (scatter plots) are 3.0
+        fig_height = 73
     else:
-        n_rows = 21  # Skip the last 2 rows for prediction plots
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0]
-        fig_height = 52
+        n_rows = 24  # Includes iteration analysis (no prediction plots)
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 21-23
+        fig_height = 60
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
     fig = plt.figure(figsize=(15, fig_height))
@@ -1817,17 +1866,23 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     analysis_axes = plot_analysis_subplots(
         fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors)
 
+    # Plot iteration analysis for all routing policies
+    if 'latency_predictor' in routing_policy:
+        iteration_start_row = 24  # Rows 24-26 for latency_predictor policies
+    else:
+        iteration_start_row = 21  # Rows 21-23 for non-predictor policies
+    
+    iteration_axes = plot_iteration_analysis_subplots(fig, gs, df, iteration_start_row)
+    
+    # Plot prediction analysis only for latency_predictor policies
     if 'latency_predictor' in routing_policy:
         prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy)
+        ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
     else:
         prediction_axes = None
 
-    # Unpack prediction axes for conditional formatting below (only if prediction plots were created)
-    if prediction_axes is not None:
-        ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_trends_avg, ax_iter_trends_p99, ax_iter_ttft_cdf, ax_iter_tpot_cdf, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
-
     # Set font sizes for tick labels
-    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes
+    all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes + list(iteration_axes)
     if prediction_axes is not None:
         all_axes += list(prediction_axes)
     for ax in all_axes:
@@ -1836,8 +1891,12 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         
         # Force y-axis tick generation for axes with data
         ylim = ax.get_ylim()
-        # Do not override custom ticks on the Actual vs Predicted scatter plot
-        if prediction_axes is not None and ax is ax_pred_scatter:
+        # Do not override custom ticks on the Actual vs Predicted scatter plots
+        skip_axis = False
+        if prediction_axes is not None:
+            if ax is ax_pred_scatter or ax is ax_iter_pred_scatter:
+                skip_axis = True
+        if skip_axis:
             continue
         if ylim[1] > ylim[0] + 1:  # Only if there's a meaningful range
             # Force matplotlib to generate proper y-ticks

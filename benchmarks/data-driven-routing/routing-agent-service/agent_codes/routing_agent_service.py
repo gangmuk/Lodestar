@@ -822,7 +822,7 @@ def scalable_rl_training_worker():
                     # Create proper checkpoint file path (not just directory)
                     checkpoint_file = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'scalable_rl_agent')
                     
-                    eval_freq = RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'] * RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
+                    eval_freq = (RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'] + 1) * RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
                     SCALABLE_RL_AGENT.train(
                         save_path=checkpoint_file,
                         eval_freq=eval_freq,
@@ -1188,23 +1188,26 @@ def init():
                 num_iterations=RL_MODEL_HYPERPARAMETERS['num_iterations'],   
                 rl=RL_MODEL_HYPERPARAMETERS['rl_algorithm'], 
                 static_num_pods=True, 
-                learning_rate=3e-4, 
+                learning_rate=RL_MODEL_HYPERPARAMETERS['rl_learning_rate'], 
                 hidden_dim=RL_MODEL_HYPERPARAMETERS['hidden_dim'], 
-                gamma=1.0, 
-                gae_lambda=0.95, 
+                gamma=RL_MODEL_HYPERPARAMETERS['gamma'], 
+                gae_lambda=RL_MODEL_HYPERPARAMETERS['gae_lambda'], 
                 tb_log_dir=os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
                 batch_size=RL_MODEL_HYPERPARAMETERS['batch_size'], 
                 n_epochs=RL_MODEL_HYPERPARAMETERS['training_epochs'], 
-                clip_range=0.2, 
-                entropy_coeff=0.01, 
-                vf_coef=0.5, 
-                max_grad_norm=0.5, 
-                last_layer_dim_pi=1, 
-                last_layer_dim_vf=1, 
+                clip_range=RL_MODEL_HYPERPARAMETERS['clip_range'], 
+                entropy_coeff=RL_MODEL_HYPERPARAMETERS['entropy_coeff'], 
+                vf_coef=RL_MODEL_HYPERPARAMETERS['vf_coef'], 
+                max_grad_norm=RL_MODEL_HYPERPARAMETERS['max_grad_norm'], 
+                last_layer_dim_pi=RL_MODEL_HYPERPARAMETERS['last_layer_dim_pi'], 
+                last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS['last_layer_dim_vf'], 
                 use_prioritized_replay=False, 
-                buffer_size=1000, 
-                priority_alpha=0.6, 
-                priority_beta=0.4)
+                buffer_size=RL_MODEL_HYPERPARAMETERS['buffer_size'], 
+                priority_alpha=RL_MODEL_HYPERPARAMETERS['priority_alpha'], 
+                priority_beta=RL_MODEL_HYPERPARAMETERS['priority_beta'],
+                lr_scheduler_type=RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'],
+                load_tb_best='/app/final_model/init_model/best_model.zip',
+                )
             
             logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
             

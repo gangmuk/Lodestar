@@ -4,27 +4,6 @@
 
 set -e
 
-
-
-####################################################################
-## Q: How many times of workload should I send for RL experiment? ##
-####################################################################
-# "num_requests_per_episode": 20,
-# "num_episodes_per_iteration": 2,
-# "num_iterations": 5,
-# "n_eval_episodes": 1,
-
-# Total training episodes = num_episodes_per_iteration x num_iterations
-# = 2 x 5 = 10 episodes
-
-# Total evaluation episodes = n_eval_episodes x num_iterations
-# = 1 x 5 = 5 episodes
-
-# Total number of times to send the workload for training and evaluation = Total training episodes + Total evaluation episodes
-# = Total training episodes + Total evaluation episodes
-# = 10 + 5 = 15 times
-#########################################################################
-
 # Configuration
 NAMESPACE=${NAMESPACE:-default}
 POD_NAME=${POD_NAME:-client-service}
@@ -43,23 +22,42 @@ config="rl-online-router${delimiter}${routing_policy}"
 routing="${config%%${delimiter}*}"
 subAlgorithm="${config#*${delimiter}}"
 
-# batch_size=256
-# training_epochs=4
-# num_requests_per_episode=4000 # it is the number of requests in the chosen workload file
-# num_iterations=10
-# num_episodes_per_iteration=5
-# num_episode_for_training=50 # num_episodes_per_iteration x num_iterations
-# n_eval_episodes=5
-# num_episode_for_evaluation=50 # n_eval_episodes x num_iterations
-total_num_episodes=4 # num_episode_for_training + num_episode_for_evaluation
+
+training_epochs=10
+num_requests_per_episode=500
+num_iterations=20
+num_episodes_per_iteration=5
+n_eval_episodes=5
+total_num_episode_for_training=$((num_iterations * num_episodes_per_iteration))
+total_num_episode_for_evaluation=$((num_iterations * n_eval_episodes))
+total_num_episodes=$((total_num_episode_for_training + total_num_episode_for_evaluation))
+batch_size=256
+
+echo "*******************************************"
+echo "num_iterations: ${num_iterations}"
+echo "num_episodes_per_iteration: ${num_episodes_per_iteration}"
+echo "n_eval_episodes: ${n_eval_episodes}"
+echo "total_num_episode_for_training: ${total_num_episode_for_training}"
+echo "total_num_episode_for_evaluation: ${total_num_episode_for_evaluation}"
+echo "total_num_episodes: ${total_num_episodes}"
+echo "*******************************************"
+python update_model_config.py \
+    --final_model_dir "../training_data/scalable_rl_agent/final_model" \
+    --num_requests_per_episode ${num_requests_per_episode} \
+    --num_iterations ${num_iterations} \
+    --num_episodes_per_iteration ${num_episodes_per_iteration} \
+    --n_eval_episodes ${n_eval_episodes} \
+    --training_epochs ${training_epochs} \
+    --batch_size ${batch_size}
+sleep 3
 
 EXPLORATION_ENABLED="0"
 ENABLE_ONLINE_LEARNING="0"
-MIN_NUM_TRAINING_DATA="100"
+MIN_NUM_TRAINING_DATA="500"
 ENABLE_FLUSH="0"
 FLUSH_PERIOD="10"
 MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
-max_tokens=100
+max_tokens=1000
 
 # Configuration for the client
 api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
@@ -80,16 +78,16 @@ port=80
 # workload_name="ten_request"
 
 workload_name_list=(
-    # "ten_request"
-    # "hundred_request"
-    "MixedSharingRatio10_30_50_70%"
+    # "ten_request" # 20
+    # "hundred_request" # 99
+    # "MixedSharingRatio10_30_50_70%" # 4000
     # "SharingRatio71%"
     # "SharingRatio47%"
-    # "SharingRatio28%"
+    "SharingRatio28%" # 1999
     # "SharingRatio9%"
 )
-timestamp=$(date +%Y%m%d_%H%M%S)
-test_tb_logs_dir="test_tb_logs_${timestamp}"
+
+
 for workload_name in "${workload_name_list[@]}"; do
     python3 update_k8s_env.py \
         --deployment routing-agent-service \
@@ -110,33 +108,13 @@ for workload_name in "${workload_name_list[@]}"; do
         --env useRealRequest=1
         # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
-
+    ship_model=1
+    ship_code=1
+    scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
     final_model_dir="../training_data/scalable_rl_agent/final_model"
     # final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft"
     # final_model_dir="../training_data/merged-data/all/final_model-latency_predictor_ttft-withoutprefilltoken"
-    
-    ##########################################################
-    ## TODO: automation
-    # num_requests_per_episode=$(wc -l < /app/workload/${workload_name}/workload.jsonl)
-    # num_requests_per_episode=20
-    # num_episodes_per_iteration=2
-    # num_iterations=5
-    # n_eval_episodes=1
-    # num_episode_for_training=$((num_episodes_per_iteration * num_iterations))
-    # num_episode_for_evaluation=$((n_eval_episodes * num_iterations))
-    # num_episode_for_training_and_evaluation=$((num_episode_for_training + num_episode_for_evaluation))
-    # model_config_path="${final_model_dir}/model_config.json"
-    # python update_model_config_json.py --model_config_path ${model_config_path} \
-    #     --num_requests_per_episode ${num_requests_per_episode} \
-    #     --num_episodes_per_iteration ${num_episodes_per_iteration} \
-    #     --num_iterations ${num_iterations} \
-    #     --n_eval_episodes ${n_eval_episodes} \
-    #     --training_epochs ${training_epochs}
-    ##########################################################
 
-
-    ship_model=1
-    ship_code=1
     if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
         echo "Error: Final model directory does not exist: ${final_model_dir}"
         echo "Exiting..."
@@ -144,6 +122,7 @@ for workload_name in "${workload_name_list[@]}"; do
     fi
     ship_start_time=$(date +%s)
     python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
+    python kubectl_cp_from_host_to_pod.py ${scalable_rl_agent_init_model_dir} /app/final_model routing-agent-service default
     # python ship_all_copy.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster}
     ship_end_time=$(date +%s)
     ship_took=$((ship_end_time - ship_start_time))
@@ -161,7 +140,7 @@ for workload_name in "${workload_name_list[@]}"; do
     echo "Sub-Algorithm:       ${subAlgorithm}"
     echo "Workload:            ${workload_name}"
     echo "Online Learning:     ${ENABLE_ONLINE_LEARNING}"
-    echo "Total Episodes:      ${total_num_episodes}"
+    echo "total_num_episodes:          ${total_num_episodes}"
     echo "Max Tokens:          ${max_tokens}"
     echo "========================================="
 
@@ -202,22 +181,23 @@ for workload_name in "${workload_name_list[@]}"; do
     }
 
     # Create local experiment result output directory
+    timestamp=$(date +%Y%m%d_%H%M%S)
     experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
     if [ "${subAlgorithm}" == "rl_agent" ]; then
-        postfix="num_episodes${total_num_episodes}"
+        postfix="total_num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
     elif [ "${subAlgorithm}" == "rl_naive" ]; then
         trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
         used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
         hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
         hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
-        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-num_episodes${total_num_episodes}"
+        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-total_num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
     elif [ "${subAlgorithm}" == "latency_predictor" ]; then
         trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
         prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
         used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
-        postfix="trained_on_${trained_model_data_name}_${used_data_name}-num_episodes${total_num_episodes}"
+        postfix="trained_on_${trained_model_data_name}_${used_data_name}-iter${iterations}"
         experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}-${postfix}"
     fi
 
@@ -228,55 +208,76 @@ for workload_name in "${workload_name_list[@]}"; do
     fi
 
     echo "Starting log collection..."
-    kubectl logs -f -n aibrix-system $(kubectl get pods -n aibrix-system | grep aibrix-gateway-plugins | awk '{print $1}') > ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt &
+    
+    # Function to collect logs with timestamp tracking to avoid duplicates
+    collect_logs_continuously() {
+        local namespace=$1
+        local pod_pattern=$2
+        local output_file=$3
+        local interval=30  # Collect logs every 30 seconds
+        
+        local since_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        while true; do
+            pod_name=$(kubectl get pods -n ${namespace} | grep ${pod_pattern} | awk '{print $1}' | head -n 1)
+            if [ -n "$pod_name" ]; then
+                # Get logs since last collection time
+                kubectl logs --since-time="${since_time}" -n ${namespace} ${pod_name} >> ${output_file} 2>&1
+                # Update timestamp for next iteration
+                since_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            fi
+            sleep ${interval}
+        done
+    }
+    
+    # Function to copy checkpoints periodically
+    copy_checkpoints_periodically() {
+        local output_dir=$1
+        local interval=300  # Copy checkpoints every 5 minutes (300 seconds)
+        
+        # Wait a bit before first copy to let training start
+        sleep 60
+        
+        while true; do
+            checkpoint_ts=$(date +%Y%m%d_%H%M%S)
+            echo "[$(date)] Copying checkpoints at ${checkpoint_ts}..."
+            python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default 2>&1 | grep -v "tar: Removing leading"
+            echo "[$(date)] Checkpoint copy completed: checkpoints_${checkpoint_ts}"
+            sleep ${interval}
+        done
+    }
+    
+    # Start log collection in background
+    collect_logs_continuously "aibrix-system" "aibrix-gateway-plugins" "${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt" &
     pid_1=$!
-    kubectl logs -f -n default $(kubectl get pods -n default | grep routing-agent-service | awk '{print $1}') > ${experiment_result_output_dir}/all-routing-agent-service.log.txt &
+    collect_logs_continuously "default" "routing-agent-service" "${experiment_result_output_dir}/all-routing-agent-service.log.txt" &
     pid_2=$!
+    
+    # Start periodic checkpoint copying for scalable_rl_agent
+    if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+        echo "Starting periodic checkpoint copying (every 5 minutes)..."
+        copy_checkpoints_periodically "${experiment_result_output_dir}" &
+        pid_checkpoint=$!
+    fi
 
     echo "Starting client in pod..."
     echo "Output will be saved to: ${output_dir}"
 
-    sleep 5
-    echo "curl start"
-    bash curl.sh
-    echo "curl end"
     # Run the client using kubectl exec
-    echo "Will run ${total_num_episodes} episodes"
-    for iteration in $(seq 1 ${total_num_episodes}); do
-        if [ ! -d "${experiment_result_output_dir}/iteration1" ]; then
-            mkdir -p "${experiment_result_output_dir}/iteration${iteration}"
-        fi
-        echo "Starting ${iteration} episode"
-        kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
-            python3 /app/async-client.py \
-                --workload_path ${workload_path} \
-                --model ${llm_model} \
-                --endpoint http://${ipaddr}:${port} \
-                --api_key ${api_key} \
-                --output_file_path ${output_jsonl_path} \
-                --routing_strategy ${routing} \
-                --subAlgorithm ${subAlgorithm} \
-                --max_tokens ${max_tokens} \
-                --output_dir ${output_dir} \
-                --iteration ${iteration} \
-                --streaming \
-                2>&1 | tee ${experiment_result_output_dir}/iteration${iteration}/client.log.txt
-
-        echo "Done with ${iteration} episode"
-
-
-        # ts=$(date +%Y%m%d_%H%M%S)
-        echo "Starting copying checkpoints for ${iteration} episode"
-        python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints/tb_logs ${test_tb_logs_dir}/tb_logs_at_episode_${iteration} routing-agent-service default &
-        # copy_latency=$(( $(date +%s) - ts ))
-        # echo "Done copying checkpoints for ${iteration} episode. took ${copy_latency} seconds"
-
-        # echo "Starting copying checkpoints for ${iteration} episode"
-        # ts=$(date +%Y%m%d_%H%M%S)
-        # python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints/scalable_rl_agent.zip "test_tb_logs/scalable_rl_agent_${iteration}.zip" routing-agent-service default
-        # copy_latency=$(( $(date +%s) - ts ))
-        # echo "Done copying checkpoints for ${iteration} episode. took ${copy_latency} seconds"
-    done
+    kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- \
+        python3 /app/async-client.py \
+            --workload_path ${workload_path} \
+            --model ${llm_model} \
+            --endpoint http://${ipaddr}:${port} \
+            --api_key ${api_key} \
+            --output_file_path ${output_jsonl_path} \
+            --routing_strategy ${routing} \
+            --subAlgorithm ${subAlgorithm} \
+            --max_tokens ${max_tokens} \
+            --output_dir ${output_dir} \
+            --iterations ${total_num_episodes} \
+            --streaming \
+            2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
     echo ""
     echo "========================================="
@@ -292,8 +293,9 @@ for workload_name in "${workload_name_list[@]}"; do
 
     # Copy checkpoints (for scalable_rl_agent)
     if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+        checkpoint_ts=$(date +%Y%m%d_%H%M%S)
         echo "Copying scalable RL agent checkpoints..."
-        python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${experiment_result_output_dir}/checkpoints" routing-agent-service default || echo "⚠️  No checkpoints found (agent may not have trained enough steps)"
+        python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${experiment_result_output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default || echo "⚠️  No checkpoints found (agent may not have trained enough steps)"
     fi
 
     # Process logs
@@ -303,11 +305,17 @@ for workload_name in "${workload_name_list[@]}"; do
     echo "* routing agent log: ${experiment_result_output_dir}/all-routing-agent-service.log.txt"
     echo "* client log: ${experiment_result_output_dir}/client.log.txt"
     if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
-        echo "* checkpoints: ${experiment_result_output_dir}/checkpoints/"
+        echo "* checkpoints (periodic snapshots): ${experiment_result_output_dir}/checkpoints_*/"
+        echo "* final checkpoint: ${experiment_result_output_dir}/checkpoints_${checkpoint_ts}/"
     fi
     # python plot_latency_timeseries.py ${experiment_result_output_dir}/latency_metrics.log.txt
-    kill $pid_1
-    kill $pid_2
+    
+    # Kill background processes
+    kill $pid_1 2>/dev/null || true
+    kill $pid_2 2>/dev/null || true
+    if [ "${subAlgorithm}" == "scalable_rl_agent" ] && [ -n "${pid_checkpoint}" ]; then
+        kill $pid_checkpoint 2>/dev/null || true
+    fi
 
     kubectl rollout restart deployment client-service
 done

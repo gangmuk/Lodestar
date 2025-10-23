@@ -97,11 +97,15 @@ func FlushLogMessageToRLAgent() {
 						klog.Infof("The first request has not been received yet, skipping the flush. (needed to construct the running pod IPs)")
 						continue // Skip this iteration and check again on the next tick
 					}
-					if len(utils.RequestToLogMessage) > minNumLogMessagesToFlush {
-						klog.Infof("Starting flushing %dth flush for %d number of log messages", utils.GetNumFlush(), len(utils.RequestToLogMessage))
-						// utils.RequestToLogMessageMutex.Lock()
+					utils.RequestToLogMessageMutex.RLock()
+					numMessages := len(utils.RequestToLogMessage)
+					utils.RequestToLogMessageMutex.RUnlock()
+
+					if numMessages > minNumLogMessagesToFlush {
+						klog.Infof("Starting flushing %dth flush for %d number of log messages", utils.GetNumFlush(), numMessages)
+						utils.RequestToLogMessageMutex.RLock()
 						reqBody, err := json.Marshal(utils.RequestToLogMessage)
-						// utils.RequestToLogMessageMutex.Unlock()
+						utils.RequestToLogMessageMutex.RUnlock()
 						if err != nil {
 							klog.Errorf("Failed flush. failed marshal RequestToLogMessage: %v", err)
 							utils.CleanupAllRequestLogMessage()
@@ -180,9 +184,12 @@ func FlushLogMessageToRLAgent() {
 					}
 					end_request_id_of_this_batch := fake_request_id
 					klog.Infof("Newly added request ids %d-%d", start_request_id_of_this_batch, end_request_id_of_this_batch)
-					klog.Infof("Starting flushing process for %d logs ", len(utils.RequestToLogMessage))
+					utils.RequestToLogMessageMutex.RLock()
+					numLogs := len(utils.RequestToLogMessage)
+					klog.Infof("Starting flushing process for %d logs ", numLogs)
 					klog.V(5).Infof("logs: %v", logs)
 					reqBody, err := json.Marshal(utils.RequestToLogMessage)
+					utils.RequestToLogMessageMutex.RUnlock()
 					if err != nil {
 						klog.Errorf("Failed flush. failed to marshal RequestToLogMessage: %v", err)
 						continue
@@ -410,21 +417,39 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 		prev_reward := 0.0 // total latency in seconds of all live and completed requests
 		cur_time_in_microseconds := time.Now().UnixMicro()
-		klog.Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
-		for live_request_id := range utils.LiveRequests {
+		klog.V(5).Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
+
+		// Copy live request IDs to avoid concurrent map iteration and write
+		utils.LiveRequestsMutex.RLock()
+		liveRequestIDs := make([]string, 0, len(utils.LiveRequests))
+		for reqID := range utils.LiveRequests {
+			liveRequestIDs = append(liveRequestIDs, reqID)
+		}
+		utils.LiveRequestsMutex.RUnlock()
+
+		// Now safely iterate over the copy
+		for _, live_request_id := range liveRequestIDs {
 			live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
 			if !exists {
-				klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests", ctx.RequestID, live_request_id)
-				continue
+				klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests. Use default value %d seconds", ctx.RequestID, live_request_id, live_request_last_time)
+				// continue
 			}
 			pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
 			prev_reward += pass_time_in_second
-			klog.Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
 			utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
 		}
 
-		// utils.RemainingLatencyMutex.RLock()
-		for completed_request_id := range utils.RemainingLatencyInMicroseconds {
+		// Copy completed request IDs to avoid concurrent map iteration and write
+		utils.RemainingLatencyMutex.RLock()
+		completedRequestIDs := make([]string, 0, len(utils.RemainingLatencyInMicroseconds))
+		for reqID := range utils.RemainingLatencyInMicroseconds {
+			completedRequestIDs = append(completedRequestIDs, reqID)
+		}
+		utils.RemainingLatencyMutex.RUnlock()
+
+		// Now safely iterate over the copy
+		for _, completed_request_id := range completedRequestIDs {
 			remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
 			if !exists {
 				klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
@@ -432,13 +457,12 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			}
 			pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
 			prev_reward += pass_time_in_second
-			klog.Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
 			utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
 		}
-		// utils.RemainingLatencyMutex.RUnlock()
 		utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
 
-		klog.Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
+		klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
 		utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
 		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f`
 		logMessage = fmt.Sprintf(

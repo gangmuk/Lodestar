@@ -848,7 +848,7 @@ func GetLiveRequestLastTime(requestID string) (int64, bool) {
 		return val, true
 	}
 	klog.Errorf("Error, Failed GetLiveRequestLastTime for request ID: %s, not found, returning -1", requestID)
-	return -1, false
+	return 3, false
 }
 
 func RemoveLiveRequest(requestID string) {
@@ -939,7 +939,7 @@ func GetExploration(requestID string) (int, int) {
 	if val, ok := Exploration[requestID]; ok {
 		return val, ExplorationEnabled[requestID]
 	}
-	klog.Errorf("Error, Failed GetExploration for request ID: %s, not found, returning -1", requestID)
+	klog.V(5).Infof("Error, Failed GetExploration for request ID: %s, not found, returning -1", requestID)
 	return -1, -1
 }
 

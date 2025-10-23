@@ -82,10 +82,10 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
             # Record the actual start time after waiting
             actual_start_time = time.time()
             scheduling_accuracy = actual_start_time - target_time
-            logger.info(f"Request {request_id}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+            logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
                       f"scheduling accuracy: {scheduling_accuracy:.6f}s")
         else:
-            logger.info(f"Request {request_id}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
+            logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
         
         # # Double-check prompt format
         # if not isinstance(prompt, list):
@@ -1098,7 +1098,9 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 
     return result
 
-async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy, load_struct, output_file, model, max_tokens, temperature, is_streaming, results_lock, history_lock, iteration):
+async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
+                       load_struct, output_file, model, max_tokens,
+                       temperature, is_streaming, results_lock, history_lock, iterations):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Create a client
     client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
@@ -1111,105 +1113,106 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
     overall_start_time = time.time()
     
     # For each iteration
-    logger.info(f"Starting iteration {iteration}")
-    
-    # Calculate base time for this iteration
-    # For first iteration, use current time
-    # For subsequent iterations, wait until previous iteration is completely done
-    iteration_base_time = time.time()
-    
-    # Prepare tasks for this iteration only
-    iteration_tasks = []
-    
-    # Process the load structure and create tasks for this iteration only
-    for requests_dict in load_struct:
-        ts = int(requests_dict["timestamp"])
-        requests = requests_dict["requests"]
-        # Use iteration_base_time instead of global base_time
-        target_time = iteration_base_time + ts / 1000.0  # Convert milliseconds to seconds
+    for iteration in range(iterations):
+        logger.info(f"Starting iteration {iteration+1}/{iterations}")
         
-        for request in requests:
-            session_id = request.get("session_id", None)
+        # Calculate base time for this iteration
+        # For first iteration, use current time
+        # For subsequent iterations, wait until previous iteration is completely done
+        iteration_base_time = time.time()
+        
+        # Prepare tasks for this iteration only
+        iteration_tasks = []
+        
+        # Process the load structure and create tasks for this iteration only
+        for requests_dict in load_struct:
+            ts = int(requests_dict["timestamp"])
+            requests = requests_dict["requests"]
+            # Use iteration_base_time instead of global base_time
+            target_time = iteration_base_time + ts / 1000.0  # Convert milliseconds to seconds
+            
+            for request in requests:
+                session_id = request.get("session_id", None)
 
-            if args.prompt_type == "token-ids":
-                # Parse token IDs from workload file
-                try:
-                    # Expect prompt field to contain a list of token IDs like "[123, 456, 789, ...]"
-                    if isinstance(request["prompt"], str):
-                        # Parse string representation of list
-                        token_ids = json.loads(request["prompt"])
-                    elif isinstance(request["prompt"], list):
-                        # Already a list
-                        token_ids = request["prompt"]
-                    else:
-                        raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+                if args.prompt_type == "token-ids":
+                    # Parse token IDs from workload file
+                    try:
+                        # Expect prompt field to contain a list of token IDs like "[123, 456, 789, ...]"
+                        if isinstance(request["prompt"], str):
+                            # Parse string representation of list
+                            token_ids = json.loads(request["prompt"])
+                        elif isinstance(request["prompt"], list):
+                            # Already a list
+                            token_ids = request["prompt"]
+                        else:
+                            raise ValueError(f"Invalid token_ids format: {request['prompt']}")
 
-                    prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
-                    raise
-            else:
-                token_ids = None
-                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+                        prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
+                        raise
+                else:
+                    token_ids = None
+                    prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
 
-            max_tokens_value = request.get("Output Length", max_tokens)
-            # print(f"max_tokens_value: {max_tokens_value}")
-            task = {
-                "prompt": prompt,
-                "request_id": request_id,
-                "session_id": session_id,
-                "target_time": target_time,
-                "max_tokens": max_tokens_value,
-                "iteration": iteration,
-                "token_ids": token_ids
-            }
-            iteration_tasks.append(task)
-            request_id += 1
-    
-    logger.info(f"Iteration {iteration}: Scheduling {len(iteration_tasks)} tasks for execution")
-    print(f"Iteration {iteration}: Scheduling {len(iteration_tasks)} tasks for execution")
-    
-    # Execute only this iteration's tasks
-    start_time = time.time()
-    results = await schedule_and_execute_tasks(
-        tasks=iteration_tasks,
-        client=client,
-        model=model,
-        is_streaming=is_streaming,
-        output_file=output_file,
-        temperature=temperature,
-        routing_strategy=routing_strategy,
-        results_lock=results_lock,
-        history_lock=history_lock,
-        iteration=iteration,
-        prompt_type=args.prompt_type,
-    )
-    end_time = time.time()
-    
-    # Count successes and failures for this iteration
-    success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-    error_count = len(iteration_tasks) - success_count
-    
-    logger.info(f"Iteration {iteration} completed in {end_time - start_time:.2f} seconds")
-    logger.info(f"Iteration {iteration} results: {success_count} successful, {error_count} failed")
-    
-    # Update totals
-    total_requests += len(iteration_tasks)
-    total_success += success_count
-    total_failures += error_count
-    
-    # Free up memory
-    iteration_tasks = None
-    results = None
+                max_tokens_value = request.get("Output Length", max_tokens)
+                # print(f"max_tokens_value: {max_tokens_value}")
+                task = {
+                    "prompt": prompt,
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "target_time": target_time,
+                    "max_tokens": max_tokens_value,
+                    "iteration": iteration,
+                    "token_ids": token_ids
+                }
+                iteration_tasks.append(task)
+                request_id += 1
+        
+        logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        
+        # Execute only this iteration's tasks
+        start_time = time.time()
+        results = await schedule_and_execute_tasks(
+            tasks=iteration_tasks,
+            client=client,
+            model=model,
+            is_streaming=is_streaming,
+            output_file=output_file,
+            temperature=temperature,
+            routing_strategy=routing_strategy,
+            results_lock=results_lock,
+            history_lock=history_lock,
+            iteration=iteration,
+            prompt_type=args.prompt_type,
+        )
+        end_time = time.time()
+        
+        # Count successes and failures for this iteration
+        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        error_count = len(iteration_tasks) - success_count
+        
+        logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
+        
+        # Update totals
+        total_requests += len(iteration_tasks)
+        total_success += success_count
+        total_failures += error_count
+        
+        # Free up memory
+        iteration_tasks = None
+        results = None
 
-    # # Add a small buffer before next iteration if not the last iteration
-    # if iteration < iterations - 1:
-    #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
-    #     await asyncio.sleep(2.0)
+        # # Add a small buffer before next iteration if not the last iteration
+        # if iteration < iterations - 1:
+        #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
+        #     await asyncio.sleep(2.0)
     
     # Log overall benchmark completion
     overall_end_time = time.time()
-    logger.info(f"{iteration} iteration completed in {overall_end_time - overall_start_time:.2f} seconds")
+    logger.info(f"All {iterations} iterations completed in {overall_end_time - overall_start_time:.2f} seconds")
     logger.info(f"Total requests: {total_requests}")
     logger.info(f"Successful requests: {total_success}")
     logger.info(f"Failed requests: {total_failures}")
@@ -1252,7 +1255,7 @@ async def main(args):
             is_streaming=args.streaming,
             results_lock=results_lock,
             history_lock=history_lock,
-            iteration=args.iteration,
+            iterations=args.iterations,
         )
         end_time = time.time()
         
@@ -1284,7 +1287,7 @@ if __name__ == "__main__":
     parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout in seconds.")
     parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
     parser.add_argument("--output_dir", type=str, default="./", help="output dir")
-    parser.add_argument("--iteration", type=int, default=1, help="Number of times to iterate through the workload trace.")
+    parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
     parser.add_argument("--prompt-type", type=str, default="chat", choices=["chat", "token-ids"],
                        help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
 
