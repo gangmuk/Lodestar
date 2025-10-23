@@ -1,7 +1,4 @@
 {
-    "hidden_dim": 64,
-    "batch_size": 32,
-    "training_epochs": 15,
     "learning_every_x_iter": 5,
     "weight_decay": 0.0001,
     "max_updates_per_epoch": 1000,
@@ -38,10 +35,30 @@
     "NO_NORMALIZE_FEATURES": [
         "none"
     ],
-    "lr_scheduler_type": "exponential",
     "lr_scheduler_gamma": 0.95,
     "LATENCY_METRIC": "ttft",
     "reward_decay_factor": 0.91,
     "MODEL_TYPE": "scalable_rl_agent",
-    "rl_algorithm": "PPO"
+    "rl_algorithm": "PPO",
+    "CHECKPOINT_DIR": "checkpoints",
+    "num_requests_per_episode": 500,
+    "num_iterations": 20,
+    "num_episodes_per_iteration": 5,
+    "n_eval_episodes": 5,
+    "training_epochs": 10,
+    "lr_scheduler_type": "linear",
+    "rl_learning_rate": 0.0005,
+    "clip_range": 0.2,
+    "entropy_coeff": 0.05,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "last_layer_dim_pi": 1,
+    "last_layer_dim_vf": 1,
+    "buffer_size": 1000,
+    "priority_alpha": 0.6,
+    "priority_beta": 0.4,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "hidden_dim": 64,
+    "batch_size": 256
 }
