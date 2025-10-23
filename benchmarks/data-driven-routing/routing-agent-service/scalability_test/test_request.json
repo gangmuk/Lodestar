@@ -1,0 +1,4 @@
+{
+    "test_req_1": "**@latency_metrics@requestID@test_req_1@request_start_time@1000@request_end_time@2000@selectedpod@10.0.0.39@ttft@100@avg_tpot@50@total_decode_time@500@e2e@1000@numInputTokens@100@numOutputTokens@50@numTotalTokens@150@allPodsKvCacheHitRatios@{\"10.0.0.39\":0.8,\"10.0.1.119\":0.6,\"10.0.0.142\":0.7}@numInflightRequestsAllPods@{\"10.0.0.39\":2,\"10.0.1.119\":1,\"10.0.0.142\":1}@vllmGPUKVCacheUsage@{\"10.0.0.39\":0.7,\"10.0.1.119\":0.5,\"10.0.0.142\":0.6}@vllmCPUKVCacheUsage@{}@vllmNumRequestsRunning@{\"10.0.0.39\":1,\"10.0.1.119\":1,\"10.0.0.142\":0}@vllmNumRequestsWaiting@{\"10.0.0.39\":0,\"10.0.1.119\":0,\"10.0.0.142\":0}@podMetricsLastSecond@{}@numPrefillTokensForAllPods@{\"10.0.0.39\":100,\"10.0.1.119\":50,\"10.0.0.142\":75}@numDecodeTokensForAllPods@{\"10.0.0.39\":200,\"10.0.1.119\":150,\"10.0.0.142\":175}@subAlgorithm@latency_predictor@prev_reward@0.0"
+
+}

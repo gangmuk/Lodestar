@@ -1,0 +1,1202 @@
+[
+  {
+    "request_id": 5,
+    "timestamp": 0.8000764846801758,
+    "end_to_end_ms": 219.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 29ms, handle_infer_normalize: 5ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 182ms, handle_infer_remaining_work: 1ms, handle_infer_end_to_end: 219ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 5ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 6ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 18ms, infer_from_tensor_prepare_tensors: 1ms, infer_from_tensor_model_inference: 135ms, infer_from_tensor_format_results: 38ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.0181450843811035,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 2,
+    "timestamp": 0.20007634162902832,
+    "end_to_end_ms": 797.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 5ms, handle_infer_normalize: 5ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 786ms, handle_infer_remaining_work: 1ms, handle_infer_end_to_end: 797ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 5ms, infer_from_tensor_model_inference: 130ms, infer_from_tensor_format_results: 38ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.0177209377288818,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 4,
+    "timestamp": 0.6001033782958984,
+    "end_to_end_ms": 422.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 5ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 411ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 422ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 135ms, infer_from_tensor_format_results: 38ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.0172157287597656,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 3,
+    "timestamp": 0.400223970413208,
+    "end_to_end_ms": 625.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 5ms, handle_infer_normalize: 5ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 612ms, handle_infer_remaining_work: 2ms, handle_infer_end_to_end: 625ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 4ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 135ms, infer_from_tensor_format_results: 38ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.019636869430542,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 1,
+    "timestamp": 1.6927719116210938e-05,
+    "end_to_end_ms": 1019.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 1ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1007ms, handle_infer_remaining_work: 2ms, handle_infer_end_to_end: 1019ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 135ms, infer_from_tensor_format_results: 38ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.01902437210083,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 6,
+    "timestamp": 1.0000805854797363,
+    "end_to_end_ms": 28.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 5ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 18ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 28ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 2ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 4ms, infer_from_tensor_prepare_tensors: 13ms, infer_from_tensor_model_inference: 5ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.02176833152771,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 7,
+    "timestamp": 1.200075626373291,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.2043976783752441,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 8,
+    "timestamp": 1.4000861644744873,
+    "end_to_end_ms": 11.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 11ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 2ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.4261829853057861,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 9,
+    "timestamp": 1.60007905960083,
+    "end_to_end_ms": 11.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 11ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 1ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.6476130485534668,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 10,
+    "timestamp": 1.8000879287719727,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 1.8036701679229736,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 11,
+    "timestamp": 2.0001060962677,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 2.0034067630767822,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 12,
+    "timestamp": 2.200083017349243,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 2.2036116123199463,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 13,
+    "timestamp": 2.4001080989837646,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 2.4029409885406494,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 14,
+    "timestamp": 2.600105047225952,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 2.603236198425293,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 15,
+    "timestamp": 2.8000752925872803,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 2.8031437397003174,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 16,
+    "timestamp": 3.000237464904785,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 3.0033910274505615,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 17,
+    "timestamp": 3.2000982761383057,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 3.2033188343048096,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 18,
+    "timestamp": 3.4001035690307617,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 3.402939558029175,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 19,
+    "timestamp": 3.60007381439209,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 3.60308575630188,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 20,
+    "timestamp": 3.800074577331543,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 3.8029074668884277,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 21,
+    "timestamp": 4.000078201293945,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 4.003218173980713,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 22,
+    "timestamp": 4.2001049518585205,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 4.203094959259033,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 23,
+    "timestamp": 4.400079965591431,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 4.402920484542847,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 24,
+    "timestamp": 4.600080490112305,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 4.6034393310546875,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 25,
+    "timestamp": 4.800081729888916,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 4.8035242557525635,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 26,
+    "timestamp": 5.0001060962677,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 5.003023862838745,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 27,
+    "timestamp": 5.200072765350342,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 5.203171730041504,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 28,
+    "timestamp": 5.4000794887542725,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 2ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 5.40321159362793,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 29,
+    "timestamp": 5.600100755691528,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 5.602916717529297,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 30,
+    "timestamp": 5.800098419189453,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 5.802696943283081,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 31,
+    "timestamp": 6.000100612640381,
+    "end_to_end_ms": 11.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 11ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 6.003845691680908,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 32,
+    "timestamp": 6.2001118659973145,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 6.202936887741089,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 33,
+    "timestamp": 6.400110960006714,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 6.403078556060791,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 34,
+    "timestamp": 6.600100994110107,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 6.602992534637451,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 35,
+    "timestamp": 6.800100564956665,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 6.802893400192261,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 36,
+    "timestamp": 7.000073194503784,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 7.002861738204956,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 37,
+    "timestamp": 7.200075149536133,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 7.202804327011108,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 38,
+    "timestamp": 7.400112628936768,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 7.403400659561157,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 39,
+    "timestamp": 7.600104331970215,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 7.602999687194824,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 40,
+    "timestamp": 7.800103664398193,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 4ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 7.80288290977478,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 41,
+    "timestamp": 8.000099182128906,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 8.003045558929443,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 42,
+    "timestamp": 8.200104475021362,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 8.203539609909058,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 43,
+    "timestamp": 8.40010404586792,
+    "end_to_end_ms": 10.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 10ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 8.403193712234497,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 44,
+    "timestamp": 8.600098848342896,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 8.603165626525879,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 45,
+    "timestamp": 8.800081014633179,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 8.802927494049072,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 46,
+    "timestamp": 9.000099897384644,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 9.002917766571045,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 47,
+    "timestamp": 9.20010495185852,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 9.203246355056763,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 48,
+    "timestamp": 9.40011215209961,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 9.402718782424927,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 49,
+    "timestamp": 9.600099563598633,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 0ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 9.60281491279602,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  },
+  {
+    "request_id": 50,
+    "timestamp": 9.800071239471436,
+    "end_to_end_ms": 9.0,
+    "status_code": 200,
+    "response_data": {
+      "chosen_pod_predicted_latency": -84.13470458984375,
+      "confidence": -0.0035604238510131836,
+      "exploration": 0,
+      "exploration_enabled": 0,
+      "num_flush": 0,
+      "num_trains": 0,
+      "overhead_log": "oh, handle_infer_replace_podid_overhead: 0ms, handle_infer_request_prepare: 0ms, handle_infer_preprocess_overhead: 3ms, handle_infer_normalize: 4ms, handle_infer_encode: 1ms, handle_infer_calling_infer_from_tensor: 1ms, handle_infer_remaining_work: 0ms, handle_infer_end_to_end: 9ms, encode_prepare_for_encoding: 1ms, encode_prepare_for_encoding.extract_pod_columns: 0ms, encode_prepare_for_encoding.classify_feature_timing: 0ms, encode_prepare_for_encoding.extract_request_feature: 0ms, encode_prepare_for_encoding.vectorized_extraction: 0ms, encode_prepare_for_encoding.process_pod_feature: 0ms, encode_prepare_for_encoding.extract_actions: 0ms, encode_prepare_for_encoding.positional_encoding: 0ms, encode_prepare_for_encoding.interaction_features: 0ms, encode_post_process: 0ms, encode_end_to_end: 1ms, preprocess_json_parse_overhead: 0ms, preprocess_column_check_overhead: -1000ms, preprocess_podmetrics_parse_overhead: -1000ms, preprocess_numeric_conversion_overhead: 1ms, preprocess_get_value_overhead: 0ms, preprocess_create_df_overhead: 1ms, preprocess_pod_index_overhead: 0ms, preprocess_reward_calc_overhead: -1000ms, preprocess_slo_update_overhead: -1000ms, preprocess_preprocess_unified_inference: 3ms, infer_from_tensor_prepare_tensors: 0ms, infer_from_tensor_model_inference: 1ms, infer_from_tensor_format_results: 0ms",
+      "predicted_latencies": {
+        "pod_0000": -83.89798736572266,
+        "pod_0001": -83.83621215820312,
+        "pod_0002": -84.13470458984375
+      },
+      "request_id": "test_req_1",
+      "request_timestamp": 9.803154945373535,
+      "selected_pod": "10.0.1.119",
+      "selected_pod_generalpodid": "pod_0002"
+    }
+  }
+]
