@@ -94,10 +94,10 @@ def create_comparison_report(results, output_dir="overhead_results"):
 
 def main():
     parser = argparse.ArgumentParser(description='Batch Overhead Test Runner')
-    parser.add_argument('--rps-list', nargs='+', type=int, default=[5, 10, 100],
+    parser.add_argument('--rps-list', nargs='+', type=int, default=[5, 10, 20, 50, 100],
                        help='List of RPS values to test (default: 1 2 3 5 10)')
-    parser.add_argument('--duration', type=int, default=10,
-                       help='Duration for each test in seconds (default: 10)')
+    parser.add_argument('--duration', type=int, default=20,
+                       help='Duration for each test in seconds (default: 20)')
     parser.add_argument('--url', default='http://localhost:8080/infer',
                        help='Service URL (default: http://localhost:8080/infer)')
     parser.add_argument('--output-dir', default='overhead_results',
