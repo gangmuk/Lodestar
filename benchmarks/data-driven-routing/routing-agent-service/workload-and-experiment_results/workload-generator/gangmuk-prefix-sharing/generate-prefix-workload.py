@@ -115,9 +115,9 @@ LOCATIONS = [
 ]
 
 # Deterministic unique prefix generator from seed and index
-def generate_unique_prefix(base_text, index, seed):
-    rng = np.random.RandomState(seed + index)
-    rand_str = str(rng.randint(10000000, 99999999))
+def generate_unique_prefix(base_text, index, seed, repetition_id=0):
+    rng = np.random.RandomState(seed + index + repetition_id * 1000000)
+    rand_str = f"rep{repetition_id}_{rng.randint(10000000, 99999999)}"
     return rand_str + " " + base_text
 
 def generate_realistic_prompt(tokenizer, target_token_length, rand):
@@ -286,7 +286,7 @@ def adjust_prompt_to_length(tokenizer, prompt, target_token_length, rand):
     
     return adjusted_prompt
 
-def prepare_prompts(tokenizer, config, rand, unique_seed, np_random):
+def prepare_prompts(tokenizer, config, rand, unique_seed, np_random, repetition_id=0):
     """
     Prepare prompts based on the provided configuration
     
@@ -294,6 +294,10 @@ def prepare_prompts(tokenizer, config, rand, unique_seed, np_random):
         tokenizer: The tokenizer to use
         config: Dictionary with prompt_length, prompt_length_std, shared_proportion, shared_proportion_std, 
                 num_requests_per_prefix, num_diff_prefix
+        rand: Random state
+        unique_seed: Seed for unique prefix generation
+        np_random: Numpy random state
+        repetition_id: ID of the repetition (for generating unique prefixes across repetitions)
         
     Returns:
         Tuple of (all_prompts, tot_input_len, prompts_token_counts)
@@ -315,7 +319,7 @@ def prepare_prompts(tokenizer, config, rand, unique_seed, np_random):
         
         # OPTIMIZATION: Generate base prefix once, reuse for all requests
         base_prefix_text = generate_realistic_prompt(tokenizer, shared_length_mean, rand)
-        unique_prefix = generate_unique_prefix(base_prefix_text, i, unique_seed)
+        unique_prefix = generate_unique_prefix(base_prefix_text, i, unique_seed, repetition_id)
         
         prompt_list = []
         token_count_list = []
@@ -453,24 +457,53 @@ def generate_poisson_arrival_times(num_requests, rps, start_time=0, np_random=No
     
     Args:
         num_requests: Total number of requests
-        rps: Requests per second (lambda parameter for Poisson)
+        rps: Requests per second (lambda parameter for Poisson), can be:
+             - Single value (e.g., 10): constant rate
+             - List of values (e.g., [10, 20, 30]): segments with different rates
         start_time: Starting timestamp (in milliseconds)
+        np_random: Random state for reproducibility
         
     Returns:
         List of timestamps in milliseconds
     """
-    # For Poisson process, inter-arrival times follow exponential distribution
-    # with mean = 1/lambda, where lambda = rps
     rng = np_random if np_random is not None else np.random
-    inter_arrival_times = rng.exponential(scale=1.0/rps, size=num_requests)
     
-    # Convert to cumulative times (in seconds)
-    arrival_times = np.cumsum(inter_arrival_times)
-    
-    # Convert to millisecond timestamps and add start_time
-    timestamps = [int(start_time + t * 1000) for t in arrival_times]
-    
-    return timestamps
+    # Check if rps is a list (multi-segment) or single value
+    if isinstance(rps, list):
+        # Multiple RPS segments
+        num_segments = len(rps)
+        requests_per_segment = num_requests // num_segments
+        remaining_requests = num_requests % num_segments
+        
+        all_timestamps = []
+        current_time = start_time / 1000.0  # Convert to seconds
+        
+        for i, segment_rps in enumerate(rps):
+            # Distribute remaining requests to first segments
+            segment_num_requests = requests_per_segment + (1 if i < remaining_requests else 0)
+            
+            # Generate inter-arrival times for this segment
+            inter_arrival_times = rng.exponential(scale=1.0/segment_rps, size=segment_num_requests)
+            
+            # Convert to timestamps
+            for inter_time in inter_arrival_times:
+                current_time += inter_time
+                all_timestamps.append(int(current_time * 1000))
+        
+        return all_timestamps
+    else:
+        # Single RPS value (original behavior)
+        # For Poisson process, inter-arrival times follow exponential distribution
+        # with mean = 1/lambda, where lambda = rps
+        inter_arrival_times = rng.exponential(scale=1.0/rps, size=num_requests)
+        
+        # Convert to cumulative times (in seconds)
+        arrival_times = np.cumsum(inter_arrival_times)
+        
+        # Convert to millisecond timestamps and add start_time
+        timestamps = [int(start_time + t * 1000) for t in arrival_times]
+        
+        return timestamps
 
 def calculate_metrics_over_time(workload_data, window_size_seconds=1.0):
     """
@@ -597,7 +630,7 @@ def sample_token_length(avg, std, min_, max_):
                 if min_ <= sample <= max_:
                     return sample
 
-def process_single_config(tokenizer, config, config_id, base_seed):
+def process_single_config(tokenizer, config, config_id, base_seed, repetition_id=0):
     """
     Process a single configuration to generate prompts and stats.
 
@@ -606,6 +639,7 @@ def process_single_config(tokenizer, config, config_id, base_seed):
         config: Configuration dictionary
         config_id: ID for this configuration
         base_seed: Base seed for reproducible randomization
+        repetition_id: ID of the repetition (for generating unique prefixes across repetitions)
 
     Returns:
         Tuple of (flat_prompts_data, tokens, token_counts, prompts, sharing_ratio, config_stats_dict)
@@ -614,23 +648,26 @@ def process_single_config(tokenizer, config, config_id, base_seed):
     import random as random_module
     import numpy as np_module
 
-    config_random = random_module.Random(base_seed + config_id)
-    config_np_random = np_module.random.RandomState(base_seed + config_id)
+    # Use different seed for each repetition to generate different but similar workloads
+    repetition_seed_offset = repetition_id * 10000000
+    config_random = random_module.Random(base_seed + config_id + repetition_seed_offset)
+    config_np_random = np_module.random.RandomState(base_seed + config_id + repetition_seed_offset)
 
     # No global monkeypatching; pass RNGs through
     # Add an ID to the config for reference
     config_copy = config.copy()
     config_copy["id"] = config_id
 
-    print(f"Processing config {config_id}:")
+    print(f"Processing config {config_id} (repetition {repetition_id}):")
 
     # Generate prompts for this config with deterministic RNGs
     prompts, tokens, token_counts = prepare_prompts(
         tokenizer,
         config_copy,
         rand=config_random,
-        unique_seed=base_seed * 100000 + config_id * 1000,
+        unique_seed=base_seed * 100000 + config_id * 1000 + repetition_seed_offset,
         np_random=config_np_random,
+        repetition_id=repetition_id,
     )
 
     # Calculate prefix sharing ratio for this config
@@ -667,8 +704,9 @@ def process_single_config(tokenizer, config, config_id, base_seed):
                 "prompt": prompt,
                 "token_count": token_counts[prefix_idx][j],
                 "output_token": output_token,
-                "prefix_group": prefix_idx,
-                "config_id": config_id
+                "prefix_group": f"{repetition_id}-{config_id}-{prefix_idx}",
+                "config_id": config_id,
+                "repetition_id": repetition_id
             })
 
     # Calculate stats for this config (timestamps assigned globally later)
@@ -696,7 +734,7 @@ def process_single_config(tokenizer, config, config_id, base_seed):
 
     return flat_prompts_data, tokens, token_counts, prompts, sharing_ratio, config_stats_dict
 
-def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, arrival_rps=1, arrival_start_time=0):
+def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, arrival_rps=1, arrival_start_time=0, repetitions=1):
     all_prompts_combined = []
     total_tokens = 0
     config_stats = []
@@ -709,32 +747,37 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
     # Create deterministic RNG for final shuffle
     shuffle_rng = random.Random(base_seed + 999999)
 
-    print(f"Processing {len(configs)} configurations using {num_workers} worker threads...")
+    total_tasks = len(configs) * repetitions
+    print(f"Processing {len(configs)} configurations × {repetitions} repetitions = {total_tasks} total tasks using {num_workers} worker threads...")
 
     # Process configurations in parallel using ThreadPoolExecutor
     results = []
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all config processing tasks
-        future_to_config_id = {
-            executor.submit(process_single_config, tokenizer, config, i+1, base_seed): i+1
-            for i, config in enumerate(configs)
-        }
+        # Submit all config processing tasks for all repetitions
+        future_to_task_id = {}
+        for rep_id in range(repetitions):
+            for i, config in enumerate(configs):
+                config_id = i + 1
+                task_id = (rep_id, config_id)
+                future = executor.submit(process_single_config, tokenizer, config, config_id, base_seed, rep_id)
+                future_to_task_id[future] = task_id
 
         # Collect results as they complete
-        for future in as_completed(future_to_config_id):
-            config_id = future_to_config_id[future]
+        for future in as_completed(future_to_task_id):
+            task_id = future_to_task_id[future]
             try:
                 result = future.result()
-                results.append((config_id, result))
+                results.append((task_id, result))
             except Exception as exc:
-                print(f'Config {config_id} generated an exception: {exc}')
+                print(f'Task {task_id} generated an exception: {exc}')
                 raise
 
-    # Sort results by config_id to maintain order
-    results.sort(key=lambda x: x[0])
+    # Sort results by repetition_id first, then config_id to maintain order
+    results.sort(key=lambda x: (x[0][0], x[0][1]))
 
     # Process results in order
-    for config_id, (flat_prompts_data, tokens, token_counts, prompts, sharing_ratio, config_stats_dict) in results:
+    for task_id, (flat_prompts_data, tokens, token_counts, prompts, sharing_ratio, config_stats_dict) in results:
+        rep_id, config_id = task_id
         total_tokens += tokens
 
         # Add prompt data to combined list
@@ -766,52 +809,97 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
             for cfg in config_stats
         ) if total_config_tokens > 0 else 0
 
-    # Assign global arrival timestamps across all prompts
+    # Assign global arrival timestamps across all prompts (unless rps == -1)
+    # RPS can be a single value, a list, or -1 (no timestamps)
+    has_timestamps = arrival_rps != -1
+    
     if len(all_prompts_combined) > 0:
-        import numpy as _np
-        global_np_random = _np.random.RandomState(base_seed + 55555)
-        global_timestamps = generate_poisson_arrival_times(
-            num_requests=len(all_prompts_combined),
-            rps=arrival_rps,
-            start_time=arrival_start_time,
-            np_random=global_np_random,
-        )
+        if has_timestamps:
+            import numpy as _np
+            
+            # Group prompts by repetition to process sequentially
+            prompts_by_repetition = {}
+            for prompt in all_prompts_combined:
+                rep_id = prompt.get("repetition_id", 0)
+                if rep_id not in prompts_by_repetition:
+                    prompts_by_repetition[rep_id] = []
+                prompts_by_repetition[rep_id].append(prompt)
+            
+            # Process each repetition sequentially
+            current_time = arrival_start_time
+            final_prompts = []
+            
+            for rep_id in sorted(prompts_by_repetition.keys()):
+                rep_prompts = prompts_by_repetition[rep_id]
+                num_rep_requests = len(rep_prompts)
+                
+                # Calculate RPS for this repetition
+                if isinstance(arrival_rps, list):
+                    # Find which segment(s) of RPS apply to this repetition
+                    num_segments = len(arrival_rps)
+                    rep_rps = arrival_rps
+                else:
+                    # Single RPS value
+                    rep_rps = arrival_rps
+                
+                # Generate timestamps for this repetition
+                global_np_random = _np.random.RandomState(base_seed + 55555 + rep_id)
+                rep_timestamps = generate_poisson_arrival_times(
+                    num_requests=num_rep_requests,
+                    rps=rep_rps,
+                    start_time=current_time,
+                    np_random=global_np_random,
+                )
+                
+                # Shuffle timestamps within this repetition to mix configs/prefix groups
+                shuffle_rng_rep = random.Random(base_seed + 999999 + rep_id)
+                shuffle_rng_rep.shuffle(rep_timestamps)
+                
+                # Assign timestamps to prompts
+                for i, prompt in enumerate(rep_prompts):
+                    prompt["timestamp"] = rep_timestamps[i]
+                
+                # Sort this repetition's prompts by timestamp
+                rep_prompts.sort(key=lambda x: x["timestamp"])
+                final_prompts.extend(rep_prompts)
+                
+                # Update start time for next repetition
+                if rep_timestamps:
+                    current_time = max(rep_timestamps) + 1
+            
+            # Replace all_prompts_combined with sequentially ordered prompts
+            all_prompts_combined = final_prompts
 
-        # Shuffle which prompt gets which timestamp to mix configs/prefix groups
-        shuffle_rng.shuffle(global_timestamps)
+            # Update per-config start/end times based on assigned timestamps
+            start_end_by_config = {}
+            for item in all_prompts_combined:
+                cfg_id = item["config_id"]
+                ts = item["timestamp"]
+                if cfg_id not in start_end_by_config:
+                    start_end_by_config[cfg_id] = [ts, ts]
+                else:
+                    if ts < start_end_by_config[cfg_id][0]:
+                        start_end_by_config[cfg_id][0] = ts
+                    if ts > start_end_by_config[cfg_id][1]:
+                        start_end_by_config[cfg_id][1] = ts
 
-        for i, prompt in enumerate(all_prompts_combined):
-            prompt["timestamp"] = global_timestamps[i]
-
-        # Sort by timestamp
-        all_prompts_combined.sort(key=lambda x: x["timestamp"])
-
-        # Update per-config start/end times based on assigned timestamps
-        start_end_by_config = {}
-        for item in all_prompts_combined:
-            cfg_id = item["config_id"]
-            ts = item["timestamp"]
-            if cfg_id not in start_end_by_config:
-                start_end_by_config[cfg_id] = [ts, ts]
-            else:
-                if ts < start_end_by_config[cfg_id][0]:
-                    start_end_by_config[cfg_id][0] = ts
-                if ts > start_end_by_config[cfg_id][1]:
-                    start_end_by_config[cfg_id][1] = ts
-
-        for cfg in config_stats:
-            if cfg["config_id"] in start_end_by_config:
-                s, e = start_end_by_config[cfg["config_id"]]
-                cfg["start_time"] = s
-                cfg["end_time"] = e
-                cfg["total_duration"] = (e - s) / 1000.0
+            for cfg in config_stats:
+                if cfg["config_id"] in start_end_by_config:
+                    s, e = start_end_by_config[cfg["config_id"]]
+                    cfg["start_time"] = s
+                    cfg["end_time"] = e
+                    cfg["total_duration"] = (e - s) / 1000.0
+        else:
+            # No timestamps: just shuffle the prompts to mix configs/prefix groups
+            shuffle_rng.shuffle(all_prompts_combined)
 
     return {
         "prompts": all_prompts_combined,
         "stats": config_stats,
         "total_tokens": total_tokens,
         "overall_sharing_ratio": overall_sharing_ratio,
-        "overall_prefix_proportion": overall_prefix_proportion
+        "overall_prefix_proportion": overall_prefix_proportion,
+        "has_timestamps": has_timestamps
     }
 
 def save_to_jsonl(workload_data, output_file):
@@ -822,20 +910,28 @@ def save_to_jsonl(workload_data, output_file):
         workload_data: Dictionary with prompts and stats
         output_file: Output file path
     """
+    has_timestamps = workload_data.get("has_timestamps", True)
+    
     with open(output_file, 'w') as f:
-        for item in workload_data["prompts"]:
-            entry = {
-                "timestamp": item["timestamp"],
-                "requests": [
-                    {
-                        "Prompt Length": item["token_count"],  # Use token count instead of character length
-                        "Output Length": item["output_token"],  # Fixed value as per example
-                        "prompt": item["prompt"],
-                        "prefix_group": item["prefix_group"],  # Add prefix group info for analysis
-                        "config_id": item["config_id"]
-                    }
-                ]
-            }
+        for request_id, item in enumerate(workload_data["prompts"], start=1):
+            # Build entry dict with timestamp first (if it exists)
+            entry = {}
+            
+            # Add timestamp first if it exists
+            if has_timestamps and "timestamp" in item:
+                entry["timestamp"] = item["timestamp"]
+            
+            # Add requests
+            entry["requests"] = [
+                {
+                    "Prompt Length": item["token_count"],  # Use token count instead of character length
+                    "Output Length": item["output_token"],  # Fixed value as per example
+                    "prefix_group": item["prefix_group"],  # Format: {config_id}-{prefix_idx}
+                    "request_id": request_id,  # Sequential request ID starting from 1
+                    "prompt": item["prompt"]
+                }
+            ]
+            
             f.write(json.dumps(entry) + '\n')
 
 def save_stats(workload_data, stats_file):
@@ -895,6 +991,9 @@ def get_configurations(args):
 
     # Resolve config.json path from provided directory
     config_json_path = args.config_file
+    if os.path.isdir(config_json_path):
+        config_json_path = os.path.join(config_json_path, "config.json")
+    
     if not os.path.exists(config_json_path):
         raise FileNotFoundError(f"Config file not found: {config_json_path}")
 
@@ -918,7 +1017,8 @@ def get_configurations(args):
                 'seed': config_data.get('seed', args.seed),
                 'num_workers': config_data.get('num_workers', args.num_workers),
                 'output_dir': config_data.get('output_dir', args.output_dir),
-                'arrival': config_data.get('arrival', { 'rps': config_data.get('rps', None) })
+                'arrival': config_data.get('arrival', { 'rps': config_data.get('rps', None) }),
+                'repetitions': config_data.get('repetitions', 1)
             }
         else:
             raise ValueError("JSON config file must contain either a list of workloads or a dict with 'workloads' key")
@@ -954,7 +1054,8 @@ def get_configurations(args):
                 'seed': args.seed,
                 'num_workers': args.num_workers,
                 'output_dir': args.output_dir,
-                'arrival': { 'rps': None }
+                'arrival': { 'rps': None },
+                'repetitions': 1
             }
 
         print(f"\nGlobal settings:")
@@ -1058,14 +1159,59 @@ def main(args):
     print("Generating multi-configuration workload...")
     arrival_cfg = global_config.get('arrival', {}) or {}
     arrival_rps = arrival_cfg.get('rps', None)
-    if not arrival_rps or arrival_rps <= 0:
-        raise ValueError("Global arrival rps must be specified and > 0 in config under 'arrival.rps'")
-    workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=arrival_rps, arrival_start_time=0)
+    
+    # Validate RPS
+    if arrival_rps is None:
+        raise ValueError("Global arrival rps must be specified in config under 'arrival.rps' (use -1 to skip timestamp generation)")
+    
+    # Check if rps is a list or single value
+    if isinstance(arrival_rps, list):
+        if len(arrival_rps) == 0:
+            raise ValueError("RPS list cannot be empty")
+        if any(r <= 0 for r in arrival_rps):
+            raise ValueError("All RPS values in list must be positive")
+        print(f"Using multi-segment RPS: {arrival_rps}")
+    elif arrival_rps == 0:
+        raise ValueError("Global arrival rps cannot be 0. Use -1 to skip timestamp generation or a positive value for Poisson arrivals")
+    
+    # Get repetitions from global config (default to 1 for backward compatibility)
+    repetitions = global_config.get('repetitions', 1)
+    if repetitions < 1:
+        raise ValueError("Repetitions must be at least 1")
+    
+    # Save original RPS for use in each repetition
+    original_arrival_rps = arrival_rps
+    
+    if repetitions > 1:
+        print(f"Generating workload with {repetitions} repetitions")
+        # Note: We pass the ORIGINAL RPS to process_workload_configs
+        # Each repetition will use the same RPS pattern sequentially in time
+    
+    workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=original_arrival_rps, arrival_start_time=0, repetitions=repetitions)
     print(f"workload_data['overall_sharing_ratio']: {workload_data['overall_sharing_ratio']}")
 
     avg_prompt_length = int(sum(config['prompt_length'] for config in prefix_workload_configs) / len(prefix_workload_configs))
-    output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_globalrps{int(arrival_rps)}"
-    config_dir = os.path.dirname(args.config_file)
+    # config_file could be a directory (e.g., "config_sharing10%") or a file path
+    if os.path.isdir(args.config_file):
+        config_dir = args.config_file
+    else:
+        config_dir = os.path.dirname(args.config_file)
+    
+    # Generate output directory name based on RPS configuration
+    rep_str = f"_rep{repetitions}" if repetitions > 1 else ""
+    
+    if original_arrival_rps == -1:
+        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_notimestamp{rep_str}"
+        print("Note: No timestamps will be generated (arrival.rps = -1). Client code should handle timestamp assignment.")
+    elif isinstance(original_arrival_rps, list):
+        rps_str = "-".join(str(int(r)) for r in original_arrival_rps)
+        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_multirps{rps_str}{rep_str}"
+        if repetitions > 1:
+            print(f"Using multi-segment arrival rates: {original_arrival_rps} (repeats {repetitions} times sequentially)")
+        else:
+            print(f"Using multi-segment arrival rates: {original_arrival_rps}")
+    else:
+        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_globalrps{int(original_arrival_rps)}{rep_str}"
     final_output_dir = os.path.join(config_dir, output_dir)
     print(f"Output directory: {final_output_dir}")
     os.makedirs(final_output_dir, exist_ok=True)
@@ -1078,10 +1224,13 @@ def main(args):
     print(f"Saving workload statistics to {stats_file}")
     print(f"Saving workload traces to {output_file}")
 
-    # Generate and save plots
-    print("Generating plots...")
-    plot_metrics(workload_data, final_output_dir, window_size_seconds=1.0)
-    print("Plots generated successfully!")
+    # Generate and save plots (only if timestamps are available)
+    if workload_data.get("has_timestamps", True):
+        print("Generating plots...")
+        plot_metrics(workload_data, final_output_dir, window_size_seconds=1.0)
+        print("Plots generated successfully!")
+    else:
+        print("Skipping plot generation (no timestamps available)")
 
     print("All files saved successfully!")
 
