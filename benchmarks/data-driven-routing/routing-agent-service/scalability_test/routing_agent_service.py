@@ -52,11 +52,11 @@ RESET_COLOR = "\033[0m"
 # INCLUDE_GPU_IN_FEATURE = True
 
 app = Flask(__name__)
-hyperparameter_file_path = '/app/final_model/model_config.json'
+hyperparameter_file_path = './final_model-latency_predictor_ttft/model_config.json'
 # hyperparameter_file_path = '/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/MixedSharingRatio10_30_50_70%/latency_predictor_ttft-trained_on_merged-data_all-iter5-20251015_001923/final_model/model_config.json'
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
-final_model_dir = "/app/final_model"
+final_model_dir = "./final_model-latency_predictor_ttft"
 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
 NUM_TRAINS = 0
 MODEL_UPDATED = True
@@ -1333,7 +1333,7 @@ if __name__ == "__main__":
     atexit.register(graceful_shutdown)
     
     
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8085))
     if not utils.wait_for_port_available(port, max_wait=5):
         logger.error(f"Cannot start Flask app - port {port} is not available")
         sys.exit(1)
