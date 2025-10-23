@@ -1047,11 +1047,11 @@ def init():
             logger.info(f"Latency metric for prediction: {latency_metric}")
         else:
             logger.info(f"Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
-        # Test permissions first
-        logger.info("Testing Kubernetes API permissions...")
-        if not test_kubernetes_permissions():
-            logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
-            assert False
+        # # Test permissions first
+        # logger.info("Testing Kubernetes API permissions...")
+        # if not test_kubernetes_permissions():
+        #     logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
+        #     assert False
         running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
         sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
         pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
