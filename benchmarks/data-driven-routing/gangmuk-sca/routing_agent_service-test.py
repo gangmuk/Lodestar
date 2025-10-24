@@ -1518,10 +1518,13 @@ def run_scalability_test(test_name, num_pods_list, rps_list, duration_per_test=1
             # Detailed subcomponent breakdowns for each category
             preprocess_breakdown = {
                 'json_parse': [],
+                'column_check': [],
                 'numeric_conversion': [],
+                'time_logging': [],
                 'get_value': [],
                 'create_df': [],
                 'pod_index': [],
+                'fill_nan': [],
                 'preprocess_unified': [],  # E2E total (contains all above)
             }
             
@@ -1600,14 +1603,20 @@ def run_scalability_test(test_name, num_pods_list, rps_list, duration_per_test=1
                                                 # Keys from preprocess.py overhead_summary
                                                 elif key == 'preprocess_json_parse_overhead':
                                                     preprocess_breakdown['json_parse'].append(value_ms)
+                                                elif key == 'preprocess_column_check_overhead':
+                                                    preprocess_breakdown['column_check'].append(value_ms)
                                                 elif key == 'preprocess_numeric_conversion_overhead':
                                                     preprocess_breakdown['numeric_conversion'].append(value_ms)
+                                                elif key == 'preprocess_time_logging_overhead':
+                                                    preprocess_breakdown['time_logging'].append(value_ms)
                                                 elif key == 'preprocess_get_value_overhead':
                                                     preprocess_breakdown['get_value'].append(value_ms)
                                                 elif key == 'preprocess_create_df_overhead':
                                                     preprocess_breakdown['create_df'].append(value_ms)
                                                 elif key == 'preprocess_pod_index_overhead':
                                                     preprocess_breakdown['pod_index'].append(value_ms)
+                                                elif key == 'preprocess_fill_nan_overhead':
+                                                    preprocess_breakdown['fill_nan'].append(value_ms)
                                                 elif key == 'preprocess_preprocess_unified_inference' or key == 'preprocess_preprocess_unified_training':
                                                     preprocess_breakdown['preprocess_unified'].append(value_ms)
                                                 # Also try without double preprocess_ prefix
@@ -1771,18 +1780,24 @@ def run_scalability_test(test_name, num_pods_list, rps_list, duration_per_test=1
             if preprocess_avg and any(v > 0 for v in preprocess_avg.values()):
                 logger.info(f"  {CYAN_COLOR}Preprocess Subcomponents:{RESET_COLOR}")
                 logger.info(f"    JSON Parse: {preprocess_avg.get('json_parse_avg_ms', 0):.2f}ms, "
-                          f"Numeric Conv: {preprocess_avg.get('numeric_conversion_avg_ms', 0):.2f}ms, "
-                          f"Get Value: {preprocess_avg.get('get_value_avg_ms', 0):.2f}ms")
-                logger.info(f"    Create DF: {preprocess_avg.get('create_df_avg_ms', 0):.2f}ms, "
-                          f"Pod Index: {preprocess_avg.get('pod_index_avg_ms', 0):.2f}ms, "
-                          f"Unified: {preprocess_avg.get('preprocess_unified_avg_ms', 0):.2f}ms")
+                          f"Column Check: {preprocess_avg.get('column_check_avg_ms', 0):.2f}ms, "
+                          f"Numeric Conv: {preprocess_avg.get('numeric_conversion_avg_ms', 0):.2f}ms")
+                logger.info(f"    Time Logging: {preprocess_avg.get('time_logging_avg_ms', 0):.2f}ms, "
+                          f"Get Value: {preprocess_avg.get('get_value_avg_ms', 0):.2f}ms, "
+                          f"Create DF: {preprocess_avg.get('create_df_avg_ms', 0):.2f}ms")
+                logger.info(f"    Pod Index: {preprocess_avg.get('pod_index_avg_ms', 0):.2f}ms, "
+                          f"Fill NaN: {preprocess_avg.get('fill_nan_avg_ms', 0):.2f}ms")
+                logger.info(f"    Unified Total: {preprocess_avg.get('preprocess_unified_avg_ms', 0):.2f}ms")
                 
                 # Calculate "Other" time
                 subcomponents_sum = (preprocess_avg.get('json_parse_avg_ms', 0) +
+                                    preprocess_avg.get('column_check_avg_ms', 0) +
                                     preprocess_avg.get('numeric_conversion_avg_ms', 0) +
+                                    preprocess_avg.get('time_logging_avg_ms', 0) +
                                     preprocess_avg.get('get_value_avg_ms', 0) +
                                     preprocess_avg.get('create_df_avg_ms', 0) +
-                                    preprocess_avg.get('pod_index_avg_ms', 0))
+                                    preprocess_avg.get('pod_index_avg_ms', 0) +
+                                    preprocess_avg.get('fill_nan_avg_ms', 0))
                 unified_total = preprocess_avg.get('preprocess_unified_avg_ms', 0)
                 other_time = unified_total - subcomponents_sum
                 if other_time > 0.5:
@@ -2341,10 +2356,10 @@ def plot_detailed_breakdowns(results, output_dir="."):
         # ============ Plot 1: Preprocess Breakdown ============
         ax1 = axes[0]
         # Note: preprocess_unified is the total e2e time, subcomponents are parts of it
-        preprocess_components = ['json_parse', 'numeric_conversion', 'get_value', 'create_df', 'pod_index']
+        preprocess_components = ['json_parse', 'column_check', 'numeric_conversion', 'time_logging', 'get_value', 'create_df', 'pod_index', 'fill_nan']
         preprocess_cols = [f'preprocess_{comp}_avg_ms' for comp in preprocess_components]
-        preprocess_labels = ['JSON Parse', 'Numeric Conv', 'Get Value', 'Create DF', 'Pod Index']
-        colors_preprocess = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
+        preprocess_labels = ['JSON Parse', 'Column Check', 'Numeric Conv', 'Time Log', 'Get Value', 'Create DF', 'Pod Index', 'Fill NaN']
+        colors_preprocess = ['#FF6B6B', '#E74C3C', '#4ECDC4', '#3498DB', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F']
         
         # Group by target_rps and average across pod counts
         grouped = df.groupby('target_rps')[[col for col in preprocess_cols if col in df.columns]].mean()
@@ -2567,7 +2582,7 @@ if __name__ == "__main__":
         # Adjust based on your needs - more configs = longer test time
         # NUM_PODS_TO_TEST = [5, 10, 20, 50]    # Different pod counts
         NUM_PODS_TO_TEST = [5]    # Different pod counts
-        RPS_TO_TEST = [100]       # Different request rates (removed 500 - too saturated)
+        RPS_TO_TEST = [50, 100]       # Different request rates (removed 500 - too saturated)
         DURATION_PER_TEST = 20                  # Seconds per test
         
         # Expected test time: ~5 minutes (4 pods × 4 RPS × 5 seconds + overhead)
