@@ -68,8 +68,14 @@ app = Flask(__name__)
 # final_model_dir = "/app/final_model"
 
 # Path for scalability testing (local machine)
-hyperparameter_file_path = '/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/scalability_test/final_model-latency_predictor_ttft/model_config.json'
-final_model_dir = "/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/scalability_test/final_model-latency_predictor_ttft"
+# if currently on node1, use the following path
+if 'node0' in socket.gethostname():
+    hyperparameter_file_path = '/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/scalability_test/final_model-latency_predictor_ttft/model_config.json'
+    final_model_dir = "/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/scalability_test/final_model-latency_predictor_ttft"
+else:
+    hyperparameter_file_path = './final_model-latency_predictor_ttft/model_config.json'
+    final_model_dir = "./final_model-latency_predictor_ttft"
+
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
