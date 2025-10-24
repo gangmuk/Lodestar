@@ -298,76 +298,81 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         if isinstance(sample_val, str):
             parsed_df[col] = parsed_df[col].apply(safe_parse_json)
     
-    # Handle podMetricsLastSecond separately (optional column)
-    if 'podMetricsLastSecond' in parsed_df.columns:
-        sample_val = parsed_df['podMetricsLastSecond'].iloc[0]
-        if isinstance(sample_val, str):
-            parsed_df['podMetricsLastSecond'] = parsed_df['podMetricsLastSecond'].apply(safe_parse_json)
-        logger.info("Found podMetricsLastSecond column - will be ignored for feature extraction")
-    else:
-        logger.info("podMetricsLastSecond column not found - this is fine, features from this column are not used")
+    # # Handle podMetricsLastSecond separately (optional column)
+    # if 'podMetricsLastSecond' in parsed_df.columns:
+    #     sample_val = parsed_df['podMetricsLastSecond'].iloc[0]
+    #     if isinstance(sample_val, str):
+    #         parsed_df['podMetricsLastSecond'] = parsed_df['podMetricsLastSecond'].apply(safe_parse_json)
+    #     logger.info("Found podMetricsLastSecond column - will be ignored for feature extraction")
+    # else:
+    #     logger.info("podMetricsLastSecond column not found - this is fine, features from this column are not used")
     
     json_parse_overhead = time.time() - json_parse_start_time
 
 ###JSON PARSING OVERHEAD ------------------------------------------------------------
 
-    # Collect all unique pod IDs in a single pass
-    logger.debug("Collecting all unique pod IDs across the dataset...")
-    logger.debug(f"Original dataset shape: {parsed_df.shape}")
-    logger.debug(f"Columns: {parsed_df.columns.tolist()}")
-    expected_columns = [
-        'requestID',
-        'selectedpod',
-        'ttft',
-        'avg_tpot',
-        'total_decode_time',
-        'e2e',
-        'numInputTokens',
-        # 'expectedNumOutputTokens',
-        'numOutputTokens',
-        'numTotalTokens',
-        'request_start_time',  # NEW: Add request timing columns
-        'request_end_time',    # NEW: Add request timing columns
-        'allPodsKvCacheHitRatios',
-        'numInflightRequestsAllPods',
-        'vllmGPUKVCacheUsage',
-        'vllmCPUKVCacheUsage',
-        'vllmNumRequestsRunning',
-        'vllmNumRequestsWaiting',
-        # 'podMetricsLastSecond',  # Optional column - may be empty or missing
-        'numPrefillTokensForAllPods',
-        'numDecodeTokensForAllPods',
-        # 'GPU_model',
-        'subAlgorithm', # old training data does not have it... so...
-        'prev_reward',
-    ]
+# ### COLUMN CHECK OVERHEAD ------------------------------------------------------------
+#     column_check_start_time = time.time()
+#     # Collect all unique pod IDs in a single pass
+#     logger.debug("Collecting all unique pod IDs across the dataset...")
+#     logger.debug(f"Original dataset shape: {parsed_df.shape}")
+#     logger.debug(f"Columns: {parsed_df.columns.tolist()}")
+#     expected_columns = [
+#         'requestID',
+#         'selectedpod',
+#         'ttft',
+#         'avg_tpot',
+#         'total_decode_time',
+#         'e2e',
+#         'numInputTokens',
+#         # 'expectedNumOutputTokens',
+#         'numOutputTokens',
+#         'numTotalTokens',
+#         'request_start_time',  # NEW: Add request timing columns
+#         'request_end_time',    # NEW: Add request timing columns
+#         'allPodsKvCacheHitRatios',
+#         'numInflightRequestsAllPods',
+#         'vllmGPUKVCacheUsage',
+#         'vllmCPUKVCacheUsage',
+#         'vllmNumRequestsRunning',
+#         'vllmNumRequestsWaiting',
+#         # 'podMetricsLastSecond',  # Optional column - may be empty or missing
+#         'numPrefillTokensForAllPods',
+#         'numDecodeTokensForAllPods',
+#         # 'GPU_model',
+#         'subAlgorithm', # old training data does not have it... so...
+#         'prev_reward',
+#     ]
     
-    ###########################################
-    ## HARDCODE TEMPORARY FIX FOR OLD TRAINING DATA
-    if 'subAlgorithm' not in parsed_df.columns:
-        parsed_df['subAlgorithm'] = None
-    ###########################################
-    if RL_MODEL_HYPERPARAMETERS is not None:
-        if INCLUDE_GPU_IN_FEATURE:
-            def get_gpu_model_encoded(selected_pod):
-                selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
-                return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
-            parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].apply(get_gpu_model_encoded)
-            parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
+#     ###########################################
+#     ## HARDCODE TEMPORARY FIX FOR OLD TRAINING DATA
+#     if 'subAlgorithm' not in parsed_df.columns:
+#         parsed_df['subAlgorithm'] = None
+#     ###########################################
+#     if RL_MODEL_HYPERPARAMETERS is not None:
+#         if INCLUDE_GPU_IN_FEATURE:
+#             def get_gpu_model_encoded(selected_pod):
+#                 selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
+#                 return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
+#             parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].apply(get_gpu_model_encoded)
+#             parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
     
-    # Check for missing expected columns
-    missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
-    if missing_columns:
-        logger.error(f"Error: Missing expected columns: {missing_columns}")
-        logger.error(f"parsed_df.columns: {parsed_df.columns}")
-        logger.error(f"expected_columns: {expected_columns}")
-        assert False
+#     # Check for missing expected columns
+#     missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
+#     if missing_columns:
+#         logger.error(f"Error: Missing expected columns: {missing_columns}")
+#         logger.error(f"parsed_df.columns: {parsed_df.columns}")
+#         logger.error(f"expected_columns: {expected_columns}")
+#         assert False
     
-    # Check for unknown columns
-    unknown_columns = [col for col in parsed_df.columns if col not in expected_columns]
-    if unknown_columns:
-        logger.warning(f"Warning: Unused columns: {unknown_columns}")
+#     # Check for unknown columns
+#     unknown_columns = [col for col in parsed_df.columns if col not in expected_columns]
+#     if unknown_columns:
+#         logger.warning(f"Warning: Unused columns: {unknown_columns}")
 
+#     column_check_overhead = time.time() - column_check_start_time
+
+### COLUMN CHECK OVERHEAD ------------------------------------------------------------
 ###NUMERIC CONVERSION OVERHEAD ------------------------------------------------------------
     numeric_conversion_start_time = time.time()
     # Convert string columns to appropriate types - vectorized
@@ -391,13 +396,20 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     numeric_conversion_overhead = time.time() - numeric_conversion_start_time # 0-1ms
 
 ### NUMERIC CONVERSION OVERHEAD ------------------------------------------------------------
-    
+
+### TIME LOGGING OVERHEAD ------------------------------------------------------------
+    time_logging_start_time = time.time()
+
     # Vectorized processing using pandas operations
-    logger.info("Processing records in vectorized manner...")
+    # logger.info("Processing records in vectorized manner...")
+    time_logging_overhead = time.time() - time_logging_start_time
+
+### TIME LOGGING OVERHEAD ------------------------------------------------------------
 
 ### GET VALUE OVERHEAD ------------------------------------------------------------
     
     get_value_start_time = time.time()
+    
     # Extract base features
     base_data = {
         'request_id': parsed_df['requestID'].values,
@@ -527,12 +539,16 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
 
     # Replace fillna(0) with a more targeted approach since most values should already be handled
     # Only fill NaN values in specific columns that might have them
+
+    fill_nan_start_time = time.time()
     nan_columns = processed_df.columns[processed_df.isnull().any()].tolist()
     if nan_columns:
         processed_df[nan_columns] = processed_df[nan_columns].fillna(0)
 
     logger.debug(f"Processed dataset shape: {processed_df.shape}")
     logger.debug(f"Processed columns: {processed_df.columns[:10].tolist()}...")
+
+    fill_nan_overhead = time.time() - fill_nan_start_time
 
     # Prepare overhead summary
     preprocess_overhead_summary = {
@@ -545,6 +561,9 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'pod_index_overhead': pod_index_overhead,
         'reward_calc_overhead': -1,
         'slo_update_overhead': -1,
+        'fill_nan_overhead': fill_nan_overhead,
+        'time_logging_overhead': time_logging_overhead,
+        'column_check_overhead': 0,
     }
     
     if is_training:
