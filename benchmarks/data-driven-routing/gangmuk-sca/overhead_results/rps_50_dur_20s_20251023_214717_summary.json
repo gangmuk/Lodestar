@@ -1,0 +1,12 @@
+{
+  "test_name": "rps_50_dur_20s_20251023_214717",
+  "timestamp": "2025-10-23T21:47:37.709250",
+  "target_rps": 50,
+  "duration_seconds": 20,
+  "actual_rps": 0.0,
+  "total_requests": 1000,
+  "successful_requests": 0,
+  "failed_requests": 1000,
+  "total_time": 20.00452494621277,
+  "success_rate": 0.0
+}

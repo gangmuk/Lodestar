@@ -1,0 +1,12 @@
+{
+  "test_name": "rps_100_dur_10s_20251023_223744",
+  "timestamp": "2025-10-23T22:38:00.472624",
+  "target_rps": 100,
+  "duration_seconds": 10,
+  "actual_rps": 63.460630155301295,
+  "total_requests": 1000,
+  "successful_requests": 1000,
+  "failed_requests": 0,
+  "total_time": 15.757801294326782,
+  "success_rate": 100.0
+}

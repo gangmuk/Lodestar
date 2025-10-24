@@ -1,0 +1,142 @@
+latency_predictor.py - INFO - <module>:39 - Using device: cpu
+routing_agent_service-test.py - INFO - <module>:103 - POD_LABEL_SELECTOR: model.aibrix.ai/name=llama-3-8b-instruct
+routing_agent_service-test.py - INFO - <module>:1776 - 
+[95m================================================================================[0m
+routing_agent_service-test.py - INFO - <module>:1777 - [95mROUTING AGENT SERVICE - SCALABILITY TEST MODE[0m
+routing_agent_service-test.py - INFO - <module>:1778 - [95m================================================================================[0m
+
+routing_agent_service-test.py - INFO - init_test_mode:1065 - [92mInitializing in TEST MODE with hardcoded configurations[0m
+routing_agent_service-test.py - INFO - init_test_mode:1100 - Model type: latency_predictor
+routing_agent_service-test.py - INFO - init_test_mode:1101 - Latency metric: ttft
+routing_agent_service-test.py - INFO - init_test_mode:1104 - Creating mock normalization statistics for testing...
+routing_agent_service-test.py - INFO - init_test_mode:1155 - Created mock stats for 913 features
+routing_agent_service-test.py - INFO - setup_mock_environment:1731 - Mock environment setup complete: 5 pods configured
+routing_agent_service-test.py - INFO - init_test_mode:1160 - [92mTest mode initialization complete![0m
+routing_agent_service-test.py - INFO - <module>:1783 - [92mInitialization complete. Starting scalability tests...[0m
+
+routing_agent_service-test.py - INFO - run_scalability_test:1522 - 
+================================================================================
+routing_agent_service-test.py - INFO - run_scalability_test:1523 - SCALABILITY TEST: Latency Predictor Inference Scalability
+routing_agent_service-test.py - INFO - run_scalability_test:1524 - ================================================================================
+
+routing_agent_service-test.py - INFO - run_scalability_test:1530 - 
+[94mConfiguring for 5 pods...[0m
+routing_agent_service-test.py - INFO - setup_mock_environment:1731 - Mock environment setup complete: 5 pods configured
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 5 pods @ 10 RPS[0m
+routing_agent_service-test.py - INFO - __init__:1668 - Initialized MockLatencyPredictor with state_dims={'pod_features': 10, 'kv_hit_ratios': 1, 'request_features': 3, 'num_pods': 5}
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 5, Target RPS: 10, Actual RPS: 10.0
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 50 total, 50 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.23, p50=0.12, p95=0.18, p99=5.34
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.09ms, max=5.34ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.01s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 5 pods @ 50 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 5, Target RPS: 50, Actual RPS: 49.6
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 250 total, 250 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.14, p50=0.13, p95=0.18, p99=0.19
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.10ms, max=0.49ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.04s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 5 pods @ 100 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 5, Target RPS: 100, Actual RPS: 98.6
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 500 total, 500 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.13, p50=0.12, p95=0.16, p99=0.20
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.06ms, max=1.26ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.07s
+routing_agent_service-test.py - INFO - run_scalability_test:1530 - 
+[94mConfiguring for 10 pods...[0m
+routing_agent_service-test.py - INFO - setup_mock_environment:1731 - Mock environment setup complete: 10 pods configured
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 10 pods @ 10 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 10, Target RPS: 10, Actual RPS: 10.0
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 50 total, 50 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.13, p50=0.12, p95=0.18, p99=0.51
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.07ms, max=0.51ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.01s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 10 pods @ 50 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 10, Target RPS: 50, Actual RPS: 49.6
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 250 total, 250 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.14, p50=0.13, p95=0.18, p99=0.26
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.05ms, max=0.47ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.04s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 10 pods @ 100 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 10, Target RPS: 100, Actual RPS: 98.6
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 500 total, 500 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.13, p50=0.12, p95=0.17, p99=0.18
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.07ms, max=0.39ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.07s
+routing_agent_service-test.py - INFO - run_scalability_test:1530 - 
+[94mConfiguring for 20 pods...[0m
+routing_agent_service-test.py - INFO - setup_mock_environment:1731 - Mock environment setup complete: 20 pods configured
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 20 pods @ 10 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 20, Target RPS: 10, Actual RPS: 10.0
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 50 total, 50 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.13, p50=0.13, p95=0.18, p99=0.18
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.09ms, max=0.18ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.01s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 20 pods @ 50 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 20, Target RPS: 50, Actual RPS: 49.7
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 250 total, 250 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.13, p50=0.12, p95=0.17, p99=0.18
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.09ms, max=0.52ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.03s
+routing_agent_service-test.py - INFO - run_scalability_test:1534 - 
+[92mTesting: 20 pods @ 100 RPS[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1648 - 
+[96mResults:[0m
+routing_agent_service-test.py - INFO - run_scalability_test:1649 -   Pods: 20, Target RPS: 100, Actual RPS: 98.6
+routing_agent_service-test.py - INFO - run_scalability_test:1650 -   Requests: 500 total, 500 successful, 0 errors
+routing_agent_service-test.py - INFO - run_scalability_test:1651 -   Success Rate: 100.0%
+routing_agent_service-test.py - INFO - run_scalability_test:1652 -   Latency (ms): avg=0.14, p50=0.14, p95=0.17, p99=0.22
+routing_agent_service-test.py - INFO - run_scalability_test:1653 -   Latency Range: min=0.07ms, max=0.43ms
+routing_agent_service-test.py - INFO - run_scalability_test:1654 -   Test Duration: 5.07s
+routing_agent_service-test.py - INFO - print_scalability_summary:1736 - 
+========================================================================================================================
+routing_agent_service-test.py - INFO - print_scalability_summary:1737 - SCALABILITY TEST SUMMARY
+routing_agent_service-test.py - INFO - print_scalability_summary:1738 - ========================================================================================================================
+routing_agent_service-test.py - INFO - print_scalability_summary:1743 - Pods     Target RPS   Actual RPS   Success%   Avg(ms)    P50(ms)    P95(ms)    P99(ms)   
+routing_agent_service-test.py - INFO - print_scalability_summary:1744 - ------------------------------------------------------------------------------------------------------------------------
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 5        10           10.0         100.0      0.23       0.12       0.18       5.34      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 5        50           49.6         100.0      0.14       0.13       0.18       0.19      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 5        100          98.6         100.0      0.13       0.12       0.16       0.20      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 10       10           10.0         100.0      0.13       0.12       0.18       0.51      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 10       50           49.6         100.0      0.14       0.13       0.18       0.26      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 10       100          98.6         100.0      0.13       0.12       0.17       0.18      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 20       10           10.0         100.0      0.13       0.13       0.18       0.18      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 20       50           49.7         100.0      0.13       0.12       0.17       0.18      
+routing_agent_service-test.py - INFO - print_scalability_summary:1750 - 20       100          98.6         100.0      0.14       0.14       0.17       0.22      
+routing_agent_service-test.py - INFO - print_scalability_summary:1752 - ========================================================================================================================
+
+routing_agent_service-test.py - INFO - print_scalability_summary:1766 - Results exported to: scalability_test_results_20251023_230956.csv
+routing_agent_service-test.py - INFO - <module>:1798 - 
+[92mScalability test completed![0m
+routing_agent_service-test.py - INFO - <module>:1799 - Total test configurations: 9
