@@ -288,6 +288,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         # 'podMetricsLastSecond',  # Made optional - will be handled separately
         'numPrefillTokensForAllPods', 
         'numDecodeTokensForAllPods',
+        'GPU',
     ]
     
     json_parse_start_time = time.time()

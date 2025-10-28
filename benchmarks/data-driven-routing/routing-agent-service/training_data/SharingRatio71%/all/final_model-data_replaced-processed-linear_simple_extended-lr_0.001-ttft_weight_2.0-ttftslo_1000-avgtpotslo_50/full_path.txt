@@ -1,1 +1,0 @@
-../training_data/SharingRatio71%/all/final_model-data_replaced-processed-linear_simple_extended-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50
