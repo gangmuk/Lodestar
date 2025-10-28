@@ -78,8 +78,58 @@ func NewRLOnlineRouter() (types.Router, error) {
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}
+
+	// Initialize GPU models for all pods in the background
+	go initializeGPUModels(c)
+
 	klog.InfoS("Created RL online router")
 	return router, nil
+}
+
+// initializeGPUModels pre-populates GPU model information for all pods
+// This runs in the background to avoid blocking router initialization
+func initializeGPUModels(c cache.Cache) {
+	// Wait a bit for pods to be registered in cache
+	time.Sleep(2 * time.Second)
+
+	klog.InfoS("Starting GPU model initialization for all pods")
+
+	// Get all models
+	models := c.ListModels()
+	if len(models) == 0 {
+		klog.Warningf("No models found during GPU initialization, will retry on first request")
+		return
+	}
+
+	// For each model, get all pods
+	podCount := 0
+	for _, model := range models {
+		pods, err := c.ListPodsByModel(model)
+		if err != nil {
+			klog.Warningf("Failed to list pods for model %s during GPU init: %v", model, err)
+			continue
+		}
+
+		// Extract and cache GPU model for each pod
+		for _, pod := range pods {
+			if pod.Status.PodIP == "" {
+				continue
+			}
+
+			// Check if already cached
+			if _, exists := utils.GetGPUModel(pod.Status.PodIP); exists {
+				continue
+			}
+
+			// Extract GPU model from pod
+			gpuModel := extractGPUModelFromPod(pod)
+			utils.SetGPUModel(pod.Status.PodIP, gpuModel)
+			podCount++
+			klog.V(4).Infof("Initialized GPU model for pod %s: %s", pod.Status.PodIP, gpuModel)
+		}
+	}
+
+	klog.InfoS("GPU model initialization completed", "podsInitialized", podCount)
 }
 
 // // flush real request log collected
@@ -282,6 +332,48 @@ func GetPod(podIP string, pods []*v1.Pod) *v1.Pod {
 	return nil
 }
 
+// extractGPUModelFromPod extracts GPU model information from pod metadata
+// It checks multiple sources in order of preference:
+// 1. Pod label "machine.cluster.vke.volcengine.com/gpu-name" (if inherited from node)
+// 2. Fetch from node (using pod.Spec.NodeName) - calls utils.GetGPUModelFromNode()
+// 3. Pod label "gpu-model" or "nvidia.com/gpu.product"
+// 4. Pod annotation "gpu-model"
+// 5. Falls back to "GPU-L3c" as default
+func extractGPUModelFromPod(pod *v1.Pod) string {
+	// First, try the VKE GPU label that may be on the pod itself
+	if gpuModel, ok := pod.Labels["machine.cluster.vke.volcengine.com/gpu-name"]; ok && gpuModel != "" {
+		klog.V(5).Infof("Found GPU model from pod VKE label for pod %s: %s", pod.Status.PodIP, gpuModel)
+		return gpuModel
+	}
+
+	// Second, try to get GPU model from the node the pod is running on
+	if pod.Spec.NodeName != "" {
+		if gpuModel, err := utils.GetGPUModelFromNode(pod.Spec.NodeName); err == nil && gpuModel != "" {
+			klog.V(5).Infof("Found GPU model from node %s for pod %s: %s", pod.Spec.NodeName, pod.Status.PodIP, gpuModel)
+			return gpuModel
+		} else if err != nil {
+			klog.V(4).Infof("Failed to get GPU model from node %s for pod %s: %v", pod.Spec.NodeName, pod.Status.PodIP, err)
+		}
+	}
+
+	// Try other common pod labels
+	if gpuModel, ok := pod.Labels["gpu-model"]; ok && gpuModel != "" {
+		return gpuModel
+	}
+	if gpuModel, ok := pod.Labels["nvidia.com/gpu.product"]; ok && gpuModel != "" {
+		return gpuModel
+	}
+
+	// Try pod annotations
+	if gpuModel, ok := pod.Annotations["gpu-model"]; ok && gpuModel != "" {
+		return gpuModel
+	}
+
+	// Default fallback - since we can't determine GPU type, use most common
+	klog.Errorf("No GPU model found for pod %s (node: %s), using default GPU-L3c", pod.Status.PodIP, pod.Spec.NodeName)
+	return "GPU-L3c"
+}
+
 // Route selects the optimal pod based on latency predictions
 func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	route_start_time := time.Now()
@@ -300,6 +392,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Status.PodIP] = struct{}{}
+
+		// Set GPU model for this pod if not already cached
+		// Check cache first to avoid unnecessary API calls
+		if _, exists := utils.GetGPUModel(pod.Status.PodIP); !exists {
+			// Only extract if not already cached
+			gpuModel := extractGPUModelFromPod(pod)
+			utils.SetGPUModel(pod.Status.PodIP, gpuModel)
+		}
 	}
 
 	// input_tokens, err := r.tokenizer.TokenizeInputText(ctx.Message) // character tokenizer by four
@@ -409,6 +509,21 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		numDecodeTokensForAllPods := utils.GetNumDecodeTokensForAllPods()
 		jsonStrings["numDecodeTokensForAllPods"] = jsonStringify(numDecodeTokensForAllPods, utils.GetpodTotalDecodeTokensMutex())
 
+		// Create GPU model map for each pod (proper JSON format like other metrics)
+		gpuModelMap := make(map[string]string)
+		for _, pod := range readyPods {
+			// Get GPU model for each pod, with fallback to default
+			gpuModel, exists := utils.GetGPUModel(pod.Status.PodIP)
+			if !exists {
+				gpuModel = "GPU-L3c" // Default fallback
+			}
+			gpuModelMap[pod.Status.PodIP] = gpuModel
+		}
+		// Use a local mutex for this request-scoped data
+		var gpuMapMutex sync.RWMutex
+		jsonStrings["GPU"] = jsonStringify(gpuModelMap, &gpuMapMutex)
+		klog.V(5).Infof("GPU model map JSON: %s", jsonStrings["GPU"])
+
 		podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
 		jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
 
@@ -467,7 +582,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
 			utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
 		}
-		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f`
+		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
 		logMessage = fmt.Sprintf(
 			logFormat,
 			ctx.RequestID,
@@ -486,6 +601,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			jsonStrings["numDecodeTokensForAllPods"],
 			ctx.SubAlgorithm,
 			prev_reward,
+			jsonStrings["GPU"],
 		)
 	} else { // useRealRequest == 0
 		logMessage = utils.GenerateLogMessages(allPodIPs, 1)[0]
@@ -547,22 +663,25 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod = selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
 					if targetPod == nil {
 						klog.Errorf("least-latency routing, No suitable pod found for least latency routing, requestID: %s", ctx.RequestID)
+					} else {
+						klog.Infof("least-latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
-					klog.Infof("least-latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 				} else if ctx.SubAlgorithm == "least-request" {
 					klog.Infof("least-request routing, request_id: %s", ctx.RequestID)
 					targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 					if targetPod == nil {
 						klog.Errorf("least-request routing, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+					} else {
+						klog.Infof("least-request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
-					klog.Infof("least-request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 				} else if ctx.SubAlgorithm == "least-kv-cache" {
 					klog.Infof("least-kv-cache routing, request_id: %s", ctx.RequestID)
 					targetPod = selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
 					if targetPod == nil {
 						klog.Errorf("least-kv-cache routing, No suitable pod found for least kv cache routing, requestID: %s", ctx.RequestID)
+					} else {
+						klog.Infof("least-kv-cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
-					klog.Infof("least-kv-cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 				} else if ctx.SubAlgorithm == "prefix_cache_1" {
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
@@ -596,6 +715,13 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				// 	// For latency_predictor with iteration > 0, the targetPod is already set by the RL agent response
 				// 	klog.Infof("Using RL agent selected pod for sub-algorithm: %s, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				// }
+
+				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
+				if targetPod == nil {
+					klog.Warningf("targetPod is nil after routing algorithm execution, using fallback routing for requestID: %s", ctx.RequestID)
+					targetPod, _ = r.fallbackRouting(ctx, readyPods)
+				}
+
 				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {
 					utils.SetNumTrains(routeResponse.NumTrains)
@@ -609,17 +735,31 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
 				utils.SetEndToEndOverheadForRequest(float64(end_to_end_overhead), ctx.RequestID)
-				klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+				if targetPod != nil {
+					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+				} else {
+					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: nil, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+				}
 			}
 		}
 	}
 
-	if len(allPrefixHashes) > 0 {
+	if len(allPrefixHashes) > 0 && targetPod != nil {
 		klog.V(5).Infof("Adding prefix hashes to cache. pod: %s", targetPod.Status.PodIP)
 		r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
 	} else {
-		klog.Warningf("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
+		if len(allPrefixHashes) == 0 {
+			klog.Warningf("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
+		} else if targetPod == nil {
+			klog.Errorf("targetPod is nil, cannot add prefix hashes to cache for requestID: %s", ctx.RequestID)
+		}
 	}
+
+	if targetPod == nil {
+		klog.Errorf("CRITICAL: targetPod is still nil before setting context, requestID: %s. Using fallback routing.", ctx.RequestID)
+		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+	}
+
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }
