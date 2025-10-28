@@ -333,7 +333,11 @@ def handle_infer():
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
         logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
         
-        if subAlgorithm == 'latency_predictor':
+        # "random"
+        # "least-latency"
+        # "least-request"
+        # "least-kv-cache"
+        if subAlgorithm == 'latency_predictor' or subAlgorithm == 'random' or subAlgorithm == 'least-latency' or subAlgorithm == 'least-request' or subAlgorithm == 'least-kv-cache':
             global LATENCY_PREDICTOR
             # Check if initialization needed without blocking
             if LATENCY_PREDICTOR is None:
@@ -548,10 +552,8 @@ def handle_infer():
                 agent_lock=None  # New agent doesn't need lock for prediction
             )
         else:
-            logger.info(f"requestID: {request_id}, contextual bandit model for inference")
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
-            result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
-            result['chosen_pod_predicted_latency'] = -1
+            logger.error(f"Unknown subAlgorithm: {subAlgorithm}")
+            assert False
         handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
         
         remaining_work_start = time.time()
