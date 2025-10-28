@@ -1,5 +1,6 @@
 {
-    "arrival": { "rps": 10 },
+    "arrival": { "rps": [12, 15, 12] },
+    "repetitions": 10,
     "workloads": [
         {
             "prompt_length": 1000,
@@ -36,8 +37,8 @@
             "prompt_length_std": 400,
             "shared_proportion": 0.7,
             "shared_proportion_std": 0.05,
-            "num_requests_per_prefix": 10,
-            "num_diff_prefix": 25,
+            "num_requests_per_prefix": 5,
+            "num_diff_prefix": 5,
             "output_length_mean": 100,
             "output_length_std": 10
         }

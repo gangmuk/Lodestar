@@ -321,7 +321,7 @@ def handle_infer():
                     request_id=request_id,
                     sorted_all_pod_ids=sorted_all_pod_ids
                 )
-
+        elif subAlgorithm == 'rl_agent':
             # === OLD RL AGENT (entire cluster as input state) ===
             logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
             
@@ -693,12 +693,6 @@ def get_current_cluster_features():
 def graceful_shutdown(sig=None, frame=None):
     """Handle graceful shutdown when receiving SIGTERM or SIGINT"""
     logger.info(f"Received signal {sig if sig else 'shutdown'}, shutting down gracefully...")
-    
-    # Stop RL update worker
-    stop_rl_update_worker()
-    
-    # Stop scalable RL training worker
-    stop_scalable_rl_training_worker()
     
     # Shutdown the scheduler if it exists
     if 'scheduler' in globals() and scheduler:

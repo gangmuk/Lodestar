@@ -1,1 +1,0 @@
-python3 offline_routing_agent.py ../training_data/SharingRatio71%/all/data-processed.csv --analyze_behavior --ttft_slo 500 --avg_tpot_slo 50 --final_model_dir ../training_data/SharingRatio71%/all/final_model-data-processed-linear_simple-lr_0.01-ttft_weight_2.0-ttftslo_500-avgtpotslo_50 --ttft_reward_weight 2.0 --offline_learning_rate 0.01 --reward_function linear_simple

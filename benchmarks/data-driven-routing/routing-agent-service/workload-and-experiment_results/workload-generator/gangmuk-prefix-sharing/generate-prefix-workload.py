@@ -816,22 +816,57 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
     if len(all_prompts_combined) > 0:
         if has_timestamps:
             import numpy as _np
-            global_np_random = _np.random.RandomState(base_seed + 55555)
-            global_timestamps = generate_poisson_arrival_times(
-                num_requests=len(all_prompts_combined),
-                rps=arrival_rps,
-                start_time=arrival_start_time,
-                np_random=global_np_random,
-            )
-
-            # Shuffle which prompt gets which timestamp to mix configs/prefix groups
-            shuffle_rng.shuffle(global_timestamps)
-
-            for i, prompt in enumerate(all_prompts_combined):
-                prompt["timestamp"] = global_timestamps[i]
-
-            # Sort by timestamp
-            all_prompts_combined.sort(key=lambda x: x["timestamp"])
+            
+            # Group prompts by repetition
+            prompts_by_repetition = {}
+            for prompt in all_prompts_combined:
+                rep_id = prompt.get("repetition_id", 0)
+                if rep_id not in prompts_by_repetition:
+                    prompts_by_repetition[rep_id] = []
+                prompts_by_repetition[rep_id].append(prompt)
+            
+            # Process each repetition sequentially
+            current_start_time = arrival_start_time
+            all_prompts_combined = []
+            
+            for rep_id in sorted(prompts_by_repetition.keys()):
+                rep_prompts = prompts_by_repetition[rep_id]
+                num_rep_requests = len(rep_prompts)
+                
+                # Determine RPS for this repetition
+                if isinstance(arrival_rps, list):
+                    # For list RPS, use the original pattern (not expanded)
+                    # arrival_rps has already been expanded, so divide by repetitions count
+                    num_reps = len(prompts_by_repetition)
+                    pattern_length = len(arrival_rps) // num_reps
+                    rep_rps = arrival_rps[rep_id * pattern_length : (rep_id + 1) * pattern_length]
+                else:
+                    rep_rps = arrival_rps
+                
+                # Generate timestamps for this repetition
+                rep_np_random = _np.random.RandomState(base_seed + 55555 + rep_id)
+                rep_timestamps = generate_poisson_arrival_times(
+                    num_requests=num_rep_requests,
+                    rps=rep_rps,
+                    start_time=current_start_time,
+                    np_random=rep_np_random,
+                )
+                
+                # Shuffle timestamps within this repetition to mix configs/prefix groups
+                rep_shuffle_rng = random.Random(base_seed + 999999 + rep_id)
+                rep_shuffle_rng.shuffle(rep_timestamps)
+                
+                # Assign timestamps to prompts
+                for i, prompt in enumerate(rep_prompts):
+                    prompt["timestamp"] = rep_timestamps[i]
+                
+                # Sort this repetition by timestamp
+                rep_prompts.sort(key=lambda x: x["timestamp"])
+                all_prompts_combined.extend(rep_prompts)
+                
+                # Update start time for next repetition
+                if rep_timestamps:
+                    current_start_time = max(rep_timestamps) + 1
 
             # Update per-config start/end times based on assigned timestamps
             start_end_by_config = {}
@@ -853,7 +888,7 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
                     cfg["end_time"] = e
                     cfg["total_duration"] = (e - s) / 1000.0
         else:
-            # No timestamps: just shuffle the prompts to mix configs/prefix groups
+            # No timestamps: just shuffle the prompts to mix configs/prefix groups/repetitions
             shuffle_rng.shuffle(all_prompts_combined)
 
     return {

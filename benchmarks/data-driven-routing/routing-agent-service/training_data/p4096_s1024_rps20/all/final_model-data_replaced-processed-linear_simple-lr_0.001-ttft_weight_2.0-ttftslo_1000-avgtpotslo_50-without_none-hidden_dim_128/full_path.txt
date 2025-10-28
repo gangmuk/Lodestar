@@ -1,3 +1,0 @@
-final_model_dir: ../training_data/p4096_s1024_rps20/all/final_model-data_replaced-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_none-hidden_dim_128
-data_file: ../training_data/p4096_s1024_rps20/all/data_replaced.csv
-processed_csv: ../training_data/p4096_s1024_rps20/all/data_replaced-processed.csv

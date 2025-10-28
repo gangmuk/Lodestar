@@ -19,7 +19,6 @@ import encoding
 # import contextual_bandit
 import simpler_contextual_bandit
 import latency_predictor
-from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -337,7 +336,7 @@ def handle_infer():
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
-        if subAlgorithm == 'latency_predictor' or subAlgorithm == 'random' or subAlgorithm == 'least-latency' or subAlgorithm == 'least-request' or subAlgorithm == 'least-kv-cache':
+        if subAlgorithm == 'latency_predictor' or subAlgorithm == 'random' or subAlgorithm == 'least-latency' or subAlgorithm == 'least-request' or subAlgorithm == 'least-kv-cache' or subAlgorithm == 'prefix_cache_1':
             global LATENCY_PREDICTOR
             # Check if initialization needed without blocking
             if LATENCY_PREDICTOR is None:
@@ -385,6 +384,7 @@ def handle_infer():
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
         elif subAlgorithm == 'rl_agent':
+            from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
             # === OLD RL AGENT (entire cluster as input state) ===
             logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
             

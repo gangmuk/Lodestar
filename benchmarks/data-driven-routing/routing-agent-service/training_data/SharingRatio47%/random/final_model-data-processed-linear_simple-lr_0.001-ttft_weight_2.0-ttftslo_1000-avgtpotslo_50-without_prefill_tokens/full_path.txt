@@ -1,3 +1,0 @@
-final_model_dir: ../training_data/SharingRatio47%/random/final_model-data-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50-without_prefill_tokens
-data_file: ../training_data/SharingRatio47%/random/data.csv
-processed_csv: ../training_data/SharingRatio47%/random/data-processed.csv
