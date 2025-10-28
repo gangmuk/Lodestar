@@ -35,8 +35,16 @@ COPY start.sh .
 
 COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft final_model
 
-COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data.csv
+# Create backup copies of the model files for different GPU types
+RUN cp -r final_model final_model_temp && \
+    mkdir -p final_model/A_NVIDIA-A30 && \
+    mkdir -p final_model/A_GPU-L3c && \
+    cp -r final_model_temp/* final_model/A_NVIDIA-A30/ && \
+    cp -r final_model_temp/* final_model/A_GPU-L3c/ && \
+    rm -rf final_model_temp
 
+COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data.csv
+COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed-with-gpu-col.csv offline_training_data_with_gpu_column.csv
 
 # Remove the duplicate COPY command that overwrites the model above
 COPY Dockerfile /app/Dockerfile
