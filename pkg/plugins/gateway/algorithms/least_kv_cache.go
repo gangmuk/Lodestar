@@ -52,41 +52,11 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 }
 
 func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	minKvCache := math.MaxFloat64
-
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	for _, pod := range pods.All() {
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
-		// Due to metric refactor (pull/543) to better support lora and multi models,
-		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
-		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.GPUCacheUsagePerc)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.CPUCacheUsagePerc)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		totalCache := gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
-
-		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, cpuCache: %v, kaCache: %v",
-			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), cpuCache.GetSimpleValue(), totalCache)
-
-		if totalCache <= minKvCache {
-			minKvCache = totalCache
-			targetPod = pod
-		}
-	}
+	targetPod := selectTargetPodWithLeastKVCache(r.cache, pods.All(), ctx.Model)
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
@@ -105,4 +75,46 @@ func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+// selectTargetPodWithLeastKVCache selects the pod with the lowest KV cache usage
+// This is a helper function that can be used by other routers
+func selectTargetPodWithLeastKVCache(cache cache.Cache, readyPods []*v1.Pod, model string) *v1.Pod {
+	var targetPod *v1.Pod
+	minKvCache := math.MaxFloat64
+
+	if len(readyPods) == 0 {
+		return nil
+	}
+
+	for _, pod := range readyPods {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+
+		// Due to metric refactor (pull/543) to better support lora and multi models,
+		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
+		// This works but doesn't look very promising, we can revisit this part later.
+		gpuCache, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.GPUCacheUsagePerc)
+		if err != nil {
+			klog.V(5).Infof("Could not get GPUCacheUsagePerc for pod %s: %v", pod.Name, err)
+			continue
+		}
+		cpuCache, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.CPUCacheUsagePerc)
+		if err != nil {
+			klog.V(5).Infof("Could not get CPUCacheUsagePerc for pod %s: %v", pod.Name, err)
+			continue
+		}
+		totalCache := gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
+
+		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, cpuCache: %v, kvCache: %v",
+			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), cpuCache.GetSimpleValue(), totalCache)
+
+		if totalCache <= minKvCache {
+			minKvCache = totalCache
+			targetPod = pod
+		}
+	}
+
+	return targetPod
 }

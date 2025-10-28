@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import re
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +17,7 @@ from numpy.polynomial.polynomial import polyfit
 # from logger import logger
 
 linewidth = 1.5
-transition_linewidth = 0.5
+transition_linewidth = 1.0
 edgecolor = 'gray'
 alpha = 0.7
 marker_size = 50
@@ -278,6 +280,24 @@ def get_numflush_transitions(data):
                 'relative_time': item['relative_time']
             })
             seen_flush.add(num_flush)
+    
+    return transitions
+
+def get_iteration_transitions(data):
+    """
+    Get the first occurrence time of each new iteration value
+    """
+    transitions = []
+    seen_iterations = set()
+    
+    for item in data:
+        iteration = item.get('iteration')
+        if iteration is not None and iteration not in seen_iterations:
+            transitions.append({
+                'iteration': iteration,
+                'relative_time': item['relative_time']
+            })
+            seen_iterations.add(iteration)
     
     return transitions
 
@@ -618,12 +638,18 @@ def extract_pod_specific_data(df, unique_pods):
         'waiting_selected_pod_df': waiting_selected_pod_df
     }
 
-def add_transition_lines(ax, train_transitions, flush_transitions):
-    """Add vertical lines for numTrains transitions only (numFlush transitions removed)"""
+def add_transition_lines(ax, train_transitions, flush_transitions, iteration_transitions=None):
+    """Add vertical lines for numTrains and iteration transitions"""
+    # Add numTrains transition lines (purple)
     for transition in train_transitions:
         ax.axvline(x=transition['relative_time'], color='purple', linewidth=transition_linewidth, alpha=alpha, zorder=5)
+    
+    # Add iteration transition lines (orange) if provided
+    if iteration_transitions:
+        for transition in iteration_transitions:
+            ax.axvline(x=transition['relative_time'], color='orange', linewidth=transition_linewidth, alpha=alpha, zorder=5, linestyle='--')
 
-def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_transitions, unique_pods, pod_colors):
+def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors):
     """Plot the request rate analysis subplots"""
     # Request rate analysis subplots
     ax_total_rate = fig.add_subplot(gs[0, :])  # Total requests per second
@@ -633,7 +659,7 @@ def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_tran
     # SUBPLOT 1: Total Requests Per Second (ax_total_rate)
     ax_total_rate.plot(plot_data['total_requests_per_sec']['time_bin'], plot_data['total_requests_per_sec']['total_requests'], 
                       '-', color='blue', linewidth=linewidth, alpha=alpha, label='Total RPS')
-    add_transition_lines(ax_total_rate, train_transitions, flush_transitions)
+    add_transition_lines(ax_total_rate, train_transitions, flush_transitions, iteration_transitions)
     ax_total_rate.set_title('Total Requests Per Second', fontsize=16, fontweight='bold', pad=10)
     ax_total_rate.set_ylabel('Requests/sec', fontsize=14, fontweight='bold')
     ax_total_rate.grid(True, alpha=alpha)
@@ -642,7 +668,7 @@ def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_tran
     # SUBPLOT 2: Total Input Tokens Per Second (ax_token_rate)
     ax_token_rate.plot(plot_data['input_tokens_per_sec']['time_bin'], plot_data['input_tokens_per_sec']['num_input_tokens'], 
                       '-', color='green', linewidth=linewidth, alpha=alpha, label='Total Tokens/sec')
-    add_transition_lines(ax_token_rate, train_transitions, flush_transitions)
+    add_transition_lines(ax_token_rate, train_transitions, flush_transitions, iteration_transitions)
     ax_token_rate.set_title('Total Input Tokens Per Second', fontsize=16, fontweight='bold', pad=10)
     ax_token_rate.set_ylabel('Tokens/sec', fontsize=14, fontweight='bold')
     ax_token_rate.grid(True, alpha=alpha)
@@ -659,7 +685,7 @@ def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_tran
                            label=f'Pod {pod}', color=pod_colors[pod], 
                            linewidth=linewidth, alpha=alpha)
     
-    add_transition_lines(ax_pod_rate, train_transitions, flush_transitions)
+    add_transition_lines(ax_pod_rate, train_transitions, flush_transitions, iteration_transitions)
     ax_pod_rate.set_title('Requests Per Second by Pod', fontsize=16, fontweight='bold', pad=10)
     ax_pod_rate.set_ylabel('Requests/sec', fontsize=14, fontweight='bold')
     ax_pod_rate.grid(True, alpha=alpha)
@@ -669,26 +695,26 @@ def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_tran
     
     return ax_total_rate, ax_token_rate, ax_pod_rate
 
-def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_transitions, flush_transitions, unique_pods, pod_colors, plot_data):
+def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, plot_data):
     """Plot the main metrics (TTFT, KV Cache, Running Requests, etc.)"""
     # Define the main time series plots (starting from row 3 after removing empty rows)
     # Group request-level metrics together
     ax1 = fig.add_subplot(gs[3, :])  # TTFT plot
     ax2 = fig.add_subplot(gs[4, :], sharex=ax1)  # TPOT plot
     ax3 = fig.add_subplot(gs[5, :], sharex=ax1)  # E2E Duration plot
-    ax_reward = fig.add_subplot(gs[6, :], sharex=ax1)  # Reward plot
+    # ax_reward = fig.add_subplot(gs[6, :], sharex=ax1)  # Reward plot - REMOVED
     
     # Pod-level system metrics - grouped with their cluster-wide counterparts
-    ax_kv_cache = fig.add_subplot(gs[7, :], sharex=ax1)  # KV Cache Hit Ratio plot
-    ax_running_total = fig.add_subplot(gs[8, :], sharex=ax1)  # Total running requests (cluster-wide)
-    ax_running = fig.add_subplot(gs[9, :], sharex=ax1)  # Running requests (selected pod)
-    ax_prefill_total = fig.add_subplot(gs[10, :], sharex=ax1)  # Total prefill tokens (cluster-wide)
-    ax_prefill = fig.add_subplot(gs[11, :], sharex=ax1)  # Prefill tokens (selected pod)
-    ax_decode_total = fig.add_subplot(gs[12, :], sharex=ax1)  # Total decode tokens (cluster-wide)
-    ax_decode = fig.add_subplot(gs[13, :], sharex=ax1)  # Decode tokens (selected pod)
-    ax_gpu_usage = fig.add_subplot(gs[14, :], sharex=ax1)  # GPU cache usage
-    ax_waiting = fig.add_subplot(gs[15, :], sharex=ax1)  # Total waiting requests (cluster-wide)
-    ax_waiting_selected = fig.add_subplot(gs[16, :], sharex=ax1)  # Waiting requests (selected pod)
+    ax_kv_cache = fig.add_subplot(gs[6, :], sharex=ax1)  # KV Cache Hit Ratio plot (moved up from row 7)
+    ax_running_total = fig.add_subplot(gs[7, :], sharex=ax1)  # Total running requests (cluster-wide)
+    ax_running = fig.add_subplot(gs[8, :], sharex=ax1)  # Running requests (selected pod)
+    ax_prefill_total = fig.add_subplot(gs[9, :], sharex=ax1)  # Total prefill tokens (cluster-wide)
+    ax_prefill = fig.add_subplot(gs[10, :], sharex=ax1)  # Prefill tokens (selected pod)
+    ax_decode_total = fig.add_subplot(gs[11, :], sharex=ax1)  # Total decode tokens (cluster-wide)
+    ax_decode = fig.add_subplot(gs[12, :], sharex=ax1)  # Decode tokens (selected pod)
+    ax_gpu_usage = fig.add_subplot(gs[13, :], sharex=ax1)  # GPU cache usage
+    ax_waiting = fig.add_subplot(gs[14, :], sharex=ax1)  # Total waiting requests (cluster-wide)
+    ax_waiting_selected = fig.add_subplot(gs[15, :], sharex=ax1)  # Waiting requests (selected pod)
     
     # TTFT Plot (ax1)
     for pod in unique_pods:
@@ -704,7 +730,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     ttft_avg_per_sec = df.groupby('time_bin')['ttft'].mean().reset_index()
     ax1.plot(ttft_avg_per_sec['time_bin'], ttft_avg_per_sec['ttft'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg TTFT (per sec)', zorder=10)
     
-    add_transition_lines(ax1, train_transitions, flush_transitions)
+    add_transition_lines(ax1, train_transitions, flush_transitions, iteration_transitions)
 
     # NEW SUBPLOT: KV Cache Hit Ratio (ax_kv_cache)
     if not pod_data['kv_cache_df'].empty:
@@ -730,7 +756,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         ax_kv_cache.plot(avg_kv_cache_per_sec['time_bin'], avg_kv_cache_per_sec['selectedpod_kv_cache_hit_ratio'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg Selected Pod KV Cache (per sec)')
 
     pod_data['kv_cache_df'].to_csv('kv_cache_df.csv')
-    add_transition_lines(ax_kv_cache, train_transitions, flush_transitions)
+    add_transition_lines(ax_kv_cache, train_transitions, flush_transitions, iteration_transitions)
     ax_kv_cache.set_title('KV Cache Hit Ratio for Selected Pod per Request', fontsize=16, fontweight='bold', pad=10)
     ax_kv_cache.set_ylabel('KV Cache Hit Ratio', fontsize=14, fontweight='bold')
     ax_kv_cache.set_ylim(0, 110)  # Hit ratio is between 0 and 100
@@ -743,19 +769,19 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     # Plot other metrics subplots (Running Requests, Prefill Tokens, etc.)
     _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests', 
                            'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, 
-                           train_transitions, flush_transitions)
+                           train_transitions, flush_transitions, iteration_transitions)
     
     _plot_pod_metric_subplot(ax_prefill, pod_data['prefill_tokens_df'], 'prefill_tokens', 'Prefill Tokens',
                            'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions)
+                           train_transitions, flush_transitions, iteration_transitions)
     
     _plot_pod_metric_subplot(ax_decode, pod_data['decode_tokens_df'], 'decode_tokens', 'Decode Tokens',
                            'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions)
+                           train_transitions, flush_transitions, iteration_transitions)
     
     _plot_pod_metric_subplot(ax_gpu_usage, pod_data['gpu_cache_usage_df'], 'gpu_cache_usage', 'GPU Cache Usage',
                            'vllmGPUKVCacheUsage for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions, ylim=(0, 1.1))
+                           train_transitions, flush_transitions, iteration_transitions, ylim=(0, 1.1), show_legend=False)
     
     if not pod_data['waiting_selected_pod_df'].empty:
         for pod in unique_pods:
@@ -777,7 +803,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         ax_waiting_selected.text(0.5, 0.5, 'No Data Available', transform=ax_waiting_selected.transAxes, 
                                ha='center', va='center', fontsize=16, alpha=alpha)
     
-    add_transition_lines(ax_waiting_selected, train_transitions, flush_transitions)
+    add_transition_lines(ax_waiting_selected, train_transitions, flush_transitions, iteration_transitions)
     ax_waiting_selected.set_title('vllmNumRequestsWaiting for Selected Pod per Request', fontsize=16, fontweight='bold', pad=10)
     ax_waiting_selected.set_ylabel('Waiting Requests (Selected Pod)', fontsize=14, fontweight='bold')
     ax_waiting_selected.grid(True, alpha=alpha)
@@ -795,7 +821,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     tpot_avg_per_sec = df.groupby('time_bin')['avg_tpot'].mean().reset_index()
     ax2.plot(tpot_avg_per_sec['time_bin'], tpot_avg_per_sec['avg_tpot'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg TPOT (per sec)', zorder=10)
     
-    add_transition_lines(ax2, train_transitions, flush_transitions)
+    add_transition_lines(ax2, train_transitions, flush_transitions, iteration_transitions)
 
     # E2E Duration Plot (ax3)
     for pod in unique_pods:
@@ -809,7 +835,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     e2e_avg_per_sec = df.groupby('time_bin')['e2e'].mean().reset_index()
     ax3.plot(e2e_avg_per_sec['time_bin'], e2e_avg_per_sec['e2e'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg E2E (per sec)', zorder=10)
     
-    add_transition_lines(ax3, train_transitions, flush_transitions)
+    add_transition_lines(ax3, train_transitions, flush_transitions, iteration_transitions)
     
     # Set titles and labels for main plots
     ax1.set_title('Time to First Token (TTFT) for Each Request', fontsize=16, fontweight='bold', pad=10)
@@ -823,10 +849,11 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     legend_labels_ttft = []
     legend_elements_ttft.extend([
         Line2D([0], [0], color='red', linewidth=linewidth, label='Avg TTFT (per sec)'),
-        Line2D([0], [0], color='purple', linewidth=linewidth, label='numTrains transition')
+        Line2D([0], [0], color='purple', linewidth=linewidth, label='numTrains transition'),
+        Line2D([0], [0], color='orange', linewidth=linewidth, linestyle='--', label='Iteration transition')
     ])
-    legend_labels_ttft.extend(['Avg TTFT (per sec)', 'numTrains transition'])
-    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, loc='upper right', ncol=2)
+    legend_labels_ttft.extend(['Avg TTFT (per sec)', 'numTrains transition', 'Iteration transition'])
+    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, loc='upper right', ncol=3)
     
     ax2.set_title('Average Time Per Output Token (TPOT) for Each Request', fontsize=16, fontweight='bold', pad=10)
     ax2.set_ylabel('Average TPOT (ms)', fontsize=14, fontweight='bold')
@@ -853,32 +880,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     ]
     ax3.legend(legend_elements_e2e, [elem.get_label() for elem in legend_elements_e2e], fontsize=10, loc='upper right')
     
-    # Reward Plot (ax_reward)
-    for pod in unique_pods:
-        pod_df = df[df['selectedpod'] == pod]
-        ax_reward.scatter(pod_df['relative_time'], pod_df['total_reward'], s=marker_size, 
-                         color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
-    
-    # Note: Removed cluster-wise statistics as they are redundant with sliding window average
-    # Each request belongs to one pod, so cluster min/max across requests per time bin is not meaningful
-    
-    # Add sliding window average for all Reward values per second
-    reward_avg_per_sec = df.groupby('time_bin')['total_reward'].mean().reset_index()
-    ax_reward.plot(reward_avg_per_sec['time_bin'], reward_avg_per_sec['total_reward'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg Reward (per sec)', zorder=10)
-    
-    add_transition_lines(ax_reward, train_transitions, flush_transitions)
-    
-    ax_reward.set_title('Total Reward for Each Request', fontsize=16, fontweight='bold', pad=10)
-    ax_reward.set_ylabel('Total Reward', fontsize=14, fontweight='bold')
-    ax_reward.grid(True, alpha=alpha)
-    ax_reward.tick_params(axis='both', which='major', labelsize=11)
-    ax_reward.tick_params(axis='y', which='major', labelsize=11, labelleft=True)
-    
-    # Add legend for Reward - only meaningful metrics
-    legend_elements_reward = [
-        Line2D([0], [0], color='red', linewidth=linewidth, label='Avg Reward (per sec)')
-    ]
-    ax_reward.legend(legend_elements_reward, [elem.get_label() for elem in legend_elements_reward], fontsize=10, loc='upper right')
+    # Reward Plot - REMOVED
     
     # Plot the grouped cluster-wide total plots
     
@@ -886,7 +888,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     if 'running_requests_df' in plot_data and not plot_data['running_requests_df'].empty:
         ax_running_total.plot(plot_data['running_requests_df']['time_bin'], plot_data['running_requests_df']['total_running'], 
                              '-', color='orange', linewidth=linewidth, alpha=alpha, label='Total Running Requests')
-    add_transition_lines(ax_running_total, train_transitions, flush_transitions)
+    add_transition_lines(ax_running_total, train_transitions, flush_transitions, iteration_transitions)
     ax_running_total.set_title('Total vllmNumRequestsRunning Across All Pods', fontsize=16, fontweight='bold', pad=10)
     ax_running_total.set_ylabel('Running Requests', fontsize=14, fontweight='bold')
     ax_running_total.grid(True, alpha=alpha)
@@ -894,13 +896,13 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     # Running Requests for Selected Pod (ax_running)
     _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests', 
-                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions)
+                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
     
     # Total Prefill Tokens (ax_prefill_total)
     if 'prefill_tokens_df' in plot_data and not plot_data['prefill_tokens_df'].empty:
         ax_prefill_total.plot(plot_data['prefill_tokens_df']['time_bin'], plot_data['prefill_tokens_df']['total_prefill'], 
                              '-', color='purple', linewidth=linewidth, alpha=alpha, label='Total Prefill Tokens')
-    add_transition_lines(ax_prefill_total, train_transitions, flush_transitions)
+    add_transition_lines(ax_prefill_total, train_transitions, flush_transitions, iteration_transitions)
     ax_prefill_total.set_title('Total numPrefillTokensForAllPods Across All Pods', fontsize=16, fontweight='bold', pad=10)
     ax_prefill_total.set_ylabel('Prefill Tokens', fontsize=14, fontweight='bold')
     ax_prefill_total.grid(True, alpha=alpha)
@@ -908,13 +910,13 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     # Prefill Tokens for Selected Pod (ax_prefill)
     _plot_pod_metric_subplot(ax_prefill, pod_data['prefill_tokens_df'], 'prefill_tokens', 'Prefill Tokens', 
-                           'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions)
+                           'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
 
     # Total Decode Tokens (ax_decode_total)
     if 'decode_tokens_df' in plot_data and not plot_data['decode_tokens_df'].empty:
         ax_decode_total.plot(plot_data['decode_tokens_df']['time_bin'], plot_data['decode_tokens_df']['total_decode'], 
                             '-', color='brown', linewidth=linewidth, alpha=alpha, label='Total Decode Tokens')
-    add_transition_lines(ax_decode_total, train_transitions, flush_transitions)
+    add_transition_lines(ax_decode_total, train_transitions, flush_transitions, iteration_transitions)
     ax_decode_total.set_title('Total numDecodeTokensForAllPods Across All Pods', fontsize=16, fontweight='bold', pad=10)
     ax_decode_total.set_ylabel('Decode Tokens', fontsize=14, fontweight='bold')
     ax_decode_total.grid(True, alpha=alpha)
@@ -922,13 +924,13 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     # Decode Tokens for Selected Pod (ax_decode)
     _plot_pod_metric_subplot(ax_decode, pod_data['decode_tokens_df'], 'decode_tokens', 'Decode Tokens', 
-                           'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions)
+                           'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
 
     # Total Waiting Requests (ax_waiting)
     if 'waiting_requests_df' in plot_data and not plot_data['waiting_requests_df'].empty:
         ax_waiting.plot(plot_data['waiting_requests_df']['time_bin'], plot_data['waiting_requests_df']['total_waiting'], 
                        '-', color='red', linewidth=linewidth, alpha=alpha, label='Total Waiting Requests')
-    add_transition_lines(ax_waiting, train_transitions, flush_transitions)
+    add_transition_lines(ax_waiting, train_transitions, flush_transitions, iteration_transitions)
     ax_waiting.set_title('Total vllmNumRequestsWaiting Across All Pods', fontsize=16, fontweight='bold', pad=10)
     ax_waiting.set_ylabel('Waiting Requests', fontsize=14, fontweight='bold')
     ax_waiting.grid(True, alpha=alpha)
@@ -936,11 +938,11 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     # Waiting Requests for Selected Pod (ax_waiting_selected)
     _plot_pod_metric_subplot(ax_waiting_selected, pod_data['waiting_selected_pod_df'], 'waiting_requests_selected', 'Waiting Requests', 
-                           'vllmNumRequestsWaiting for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions)
+                           'vllmNumRequestsWaiting for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions, show_legend=False)
     
-    return ax1, ax2, ax3, ax_reward, ax_kv_cache, ax_running_total, ax_running, ax_prefill_total, ax_prefill, ax_decode_total, ax_decode, ax_gpu_usage, ax_waiting, ax_waiting_selected
+    return ax1, ax2, ax3, ax_kv_cache, ax_running_total, ax_running, ax_prefill_total, ax_prefill, ax_decode_total, ax_decode, ax_gpu_usage, ax_waiting, ax_waiting_selected
 
-def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique_pods, pod_colors, train_transitions, flush_transitions, ylim=None):
+def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions=None, ylim=None, show_legend=True):
     """Helper function to plot pod metric subplots"""
     # Define cluster column names first
     if metric_col == 'waiting_requests_selected':
@@ -992,7 +994,7 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
         ax.plot(avg_per_sec['time_bin'], avg_per_sec[metric_col], 
                'red', '-', linewidth=linewidth, alpha=alpha, label=f'Avg Selected Pod {metric_name} (per sec)', zorder=10)
     
-    add_transition_lines(ax, train_transitions, flush_transitions)
+    add_transition_lines(ax, train_transitions, flush_transitions, iteration_transitions)
     ax.set_title(title, fontsize=16, fontweight='bold', pad=10)
     ax.set_ylabel(metric_name, fontsize=14, fontweight='bold')
     if ylim:
@@ -1000,29 +1002,30 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', which='major', labelsize=11)
     
-    # Add legend - only cluster metrics, no pod labels
-    legend_elements = []
-    if cluster_avg_col in data_df.columns:
-        legend_elements.append(Line2D([0], [0], color='blue', linewidth=linewidth, label=f'Cluster Avg {metric_name}'))
-    if cluster_min_col in data_df.columns:
-        legend_elements.append(Line2D([0], [0], color='green', linewidth=linewidth, label=f'Cluster Min {metric_name}'))
-    if cluster_max_col in data_df.columns:
-        legend_elements.append(Line2D([0], [0], color='orange', linewidth=linewidth, label=f'Cluster Max {metric_name}'))
-    if len(legend_elements) > 0:
-        legend_elements.append(Line2D([0], [0], color='red', linewidth=linewidth, label=f'Avg Selected Pod {metric_name} (per sec)'))
-        ax.legend(legend_elements, [elem.get_label() for elem in legend_elements], fontsize=10, loc='upper right')
+    # Add legend - only cluster metrics, no pod labels (if show_legend is True)
+    if show_legend:
+        legend_elements = []
+        if cluster_avg_col in data_df.columns:
+            legend_elements.append(Line2D([0], [0], color='blue', linewidth=linewidth, label=f'Cluster Avg {metric_name}'))
+        if cluster_min_col in data_df.columns:
+            legend_elements.append(Line2D([0], [0], color='green', linewidth=linewidth, label=f'Cluster Min {metric_name}'))
+        if cluster_max_col in data_df.columns:
+            legend_elements.append(Line2D([0], [0], color='orange', linewidth=linewidth, label=f'Cluster Max {metric_name}'))
+        if len(legend_elements) > 0:
+            legend_elements.append(Line2D([0], [0], color='red', linewidth=linewidth, label=f'Avg Selected Pod {metric_name} (per sec)'))
+            ax.legend(legend_elements, [elem.get_label() for elem in legend_elements], fontsize=10, loc='upper right')
 
 def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors):
     """Plot the pod analysis and CDF distribution subplots"""
-    # Define the pod analysis plots (updated indices)
-    ax4 = fig.add_subplot(gs[17, 0])  # Average TTFT by Pod
-    ax5 = fig.add_subplot(gs[17, 1])  # Average TPOT by Pod
-    ax_slo = fig.add_subplot(gs[17, 2])  # SLO satisfaction
+    # Define the pod analysis plots (updated indices - shifted up by 1 after removing reward plot)
+    ax4 = fig.add_subplot(gs[16, 0])  # Average TTFT by Pod
+    ax5 = fig.add_subplot(gs[16, 1])  # Average TPOT by Pod
+    ax_slo = fig.add_subplot(gs[16, 2])  # SLO satisfaction
     
     # Define the CDF distribution plots  
-    ax6 = fig.add_subplot(gs[18, 0])  # TTFT CDF
-    ax7 = fig.add_subplot(gs[18, 1])  # TPOT CDF
-    ax8 = fig.add_subplot(gs[18, 2])  # E2E CDF
+    ax6 = fig.add_subplot(gs[17, 0])  # TTFT CDF
+    ax7 = fig.add_subplot(gs[17, 1])  # TPOT CDF
+    ax8 = fig.add_subplot(gs[17, 2])  # E2E CDF
     
     # Average TTFT by Pod (ax4)
     pod_avg_ttft = df.groupby('selectedpod')['ttft'].mean().sort_values(ascending=False)
@@ -1035,8 +1038,8 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     
     # Add annotations
     for i, (pod, ttft) in enumerate(pod_avg_ttft.items()):
-        ax4.text(i, ttft + 5, f'{ttft:.1f} ms', ha='center', fontsize=12, fontweight='bold')
-        ax4.text(i, 10, f'n={pod_counts[pod]}', ha='center', fontsize=10)
+        ax4.text(i, ttft + 7, f'{ttft:.0f} ms', ha='center', fontsize=6, fontweight='bold', rotation=45)
+        ax4.text(i, 14, f'n={pod_counts[pod]}', ha='center', fontsize=6, rotation=90, fontweight='bold')
     
     ax4.set_xticks(range(len(pod_avg_ttft)))
     ax4.set_xticklabels([f'Pod {pod}' for pod in pod_avg_ttft.index], rotation=45, ha='right', fontsize=11)
@@ -1148,60 +1151,207 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     ax8.axvline(avg_e2e, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_e2e:.1f}ms')
     ax8.legend(fontsize=8)
     
-    # New subplots for numTrains analysis (updated indices)
-    # Create a 2-column grid for row 19
-    gs_row19 = gs[19, :].subgridspec(1, 2, wspace=0.3)
-    ax9 = fig.add_subplot(gs_row19[0])  # TTFT CDF by numTrains (left half - 50% width)
-    ax10 = fig.add_subplot(gs_row19[1])  # TPOT CDF by numTrains (right half - 50% width)
+    return [ax4, ax5, ax_slo, ax6, ax7, ax8]
+
+def plot_numtrains_analysis_subplots(fig, gs, df, start_row):
+    """Plot numTrains-based latency trends and CDFs for latency_predictor policies"""
+    linewidth = 1.5
+    alpha = 0.7
     
-    # Get unique num_trains values and use same colors for both TTFT and TPOT
+    # Get unique numTrains
     unique_num_trains = sorted(df['num_trains'].unique())
+    
+    # Define colors for numTrains (used across all numTrains plots)
     num_trains_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
     num_trains_color_map = dict(zip(unique_num_trains, num_trains_colors))
     
-    # TTFT CDF by numTrains (ax9)
+    # Row start_row: TTFT Trends (Avg + P99 with dual y-axis) | TTFT CDF
+    gs_row_ttft = gs[start_row, :].subgridspec(1, 2, wspace=0.3)
+    ax_nt_ttft_trends = fig.add_subplot(gs_row_ttft[0])
+    ax_nt_ttft_cdf = fig.add_subplot(gs_row_ttft[1])
+    
+    # Row start_row+1: TPOT Trends (Avg + P99 with dual y-axis) | TPOT CDF
+    gs_row_tpot = gs[start_row+1, :].subgridspec(1, 2, wspace=0.3)
+    ax_nt_tpot_trends = fig.add_subplot(gs_row_tpot[0])
+    ax_nt_tpot_cdf = fig.add_subplot(gs_row_tpot[1])
+    
+    # Row start_row+2: E2E Trends (Avg + P99 with dual y-axis) | E2E CDF
+    gs_row_e2e = gs[start_row+2, :].subgridspec(1, 2, wspace=0.3)
+    ax_nt_e2e_trends = fig.add_subplot(gs_row_e2e[0])
+    ax_nt_e2e_cdf = fig.add_subplot(gs_row_e2e[1])
+    
+    # Calculate numTrains statistics
+    nt_stats = []
+    for num_trains in unique_num_trains:
+        subset = df[df['num_trains'] == num_trains]
+        if len(subset) > 0:
+            nt_stats.append({
+                'num_trains': num_trains,
+                'avg_ttft': subset['ttft'].mean(),
+                'p99_ttft': np.percentile(subset['ttft'], 99),
+                'avg_tpot': subset['avg_tpot'].mean(),
+                'p99_tpot': np.percentile(subset['avg_tpot'], 99),
+                'avg_e2e': subset['e2e'].mean(),
+                'p99_e2e': np.percentile(subset['e2e'], 99),
+            })
+    
+    if nt_stats:
+        nt_vals = [s['num_trains'] for s in nt_stats]
+        avg_ttft_vals = [s['avg_ttft'] for s in nt_stats]
+        p99_ttft_vals = [s['p99_ttft'] for s in nt_stats]
+        avg_tpot_vals = [s['avg_tpot'] for s in nt_stats]
+        p99_tpot_vals = [s['p99_tpot'] for s in nt_stats]
+        avg_e2e_vals = [s['avg_e2e'] for s in nt_stats]
+        p99_e2e_vals = [s['p99_e2e'] for s in nt_stats]
+        
+        # Compute overall statistics for legend
+        overall_avg_ttft = df['ttft'].mean()
+        overall_p99_ttft = np.percentile(df['ttft'], 99)
+        overall_avg_tpot = df['avg_tpot'].mean()
+        overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
+        overall_avg_e2e = df['e2e'].mean()
+        overall_p99_e2e = np.percentile(df['e2e'], 99)
+        
+        # TTFT Trends (Avg + P99 with dual y-axis)
+        ax_nt_ttft_trends.plot(nt_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
+        # Add value labels on each dot for average
+        for nt, val in zip(nt_vals, avg_ttft_vals):
+            ax_nt_ttft_trends.text(nt, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='blue', fontweight='bold')
+        ax_nt_ttft_trends.set_xlabel('numTrains', fontsize=10)
+        ax_nt_ttft_trends.set_ylabel('Average TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
+        ax_nt_ttft_trends.tick_params(axis='y', labelcolor='blue')
+        
+        ax_nt_ttft_trends_right = ax_nt_ttft_trends.twinx()
+        ax_nt_ttft_trends_right.plot(nt_vals, p99_ttft_vals, marker='x', linestyle='--', color='darkblue', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_ttft:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(nt_vals) - min(nt_vals) if len(nt_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for nt, val in zip(nt_vals, p99_ttft_vals):
+            ax_nt_ttft_trends_right.text(nt + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkblue', fontweight='bold')
+        ax_nt_ttft_trends_right.set_ylabel('P99 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
+        ax_nt_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
+        
+        ax_nt_ttft_trends.set_ylim(0, max(avg_ttft_vals) * 1.4)
+        ax_nt_ttft_trends_right.set_ylim(0, max(p99_ttft_vals) * 1.4)
+        ax_nt_ttft_trends.set_title('TTFT Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
+        ax_nt_ttft_trends.grid(True, alpha=alpha)
+        ax_nt_ttft_trends.set_xticks(nt_vals)
+        
+        lines1, labels1 = ax_nt_ttft_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_nt_ttft_trends_right.get_legend_handles_labels()
+        ax_nt_ttft_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        
+        # TPOT Trends (Avg + P99 with dual y-axis)
+        ax_nt_tpot_trends.plot(nt_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_tpot:.1f}ms')
+        # Add value labels on each dot for average
+        for nt, val in zip(nt_vals, avg_tpot_vals):
+            ax_nt_tpot_trends.text(nt, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='green', fontweight='bold')
+        ax_nt_tpot_trends.set_xlabel('numTrains', fontsize=10)
+        ax_nt_tpot_trends.set_ylabel('Average TPOT (ms)', fontsize=10, fontweight='bold', color='green')
+        ax_nt_tpot_trends.tick_params(axis='y', labelcolor='green')
+        
+        ax_nt_tpot_trends_right = ax_nt_tpot_trends.twinx()
+        ax_nt_tpot_trends_right.plot(nt_vals, p99_tpot_vals, marker='x', linestyle='--', color='darkgreen', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_tpot:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(nt_vals) - min(nt_vals) if len(nt_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for nt, val in zip(nt_vals, p99_tpot_vals):
+            ax_nt_tpot_trends_right.text(nt + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkgreen', fontweight='bold')
+        ax_nt_tpot_trends_right.set_ylabel('P99 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
+        ax_nt_tpot_trends_right.tick_params(axis='y', labelcolor='darkgreen')
+        
+        ax_nt_tpot_trends.set_ylim(0, max(avg_tpot_vals) * 1.4)
+        ax_nt_tpot_trends_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
+        ax_nt_tpot_trends.set_title('TPOT Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
+        ax_nt_tpot_trends.grid(True, alpha=alpha)
+        ax_nt_tpot_trends.set_xticks(nt_vals)
+        
+        lines1, labels1 = ax_nt_tpot_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_nt_tpot_trends_right.get_legend_handles_labels()
+        ax_nt_tpot_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        
+        # E2E Trends (Avg + P99 with dual y-axis)
+        ax_nt_e2e_trends.plot(nt_vals, avg_e2e_vals, marker='o', linestyle='-', color='purple', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_e2e:.1f}ms')
+        # Add value labels on each dot for average
+        for nt, val in zip(nt_vals, avg_e2e_vals):
+            ax_nt_e2e_trends.text(nt, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='purple', fontweight='bold')
+        ax_nt_e2e_trends.set_xlabel('numTrains', fontsize=10)
+        ax_nt_e2e_trends.set_ylabel('Average E2E (ms)', fontsize=10, fontweight='bold', color='purple')
+        ax_nt_e2e_trends.tick_params(axis='y', labelcolor='purple')
+        
+        ax_nt_e2e_trends_right = ax_nt_e2e_trends.twinx()
+        ax_nt_e2e_trends_right.plot(nt_vals, p99_e2e_vals, marker='x', linestyle='--', color='indigo', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_e2e:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(nt_vals) - min(nt_vals) if len(nt_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for nt, val in zip(nt_vals, p99_e2e_vals):
+            ax_nt_e2e_trends_right.text(nt + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='indigo', fontweight='bold')
+        ax_nt_e2e_trends_right.set_ylabel('P99 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
+        ax_nt_e2e_trends_right.tick_params(axis='y', labelcolor='indigo')
+        
+        ax_nt_e2e_trends.set_ylim(0, max(avg_e2e_vals) * 1.4)
+        ax_nt_e2e_trends_right.set_ylim(0, max(p99_e2e_vals) * 1.4)
+        ax_nt_e2e_trends.set_title('E2E Latency Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
+        ax_nt_e2e_trends.grid(True, alpha=alpha)
+        ax_nt_e2e_trends.set_xticks(nt_vals)
+        
+        lines1, labels1 = ax_nt_e2e_trends.get_legend_handles_labels()
+        lines2, labels2 = ax_nt_e2e_trends_right.get_legend_handles_labels()
+        ax_nt_e2e_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+    
+    # TTFT CDF by numTrains
     for num_trains in unique_num_trains:
         subset = df[df['num_trains'] == num_trains]
         if len(subset) > 0:
             sorted_ttft = np.sort(subset['ttft'])
-            y = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
-            
-            # Calculate stats
+            cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
             avg_ttft = subset['ttft'].mean()
             p99_ttft = np.percentile(subset['ttft'], 99)
-            
-            # Plot CDF line with combined label
-            ax9.plot(sorted_ttft, y, color=num_trains_color_map[num_trains], 
-                    linewidth=linewidth, alpha=alpha, label=f'numTrains={num_trains}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms')
+            ax_nt_ttft_cdf.plot(sorted_ttft, cdf, label=f'numTrains={num_trains}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
+                                  color=num_trains_color_map[num_trains], linewidth=1.5, alpha=0.7)
     
-    ax9.set_xlabel('TTFT (ms)', fontsize=10)
-    ax9.set_ylabel('CDF', fontsize=10, fontweight='bold')
-    ax9.set_title('TTFT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
-    ax9.grid(True, alpha=alpha)
-    ax9.legend(fontsize=6)
+    ax_nt_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
+    ax_nt_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_nt_ttft_cdf.set_title('TTFT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
+    ax_nt_ttft_cdf.grid(True, alpha=0.3)
+    ax_nt_ttft_cdf.legend(fontsize=6, loc='lower right')
     
-    # TPOT CDF by numTrains (ax10)
+    # TPOT CDF by numTrains
     for num_trains in unique_num_trains:
         subset = df[df['num_trains'] == num_trains]
         if len(subset) > 0:
             sorted_tpot = np.sort(subset['avg_tpot'])
-            y = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
-            
-            # Calculate stats
+            cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
             avg_tpot = subset['avg_tpot'].mean()
             p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            
-            # Plot CDF line with combined label
-            ax10.plot(sorted_tpot, y, color=num_trains_color_map[num_trains], 
-                     linewidth=linewidth, alpha=alpha, label=f'numTrains={num_trains}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms')
+            ax_nt_tpot_cdf.plot(sorted_tpot, cdf, label=f'numTrains={num_trains}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
+                                  color=num_trains_color_map[num_trains], linewidth=1.5, alpha=0.7)
     
-    ax10.set_xlabel('TPOT (ms)', fontsize=10)
-    ax10.set_ylabel('CDF', fontsize=10, fontweight='bold')
-    ax10.set_title('TPOT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
-    ax10.grid(True, alpha=alpha)
-    ax10.legend(fontsize=6)
+    ax_nt_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
+    ax_nt_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_nt_tpot_cdf.set_title('TPOT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
+    ax_nt_tpot_cdf.grid(True, alpha=0.3)
+    ax_nt_tpot_cdf.legend(fontsize=6, loc='lower right')
     
-    return [ax4, ax5, ax_slo, ax6, ax7, ax8, ax9, ax10]
+    # E2E CDF by numTrains
+    for num_trains in unique_num_trains:
+        subset = df[df['num_trains'] == num_trains]
+        if len(subset) > 0:
+            sorted_e2e = np.sort(subset['e2e'])
+            cdf = np.arange(1, len(sorted_e2e) + 1) / len(sorted_e2e)
+            avg_e2e = subset['e2e'].mean()
+            p99_e2e = np.percentile(subset['e2e'], 99)
+            ax_nt_e2e_cdf.plot(sorted_e2e, cdf, label=f'numTrains={num_trains}, avg: {avg_e2e:.0f}ms, p99: {p99_e2e:.0f}ms',
+                                 color=num_trains_color_map[num_trains], linewidth=1.5, alpha=0.7)
+    
+    ax_nt_e2e_cdf.set_xlabel('E2E Latency (ms)', fontsize=10, fontweight='bold')
+    ax_nt_e2e_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_nt_e2e_cdf.set_title('E2E CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
+    ax_nt_e2e_cdf.grid(True, alpha=0.3)
+    ax_nt_e2e_cdf.legend(fontsize=6, loc='lower right')
+    
+    return ax_nt_ttft_trends, ax_nt_tpot_trends, ax_nt_e2e_trends, ax_nt_ttft_cdf, ax_nt_tpot_cdf, ax_nt_e2e_cdf
+
 
 def plot_iteration_analysis_subplots(fig, gs, df, start_row):
     """Plot iteration-based latency trends and CDFs for all routing policies"""
@@ -1264,12 +1414,20 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         
         # TTFT Trends (Avg + P99 with dual y-axis)
         ax_iter_ttft_trends.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
+        # Add value labels on each dot for average
+        for it, val in zip(iter_vals, avg_ttft_vals):
+            ax_iter_ttft_trends.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='blue', fontweight='bold')
         ax_iter_ttft_trends.set_xlabel('Iteration', fontsize=10)
         ax_iter_ttft_trends.set_ylabel('Average TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
         ax_iter_ttft_trends.tick_params(axis='y', labelcolor='blue')
         
         ax_iter_ttft_trends_right = ax_iter_ttft_trends.twinx()
         ax_iter_ttft_trends_right.plot(iter_vals, p99_ttft_vals, marker='x', linestyle='--', color='darkblue', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_ttft:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for it, val in zip(iter_vals, p99_ttft_vals):
+            ax_iter_ttft_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkblue', fontweight='bold')
         ax_iter_ttft_trends_right.set_ylabel('P99 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
         ax_iter_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
         
@@ -1284,12 +1442,20 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         
         # TPOT Trends (Avg + P99 with dual y-axis)
         ax_iter_tpot_trends.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_tpot:.1f}ms')
+        # Add value labels on each dot for average
+        for it, val in zip(iter_vals, avg_tpot_vals):
+            ax_iter_tpot_trends.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='green', fontweight='bold')
         ax_iter_tpot_trends.set_xlabel('Iteration', fontsize=10)
         ax_iter_tpot_trends.set_ylabel('Average TPOT (ms)', fontsize=10, fontweight='bold', color='green')
         ax_iter_tpot_trends.tick_params(axis='y', labelcolor='green')
         
         ax_iter_tpot_trends_right = ax_iter_tpot_trends.twinx()
         ax_iter_tpot_trends_right.plot(iter_vals, p99_tpot_vals, marker='x', linestyle='--', color='darkgreen', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_tpot:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for it, val in zip(iter_vals, p99_tpot_vals):
+            ax_iter_tpot_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkgreen', fontweight='bold')
         ax_iter_tpot_trends_right.set_ylabel('P99 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
         ax_iter_tpot_trends_right.tick_params(axis='y', labelcolor='darkgreen')
         
@@ -1304,12 +1470,20 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         
         # E2E Trends (Avg + P99 with dual y-axis)
         ax_iter_e2e_trends.plot(iter_vals, avg_e2e_vals, marker='o', linestyle='-', color='purple', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_e2e:.1f}ms')
+        # Add value labels on each dot for average
+        for it, val in zip(iter_vals, avg_e2e_vals):
+            ax_iter_e2e_trends.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='purple', fontweight='bold')
         ax_iter_e2e_trends.set_xlabel('Iteration', fontsize=10)
         ax_iter_e2e_trends.set_ylabel('Average E2E (ms)', fontsize=10, fontweight='bold', color='purple')
         ax_iter_e2e_trends.tick_params(axis='y', labelcolor='purple')
         
         ax_iter_e2e_trends_right = ax_iter_e2e_trends.twinx()
         ax_iter_e2e_trends_right.plot(iter_vals, p99_e2e_vals, marker='x', linestyle='--', color='indigo', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_e2e:.1f}ms')
+        # Add value labels on each dot for P99 (positioned slightly to the right)
+        x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
+        x_offset = x_range * 0.08  # Offset to the right
+        for it, val in zip(iter_vals, p99_e2e_vals):
+            ax_iter_e2e_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='indigo', fontweight='bold')
         ax_iter_e2e_trends_right.set_ylabel('P99 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
         ax_iter_e2e_trends_right.tick_params(axis='y', labelcolor='indigo')
         
@@ -1328,7 +1502,9 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         if len(subset) > 0:
             sorted_ttft = np.sort(subset['ttft'])
             cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
-            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}',
+            avg_ttft = subset['ttft'].mean()
+            p99_ttft = np.percentile(subset['ttft'], 99)
+            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
@@ -1343,7 +1519,9 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         if len(subset) > 0:
             sorted_tpot = np.sort(subset['avg_tpot'])
             cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
-            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}',
+            avg_tpot = subset['avg_tpot'].mean()
+            p99_tpot = np.percentile(subset['avg_tpot'], 99)
+            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
@@ -1358,7 +1536,9 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         if len(subset) > 0:
             sorted_e2e = np.sort(subset['e2e'])
             cdf = np.arange(1, len(sorted_e2e) + 1) / len(sorted_e2e)
-            ax_iter_e2e_cdf.plot(sorted_e2e, cdf, label=f'Iter {iteration}',
+            avg_e2e = subset['e2e'].mean()
+            p99_e2e = np.percentile(subset['e2e'], 99)
+            ax_iter_e2e_cdf.plot(sorted_e2e, cdf, label=f'Iter {iteration}, avg: {avg_e2e:.0f}ms, p99: {p99_e2e:.0f}ms',
                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_e2e_cdf.set_xlabel('E2E Latency (ms)', fontsize=10, fontweight='bold')
@@ -1370,7 +1550,7 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
     return ax_iter_ttft_trends, ax_iter_tpot_trends, ax_iter_e2e_trends, ax_iter_ttft_cdf, ax_iter_tpot_cdf, ax_iter_e2e_cdf
 
 
-def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy):
+def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, ax1, routing_policy):
     """Plot prediction analysis subplots: actual vs predicted latency comparison and time series"""
     # Determine the target latency metric based on routing policy
     if 'latency_predictor_ttft' in routing_policy:
@@ -1399,92 +1579,15 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         title_scatter = 'Actual vs Predicted E2E Latency Comparison'
         title_timeseries = 'E2E Latency Time Series with Predictions'
 
-    # Define the prediction analysis plots (rows 20-23)
-    # Row 20: Avg and P99 Latency Trends by numTrains side by side
-    gs_row20 = gs[20, :].subgridspec(1, 2, wspace=0.3)
-    ax11_avg = fig.add_subplot(gs_row20[0])  # Avg Latency Trends by numTrains (left half)
-    ax11_p99 = fig.add_subplot(gs_row20[1])  # P99 Latency Trends by numTrains (right half)
+    # Define the prediction analysis plots (rows 22-24, shifted up by 1 after removing reward plot)
+    # Row 22: Prediction Accuracy by numTrains (full width)
+    ax_pred_bar = fig.add_subplot(gs[22, :])
     
-    # Row 21: Prediction Accuracy by numTrains (full width)
-    ax_pred_bar = fig.add_subplot(gs[21, :])
+    # Row 23: Centered scatter plot (bigger, square)
+    ax_pred_scatter = fig.add_subplot(gs[23, :])  # Actual vs Predicted Scatter Plot (full width, will use aspect ratio)
     
-    # Row 22: Centered scatter plot (bigger, square)
-    ax_pred_scatter = fig.add_subplot(gs[22, :])  # Actual vs Predicted Scatter Plot (full width, will use aspect ratio)
-    
-    # Row 23: Time series
-    ax_pred_timeseries = fig.add_subplot(gs[23, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
-
-    # SUBPLOT: Latency Trends by numTrains
-    # Get unique num_trains values
-    unique_num_trains = sorted(df['num_trains'].unique())
-    
-    # Trend plot: avg TTFT, p99 TTFT, avg TPOT, p99 TPOT vs numTrains
-    num_trains_stats = []
-    for num_trains in unique_num_trains:
-        subset = df[df['num_trains'] == num_trains]
-        if len(subset) > 0:
-            avg_ttft = subset['ttft'].mean()
-            p99_ttft = np.percentile(subset['ttft'], 99)
-            avg_tpot = subset['avg_tpot'].mean()
-            p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            num_trains_stats.append((num_trains, avg_ttft, p99_ttft, avg_tpot, p99_tpot))
-    
-    if num_trains_stats:
-        num_trains_vals, avg_ttft_vals, p99_ttft_vals, avg_tpot_vals, p99_tpot_vals = zip(*num_trains_stats)
-        
-        # Compute overall statistics for legend
-        overall_avg_ttft = df['ttft'].mean()
-        overall_p99_ttft = np.percentile(df['ttft'], 99)
-        overall_avg_tpot = df['avg_tpot'].mean()
-        overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
-        
-        # SUBPLOT 1: Average Latency Trends (ax11_avg)
-        ax11_avg.plot(num_trains_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg TTFT: {overall_avg_ttft:.1f}ms')
-        ax11_avg.set_xlabel('numTrains', fontsize=10)
-        ax11_avg.set_ylabel('TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
-        ax11_avg.tick_params(axis='y', labelcolor='blue')
-        
-        # Right axis for TPOT
-        ax11_avg_right = ax11_avg.twinx()
-        ax11_avg_right.plot(num_trains_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg TPOT: {overall_avg_tpot:.1f}ms')
-        ax11_avg_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
-        ax11_avg_right.tick_params(axis='y', labelcolor='green')
-        
-        ax11_avg.set_ylim(0, max(avg_ttft_vals) * 1.4)
-        ax11_avg_right.set_ylim(0, max(avg_tpot_vals) * 1.4)
-        
-        ax11_avg.set_title('Average Latency Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
-        ax11_avg.grid(True, alpha=alpha)
-        ax11_avg.set_xticks(num_trains_vals)
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax11_avg.get_legend_handles_labels()
-        lines2, labels2 = ax11_avg_right.get_legend_handles_labels()
-        ax11_avg.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
-        
-        # SUBPLOT 2: P99 Latency Trends (ax11_p99)
-        ax11_p99.plot(num_trains_vals, p99_ttft_vals, marker='x', linestyle='--', color='blue', linewidth=linewidth, alpha=alpha, label=f'P99 TTFT: {overall_p99_ttft:.1f}ms')
-        ax11_p99.set_xlabel('numTrains', fontsize=10)
-        ax11_p99.set_ylabel('TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
-        ax11_p99.tick_params(axis='y', labelcolor='blue')
-        
-        # Right axis for TPOT
-        ax11_p99_right = ax11_p99.twinx()
-        ax11_p99_right.plot(num_trains_vals, p99_tpot_vals, marker='x', linestyle='--', color='green', linewidth=linewidth, alpha=alpha, label=f'P99 TPOT: {overall_p99_tpot:.1f}ms')
-        ax11_p99_right.set_ylabel('TPOT (ms)', fontsize=10, fontweight='bold', color='green')
-        ax11_p99_right.tick_params(axis='y', labelcolor='green')
-        
-        ax11_p99.set_ylim(0, max(p99_ttft_vals) * 1.4)
-        ax11_p99_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
-        
-        ax11_p99.set_title('P99 Latency Trends by numTrains', fontsize=12, fontweight='bold', pad=10)
-        ax11_p99.grid(True, alpha=alpha)
-        ax11_p99.set_xticks(num_trains_vals)
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax11_p99.get_legend_handles_labels()
-        lines2, labels2 = ax11_p99_right.get_legend_handles_labels()
-        ax11_p99.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+    # Row 24: Time series
+    ax_pred_timeseries = fig.add_subplot(gs[24, :], sharex=ax1)  # Prediction Time Series (share x-axis with other time series)
 
     # SUBPLOT: Prediction Accuracy Bar Chart by numTrains (ax_pred_bar)
     # Filter out entries where predicted latency is None or 0 (no prediction made)
@@ -1655,7 +1758,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     actual_avg_per_sec = df.groupby('time_bin')[actual_col].mean().reset_index()
     ax_pred_timeseries.plot(actual_avg_per_sec['time_bin'], actual_avg_per_sec[actual_col], 'tab:orange', '-', linewidth=linewidth+0.5, alpha=1, label=f'Avg {metric_name} (per sec)', zorder=10)
 
-    add_transition_lines(ax_pred_timeseries, train_transitions, flush_transitions)
+    add_transition_lines(ax_pred_timeseries, train_transitions, flush_transitions, iteration_transitions)
     ax_pred_timeseries.set_xlabel('Relative Time (seconds)', fontsize=14, fontweight='bold')
     ax_pred_timeseries.set_ylabel(ylabel, fontsize=14, fontweight='bold')
     ax_pred_timeseries.set_title(title_timeseries, fontsize=16, fontweight='bold', pad=10)
@@ -1669,11 +1772,11 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     ax_pred_timeseries.legend(handles=legend_elements, fontsize=10, loc='upper left')
 
     # ========== PREDICTION ACCURACY BY ITERATIONS ==========
-    # Row 27: Prediction Accuracy by Iterations (full width)
-    ax_iter_pred_bar = fig.add_subplot(gs[27, :])
+    # Row 28: Prediction Accuracy by Iterations (full width, shifted up by 1 after removing reward plot)
+    ax_iter_pred_bar = fig.add_subplot(gs[28, :])
     
-    # Row 28: Centered scatter plot (bigger, square)
-    ax_iter_pred_scatter = fig.add_subplot(gs[28, :])  # Actual vs Predicted Scatter Plot by Iterations (full width)
+    # Row 29: Centered scatter plot (bigger, square)
+    ax_iter_pred_scatter = fig.add_subplot(gs[29, :])  # Actual vs Predicted Scatter Plot by Iterations (full width)
     
     # Get unique iterations
     unique_iterations = sorted(df['iteration'].unique())
@@ -1688,6 +1791,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         mae_values_iter = []
         mape_values_iter = []
         count_values_iter = []
+        iterations_with_data = []  # Track which iterations have data
         
         for iteration in unique_iterations:
             subset = valid_predictions[valid_predictions['iteration'] == iteration]
@@ -1698,10 +1802,11 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
                 mae_values_iter.append(mae)
                 mape_values_iter.append(mape)
                 count_values_iter.append(len(subset))
+                iterations_with_data.append(iteration)  # Track this iteration
         
         if mae_values_iter:
-            # Create bar chart with grouped bars for MAE and MAPE
-            x = np.arange(len(unique_iterations))
+            # Create bar chart with grouped bars for MAE and MAPE - only for iterations with data
+            x = np.arange(len(iterations_with_data))
             width = 0.35
             
             # Create twin axis for MAPE
@@ -1709,12 +1814,12 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
             
             # Plot MAE bars (left axis)
             bars1 = ax_iter_pred_bar.bar(x - width/2, mae_values_iter, width, 
-                                        color=[iteration_colors[i] for i in range(len(unique_iterations))],
+                                        color=[iteration_color_map[it] for it in iterations_with_data],
                                         alpha=0.8, edgecolor=edgecolor, label='MAE (ms)')
             
             # Plot MAPE bars (right axis)
             bars2 = ax_iter_pred_bar_right.bar(x + width/2, mape_values_iter, width,
-                                             color=[iteration_colors[i] for i in range(len(unique_iterations))],
+                                             color=[iteration_color_map[it] for it in iterations_with_data],
                                              alpha=0.5, edgecolor=edgecolor, hatch='//', label='MAPE (%)')
             
             # Add value labels on bars
@@ -1737,7 +1842,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
             
             # Set x-axis
             ax_iter_pred_bar.set_xticks(x)
-            ax_iter_pred_bar.set_xticklabels([f'{it}' for it in unique_iterations], fontsize=11)
+            ax_iter_pred_bar.set_xticklabels([f'{it}' for it in iterations_with_data], fontsize=11)
             
             # Set y-axis colors
             ax_iter_pred_bar.tick_params(axis='y', labelcolor='navy', labelsize=11)
@@ -1798,7 +1903,7 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         ax_iter_pred_scatter.tick_params(axis='x', rotation=45, labelsize=9)
         ax_iter_pred_scatter.set_aspect('equal', adjustable='box')
 
-    return ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter
+    return ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter
 
 
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy):
@@ -1806,6 +1911,20 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     df = pd.DataFrame(data)
     if len(df) == 0:
         print("Error, No valid data to plot.")
+        exit()
+    
+    # Filter out rows with negative iteration or numTrains values
+    original_count = len(df)
+    if 'iteration' in df.columns:
+        df = df[df['iteration'] >= 0]
+    if 'num_trains' in df.columns:
+        df = df[df['num_trains'] >= 0]
+    filtered_count = original_count - len(df)
+    if filtered_count > 0:
+        print(f"Filtered out {filtered_count} rows with negative iteration or numTrains values ({len(df)} rows remaining)")
+    
+    if len(df) == 0:
+        print("Error, No valid data remaining after filtering negative values.")
         exit()
     
     # Calculate reward columns first before cluster statistics
@@ -1824,8 +1943,12 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     
     # Now calculate cluster statistics (which need total_reward column)
     cluster_stats = calculate_cluster_wise_metrics(df)
-    train_transitions = get_numtrains_transitions(data)
-    flush_transitions = get_numflush_transitions(data)
+    
+    # Convert filtered df back to list format for transition calculations (to exclude negative values)
+    filtered_data = df.to_dict('records')
+    train_transitions = get_numtrains_transitions(filtered_data)
+    flush_transitions = get_numflush_transitions(filtered_data)
+    iteration_transitions = get_iteration_transitions(filtered_data)
     
     slo_stats = calculate_slo_satisfaction(df, slo_ttft, slo_tpot)
 
@@ -1843,13 +1966,14 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
 
     # Determine number of rows based on whether prediction plots are needed
     if 'latency_predictor' in routing_policy:
-        n_rows = 29  # Includes iteration analysis + prediction plots
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Row 22 & 28 (scatter plots) are 3.0
-        fig_height = 73
+        n_rows = 30  # Includes numTrains analysis + iteration analysis + prediction plots (removed reward plot, so 31->30)
+        # Rows: 0-2 (request rate), 3-5 (TTFT/TPOT/E2E), 6-15 (pod metrics), 16-17 (analysis/CDF), 19-21 (numTrains), 22-24 (pred by numTrains), 25-27 (iterations), 28-29 (pred by iterations)
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Rows 23 & 29 (scatter plots) are 3.0
+        fig_height = 75
     else:
-        n_rows = 24  # Includes iteration analysis (no prediction plots)
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 21-23
-        fig_height = 60
+        n_rows = 23  # Includes iteration analysis only (no numTrains or prediction plots, removed reward plot, so 24->23)
+        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 20-22
+        fig_height = 57
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
     fig = plt.figure(figsize=(15, fig_height))
@@ -1857,32 +1981,36 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     
     # Plot all subplots
     ax_total_rate, ax_token_rate, ax_pod_rate = plot_request_rate_subplots(
-        fig, gs, plot_data, train_transitions, flush_transitions, unique_pods, pod_colors)
+        fig, gs, plot_data, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors)
     
     main_metrics_axes = plot_main_metrics_subplots(
-        fig, gs, df, pod_data, cluster_stats, train_transitions, flush_transitions, unique_pods, pod_colors, plot_data)
-    ax1, ax2, ax3, ax_reward = main_metrics_axes[:4]  # Extract the first 4 axes for backward compatibility
+        fig, gs, df, pod_data, cluster_stats, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, plot_data)
+    ax1, ax2, ax3 = main_metrics_axes[:3]  # Extract the first 3 axes for backward compatibility
     
     analysis_axes = plot_analysis_subplots(
         fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors)
 
-    # Plot iteration analysis for all routing policies
+    # Plot numTrains analysis and prediction analysis only for latency_predictor policies
     if 'latency_predictor' in routing_policy:
-        iteration_start_row = 24  # Rows 24-26 for latency_predictor policies
+        # numTrains analysis: rows 19-21 (shifted up by 1 after removing reward plot)
+        numtrains_axes = plot_numtrains_analysis_subplots(fig, gs, df, start_row=19)
+        
+        # Iteration analysis: rows 25-27
+        iteration_axes = plot_iteration_analysis_subplots(fig, gs, df, start_row=25)
+        
+        # Prediction analysis: rows 22-24 (numTrains) and rows 28-29 (iterations)
+        prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, ax1, routing_policy)
+        ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
     else:
-        iteration_start_row = 21  # Rows 21-23 for non-predictor policies
-    
-    iteration_axes = plot_iteration_analysis_subplots(fig, gs, df, iteration_start_row)
-    
-    # Plot prediction analysis only for latency_predictor policies
-    if 'latency_predictor' in routing_policy:
-        prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, unique_pods, pod_colors, ax1, routing_policy)
-        ax11_avg, ax11_p99, ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
-    else:
+        # Only iteration analysis for non-predictor policies: rows 20-22
+        numtrains_axes = None
+        iteration_axes = plot_iteration_analysis_subplots(fig, gs, df, start_row=20)
         prediction_axes = None
 
     # Set font sizes for tick labels
     all_axes = [ax_total_rate, ax_token_rate, ax_pod_rate] + list(main_metrics_axes) + analysis_axes + list(iteration_axes)
+    if numtrains_axes is not None:
+        all_axes += list(numtrains_axes)
     if prediction_axes is not None:
         all_axes += list(prediction_axes)
     for ax in all_axes:
@@ -1913,12 +2041,10 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         ax1.set_ylim(0, 2000)
         ax2.set_ylim(0, 200)
         ax3.set_ylim(0, 10000)
-        ax_reward.set_ylim(0, 2.2)
     else:
         ax1.set_ylim(0, df['ttft'].max() * 1.1)
         ax2.set_ylim(0, df['avg_tpot'].max() * 1.1)
         ax3.set_ylim(0, df['e2e'].max() * 1.1)
-        ax_reward.set_ylim(df['total_reward'].min() - 1.1, df['total_reward'].max() * 1.5)
     
     # Add reward statistics to the summary print
     print(f"TTFT: {slo_stats['ttft_satisfied']}/{slo_stats['total_requests']} ({slo_stats['ttft_satisfaction_rate']:.1f}%)")
@@ -1950,6 +2076,7 @@ parser.add_argument('log_file', type=str, help='Path to the log file')
 parser.add_argument('--setylim', type=int, default=0, help='Set y-axis limits')
 parser.add_argument('--slo_ttft', type=int, default=1000, help='SLO TTFT')
 parser.add_argument('--slo_tpot', type=int, default=50, help='SLO TPOT')
+parser.add_argument('--skip-first-seconds', type=float, default=30, help='Skip/truncate the first X seconds of data (default: 30s)')
 
 
 if __name__ == "__main__":
@@ -1960,6 +2087,7 @@ if __name__ == "__main__":
     setylim = args.setylim
     slo_ttft = args.slo_ttft
     slo_tpot = args.slo_tpot
+    skip_first_seconds = args.skip_first_seconds
     routing_policy = log_file.split('/')[-2].split('-')[0]
     print(f"routing_policy: {routing_policy}")
     data = parse_log_file(log_file)
@@ -1969,6 +2097,17 @@ if __name__ == "__main__":
         assert False
     
     print(f"Found {len(data)} log entries with latency metrics")
+    
+    # Filter out first X seconds if specified
+    if skip_first_seconds > 0:
+        original_count = len(data)
+        data = [entry for entry in data if entry.get('relative_time', 0) >= skip_first_seconds]
+        filtered_count = original_count - len(data)
+        print(f"Skipped first {skip_first_seconds} seconds: removed {filtered_count} entries, {len(data)} entries remaining")
+        
+        if not data:
+            print(f"Error: No data remaining after skipping first {skip_first_seconds} seconds.")
+            assert False
     
     # Create and save the enhanced plot
     fig = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy)

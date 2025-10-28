@@ -50,6 +50,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	headerCache := make(map[string]string)
 	headerCache["subAlgorithm"] = getSubAlgorithm(h.RequestHeaders.Headers.Headers)
 	headerCache["iteration"] = getIteration(h.RequestHeaders.Headers.Headers)
+	headerCache["targetGPU"] = getTargetGPU(h.RequestHeaders.Headers.Headers)
 
 	// Store headers in cache for this requestID (needed because headers aren't accessible in HandleRequestBody)
 	s.requestHeaders.Store(requestID, headerCache)

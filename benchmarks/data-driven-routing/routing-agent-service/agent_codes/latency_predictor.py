@@ -150,19 +150,61 @@ class LatencyPredictionNetwork(nn.Module):
         
         return predicted_latencies
     
-    def predict_and_select_pod(self, pod_features, kv_hit_ratios, request_features):
+    def predict_and_select_pod(self, pod_features, kv_hit_ratios, request_features, 
+                               exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1):
         """
         Predict latencies and select the pod with lowest predicted latency.
         
+        Args:
+            pod_features: Pod feature tensors
+            kv_hit_ratios: KV hit ratio tensors
+            request_features: Request feature tensors
+            exploration_rate: Probability of random exploration (epsilon-greedy)
+            smoothing: If True, randomly select from pods within smoothing_threshold of min latency
+            smoothing_threshold: Percentage threshold for smoothing (default 0.1 = 10%)
+        
         Returns:
-            dict with selected_pod_index, predicted_latencies, confidence
+            dict with selected_pod_index, predicted_latencies, confidence, explore_mask
         """
         with torch.no_grad():
             predicted_latencies = self.forward(pod_features, kv_hit_ratios, request_features)
+            num_pods = predicted_latencies.shape[1]
+            batch_size = predicted_latencies.shape[0]
             
-            # Select pod with minimum predicted latency
-            selected_pod_indices = torch.argmin(predicted_latencies, dim=1)
-            min_latencies = torch.min(predicted_latencies, dim=1)[0]
+            # Epsilon-greedy exploration
+            explore_mask = 0
+            smoothing_mask = 0
+            
+            if exploration_rate > 0 and torch.rand(1).item() < exploration_rate:
+                # Exploration: random pod selection
+                selected_pod_indices = torch.randint(0, num_pods, (batch_size,), device=predicted_latencies.device)
+                explore_mask = 1
+            else:
+                # Exploitation with optional smoothing
+                if smoothing and batch_size == 1:  # Smoothing only makes sense for single requests
+                    # Find minimum predicted latency
+                    min_latency_value = torch.min(predicted_latencies[0])
+                    
+                    # Calculate threshold: pods within smoothing_threshold (e.g., 10%) of min latency
+                    threshold = min_latency_value * (1.0 + smoothing_threshold)
+                    
+                    # Find all pods within threshold
+                    candidate_mask = predicted_latencies[0] <= threshold
+                    candidate_indices = torch.where(candidate_mask)[0]
+                    
+                    if len(candidate_indices) > 1:
+                        # Multiple pods within threshold - randomly select one
+                        random_idx = torch.randint(0, len(candidate_indices), (1,), device=predicted_latencies.device)
+                        selected_pod_indices = candidate_indices[random_idx]
+                        smoothing_mask = 1
+                    else:
+                        # Only one pod in range (or threshold too tight) - use minimum
+                        selected_pod_indices = torch.argmin(predicted_latencies, dim=1)
+                else:
+                    # Standard exploitation: select pod with minimum predicted latency
+                    selected_pod_indices = torch.argmin(predicted_latencies, dim=1)
+            
+            min_latencies = predicted_latencies[torch.arange(batch_size), selected_pod_indices]
             
             # Calculate confidence as inverse of minimum latency (normalized)
             # Higher confidence for lower predicted latency
@@ -173,7 +215,9 @@ class LatencyPredictionNetwork(nn.Module):
                 'selected_pod_index': selected_pod_indices,
                 'predicted_latencies': predicted_latencies,
                 'min_latencies': min_latencies,
-                'confidence': confidence
+                'confidence': confidence,
+                'explore_mask': explore_mask,
+                'smoothing_mask': smoothing_mask
             }
 
 
@@ -245,10 +289,10 @@ class LatencyPredictor:
         self.final_model_dir = final_model_dir
         
         # Model configuration
-        self.latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
-        self.hidden_dim = HYPERPARAMETERS.get('hidden_dim', 64)
-        self.learning_rate = HYPERPARAMETERS.get('offline_learning_rate', 0.001)
-        self.weight_initialization = HYPERPARAMETERS.get('weight_initialization', 'xavier')
+        self.latency_metric = HYPERPARAMETERS['LATENCY_METRIC']
+        self.hidden_dim = HYPERPARAMETERS['hidden_dim']
+        self.learning_rate = HYPERPARAMETERS['OFFLINE_LEARNING_RATE']
+        self.weight_initialization = HYPERPARAMETERS['weight_initialization']
         
         # Create network
         self.network = LatencyPredictionNetwork(
@@ -263,6 +307,10 @@ class LatencyPredictor:
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.learning_rate)
         self.criterion = nn.MSELoss()
         
+        # Learning rate scheduler
+        self.lr_scheduler_type = HYPERPARAMETERS.get('lr_scheduler_type', 'constant')
+        self.scheduler = self._create_lr_scheduler()
+        
         # Training tracking - Enhanced for comprehensive plotting
         self.current_epoch = 0
         self.training_losses = []
@@ -271,6 +319,7 @@ class LatencyPredictor:
         self.validation_r2 = []   # R-squared scores
         self.routing_accuracies = []  # How often we pick the actual best pod
         self.epoch_times = []  # Training time per epoch
+        self.learning_rates = []  # Track learning rate changes
         
         # Prediction tracking for analysis
         self.latest_predictions = None
@@ -280,11 +329,49 @@ class LatencyPredictor:
         
         logger.info(f"Created LatencyPredictor for {self.latency_metric} prediction")
         logger.info(f"Network parameters: {sum(p.numel() for p in self.network.parameters())}")
+        logger.info(f"Learning rate scheduler: {self.lr_scheduler_type}")
+    
+    def _create_lr_scheduler(self):
+        """Create learning rate scheduler based on configuration."""
+        if self.lr_scheduler_type == 'constant':
+            # No scheduler - constant learning rate
+            logger.info("Using constant learning rate (no scheduler)")
+            return None
+        
+        elif self.lr_scheduler_type == 'linear':
+            # Linear decay to 0 over training epochs
+            num_epochs = self.HYPERPARAMETERS.get('training_epochs', 100)
+            lambda_lr = lambda epoch: max(0.0, 1.0 - epoch / num_epochs)
+            scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda_lr)
+            logger.info(f"Using linear learning rate decay over {num_epochs} epochs")
+            return scheduler
+        
+        elif self.lr_scheduler_type == 'exponential':
+            # Exponential decay with gamma parameter
+            gamma = self.HYPERPARAMETERS.get('lr_scheduler_gamma', 0.95)
+            scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
+            logger.info(f"Using exponential learning rate decay with gamma={gamma}")
+            return scheduler
+        
+        else:
+            logger.warning(f"Unknown lr_scheduler_type: {self.lr_scheduler_type}, using constant LR")
+            return None
+    
+    def step_scheduler(self):
+        """Step the learning rate scheduler if it exists."""
+        if self.scheduler is not None:
+            self.scheduler.step()
+        
+        # Track current learning rate
+        current_lr = self.optimizer.param_groups[0]['lr']
+        self.learning_rates.append(current_lr)
+        return current_lr
     
     def train_epoch(self, dataloader):
         """Train for one epoch using MSE loss."""
         self.network.train()
         epoch_losses = []
+        pod_selection_counts = {}  # Track which pods are selected
         
         for batch_idx, batch in enumerate(dataloader):
             # Move to device
@@ -296,6 +383,16 @@ class LatencyPredictor:
             
             # Forward pass: predict latencies for all pods
             predicted_latencies = self.network(pod_features, kv_hit_ratios, request_features)
+            
+            # # DEBUG: Log prediction diversity in first batch
+            # if batch_idx == 0 and self.current_epoch % 5 == 0:  # Every 5 epochs instead of 10
+            #     first_sample_preds = predicted_latencies[0].detach().cpu().numpy()
+            #     logger.info(f"DEBUG Epoch {self.current_epoch} first sample predictions for all pods: {first_sample_preds}")
+            #     logger.info(f"DEBUG Prediction std dev: {np.std(first_sample_preds):.4f}, min: {np.min(first_sample_preds):.4f}, max: {np.max(first_sample_preds):.4f}")
+                
+            #     # Log which pod would be selected (argmin)
+            #     selected_pod_in_training = np.argmin(first_sample_preds)
+            #     logger.info(f"DEBUG Epoch {self.current_epoch} would select pod_{selected_pod_in_training} with prediction {first_sample_preds[selected_pod_in_training]:.4f}")
             
             # Extract predictions for the selected pods only
             batch_size = predicted_latencies.shape[0]
@@ -311,12 +408,23 @@ class LatencyPredictor:
             
             epoch_losses.append(loss.item())
             
+            # # Track which pods were selected in this batch
+            # for pod_idx in selected_pod_indices.cpu().numpy():
+            #     pod_selection_counts[int(pod_idx)] = pod_selection_counts.get(int(pod_idx), 0) + 1
+            
             if batch_idx % 10 == 0:
                 logger.debug(f"Batch {batch_idx}, Loss: {loss.item():.4f}")
         
         avg_loss = np.mean(epoch_losses)
         self.training_losses.append(avg_loss)
         logger.info(f"Epoch {self.current_epoch}, Avg Loss: {avg_loss:.4f}")
+        
+        # # Log pod selection distribution every 5 epochs
+        # if self.current_epoch % 5 == 0:
+        #     logger.info(f"DEBUG Epoch {self.current_epoch} pod selection counts: {sorted(pod_selection_counts.items())}")
+        #     total_selections = sum(pod_selection_counts.values())
+        #     pod_percentages = {k: f"{v/total_selections*100:.1f}%" for k, v in pod_selection_counts.items()}
+        #     logger.info(f"DEBUG Epoch {self.current_epoch} pod selection percentages: {sorted(pod_percentages.items())}")
         
         return avg_loss
     
@@ -399,10 +507,16 @@ class LatencyPredictor:
             'total_samples': total_samples
         }
     
-    def predict(self, pod_features, kv_hit_ratios, request_features):
-        """Make prediction for inference."""
+    def predict(self, pod_features, kv_hit_ratios, request_features, 
+                exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1):
+        """Make prediction for inference with optional exploration and smoothing."""
         self.network.eval()
-        result = self.network.predict_and_select_pod(pod_features, kv_hit_ratios, request_features)
+        result = self.network.predict_and_select_pod(
+            pod_features, kv_hit_ratios, request_features, 
+            exploration_rate=exploration_rate,
+            smoothing=smoothing,
+            smoothing_threshold=smoothing_threshold
+        )
         return result
     
     def save(self, final_model_dir):
@@ -411,14 +525,22 @@ class LatencyPredictor:
         
         # Save model state
         model_path = os.path.join(final_model_dir, 'latency_predictor.pth')
-        torch.save({
+        save_dict = {
             'model_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epoch': self.current_epoch,
             'training_losses': self.training_losses,
             'latency_metric': self.latency_metric,
-            'state_dims': self.state_dims
-        }, model_path)
+            'state_dims': self.state_dims,
+            'lr_scheduler_type': self.lr_scheduler_type,
+            'learning_rates': self.learning_rates
+        }
+        
+        # Save scheduler state if it exists
+        if self.scheduler is not None:
+            save_dict['scheduler_state_dict'] = self.scheduler.state_dict()
+        
+        torch.save(save_dict, model_path)
         
         # Save hyperparameters
         config_path = os.path.join(final_model_dir, 'newly_saved_model_config.json')
@@ -450,21 +572,20 @@ class LatencyPredictor:
         if not os.path.exists(model_path):
             logger.error(f"No model file found at {model_path}")
             return False
-        
-        # Load model - the file is trusted, so we can use weights_only=False
-        # The numpy._core issue is unavoidable with this model file
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         
-        # Only load model weights for inference
         self.network.load_state_dict(checkpoint['model_state_dict'])
-        
-        # For inference, we don't need optimizer state, epoch, or training losses
-        # self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])  # Skip this
+
         self.current_epoch = 0  # Not needed for inference
         self.training_losses = []  # Not needed for inference
         
-        logger.info(f"Loaded LatencyPredictor model from {final_model_dir}")
-        logger.info(f"Model trained for {self.current_epoch} epochs")
+        # Load scheduler state if it exists (for resuming training)
+        if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            logger.info(f"Loaded scheduler state")
+        
+        logger.info(f"Successfully loaded (load_model) LatencyPredictor model from {final_model_dir}/latency_predictor.pth")
+        logger.info(f"LR scheduler type: {self.lr_scheduler_type}")
         return True
 
 
@@ -506,7 +627,7 @@ def load_encoded_data(encoded_data_dir):
     return combined_data
 
 
-def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
+def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, num_train):
     """
     Main training function for latency predictor.
     
@@ -534,7 +655,7 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
     logger.info(f"State dimensions: {state_dims}")
     
     # Create model
-    latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
+    latency_metric = HYPERPARAMETERS['LATENCY_METRIC']
     predictor = LatencyPredictor(state_dims, HYPERPARAMETERS, final_model_dir)
     
     # Create dataset and dataloader
@@ -545,14 +666,15 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     
-    batch_size = HYPERPARAMETERS.get('batch_size', 64)
+    batch_size = HYPERPARAMETERS['batch_size']
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     
     logger.info(f"Train samples: {train_size}, Validation samples: {val_size}")
     
     # Training loop
-    num_epochs = HYPERPARAMETERS.get('training_epochs', 5)
+    num_epochs = HYPERPARAMETERS['training_epochs']
+    print(f"num_epochs: {num_epochs}")
     best_val_loss = float('inf')
     
     for epoch in range(num_epochs):
@@ -566,6 +688,10 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
         
         # Validate
         val_metrics = predictor.evaluate(val_loader)
+        
+        # Step learning rate scheduler
+        current_lr = predictor.step_scheduler()
+        logger.info(f"Learning rate: {current_lr:.6f}")
         
         # Track epoch time
         epoch_time = time.time() - epoch_start_time
@@ -583,7 +709,7 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
     
     # Generate comprehensive training plots
     try:
-        plot_path = plot_latency_predictor_metrics(predictor, train_dataset, val_dataset, final_model_dir)
+        plot_path = plot_latency_predictor_metrics(predictor, train_dataset, val_dataset, final_model_dir, num_train)
         logger.info(f"Generated training plots: {plot_path}")
     except Exception as e:
         logger.error(f"Error generating plots: {e}")
@@ -593,7 +719,8 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS):
     return plot_path
 
 
-def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids):
+def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids, 
+                                        exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1):
     """
     Inference function using a cached latency predictor model.
 
@@ -602,6 +729,9 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         tensor_data: Input tensor data
         request_id: Request identifier
         sorted_all_pod_ids: List of pod IDs in same order as predictions
+        exploration_rate: Probability of random exploration (epsilon-greedy, 0.0 = pure exploitation)
+        smoothing: If True, randomly select from pods within smoothing_threshold of min latency
+        smoothing_threshold: Percentage threshold for smoothing (default 0.1 = 10%)
 
     Returns:
         Dict with prediction results. predicted_latencies will be a dict {pod_id: latency}
@@ -613,6 +743,19 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
     pod_features = tensor_data['pod_features_with_staleness'].to(device)
     kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
     request_features = tensor_data['request_features'].to(device)
+    
+    # # DEBUG: Log all pod features (sample every 10th request to reduce verbosity)
+    # if len(pod_features.shape) == 3 and int(request_id) % 10 == 0:
+    #     logger.info(f"DEBUG requestID {request_id}: Logging all pod features:")
+    #     for pod_id in range(pod_features.shape[1]):
+    #         pod_features_pod_id = pod_features[0, pod_id, :].cpu().numpy()
+    #         pod_kv_ratio = kv_hit_ratios[0, pod_id, :].cpu().numpy()
+    #         logger.info(f", pod_{pod_id:04d} features={pod_features_pod_id}, kv_ratio={pod_kv_ratio}")
+            
+    #         # VERIFICATION: Check for outlier features (normalized values should be roughly -3 to +3)
+    #         outlier_indices = np.where(np.abs(pod_features_pod_id) > 5)[0]
+    #         if len(outlier_indices) > 0:
+    #             logger.warning(f"VERIFICATION: requestID {request_id} pod_{pod_id:04d} has OUTLIER features at indices {outlier_indices.tolist()}: {pod_features_pod_id[outlier_indices]}")
 
     # Ensure batch format
     if len(pod_features.shape) == 2:
@@ -623,10 +766,48 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         request_features = request_features.unsqueeze(0)
     overhead_summary['prepare_tensors'] = time.time() - prepare_start
 
-    # Make prediction
+    # Make prediction with exploration and smoothing
     predict_start = time.time()
-    result = predictor.predict(pod_features, kv_hit_ratios, request_features)
+    result = predictor.predict(
+        pod_features, kv_hit_ratios, request_features, 
+        exploration_rate=exploration_rate,
+        smoothing=smoothing,
+        smoothing_threshold=smoothing_threshold
+    )
     overhead_summary['model_inference'] = time.time() - predict_start
+    
+    # Log smoothing details if it was applied
+    if result.get('smoothing_mask', 0) == 1 and smoothing:
+        predicted_latencies_tensor = result['predicted_latencies'][0]
+        min_latency_value = torch.min(predicted_latencies_tensor)
+        threshold = min_latency_value * (1.0 + smoothing_threshold)
+        candidate_mask = predicted_latencies_tensor <= threshold
+        candidate_indices = torch.where(candidate_mask)[0].cpu().numpy()
+        candidate_latencies = [float(predicted_latencies_tensor[i].item()) for i in candidate_indices]
+        selected_idx = result['selected_pod_index'][0].item()
+        
+        logger.info(f"SMOOTHING applied for requestID {request_id}: "
+                   f"min_latency={float(min_latency_value):.2f}, threshold={float(threshold):.2f}, "
+                   f"candidates={len(candidate_indices)} pods {candidate_indices.tolist()}, "
+                   f"latencies={[f'{l:.2f}' for l in candidate_latencies]}, "
+                   f"selected=pod_{selected_idx}")
+    
+    # # DEBUG: Log predictions for all pods (sample every 10th request)
+    # if int(request_id) % 10 == 0:
+    #     all_predictions = result['predicted_latencies'][0].cpu().numpy()
+    #     logger.info(f"DEBUG requestID {request_id}: ALL pod predictions = {all_predictions}")
+        
+    #     # VERIFICATION: Check for exploding predictions (should be < 5000ms for TTFT typically)
+    #     exploding_pods = np.where(all_predictions > 3000)[0]
+    #     if len(exploding_pods) > 0:
+    #         logger.warning(f"VERIFICATION: requestID {request_id} has EXPLODING predictions for pods {exploding_pods.tolist()}: {all_predictions[exploding_pods]}")
+    #         # Check if these pods had outlier features
+    #         if len(pod_features.shape) == 3:
+    #             for pod_idx in exploding_pods:
+    #                 pod_feat = pod_features[0, pod_idx, :].cpu().numpy()
+    #                 outliers = np.where(np.abs(pod_feat) > 5)[0]
+    #                 if len(outliers) > 0:
+    #                     logger.warning(f"VERIFICATION: pod_{pod_idx:04d} with exploding prediction ({all_predictions[pod_idx]:.1f}ms) HAS OUTLIER features at {outliers.tolist()}: {pod_feat[outliers]}")
 
     # Format result for compatibility
     format_start = time.time()
@@ -650,7 +831,8 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         'confidence': confidence,
         'pod_probabilities': [float(p) for p in softmax_probs.tolist()],
         'latency_metric': predictor.latency_metric,
-        'explore_mask': 0  # Latency predictor always uses exploitation (no exploration)
+        'explore_mask': result['explore_mask'],  # 0 = exploitation, 1 = exploration
+        'smoothing_mask': result['smoothing_mask']  # 0 = single best pod, 1 = smoothed selection
     }, overhead_summary
 
 
@@ -690,7 +872,7 @@ def infer_latency_predictor(tensor_data, request_id, model_updated, HYPERPARAMET
     return infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids)
 
 
-def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_dir):
+def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_dir, num_train):
     """
     Create comprehensive training metrics visualization for latency predictor.
     
@@ -707,12 +889,141 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     plt.style.use('default')
     sns.set_palette("husl")
     
-    # Create figure with subplots
-    fig = plt.figure(figsize=(20, 15))
-    
     # Determine number of pods
     num_pods = predictor.state_dims['num_pods']
     latency_metric = predictor.latency_metric.upper()
+    
+    # ============================================================
+    # SAVE CSV FILES FOR FUTURE PLOTTING
+    # ============================================================
+    
+    # 1. Save prediction accuracy scatter data (actual vs predicted)
+    if predictor.latest_predictions is not None and predictor.latest_targets is not None:
+        scatter_df = pd.DataFrame({
+            'actual': predictor.latest_targets,
+            'predicted': predictor.latest_predictions,
+            'error': predictor.latest_predictions - predictor.latest_targets
+        })
+        scatter_csv_path = os.path.join(final_model_dir, f'prediction_accuracy_data-{num_train}.csv')
+        scatter_df.to_csv(scatter_csv_path, index=False)
+        logger.info(f"Saved prediction accuracy data to {scatter_csv_path}")
+    
+    # 2. Save loss data (training and validation loss per epoch)
+    if predictor.training_losses:
+        loss_df = pd.DataFrame({
+            'epoch': list(range(len(predictor.training_losses))),
+            'train_loss': predictor.training_losses,
+            'val_loss': predictor.validation_losses if predictor.validation_losses else [None] * len(predictor.training_losses)
+        })
+        loss_csv_path = os.path.join(final_model_dir, f'training_loss_data-{num_train}.csv')
+        loss_df.to_csv(loss_csv_path, index=False)
+        logger.info(f"Saved training loss data to {loss_csv_path}")
+    
+    # 3. Save additional metrics for comprehensive analysis
+    if predictor.validation_mae:
+        metrics_df = pd.DataFrame({
+            'epoch': list(range(len(predictor.validation_mae))),
+            'mae': predictor.validation_mae,
+            'r2': predictor.validation_r2 if predictor.validation_r2 else [None] * len(predictor.validation_mae),
+            'routing_accuracy': predictor.routing_accuracies if predictor.routing_accuracies else [None] * len(predictor.validation_mae),
+            'learning_rate': predictor.learning_rates if predictor.learning_rates else [None] * len(predictor.validation_mae)
+        })
+        metrics_csv_path = os.path.join(final_model_dir, f'training_metrics_data-{num_train}.csv')
+        metrics_df.to_csv(metrics_csv_path, index=False)
+        logger.info(f"Saved training metrics data to {metrics_csv_path}")
+    
+    # ============================================================
+    # CREATE INDIVIDUAL PLOTS
+    # ============================================================
+    
+    # INDIVIDUAL PLOT 1: Prediction Accuracy Scatter
+    if predictor.latest_predictions is not None and predictor.latest_targets is not None:
+        fig_scatter = plt.figure(figsize=(10, 8))
+        predictions = predictor.latest_predictions
+        targets = predictor.latest_targets
+        
+        plt.scatter(targets, predictions, alpha=0.5, s=30, color='steelblue', edgecolors='black', linewidth=0.5)
+        
+        # Perfect prediction line
+        min_val = min(min(targets), min(predictions))
+        max_val = max(max(targets), max(predictions))
+        plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2,
+                label='Perfect Prediction')
+        
+        plt.xlabel(f'Actual {latency_metric} (ms)', fontsize=12)
+        plt.ylabel(f'Predicted {latency_metric} (ms)', fontsize=12)
+        plt.title(f'{latency_metric} Prediction Accuracy', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # Add correlation and metrics
+        corr = np.corrcoef(targets, predictions)[0, 1]
+        mae = mean_absolute_error(targets, predictions)
+        r2 = r2_score(targets, predictions)
+        mse = mean_squared_error(targets, predictions)
+        rmse = np.sqrt(mse)
+        
+        stats_text = f'Correlation: {corr:.3f}\n'
+        stats_text += f'R²: {r2:.3f}\n'
+        stats_text += f'MAE: {mae:.3f}\n'
+        stats_text += f'RMSE: {rmse:.3f}'
+        
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                verticalalignment='top', fontsize=11,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+        plt.tight_layout()
+        scatter_pdf_path = os.path.join(final_model_dir, f'prediction_accuracy_scatter-{num_train}.pdf')
+        plt.savefig(scatter_pdf_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved individual prediction accuracy scatter plot: {scatter_pdf_path}")
+    
+    # INDIVIDUAL PLOT 2: Prediction Loss
+    if predictor.training_losses:
+        fig_loss = plt.figure(figsize=(10, 6))
+        epochs = list(range(len(predictor.training_losses)))
+        
+        plt.plot(epochs, predictor.training_losses, 'b-', linewidth=2, marker='o', 
+                markersize=4, label='Training Loss')
+        if predictor.validation_losses:
+            plt.plot(epochs, predictor.validation_losses, 'r-', linewidth=2, marker='s',
+                    markersize=4, label='Validation Loss')
+        
+        plt.title(f'{latency_metric} Prediction Loss (MSE)', fontsize=14, fontweight='bold')
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('MSE Loss', fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        
+        # Add final loss values
+        final_train_loss = predictor.training_losses[-1]
+        loss_text = f'Final Train Loss: {final_train_loss:.4f}'
+        if predictor.validation_losses:
+            final_val_loss = predictor.validation_losses[-1]
+            loss_text += f'\nFinal Val Loss: {final_val_loss:.4f}'
+            
+            # Add gap info if there's overfitting
+            gap = abs(final_val_loss - final_train_loss)
+            gap_pct = (gap / final_train_loss) * 100
+            if gap_pct > 20:
+                loss_text += f'\n⚠️ Gap: {gap_pct:.1f}%'
+        
+        plt.text(0.98, 0.98, loss_text, transform=plt.gca().transAxes, 
+                verticalalignment='top', horizontalalignment='right', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout()
+        loss_pdf_path = os.path.join(final_model_dir, f'prediction_loss-{num_train}.pdf')
+        plt.savefig(loss_pdf_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved individual prediction loss plot: {loss_pdf_path}")
+    
+    # ============================================================
+    # CREATE COMPREHENSIVE PLOT (existing code)
+    # ============================================================
+    
+    # Create figure with subplots
+    fig = plt.figure(figsize=(20, 15))
     
     # 1. Training Loss
     plt.subplot(3, 4, 1)
@@ -910,20 +1221,34 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
                     plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(avg_latency_per_pod)*0.01,
                             f'{latency:.2f}', ha='center', va='bottom', fontsize=9)
     
-    # 9. Training Time per Epoch
+    # 9. Learning Rate Schedule
     plt.subplot(3, 4, 9)
-    if predictor.epoch_times:
-        plt.plot(predictor.epoch_times, 'brown', linewidth=2, marker='o')
-        plt.title('Training Time per Epoch')
+    if predictor.learning_rates:
+        plt.plot(predictor.learning_rates, 'darkblue', linewidth=2, marker='o', markersize=4)
+        plt.title(f'Learning Rate Schedule ({predictor.lr_scheduler_type})')
         plt.xlabel('Epoch')
-        plt.ylabel('Time (seconds)')
+        plt.ylabel('Learning Rate')
         plt.grid(True, alpha=0.3)
         
-        # Add average time
-        avg_time = np.mean(predictor.epoch_times)
-        plt.text(0.02, 0.98, f'Avg: {avg_time:.1f}s', 
+        # Add initial and final LR
+        initial_lr = predictor.learning_rates[0]
+        final_lr = predictor.learning_rates[-1]
+        plt.text(0.02, 0.98, f'Initial: {initial_lr:.6f}\nFinal: {final_lr:.6f}', 
                 transform=plt.gca().transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    else:
+        # Fallback: show training time if no LR tracking
+        if predictor.epoch_times:
+            plt.plot(predictor.epoch_times, 'brown', linewidth=2, marker='o')
+            plt.title('Training Time per Epoch')
+            plt.xlabel('Epoch')
+            plt.ylabel('Time (seconds)')
+            plt.grid(True, alpha=0.3)
+            
+            avg_time = np.mean(predictor.epoch_times)
+            plt.text(0.02, 0.98, f'Avg: {avg_time:.1f}s', 
+                    transform=plt.gca().transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
     
     # 10. Learning Curves Summary  
     plt.subplot(3, 4, 10)
@@ -965,6 +1290,10 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     total_params = sum(p.numel() for p in predictor.network.parameters())
     arch_text += f"Parameters: {total_params:,}\n"
     arch_text += f"Learning Rate: {predictor.learning_rate}\n"
+    arch_text += f"LR Scheduler: {predictor.lr_scheduler_type}\n"
+    
+    if predictor.learning_rates:
+        arch_text += f"Final LR: {predictor.learning_rates[-1]:.6f}\n"
     
     plt.text(0.1, 0.9, arch_text, transform=plt.gca().transAxes, 
             fontsize=10, verticalalignment='top', fontfamily='monospace',
@@ -1025,7 +1354,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     plt.tight_layout()
     
     # Save the plot
-    pdf_fn = f"{final_model_dir}/comprehensive_latency_predictor_metrics.pdf"
+    pdf_fn = f"{final_model_dir}/comprehensive_latency_predictor_metrics-{num_train}.pdf"
     plt.savefig(pdf_fn, dpi=150, bbox_inches='tight')
     plt.close()
     logger.info(f"* Saved latency predictor training plots: {pdf_fn}")
@@ -1059,6 +1388,182 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     return pdf_fn
 
 
+def plot_from_csv(csv_dir, num_train, latency_metric='TTFT'):
+    """
+    Recreate plots from saved CSV files without retraining.
+    
+    This function allows you to iterate on plot styling and parameters
+    without needing to retrain the model.
+    
+    Args:
+        csv_dir: Directory containing the CSV files
+        num_train: Training identifier (used in filename)
+        latency_metric: Latency metric name for labels (default: 'TTFT')
+    
+    Returns:
+        Dict with paths to generated plots
+    """
+    import os
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
+    
+    generated_plots = {}
+    
+    # 1. Plot prediction accuracy scatter from CSV
+    scatter_csv = os.path.join(csv_dir, f'prediction_accuracy_data-{num_train}.csv')
+    if os.path.exists(scatter_csv):
+        logger.info(f"Creating prediction accuracy scatter plot from {scatter_csv}")
+        df = pd.read_csv(scatter_csv)
+        
+        fig = plt.figure(figsize=(10, 8))
+        plt.scatter(df['actual'], df['predicted'], alpha=0.5, s=30, 
+                   color='steelblue', edgecolors='black', linewidth=0.5)
+        
+        # Perfect prediction line
+        min_val = min(df['actual'].min(), df['predicted'].min())
+        max_val = max(df['actual'].max(), df['predicted'].max())
+        plt.plot([min_val, max_val], [min_val, max_val], 'r--', 
+                alpha=0.8, linewidth=2, label='Perfect Prediction')
+        
+        plt.xlabel(f'Actual {latency_metric} (ms)', fontsize=12)
+        plt.ylabel(f'Predicted {latency_metric} (ms)', fontsize=12)
+        plt.title(f'{latency_metric} Prediction Accuracy', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # Calculate metrics
+        corr = np.corrcoef(df['actual'], df['predicted'])[0, 1]
+        mae = mean_absolute_error(df['actual'], df['predicted'])
+        r2 = r2_score(df['actual'], df['predicted'])
+        mse = mean_squared_error(df['actual'], df['predicted'])
+        rmse = np.sqrt(mse)
+        
+        stats_text = f'Correlation: {corr:.3f}\n'
+        stats_text += f'R²: {r2:.3f}\n'
+        stats_text += f'MAE: {mae:.3f}\n'
+        stats_text += f'RMSE: {rmse:.3f}'
+        
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                verticalalignment='top', fontsize=11,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+        plt.tight_layout()
+        output_path = os.path.join(csv_dir, f'prediction_accuracy_scatter-{num_train}-from_csv.pdf')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved plot: {output_path}")
+        generated_plots['scatter'] = output_path
+    else:
+        logger.warning(f"Scatter CSV not found: {scatter_csv}")
+    
+    # 2. Plot training loss from CSV
+    loss_csv = os.path.join(csv_dir, f'training_loss_data-{num_train}.csv')
+    if os.path.exists(loss_csv):
+        logger.info(f"Creating training loss plot from {loss_csv}")
+        df = pd.read_csv(loss_csv)
+        
+        fig = plt.figure(figsize=(10, 6))
+        plt.plot(df['epoch'], df['train_loss'], 'b-', linewidth=2, 
+                marker='o', markersize=4, label='Training Loss')
+        
+        if 'val_loss' in df.columns and df['val_loss'].notna().any():
+            plt.plot(df['epoch'], df['val_loss'], 'r-', linewidth=2,
+                    marker='s', markersize=4, label='Validation Loss')
+        
+        plt.title(f'{latency_metric} Prediction Loss (MSE)', fontsize=14, fontweight='bold')
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('MSE Loss', fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        
+        # Add final loss values
+        final_train = df['train_loss'].iloc[-1]
+        loss_text = f'Final Train Loss: {final_train:.4f}'
+        
+        if 'val_loss' in df.columns and df['val_loss'].notna().any():
+            final_val = df['val_loss'].iloc[-1]
+            loss_text += f'\nFinal Val Loss: {final_val:.4f}'
+            
+            gap = abs(final_val - final_train)
+            gap_pct = (gap / final_train) * 100
+            if gap_pct > 20:
+                loss_text += f'\n⚠️ Gap: {gap_pct:.1f}%'
+        
+        plt.text(0.98, 0.98, loss_text, transform=plt.gca().transAxes,
+                verticalalignment='top', horizontalalignment='right', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout()
+        output_path = os.path.join(csv_dir, f'prediction_loss-{num_train}-from_csv.pdf')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved plot: {output_path}")
+        generated_plots['loss'] = output_path
+    else:
+        logger.warning(f"Loss CSV not found: {loss_csv}")
+    
+    # 3. Optional: Plot additional metrics if available
+    metrics_csv = os.path.join(csv_dir, f'training_metrics_data-{num_train}.csv')
+    if os.path.exists(metrics_csv):
+        logger.info(f"Creating additional metrics plot from {metrics_csv}")
+        df = pd.read_csv(metrics_csv)
+        
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # MAE
+        if 'mae' in df.columns and df['mae'].notna().any():
+            axes[0, 0].plot(df['epoch'], df['mae'], 'g-', linewidth=2, marker='o', markersize=3)
+            axes[0, 0].set_title(f'Mean Absolute Error ({latency_metric})', fontsize=12)
+            axes[0, 0].set_xlabel('Epoch')
+            axes[0, 0].set_ylabel('MAE')
+            axes[0, 0].grid(True, alpha=0.3)
+        
+        # R2
+        if 'r2' in df.columns and df['r2'].notna().any():
+            axes[0, 1].plot(df['epoch'], df['r2'], 'purple', linewidth=2, marker='o', markersize=3)
+            axes[0, 1].set_title('R² Score', fontsize=12)
+            axes[0, 1].set_xlabel('Epoch')
+            axes[0, 1].set_ylabel('R²')
+            axes[0, 1].set_ylim(-0.1, 1.0)
+            axes[0, 1].grid(True, alpha=0.3)
+        
+        # Routing Accuracy
+        if 'routing_accuracy' in df.columns and df['routing_accuracy'].notna().any():
+            axes[1, 0].plot(df['epoch'], df['routing_accuracy'], 'orange', 
+                          linewidth=2, marker='o', markersize=3)
+            axes[1, 0].set_title('Routing Accuracy', fontsize=12)
+            axes[1, 0].set_xlabel('Epoch')
+            axes[1, 0].set_ylabel('Accuracy')
+            axes[1, 0].set_ylim(0, 1)
+            axes[1, 0].grid(True, alpha=0.3)
+        
+        # Learning Rate
+        if 'learning_rate' in df.columns and df['learning_rate'].notna().any():
+            axes[1, 1].plot(df['epoch'], df['learning_rate'], 'darkblue',
+                          linewidth=2, marker='o', markersize=3)
+            axes[1, 1].set_title('Learning Rate Schedule', fontsize=12)
+            axes[1, 1].set_xlabel('Epoch')
+            axes[1, 1].set_ylabel('Learning Rate')
+            axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        output_path = os.path.join(csv_dir, f'additional_metrics-{num_train}-from_csv.pdf')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved plot: {output_path}")
+        generated_plots['metrics'] = output_path
+    else:
+        logger.info(f"Metrics CSV not found (optional): {metrics_csv}")
+    
+    logger.info(f"Generated {len(generated_plots)} plots from CSV files")
+    return generated_plots
+
+
 if __name__ == "__main__":
     # Test the latency predictor
     print("LatencyPredictor module loaded successfully!")
+    
+    # Example usage of plot_from_csv:
+    # plot_from_csv('/path/to/model/dir', num_train=5000, latency_metric='TTFT')

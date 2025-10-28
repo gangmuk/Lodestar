@@ -30,8 +30,63 @@ RUN mkdir -p /app/workload/ten_request \
 
 # Copy workload files from parent directory
 # Build context is set to parent directory in build-and-push.sh
+
+
+
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps2030/SharingRatio10%_avginput1500_globalrps20/workload.jsonl /app/workload/old-version/input10002000/rps2030/SharingRatio10%_avginput1500_globalrps20/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps2030/SharingRatio30%_avginput1500_globalrps20/workload.jsonl /app/workload/old-version/input10002000/rps2030/SharingRatio30%_avginput1500_globalrps20/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps2030/SharingRatio50%_avginput1500_globalrps25/workload.jsonl /app/workload/old-version/input10002000/rps2030/SharingRatio50%_avginput1500_globalrps25/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps2030/SharingRatio70%_avginput1500_globalrps35/workload.jsonl /app/workload/old-version/input10002000/rps2030/SharingRatio70%_avginput1500_globalrps35/
+
+
+
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps1520/SharingRatio10%_avginput1500_globalrps15/workload.jsonl /app/workload/old-version/input10002000/rps1520/SharingRatio10%_avginput1500_globalrps15/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps1520/SharingRatio30%_avginput1500_globalrps15/workload.jsonl /app/workload/old-version/input10002000/rps1520/SharingRatio30%_avginput1500_globalrps15/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps1520/SharingRatio50%_avginput1500_globalrps17/workload.jsonl /app/workload/old-version/input10002000/rps1520/SharingRatio50%_avginput1500_globalrps17/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps1520/SharingRatio70%_avginput1500_globalrps20/workload.jsonl /app/workload/old-version/input10002000/rps1520/SharingRatio70%_avginput1500_globalrps20/
+
+
+
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input100020004000/SharingRatio10%_avginput2333_globalrps10/workload.jsonl /app/workload/old-version/input100020004000/SharingRatio10%_avginput2333_globalrps10/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input100020004000/SharingRatio30%_avginput2333_globalrps10/workload.jsonl /app/workload/old-version/input100020004000/SharingRatio30%_avginput2333_globalrps10/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input100020004000/SharingRatio50%_avginput2333_globalrps10/workload.jsonl /app/workload/old-version/input100020004000/SharingRatio50%_avginput2333_globalrps10/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input100020004000/SharingRatio70%_avginput2333_globalrps12/workload.jsonl /app/workload/old-version/input100020004000/SharingRatio70%_avginput2333_globalrps12/
+
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing10%/SharingRatio10%_avginput3750_multirps10-15-10_rep10/workload.jsonl /app/workload/config_sharing10%/
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing30%/SharingRatio30%_avginput3750_multirps10-15-10_rep10/workload.jsonl /app/workload/config_sharing30%/
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing50%/SharingRatio50%_avginput3750_multirps12-15-12_rep10/workload.jsonl /app/workload/config_sharing50%/
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing70%/SharingRatio70%_avginput3750_multirps12-15-12_rep10/workload.jsonl /app/workload/config_sharing70%/
+
+
+# text to sql
+COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/text_to_sql/SharingRatio31%_avginput4160_multirps10-12-10_rep10/workload.jsonl /app/workload/text_to_sql/
+
+# multiturn chat
+COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/multiturn-chat/multiturn_sessions300_avgturns5_turnlen1000_rps10/workload.jsonl /app/workload/multiturn-chat/
+
+# mooncake conversation
+COPY workload-and-experiment_results/workload-generator/mooncake/workload-conversation/workload.jsonl /app/workload/mooncake-conversation/
+
+# mooncake toolagent
+COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
+
+# test purpose
 COPY workload-and-experiment_results/ten_request/workload.jsonl /app/workload/ten_request/
 COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
+
+# working
 COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workload/SharingRatio71%/
 COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
 COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/

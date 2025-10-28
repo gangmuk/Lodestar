@@ -88,11 +88,11 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
             utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
             
             # Select model type based on hyperparameters
-            model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+            model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
             
             if model_type == 'latency_predictor':
                 logger.info("Training with latency predictor model")
-                saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+                saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, num_train=0)
             elif model_type == 'rl_contextual_bandit_sb3':
                 logger.info("Training with SB3 RL contextual bandit model")
                 import rl_contextual_bandit_sb3
@@ -136,7 +136,7 @@ def create_test_data_from_processed_csv(processed_csv_file):
     df = pd.read_csv(processed_csv_file)
     
     # Use last 10% or 10 samples as test data
-    test_size = min(10, max(1, int(len(df) * 0.1)))
+    test_size = min(10, max(1, int(len(df) * RL_MODEL_HYPERPARAMETERS['test_size_ratio'])))
     test_df = df.tail(test_size)
     
     # Extract actual pod IDs from the processed data
@@ -677,11 +677,7 @@ def main():
     _ = model_and_data_analysis_helper.analyze_detailed_feature_sensitivity(args, test_data, feature_normalization_stats_file)
     logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
     
-    
-    # Run test inference if we have test data
-    # if test_data and len(test_data) > 0:
-    run_test_inference_phase(args, test_data)
-        
+    # run_test_inference_phase(args, test_data)
         
     print(f"** saved_plot_path: {saved_plot_path}")
     print(f"** final_model_dir: {args.final_model_dir}")

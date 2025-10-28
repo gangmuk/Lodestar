@@ -4,6 +4,7 @@
 # import joblib
 import pandas as pd
 import numpy as np
+import random
 # import uvicorn
 # from pydantic import BaseModel
 import os
@@ -64,11 +65,13 @@ first_request_starting_time = None
 stats_instance = None
 TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
+TOTAL_NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
 
 # Training data accumulation (offline + online)
 TRAINING_DF = None  # Holds all training data (offline CSV + online appended data)
 TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
+OFFLINE_DATA_SIZE = 0  # Tracks the size of offline data portion in TRAINING_DF (shrinks as we remove overflow)
 PRINT_ONCE_AT_THE_FIRST_REQUEST = True
 # RL agent globals
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
@@ -96,7 +99,8 @@ RL_UPDATE_SHUTDOWN = threading.Event()
 PENDING_REQUESTS = {}  # request_id → (route_time, selected_pod_idx)
 PENDING_REQUESTS_LOCK = threading.Lock()
 
-MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 1000))
+MIN_NUM_TRAINING_DATA = int(os.getenv("MIN_NUM_TRAINING_DATA", 5000))
+MIN_NUM_UPDATE_DATA = int(os.getenv("MIN_NUM_UPDATE_DATA", 500))
 POD_LABEL_SELECTOR = os.getenv("POD_LABEL_SELECTOR", "model.aibrix.ai/name=llama3-1-8b")
 logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
 if POD_LABEL_SELECTOR == "":
@@ -105,6 +109,11 @@ if POD_LABEL_SELECTOR == "":
 ENABLE_ONLINE_LEARNING = int(os.getenv("ENABLE_ONLINE_LEARNING", 0))
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
 TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
+EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
+SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing for latency predictor
+SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
+logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
+           f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}")
 RL_MODEL_HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
@@ -174,7 +183,7 @@ request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, feature_normalization_stats_file, stats_instance, TRAINING_DF
+    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, feature_normalization_stats_file, stats_instance, TRAINING_DF
     NUM_FLUSH += 1
     flush_start_time = time.time()
     log_data = request.json
@@ -214,7 +223,7 @@ def handle_flush():
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TOTAL_NUM_DATA += len(log_data)
         NUM_NEW_DATA += len(log_data)
-
+        TOTAL_NUM_NEW_DATA += len(log_data)
         return jsonify({"status": "success", "message": f"Successfully processed {len(log_data)} log messages"}), 200
 
     except Exception as e:
@@ -322,11 +331,10 @@ def handle_infer():
         # Route to appropriate model based on model type
         # model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
+        logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
+        
         if subAlgorithm == 'latency_predictor':
-            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
-
             global LATENCY_PREDICTOR
-
             # Check if initialization needed without blocking
             if LATENCY_PREDICTOR is None:
                 with LATENCY_PREDICTOR_LOCK.write():
@@ -355,12 +363,18 @@ def handle_infer():
 
             # Inference with read lock (allows concurrent requests)
             with LATENCY_PREDICTOR_LOCK.read():
+                global EXPLORATION_RATE, SMOOTHING_ENABLED, SMOOTHING_THRESHOLD
+                # Get exploration and smoothing parameters
                 result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor_with_model(
                     predictor=LATENCY_PREDICTOR,
                     tensor_data=tensor_data,
                     request_id=request_id,
-                    sorted_all_pod_ids=sorted_all_pod_ids
+                    sorted_all_pod_ids=sorted_all_pod_ids,
+                    exploration_rate=EXPLORATION_RATE,
+                    smoothing=bool(SMOOTHING_ENABLED),
+                    smoothing_threshold=SMOOTHING_THRESHOLD
                 )
+                
         elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
             logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
@@ -432,8 +446,6 @@ def handle_infer():
                 update_overhead = time.time() - update_start
             
             infer_from_tensor_overhead_summary['online_update'] = update_overhead
-        ####################################################################################
-        ####################################################################################
         elif subAlgorithm == 'scalable_rl_agent':
             from scalable_rl_routing_agent import BROKER, infer
             
@@ -485,67 +497,62 @@ def handle_infer():
             }
             
             logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
+        elif subAlgorithm == 'scalable_rl_agent_old':
+            # === NEW SCALABLE RL AGENT (pod-count independent) ===
+            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
             
-        ####################################################################################
-        ####################################################################################
-        # elif subAlgorithm == 'scalable_rl_agent_old':
-        #     # === NEW SCALABLE RL AGENT (pod-count independent) ===
-        #     logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
+            global SCALABLE_RL_AGENT
             
-        #     global SCALABLE_RL_AGENT
-            
-        #     with SCALABLE_RL_AGENT_LOCK.write():
-        #         if SCALABLE_RL_AGENT is None:
-        #             # Initialize ONCE - works for any number of pods!
-        #             pod_features_t = tensor_data['pod_features']
-        #             per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
-        #             kv_hit_t = tensor_data['kv_hit_ratios']
-        #             kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
-        #             req_features_t = tensor_data['request_features']
-        #             req_dim = int(req_features_t.shape[1])  # e.g., 3
+            with SCALABLE_RL_AGENT_LOCK.write():
+                if SCALABLE_RL_AGENT is None:
+                    # Initialize ONCE - works for any number of pods!
+                    pod_features_t = tensor_data['pod_features']
+                    per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
+                    kv_hit_t = tensor_data['kv_hit_ratios']
+                    kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
+                    req_features_t = tensor_data['request_features']
+                    req_dim = int(req_features_t.shape[1])  # e.g., 3
                     
-        #             # Per-pod dimension = pod_features + kv_hit_ratios
-        #             total_per_pod_dim = per_pod_dim + kv_dim
+                    # Per-pod dimension = pod_features + kv_hit_ratios
+                    total_per_pod_dim = per_pod_dim + kv_dim
                     
-        #             SCALABLE_RL_AGENT = create_scalable_rl_agent(
-        #                 per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
-        #                 request_dim=req_dim,             # 3
-        #                 max_pods=100,                    # Max expected pods
-        #                 **RL_MODEL_HYPERPARAMETERS
-        #             )
+                    SCALABLE_RL_AGENT = create_scalable_rl_agent(
+                        per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
+                        request_dim=req_dim,             # 3
+                        max_pods=100,                    # Max expected pods
+                        **RL_MODEL_HYPERPARAMETERS
+                    )
                     
-        #             # Load checkpoint if available
-        #             ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-        #             if ckpt_path and os.path.exists(ckpt_path):
-        #                 try:
-        #                     SCALABLE_RL_AGENT.load(ckpt_path)
-        #                     logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
-        #                 except Exception as e:
-        #                     logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
+                    # Load checkpoint if available
+                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+                    if ckpt_path and os.path.exists(ckpt_path):
+                        try:
+                            SCALABLE_RL_AGENT.load(ckpt_path)
+                            logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
                     
-        #             logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
-        #                       f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
+                    logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
+                              f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
                 
-        #         current_agent = SCALABLE_RL_AGENT
+                current_agent = SCALABLE_RL_AGENT
             
-        #     # Inference (no lock needed - thread-safe in new design)
-        #     current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
-        #         tensor_data=tensor_data,
-        #         request_id=request_id,
-        #         sorted_all_pod_ids=sorted_all_pod_ids,
-        #         processed_df=processed_df,
-        #         rl_agent=current_agent,
-        #         hyperparameters=RL_MODEL_HYPERPARAMETERS,
-        #         agent_lock=None  # New agent doesn't need lock for prediction
-        #     )
-        ####################################################################################
+            # Inference (no lock needed - thread-safe in new design)
+            current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
+                tensor_data=tensor_data,
+                request_id=request_id,
+                sorted_all_pod_ids=sorted_all_pod_ids,
+                processed_df=processed_df,
+                rl_agent=current_agent,
+                hyperparameters=RL_MODEL_HYPERPARAMETERS,
+                agent_lock=None  # New agent doesn't need lock for prediction
+            )
         else:
             logger.info(f"requestID: {request_id}, contextual bandit model for inference")
             result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
         handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
-        
         
         remaining_work_start = time.time()
         result["requestID"] = request_id
@@ -580,6 +587,7 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
             
+            
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
@@ -593,7 +601,16 @@ def handle_infer():
             "overhead_log": overhead_log,
             "predicted_latencies": result['predicted_latencies'],
             "chosen_pod_predicted_latency": result['chosen_pod_predicted_latency'],
+            "smoothing": result.get('smoothing_mask', 0),  # Include smoothing indicator
         }
+        
+        # if subAlgorithm == 'latency_predictor' and NUM_TRAINS <= 0:
+        #     random_generalpodid = sorted_all_pod_ids[random.randint(0, len(sorted_all_pod_ids)-1)]
+        #     random_pod_ip = RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'][random_generalpodid]
+        #     response['selected_pod'] = random_pod_ip
+        #     response['selected_pod_generalpodid'] = random_generalpodid
+        #     logger.info(f"Training never done yet, selected random pod for exploration! selected_pod_generalpodid: {random_generalpodid}, selected_pod_ip: {random_pod_ip}")
+            
         return jsonify(response), 200
         
     except Exception as e:
@@ -605,12 +622,15 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
-    if NUM_NEW_DATA < MIN_NUM_TRAINING_DATA:
-        logger.info(f"Not enough training data available, NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
+    if TOTAL_NUM_NEW_DATA < MIN_NUM_TRAINING_DATA:
+        logger.info(f"Not enough total training data available, NUM_NEW_DATA: {TOTAL_NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
+        return
+    if NUM_NEW_DATA < MIN_NUM_UPDATE_DATA:
+        logger.info(f"Not enough new training data available, NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_UPDATE_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
         return
     TRAINING_RIGHT_NOW = True
     training_start_time = time.time()
@@ -619,7 +639,7 @@ def online_train_routine():
         # Route to appropriate training function based on model type
         model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
         if model_type == 'latency_predictor':
-            logger.info(f"Training with latency predictor model on entire dataset (offline + online)")
+            logger.info(f"Training with latency predictor model on entire dataset (offline({len(TRAINING_DF)}) + online({NUM_NEW_DATA}))")
 
             # Get a copy of TRAINING_DF for training (thread-safe)
             with TRAINING_DF_LOCK:
@@ -629,9 +649,32 @@ def online_train_routine():
                     return
                 training_df_copy = TRAINING_DF.copy()
                 total_samples = len(training_df_copy)
+                current_offline_size = OFFLINE_DATA_SIZE
 
             # logger.info(f"Training on (offline data: {ENCODED_DATA_DIR}, online data: {ENCODED_DATA_DIR}, total data: {total_samples}")
-            logger.info(f"Training on total data: {total_samples}")
+            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {total_samples - current_offline_size})")
+
+            # Remove overflow from offline data if total exceeds 20,000
+            MAX_TOTAL_DATA = 20000
+            if total_samples > MAX_TOTAL_DATA and current_offline_size > 0:
+                overflow = total_samples - MAX_TOTAL_DATA
+                
+                # Calculate how much to remove from offline portion
+                to_remove = min(overflow, current_offline_size)
+                
+                # Remove from the beginning of dataframe (where offline data resides)
+                training_df_copy = training_df_copy.iloc[to_remove:].reset_index(drop=True)
+                logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). "
+                           f"Removed {to_remove} oldest offline samples (overflow={overflow}, offline_size={current_offline_size})")
+                
+                # Update the global TRAINING_DF and OFFLINE_DATA_SIZE
+                with TRAINING_DF_LOCK:
+                    TRAINING_DF = training_df_copy.copy()
+                    OFFLINE_DATA_SIZE = max(0, current_offline_size - to_remove)
+                    logger.info(f"✅ Updated TRAINING_DF: new size={len(TRAINING_DF)} (offline: {OFFLINE_DATA_SIZE}, online: {len(TRAINING_DF) - OFFLINE_DATA_SIZE})")
+                
+                # Update total_samples for the rest of the function
+                total_samples = len(training_df_copy)
 
             # Drop non-numeric metadata columns from offline CSV that are absent online
             metadata_cols_to_drop = ['source_file', 'reward_function_used']
@@ -663,8 +706,54 @@ def online_train_routine():
             normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(
                 training_df_copy, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
 
+            # VERIFICATION: Log normalization stats BEFORE normalization
+            logger.info(f"VERIFICATION: Checking normalization stats before online training #{NUM_TRAINS}")
             for feature in normalizable_features:
-                data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, is_training=False)
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    logger.info(f"VERIFICATION BEFORE: {feature} - OLD stats: count={stats.count}, mean={stats.mean}, std={stats.std}")
+                    
+                    # Log actual feature values in the new data
+                    if feature in training_df_copy.columns:
+                        actual_values = training_df_copy[feature].values
+                        new_mean = actual_values.mean()
+                        new_std = actual_values.std()
+                        logger.info(f"VERIFICATION BEFORE: {feature} - NEW data: min={actual_values.min():.3f}, max={actual_values.max():.3f}, mean={new_mean:.3f}, std={new_std:.3f}")
+                        
+                        # **PROOF OF CAUSATION**: Calculate what normalization would produce with OLD vs NEW stats
+                        # Take a sample value from the new data
+                        sample_value = actual_values[0]
+                        old_mean = stats.mean[0] if hasattr(stats.mean, '__getitem__') else stats.mean
+                        old_std = stats.std[0] if hasattr(stats.std, '__getitem__') else stats.std
+                        
+                        if old_std > 0 and new_std > 0:
+                            normalized_with_old_stats = (sample_value - old_mean) / old_std
+                            normalized_with_new_stats = (sample_value - new_mean) / new_std
+                            
+                            logger.warning(f"VERIFICATION PROOF: {feature} sample_value={sample_value:.3f}")
+                            logger.warning(f"VERIFICATION PROOF: {feature} normalized_with_OLD_stats = ({sample_value:.3f} - {old_mean:.3f}) / {old_std:.3f} = {normalized_with_old_stats:.3f}")
+                            logger.warning(f"VERIFICATION PROOF: {feature} normalized_with_NEW_stats = ({sample_value:.3f} - {new_mean:.3f}) / {new_std:.3f} = {normalized_with_new_stats:.3f}")
+                            logger.warning(f"VERIFICATION PROOF: {feature} DIFFERENCE = {abs(normalized_with_old_stats - normalized_with_new_stats):.3f}")
+                            
+                            if abs(normalized_with_old_stats) > 5:
+                                logger.error(f"VERIFICATION PROOF: {feature} OUTLIER CREATED! Using old stats produces {normalized_with_old_stats:.3f} (should be ~{normalized_with_new_stats:.3f})")
+
+            for feature in normalizable_features:
+                # FIX: Changed from is_training=False to is_training=True
+                # This allows normalization stats to update during online training,
+                # preventing outlier creation when new data has different distributions
+                data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, is_training=True)
+            
+            # VERIFICATION: Log normalization stats AFTER normalization
+            logger.info(f"VERIFICATION: Checking normalization stats after online training #{NUM_TRAINS}")
+            for feature in normalizable_features:
+                if feature in stats_instance.feature_stats:
+                    stats = stats_instance.feature_stats[feature]
+                    logger.info(f"VERIFICATION AFTER: {feature} - count={stats.count}, mean={stats.mean}, std={stats.std}")
+                    # Log normalized values
+                    if feature in training_df_copy.columns:
+                        normalized_values = training_df_copy[feature].values
+                        logger.info(f"VERIFICATION AFTER: {feature} - normalized: min={normalized_values.min():.3f}, max={normalized_values.max():.3f}, mean={normalized_values.mean():.3f}, std={normalized_values.std():.3f}")
 
             # Get sorted pod IDs from the training data (preprocessed CSV format)
             sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
@@ -679,7 +768,7 @@ def online_train_routine():
 
             # Train on the encoded dataset
             train_start_time = time.time()
-            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, RL_MODEL_HYPERPARAMETERS)
+            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, RL_MODEL_HYPERPARAMETERS, NUM_TRAINS)
             logger.info(f"train_latency_predictor done, train time: {time.time() - train_start_time} seconds")
 
             # Reload model in training thread (non-blocking for inference)
@@ -1073,17 +1162,10 @@ def init():
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
         # Additional mappings for GPU features expected by preprocess/encoding
         RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
-        GPU_MODEL_TO_ENCODE = {
-            'NVIDIA-L20': 0,
-            'NVIDIA-L40': 1,
-            'NVIDIA-A10': 2,
-            'NVIDIA-A100': 3,
-            'NVIDIA-H100': 4,
-        }
         pod_gpu_id_mapping = {}
         for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
-            if gpu_model in GPU_MODEL_TO_ENCODE:
-                pod_gpu_id_mapping[generalpodid] = GPU_MODEL_TO_ENCODE[gpu_model]
+            if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+                pod_gpu_id_mapping[generalpodid] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
             else:
                 logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
                 assert False
@@ -1125,28 +1207,33 @@ def init():
     logger.info(f"Checkpointing every {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
 
     # Load offline training data for online learning
-    global TRAINING_DF
+    global TRAINING_DF, OFFLINE_DATA_SIZE
     if ENABLE_ONLINE_LEARNING:
         offline_csv_path = "/app/offline_training_data.csv"
         if os.path.exists(offline_csv_path):
             try:
                 with TRAINING_DF_LOCK:
                     TRAINING_DF = pd.read_csv(offline_csv_path)
+                    # shuffle the training data
+                    TRAINING_DF = TRAINING_DF.sample(frac=1).reset_index(drop=True)
+                    OFFLINE_DATA_SIZE = len(TRAINING_DF)
                     logger.info(f"✅ Loaded offline training data: {len(TRAINING_DF)} samples from {offline_csv_path}")
                     logger.info(f"   Columns: {list(TRAINING_DF.columns[:10])}...")  # Show first 10 columns
             except Exception as e:
                 logger.error(f"Failed to load offline training data: {e}")
                 TRAINING_DF = pd.DataFrame()
+                OFFLINE_DATA_SIZE = 0
                 logger.warning("Starting with empty training dataframe")
         else:
             logger.warning(f"Offline training data not found at {offline_csv_path}")
             logger.warning("Online learning will start from scratch with only new data")
             TRAINING_DF = pd.DataFrame()
+            OFFLINE_DATA_SIZE = 0
     else:
         logger.info("Online learning disabled, skipping offline data load")
     
     # Initialize scalable RL agent if configured
-
+    TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
     logger.info(f"{BLUE_COLOR}model_type: {RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
 
 
@@ -1246,6 +1333,7 @@ def periodic_checkpoint_scalable_rl():
         
         with SCALABLE_RL_AGENT_LOCK.read():
             # Check if it's time to checkpoint
+
             checkpoint_interval = RL_MODEL_HYPERPARAMETERS.get('CHECKPOINT_INTERVAL_STEPS', 1000)
             total_steps = SCALABLE_RL_AGENT.total_steps
             
@@ -1355,8 +1443,9 @@ if __name__ == "__main__":
     atexit.register(lambda: scheduler.shutdown())
     
     # Start RL update worker thread
-    logger.info(f"{GREEN_COLOR}Starting RL update worker in main()...{RESET_COLOR}")
-    start_rl_update_worker()
+    if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+        logger.info(f"{GREEN_COLOR}Starting RL update worker in main()...{RESET_COLOR}")
+        start_rl_update_worker()
         
     # NEW CODE: Add error handling around app.run()
     try:

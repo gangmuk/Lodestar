@@ -16,11 +16,55 @@ import re
 import utils
 import hashlib
 import random
+import numpy as np
 from transformers import AutoTokenizer
 
 def static_hash(input_str: str) -> str:
-    return str(int(hashlib.sha256(input_str.encode()).hexdigest(), 16))[:8]
+    """Generate a 64-character unique hash for the given input"""
+    return hashlib.sha256(input_str.encode()).hexdigest()  # Returns 64 hex characters
 
+def sample_output_tokens(mean: int, std: float) -> int:
+    """
+    Sample output tokens from a normal distribution.
+    
+    Args:
+        mean: Mean number of output tokens
+        std: Standard deviation
+    
+    Returns:
+        Sampled number of output tokens (at least 1)
+    """
+    sampled = int(np.random.normal(mean, std))
+    # Ensure at least 1 token and not more than 2x the mean (reasonable bound)
+    return max(1, min(sampled, mean * 2))
+
+def estimate_tokens_from_text(text: str, use_word_count: bool = True) -> int:
+    """
+    Estimate the number of tokens in a text string.
+    
+    Args:
+        text: The text to estimate tokens for
+        use_word_count: If True, use word count approximation (fast). If False, use actual tokenizer (accurate but slower)
+    
+    Returns:
+        Estimated number of tokens
+    """
+    if use_word_count:
+        # Approximation: 1 token ≈ 0.75 words, so 1 word ≈ 1.33 tokens
+        word_count = len(text.split())
+        return int(word_count * 1.33)
+    else:
+        # Use actual tokenizer (requires model name to be set)
+        # This is more accurate but slower
+        try:
+            from transformers import AutoTokenizer
+            # You might need to specify the correct model/tokenizer
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Default fallback
+            return len(tokenizer.encode(text))
+        except:
+            # Fallback to word count if tokenizer fails
+            word_count = len(text.split())
+            return int(word_count * 1.33)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -141,10 +185,8 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
                     if first_response_time is None:
                         first_response_time = asyncio.get_running_loop().time()
                         first_token_time = time.time()
-                        ttft = first_token_time - actual_start_time
+                        ttft = (first_token_time - actual_start_time) * 1000
                         if not ttft_logged:
-                            logger.info(f"Request {request_id}: First token received at {time.strftime('%H:%M:%S.%f', time.localtime(first_token_time))[:-3]}, "
-                                        f"TTFT: {ttft:.3f}s")
                             ttft_logged = True
                             
                     output_text = chunk.choices[0].delta.content
@@ -189,16 +231,17 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         )
         
         # Calculate total elapsed time
-        total_elapsed = completion_time - actual_start_time
-        total_decode_time = (completion_time - first_token_time) if first_response_time else 0
+        total_elapsed = (completion_time - actual_start_time)*1000
+        total_decode_time = (completion_time - first_token_time)*1000 if first_response_time else 0
         avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
         logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
-                    f"Elapsed: {total_elapsed:.3f}s, "
+                    f"Total time: {total_elapsed:.0f}ms, "
                     f"Tokens: {prompt_tokens} in / {output_tokens} out, "
-                    f"Total_decode_time: {total_decode_time:.3f}s, "
-                    f"Avg_tpot: {avg_tpot*1000:.2f}ms/token, "
-                    f"E2E_latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+                    f"TTFT: {ttft:.0f}ms, "
+                    f"Avg_tpot: {avg_tpot:.0f}ms, "
+                    f"Total_decode_time: {total_decode_time:.0f}ms, "
+                    f"E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms")
         
         # Log scheduling information
         if scheduled_time:
@@ -245,7 +288,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
                       f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # Write error results
-        await write_result_to_files(error_result, output_file, output_csv_file_name)
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
         return error_result
 
 
@@ -289,11 +332,16 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
         extra_headers["request-id"] = str(request_id)
         try:
             # Send request using completions endpoint with prompt_token_ids
+            # Note: We need to provide a dummy prompt to satisfy OpenAI client validation
+            # but vLLM will use the prompt_token_ids from extra_body
             response = await client.completions.create(
                 model=model,
-                prompt_token_ids=token_ids,
+                prompt="",  # Dummy prompt required by OpenAI client validation
                 max_tokens=max_tokens,
                 temperature=temperature,
+                extra_body={
+                    "prompt_token_ids": token_ids,
+                },
                 extra_headers=extra_headers,
             )
 
@@ -351,7 +399,7 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
                           f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
 
             # Write results to files
-            await write_result_to_files(result, output_file, output_csv_file_name)
+            await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
             return result
 
         except openai.BadRequestError as e:
@@ -391,7 +439,7 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
                       f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
 
         # Write error results
-        await write_result_to_files(error_result, output_file, output_csv_file_name)
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
         return error_result
 
 
@@ -820,7 +868,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                           f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
             
             # Write results to files
-            await write_result_to_files(result, output_file, output_csv_file_name)
+            await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
             return result
             
         except openai.BadRequestError as e:
@@ -898,7 +946,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                                   f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
                     
                     # Write results to files
-                    await write_result_to_files(result, output_file, output_csv_file_name)
+                    await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
                     return result
                     
                 except Exception as retry_e:
@@ -941,7 +989,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
                       f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # Write error results
-        await write_result_to_files(error_result, output_file, output_csv_file_name)
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
         return error_result
 
 
@@ -1100,7 +1148,8 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
-                       temperature, is_streaming, results_lock, history_lock, iterations):
+                       temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
+                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Create a client
     client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
@@ -1124,12 +1173,35 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         # Prepare tasks for this iteration only
         iteration_tasks = []
         
+        # Calculate inter-arrival time if RPS is specified
+        mean_inter_arrival_time = 1.0 / rps if rps else None
+        if rps:
+            if poisson_arrivals:
+                logger.info(f"Using RPS-based scheduling with Poisson arrivals: {rps} requests/second (mean inter-arrival: {mean_inter_arrival_time:.4f}s)")
+            else:
+                logger.info(f"Using RPS-based scheduling: {rps} requests/second (inter-arrival time: {mean_inter_arrival_time:.4f}s)")
+        else:
+            logger.info(f"Using timestamp-based scheduling from workload file")
+        
+        if shuffle_requests:
+            logger.info(f"Request shuffling enabled for iteration {iteration+1}")
+        
+        if max_input_tokens:
+            logger.info(f"Filtering requests with max_input_tokens={max_input_tokens}")
+        
+        if max_tokens_std > 0:
+            logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
+        else:
+            logger.info(f"Using fixed output tokens: {max_tokens}")
+        
+        # First, collect all requests for this iteration (without target times yet)
+        temp_requests = []
+        filtered_count = 0
+        
         # Process the load structure and create tasks for this iteration only
         for requests_dict in load_struct:
             ts = int(requests_dict["timestamp"])
             requests = requests_dict["requests"]
-            # Use iteration_base_time instead of global base_time
-            target_time = iteration_base_time + ts / 1000.0  # Convert milliseconds to seconds
             
             for request in requests:
                 session_id = request.get("session_id", None)
@@ -1155,19 +1227,74 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     token_ids = None
                     prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
 
-                max_tokens_value = request.get("Output Length", max_tokens)
-                # print(f"max_tokens_value: {max_tokens_value}")
-                task = {
+                # Filter by max_input_tokens if specified
+                if max_input_tokens:
+                    # Estimate token count from the original prompt text
+                    original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                    estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+                    
+                    if estimated_tokens > max_input_tokens:
+                        filtered_count += 1
+                        logger.debug(f"Filtering request with estimated {estimated_tokens} tokens (max: {max_input_tokens})")
+                        continue  # Skip this request
+
+                # Get base max_tokens value (from workload or default)
+                base_max_tokens = request.get("Output Length", max_tokens)
+                
+                # Sample from normal distribution to make it more realistic
+                if max_tokens_std > 0:
+                    sampled_max_tokens = sample_output_tokens(base_max_tokens, max_tokens_std)
+                else:
+                    sampled_max_tokens = base_max_tokens
+                
+                # Store request info with original timestamp (for non-RPS mode)
+                temp_request = {
                     "prompt": prompt,
-                    "request_id": request_id,
                     "session_id": session_id,
-                    "target_time": target_time,
-                    "max_tokens": max_tokens_value,
-                    "iteration": iteration,
-                    "token_ids": token_ids
+                    "max_tokens": sampled_max_tokens,
+                    "token_ids": token_ids,
+                    "original_timestamp_ms": ts  # Store original timestamp
                 }
-                iteration_tasks.append(task)
-                request_id += 1
+                temp_requests.append(temp_request)
+        
+        # Log filtering results
+        if max_input_tokens and filtered_count > 0:
+            logger.info(f"Filtered out {filtered_count} requests exceeding max_input_tokens={max_input_tokens}")
+        
+        # Shuffle requests if enabled
+        if shuffle_requests:
+            random.shuffle(temp_requests)
+            logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+        
+        # Now assign target times and create final tasks
+        cumulative_time = 0.0  # For Poisson arrivals
+        for idx, req in enumerate(temp_requests):
+            # Calculate target_time based on mode
+            if rps:
+                if poisson_arrivals:
+                    # Use exponential distribution for Poisson process
+                    # Sample inter-arrival time from exponential distribution
+                    inter_arrival = np.random.exponential(mean_inter_arrival_time)
+                    cumulative_time += inter_arrival
+                    target_time = iteration_base_time + cumulative_time
+                else:
+                    # Fixed inter-arrival time
+                    target_time = iteration_base_time + (idx * mean_inter_arrival_time)
+            else:
+                # Use timestamp from workload file
+                target_time = iteration_base_time + req["original_timestamp_ms"] / 1000.0
+            
+            task = {
+                "prompt": req["prompt"],
+                "request_id": request_id,
+                "session_id": req["session_id"],
+                "target_time": target_time,
+                "max_tokens": req["max_tokens"],
+                "iteration": iteration,
+                "token_ids": req["token_ids"]
+            }
+            iteration_tasks.append(task)
+            request_id += 1
         
         logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
         print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
@@ -1256,6 +1383,11 @@ async def main(args):
             results_lock=results_lock,
             history_lock=history_lock,
             iterations=args.iterations,
+            rps=args.rps,
+            shuffle_requests=args.shuffle_requests,
+            poisson_arrivals=args.poisson_arrivals,
+            max_input_tokens=args.max_input_tokens,
+            max_tokens_std=args.max_tokens_std,
         )
         end_time = time.time()
         
@@ -1282,7 +1414,8 @@ if __name__ == "__main__":
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing_strategy", type=str, default="random", help="Routing strategy to use.")
     parser.add_argument("--subAlgorithm", type=str, default="random", help="Sub Routing strategy that will be used for flexible prefix cache.")
-    parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request.")
+    parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request (used as mean for sampling).")
+    parser.add_argument("--max-tokens-std", type=float, default=10.0, help="Standard deviation for sampling output tokens from normal distribution. Set to 0 to disable sampling (use fixed max_tokens).")
     parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for the request.")
     parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout in seconds.")
     parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
@@ -1290,8 +1423,21 @@ if __name__ == "__main__":
     parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
     parser.add_argument("--prompt-type", type=str, default="chat", choices=["chat", "token-ids"],
                        help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
+    parser.add_argument("--rps", type=float, default=None, 
+                       help="Requests per second (RPS). If specified, requests are sent at this rate instead of using workload timestamps.")
+    parser.add_argument("--shuffle-requests", action="store_true",
+                       help="Shuffle the order of requests for each iteration (makes iterations non-identical)")
+    parser.add_argument("--poisson-arrivals", action="store_true",
+                       help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")
+    parser.add_argument("--max-input-tokens", type=int, default=None,
+                       help="Maximum number of input tokens per request. Requests exceeding this limit will be filtered out. Uses word count approximation (words * 1.33).")
 
     args = parser.parse_args()
+    
+    # Validation: poisson-arrivals only makes sense with RPS
+    if args.poisson_arrivals and not args.rps:
+        logger.warning("--poisson-arrivals flag requires --rps to be specified. Ignoring poisson-arrivals.")
+        args.poisson_arrivals = False
 
     asyncio.run(main(args))
     if not os.path.exists(args.output_dir):

@@ -415,55 +415,58 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		if utils.FirstRequestStartTime == 0 {
 			utils.FirstRequestStartTime = time.Now().UnixMicro()
 		}
+
 		prev_reward := 0.0 // total latency in seconds of all live and completed requests
-		cur_time_in_microseconds := time.Now().UnixMicro()
-		klog.V(5).Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
+		if ctx.SubAlgorithm == "scalable_rl_agent" {
+			cur_time_in_microseconds := time.Now().UnixMicro()
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
 
-		// Copy live request IDs to avoid concurrent map iteration and write
-		utils.LiveRequestsMutex.RLock()
-		liveRequestIDs := make([]string, 0, len(utils.LiveRequests))
-		for reqID := range utils.LiveRequests {
-			liveRequestIDs = append(liveRequestIDs, reqID)
-		}
-		utils.LiveRequestsMutex.RUnlock()
-
-		// Now safely iterate over the copy
-		for _, live_request_id := range liveRequestIDs {
-			live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
-			if !exists {
-				klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests. Use default value %d seconds", ctx.RequestID, live_request_id, live_request_last_time)
-				// continue
+			// Copy live request IDs to avoid concurrent map iteration and write
+			utils.LiveRequestsMutex.RLock()
+			liveRequestIDs := make([]string, 0, len(utils.LiveRequests))
+			for reqID := range utils.LiveRequests {
+				liveRequestIDs = append(liveRequestIDs, reqID)
 			}
-			pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
-			prev_reward += pass_time_in_second
-			klog.V(5).Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
-			utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
-		}
+			utils.LiveRequestsMutex.RUnlock()
 
-		// Copy completed request IDs to avoid concurrent map iteration and write
-		utils.RemainingLatencyMutex.RLock()
-		completedRequestIDs := make([]string, 0, len(utils.RemainingLatencyInMicroseconds))
-		for reqID := range utils.RemainingLatencyInMicroseconds {
-			completedRequestIDs = append(completedRequestIDs, reqID)
-		}
-		utils.RemainingLatencyMutex.RUnlock()
-
-		// Now safely iterate over the copy
-		for _, completed_request_id := range completedRequestIDs {
-			remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
-			if !exists {
-				klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
-				continue
+			// Now safely iterate over the copy
+			for _, live_request_id := range liveRequestIDs {
+				live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
+				if !exists {
+					klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests. Use default value %d seconds", ctx.RequestID, live_request_id, live_request_last_time)
+					// continue
+				}
+				pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
+				prev_reward += pass_time_in_second
+				klog.V(5).Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
+				utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
 			}
-			pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
-			prev_reward += pass_time_in_second
-			klog.V(5).Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
-			utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
-		}
-		utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
 
-		klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
-		utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
+			// Copy completed request IDs to avoid concurrent map iteration and write
+			utils.RemainingLatencyMutex.RLock()
+			completedRequestIDs := make([]string, 0, len(utils.RemainingLatencyInMicroseconds))
+			for reqID := range utils.RemainingLatencyInMicroseconds {
+				completedRequestIDs = append(completedRequestIDs, reqID)
+			}
+			utils.RemainingLatencyMutex.RUnlock()
+
+			// Now safely iterate over the copy
+			for _, completed_request_id := range completedRequestIDs {
+				remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
+				if !exists {
+					klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
+					continue
+				}
+				pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
+				prev_reward += pass_time_in_second
+				klog.V(5).Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
+				utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
+			}
+			utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
+
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
+			utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
+		}
 		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f`
 		logMessage = fmt.Sprintf(
 			logFormat,
@@ -539,28 +542,29 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				if ctx.SubAlgorithm == "random" {
 					klog.Infof("random routing, request_id: %s", ctx.RequestID)
 					targetPod, _ = selectRandomPod(readyPods, rand.Intn)
+				} else if ctx.SubAlgorithm == "least-latency" {
+					klog.Infof("least-latency routing, request_id: %s", ctx.RequestID)
+					targetPod = selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
+					if targetPod == nil {
+						klog.Errorf("least-latency routing, No suitable pod found for least latency routing, requestID: %s", ctx.RequestID)
+					}
+					klog.Infof("least-latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+				} else if ctx.SubAlgorithm == "least-request" {
+					klog.Infof("least-request routing, request_id: %s", ctx.RequestID)
+					targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
+					if targetPod == nil {
+						klog.Errorf("least-request routing, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+					}
+					klog.Infof("least-request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+				} else if ctx.SubAlgorithm == "least-kv-cache" {
+					klog.Infof("least-kv-cache routing, request_id: %s", ctx.RequestID)
+					targetPod = selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
+					if targetPod == nil {
+						klog.Errorf("least-kv-cache routing, No suitable pod found for least kv cache routing, requestID: %s", ctx.RequestID)
+					}
+					klog.Infof("least-kv-cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 				} else if ctx.SubAlgorithm == "prefix_cache_1" {
-					var isLoadImbalanced bool
-					targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
-					if !isLoadImbalanced {
-						if len(podIPsWithMatchingRatios) > 0 {
-							targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
-							if targetPod == nil {
-								klog.Errorf("prefix_cache_1, No pod found in podIPsWithMatchingRatios for prefix routing, requestID: %s", ctx.RequestID)
-							} else {
-								klog.Infof("prefix_cache_1, prefix routing, request_id: %s, targetPod: %s, podIPsWithMatchingRatios: %v", ctx.RequestID, targetPod.Status.PodIP, podIPsWithMatchingRatios)
-							}
-						}
-					} else {
-						klog.Infof("prefix_cache_1, load balancing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-					if len(podIPsWithMatchingRatios) == 0 || targetPod == nil {
-						klog.Infof("prefix_cache_1, least request count routing, request_id: %s", ctx.RequestID)
-						targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
-						if targetPod == nil {
-							klog.Errorf("prefix_cache_1, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
-						}
-					}
+					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
 					var isLoadImbalanced bool
 					targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
@@ -583,9 +587,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 							klog.Errorf("prefix_cache_2, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 						}
 					}
+				} else if ctx.SubAlgorithm == "latency_predictor" && ctx.Iteration == 0 {
+					// Use prefix_cache_1 routing for iteration 0
+					klog.Infof("latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)
+					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				}
-				// else { // rl, or latency_predictor
-				// 	klog.Infof("Unknown sub-algorithm: %s other than scalable_rl_agent, rl_agent or latency_predictor. requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
+				// else { // rl, latency_predictor with iteration > 0, or other algorithms
+				// 	// For latency_predictor with iteration > 0, the targetPod is already set by the RL agent response
+				// 	klog.Infof("Using RL agent selected pod for sub-algorithm: %s, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
 				// }
 				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {
@@ -599,6 +608,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
+				utils.SetEndToEndOverheadForRequest(float64(end_to_end_overhead), ctx.RequestID)
 				klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
 			}
 		}
@@ -625,6 +635,36 @@ func formatJSONResponse(RequestID string, jsonBytes []byte) string {
 		result.WriteString(fmt.Sprintf("requestID: %s, %s:%v\n", RequestID, key, value))
 	}
 	return strings.TrimSuffix(result.String(), "\n")
+}
+
+// routeWithPrefixCache1 implements the prefix_cache_1 routing algorithm
+func (r *rlOnlineRouter) routeWithPrefixCache1(ctx *types.RoutingContext, readyPods []*v1.Pod, podIPsWithMatchingRatios map[string]int) *v1.Pod {
+	var targetPod *v1.Pod
+	var isLoadImbalanced bool
+
+	targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
+	if !isLoadImbalanced {
+		if len(podIPsWithMatchingRatios) > 0 {
+			targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
+			if targetPod == nil {
+				klog.Errorf("prefix_cache_1, No pod found in podIPsWithMatchingRatios for prefix routing, requestID: %s", ctx.RequestID)
+			} else {
+				klog.Infof("prefix_cache_1, prefix routing, request_id: %s, targetPod: %s, podIPsWithMatchingRatios: %v", ctx.RequestID, targetPod.Status.PodIP, podIPsWithMatchingRatios)
+			}
+		}
+	} else {
+		klog.Infof("prefix_cache_1, load balancing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+	}
+
+	if len(podIPsWithMatchingRatios) == 0 || targetPod == nil {
+		klog.Infof("prefix_cache_1, least request count routing, request_id: %s", ctx.RequestID)
+		targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
+		if targetPod == nil {
+			klog.Errorf("prefix_cache_1, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+		}
+	}
+
+	return targetPod
 }
 
 func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {

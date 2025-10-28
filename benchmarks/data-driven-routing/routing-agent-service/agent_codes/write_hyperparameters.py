@@ -7,16 +7,16 @@ import argparse
 
 RL_MODEL_HYPERPARAMETERS = {
     'hidden_dim': 64, # 64, 128, 256
-    'batch_size': 32,
+    'batch_size': 256,
     # 'offline_learning_rate': 0.001,
-    'training_epochs': 15, # 5,
+    'training_epochs': 50, # 5,
     'learning_every_x_iter': 5,
     'weight_decay': 0.0001,
     'max_updates_per_epoch': 1000, # 1000000000
     'exploration_rate': 0.1, # 0.1
     'explore': True,
     'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
-    
+    'test_size_ratio': 0.1, # 0.1
     'eval_interval': 10,
     'entropy_bonus_factor': 0.02,
     'per_learn_reward_normalization': False,
@@ -39,13 +39,15 @@ RL_MODEL_HYPERPARAMETERS = {
     'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
     'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
     'TTFT_REWARD_WEIGHT': 0.5,
+    # 'lr_scheduler_type': 'exponential',
+    'lr_scheduler_type': 'constant',
+    'lr_scheduler_gamma': 0.95,
     'OFFLINE_LEARNING_RATE': 0.001,
-    'ONLINE_LEARNING_RATE': 0.0005,
+    # 'ONLINE_LEARNING_RATE': 0.0005,
     'EXCLUDED_POD_FEATURES': [],
     'NO_NORMALIZE_FEATURES': [],
     
     # Learning rate scheduling options
-    'lr_scheduler_type': 'exponential',  # 'plateau', 'exponential', 'gradient_adaptive'
     'lr_scheduler_gamma': 0.95,  # For exponential scheduler
     
     # Model type selection
@@ -64,15 +66,15 @@ def main():
     parser.add_argument('--offline_learning_rate', type=float, default=None)
     parser.add_argument('--excluded_pod_features', type=str, default='', help='Comma-separated pod features to exclude')
     parser.add_argument('--no_normalize_features', type=str, default='', help='Comma-separated features to not normalize')
-    parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive'], help='Learning rate scheduler type')
+    parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive', 'constant'], help='Learning rate scheduler type')
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
     parser.add_argument('--hidden_dim', type=int, default=None, help='Hidden dimension')
     parser.add_argument('--reward_decay_factor', type=float, default=0.9, help='reward_decay_factor (lambda)')
     parser.add_argument('--model_type', type=str, default=None, choices=['contextual_bandit', 'latency_predictor', 'rl_agent'], help='Model type to use')
+    parser.add_argument('--test_size_ratio', type=float, default=None, help='Test size ratio')
     # RL (SB3 PPO) specific hyperparameters (optional)
     parser.add_argument('--learning_rate', type=float, default=None, help='PPO learning rate')
     parser.add_argument('--n_steps', type=int, default=None, help='PPO n_steps')
-    parser.add_argument('--batch_size', type=int, default=None, help='PPO batch_size')
     parser.add_argument('--n_epochs', type=int, default=None, help='PPO n_epochs')
     parser.add_argument('--gae_lambda', type=float, default=None, help='PPO gae_lambda')
     parser.add_argument('--clip_range', type=float, default=None, help='PPO clip_range')
@@ -82,6 +84,8 @@ def main():
     parser.add_argument('--rl_checkpoint_path', type=str, default=None, help='Path to PPO checkpoint to load at init')
     parser.add_argument('--freeze_transferred_weights', action='store_true', help='Freeze transferred contextual bandit weights')
     parser.add_argument('--latency_metric', type=str, default=None, choices=['ttft', 'avg_tpot', 'e2e_latency'], help='Latency metric for latency_predictor model')
+    parser.add_argument('--training_epochs', type=int, default=15, help='Training epochs for latency_predictor model')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for latency_predictor model')
     
     args = parser.parse_args()
 
@@ -115,8 +119,6 @@ def main():
         RL_MODEL_HYPERPARAMETERS['learning_rate'] = float(args.learning_rate)
     if args.n_steps is not None:
         RL_MODEL_HYPERPARAMETERS['n_steps'] = int(args.n_steps)
-    if args.batch_size is not None:
-        RL_MODEL_HYPERPARAMETERS['batch_size'] = int(args.batch_size)
     if args.n_epochs is not None:
         RL_MODEL_HYPERPARAMETERS['n_epochs'] = int(args.n_epochs)
     if args.gae_lambda is not None:
@@ -135,6 +137,10 @@ def main():
         RL_MODEL_HYPERPARAMETERS['LATENCY_METRIC'] = args.latency_metric
     if args.reward_decay_factor:
         RL_MODEL_HYPERPARAMETERS['reward_decay_factor'] = float(args.reward_decay_factor)
+    if args.training_epochs:
+        RL_MODEL_HYPERPARAMETERS['training_epochs'] = int(args.training_epochs)
+    if args.batch_size:
+        RL_MODEL_HYPERPARAMETERS['batch_size'] = int(args.batch_size)
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w') as f:
         json.dump(RL_MODEL_HYPERPARAMETERS, f, indent=4, default=str)
