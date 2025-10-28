@@ -13,7 +13,7 @@ k8s_cluster="vke"
 routing_policy_list=(
     # "prefix_cache_1"
     # "latency_predictor"
-    # "random"
+    "random"
     "least-latency"
     "least-request"
     "least-kv-cache"
@@ -26,8 +26,8 @@ routing_policy_list=(
 workload_name_list=(
     # "ten_request" # 20
     # "hundred_request" # 99
-    "SharingRatio9%" # 2053, 265875 (5min)
-    # "SharingRatio28%" # 1999, 259697 (5min)
+    # "SharingRatio9%" # 2053, 265875 (5min)
+    "SharingRatio28%" # 1999, 259697 (5min)
     # "SharingRatio47%" # 2313, 299803
     # "SharingRatio71%" # 1500, 346602
     # "MixedSharingRatio10_30_50_70%" # 4000
@@ -106,7 +106,7 @@ for rps in "${rps_list[@]}"; do
             max_tokens_std=5
             total_num_episodes=4
         elif [ "${workload_name}" == "SharingRatio28%" ]; then
-            # rps=8 # works
+            rps=8 # works
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
@@ -283,9 +283,9 @@ for rps in "${rps_list[@]}"; do
             ship_took=$((ship_end_time - ship_start_time))
             echo "* ship_all took: ${ship_took}s"
 
+            python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
             python3 check_ready.py --deployment aibrix-gateway-plugins --namespace aibrix-system
             python3 check_ready.py --deployment routing-agent-service --namespace default
-            python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
             sleep 5
 
             echo "========================================="
@@ -343,7 +343,7 @@ for rps in "${rps_list[@]}"; do
 
             # Create local experiment result output directory
             timestamp=$(date +%Y%m%d_%H%M%S)
-            experiment_result_output_dir="../workload-and-experiment_results/hetero/${workload_name}/${subAlgorithm}"
+            experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
             if [ "${subAlgorithm}" == "rl_agent" ]; then
                 postfix="total_num_episodes${total_num_episodes}"
                 experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
