@@ -40,6 +40,7 @@ type RoutingContext struct {
 	context.Context
 	Algorithm    RoutingAlgorithm
 	SubAlgorithm string
+	TargetGPU    string
 	Iteration    int
 	Model        string
 	Message      string
@@ -119,7 +120,8 @@ func (r *RoutingContext) targetAddressWithoutPort(pod *v1.Pod) string {
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, requestID string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
-	r.SubAlgorithm = "" // Initialize the new field
+	r.SubAlgorithm = ""
+	r.TargetGPU = "" // Initialize the new field
 	r.Iteration = -2
 	r.Model = model
 	r.Message = message

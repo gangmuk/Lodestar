@@ -95,6 +95,15 @@ func getIteration(headers []*configPb.HeaderValue) string {
 	return ""
 }
 
+func getTargetGPU(headers []*configPb.HeaderValue) string {
+	for _, header := range headers {
+		if strings.ToLower(header.Key) == "targetGPU" {
+			return string(header.RawValue)
+		}
+	}
+	return "NVIDIA-L20"
+}
+
 // getRequestMessage returns input request message field which has user prompt
 func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
 	messages, ok := jsonMap["messages"]

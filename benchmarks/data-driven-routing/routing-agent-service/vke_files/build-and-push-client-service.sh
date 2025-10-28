@@ -43,11 +43,10 @@ else
         echo "Updating client-service deployment..."
         kubectl set image deployment/client-service client=gangmuk/gangmuk-client:${tag}
         kubectl patch deployment client-service -p '{"spec":{"template":{"spec":{"containers":[{"name":"client","imagePullPolicy":"Always"}]}}}}'
-        kubectl rollout restart deploy client-service
-        echo "✓ Deployment updated and restarted"
+        echo "✓ Deployment updated"
     else
         echo "⚠️  Deployment 'client-service' not found. You'll need to create it manually."
     fi
 fi
 
-kubectl rollout restart deploy client-service
+# kubectl rollout restart deploy client-service

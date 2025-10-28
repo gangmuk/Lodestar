@@ -336,7 +336,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'numDecodeTokensForAllPods',
         # 'GPU_model',
         'subAlgorithm', # old training data does not have it... so...
-        'prev_reward',
+        # 'prev_reward', ## uncomment it for scalable RL agent training
     ]
     
     ###########################################
@@ -404,7 +404,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'request_start_time': parsed_df['request_start_time'].values,
         'request_end_time': parsed_df['request_end_time'].values, 
         'subAlgorithm': parsed_df['subAlgorithm'].values,
-        'prev_reward': parsed_df['prev_reward'].values,
+        # 'prev_reward': parsed_df['prev_reward'].values,
     }
     if INCLUDE_GPU_IN_FEATURE:
         base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values

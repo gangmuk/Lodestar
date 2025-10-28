@@ -624,6 +624,9 @@ var ChosenPodPredictedLatencyMutex sync.RWMutex
 var ChosenPodPredictedLatency = make(map[string]float64)
 
 var (
+	EndToEndOverheadMutex sync.RWMutex
+	EndToEndOverhead      map[string]float64 // requestID -> end to end overhead
+
 	FirstRequestStartTime   int64 = 0
 	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
@@ -729,6 +732,9 @@ func init() {
 
 	// RequestToNumTrains = make(map[string]int) // requestID -> num trains
 	// RequestToNumTrainsMutex = sync.RWMutex{}
+
+	EndToEndOverheadMutex = sync.RWMutex{}
+	EndToEndOverhead = make(map[string]float64)
 
 	RequestToLogMessageMutex = sync.RWMutex{}
 	RequestToLogMessage = make(map[string]string)
@@ -907,6 +913,30 @@ func GetGPUModel(podIP string) (string, bool) {
 	}
 	klog.V(5).Infof("GetGPUModel for podIP %s: %s", podIP, gpuModel)
 	return gpuModel, true
+}
+
+func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
+	EndToEndOverheadMutex.Lock()
+	defer EndToEndOverheadMutex.Unlock()
+	EndToEndOverhead[requestID] = endToEndOverhead
+	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
+}
+
+func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
+	EndToEndOverheadMutex.RLock()
+	defer EndToEndOverheadMutex.RUnlock()
+	if val, ok := EndToEndOverhead[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetEndToEndOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+	return 0, false
+}
+
+func CleanupEndToEndOverheadForRequest(requestID string) {
+	EndToEndOverheadMutex.Lock()
+	defer EndToEndOverheadMutex.Unlock()
+	delete(EndToEndOverhead, requestID)
+	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
 }
 
 func SetNumTrains(numTrains int) {

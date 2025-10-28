@@ -46,12 +46,20 @@ class K8sDeployment:
             logger.error(f"Failed to get pods: {e}")
             return []
     
-    def copy_file_to_pod(self, pod_name, local_path, remote_path):
-        """Copy a single file to pod"""
+    def copy_file_to_pod(self, pod_name, local_path, remote_path, max_size_mb=10):
+        """Copy a single file to pod. Uses kubectl cp for large files."""
         try:
             if not Path(local_path).exists():
                 logger.error(f"Local file {local_path} does not exist")
                 return False
+            
+            # Check file size
+            file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+            
+            # For large files, use kubectl cp which is more robust
+            if file_size_mb > max_size_mb:
+                logger.info(f"File size ({file_size_mb:.1f}MB) exceeds {max_size_mb}MB, using kubectl cp")
+                return self.copy_file_with_kubectl(pod_name, local_path, remote_path)
             
             # Create parent directory if it doesn't exist
             remote_dir = os.path.dirname(remote_path)
@@ -76,6 +84,34 @@ class K8sDeployment:
             
         except Exception as e:
             logger.error(f"❌ Failed to copy {local_path} to {pod_name}: {e}")
+            # Fallback to kubectl cp
+            logger.info("Retrying with kubectl cp...")
+            return self.copy_file_with_kubectl(pod_name, local_path, remote_path)
+    
+    def copy_file_with_kubectl(self, pod_name, local_path, remote_path):
+        """Copy file using kubectl cp command (more reliable for large files)"""
+        try:
+            # Create parent directory if it doesn't exist
+            remote_dir = os.path.dirname(remote_path)
+            if remote_dir:
+                self.execute_command(pod_name, f"mkdir -p {remote_dir}")
+            
+            # Use kubectl cp with the kubeconfig
+            kubeconfig_path = os.path.expanduser('~/.kube/config-vke')
+            cmd = f"kubectl --kubeconfig={kubeconfig_path} cp {local_path} {self.namespace}/{pod_name}:{remote_path}"
+            
+            logger.info(f"Executing: {cmd}")
+            result = os.system(cmd)
+            
+            if result == 0:
+                logger.info(f"✅ Successfully copied {local_path} using kubectl cp")
+                return True
+            else:
+                logger.error(f"❌ kubectl cp failed with exit code {result}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to copy with kubectl: {e}")
             return False
     
     def copy_directory_to_pod(self, pod_name, local_dir, exclude_dir_or_file_list, remote_dir):
@@ -268,6 +304,7 @@ class K8sDeployment:
             # Copy individual files
             files_copied = 0
             for local_path, remote_path in agent_related_files.items():
+                print(f"Starting to copy file: {local_path} to {pod_name}")
                 if self.copy_file_to_pod(pod_name, local_path, remote_path):
                     print(f"Copied {local_path}")
                     files_copied += 1

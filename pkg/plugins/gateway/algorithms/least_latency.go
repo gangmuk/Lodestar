@@ -52,93 +52,11 @@ func NewLeastExpectedLatencyRouter() (types.Router, error) {
 }
 
 func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	minExpectedLatency := math.MaxFloat64
-
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	sumPromptTokens := 0.0
-	sumGenerationTokens := 0.0
-	cntPromt := 0
-	cntGeneration := 0
-	for _, pod := range pods.All() {
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		if avgPromptTokens.GetSimpleValue() > 0 {
-			sumPromptTokens += avgPromptTokens.GetSimpleValue()
-			cntPromt += 1
-		}
-		if avgGenerationTokens.GetSimpleValue() > 0 {
-			sumGenerationTokens += avgGenerationTokens.GetSimpleValue()
-			cntGeneration += 1
-		}
-	}
-	guessPromptTokens := 10.0
-	if cntPromt > 0 {
-		guessPromptTokens = sumPromptTokens / float64(cntPromt)
-	}
-	guessGenerationTokens := 100.0
-	if cntGeneration > 0 {
-		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
-	}
-
-	for _, pod := range pods.All() {
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
-		// expected queuing latency
-		queuingLatency, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestQueueTimeSeconds)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-
-		// expected prefill latency
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		PrefillTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestPrefillTimeSeconds)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
-
-		// expected decode latency
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		DecodeTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestDecodeTimeSeconds)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens.GetSimpleValue() * guessGenerationTokens
-
-		totalExpectedLatency := queuingLatency.GetSimpleValue() + prefillLatency + decodeLatency
-		klog.V(4).Infof("pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",
-			pod.Name, pod.Status.PodIP, queuingLatency.GetSimpleValue(), prefillLatency, decodeLatency, totalExpectedLatency)
-
-		if totalExpectedLatency <= minExpectedLatency {
-			minExpectedLatency = totalExpectedLatency
-			targetPod = pod
-		}
-	}
+	targetPod := selectTargetPodWithLeastLatency(r.cache, pods.All(), ctx.Model)
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
@@ -156,4 +74,101 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+// selectTargetPodWithLeastLatency selects the pod with the lowest expected latency
+// This is a helper function that can be used by other routers
+func selectTargetPodWithLeastLatency(cache cache.Cache, readyPods []*v1.Pod, model string) *v1.Pod {
+	var targetPod *v1.Pod
+	minExpectedLatency := math.MaxFloat64
+
+	if len(readyPods) == 0 {
+		return nil
+	}
+
+	// Calculate average prompt and generation tokens across all pods
+	sumPromptTokens := 0.0
+	sumGenerationTokens := 0.0
+	cntPrompt := 0
+	cntGeneration := 0
+	for _, pod := range readyPods {
+		avgPromptTokens, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgPromptToksPerReq)
+		if err != nil {
+			klog.V(5).Infof("Could not get AvgPromptToksPerReq for pod %s: %v", pod.Name, err)
+			continue
+		}
+		avgGenerationTokens, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgGenerationToksPerReq)
+		if err != nil {
+			klog.V(5).Infof("Could not get AvgGenerationToksPerReq for pod %s: %v", pod.Name, err)
+			continue
+		}
+		if avgPromptTokens.GetSimpleValue() > 0 {
+			sumPromptTokens += avgPromptTokens.GetSimpleValue()
+			cntPrompt += 1
+		}
+		if avgGenerationTokens.GetSimpleValue() > 0 {
+			sumGenerationTokens += avgGenerationTokens.GetSimpleValue()
+			cntGeneration += 1
+		}
+	}
+
+	guessPromptTokens := 10.0
+	if cntPrompt > 0 {
+		guessPromptTokens = sumPromptTokens / float64(cntPrompt)
+	}
+	guessGenerationTokens := 100.0
+	if cntGeneration > 0 {
+		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
+	}
+
+	// Find pod with minimum expected latency
+	for _, pod := range readyPods {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+
+		// expected queuing latency
+		queuingLatency, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.RequestQueueTimeSeconds)
+		if err != nil {
+			klog.V(5).Infof("Could not get RequestQueueTimeSeconds for pod %s: %v", pod.Name, err)
+			continue
+		}
+
+		// expected prefill latency
+		avgPromptTokens, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgPromptToksPerReq)
+		if err != nil {
+			klog.V(5).Infof("Could not get AvgPromptToksPerReq for pod %s: %v", pod.Name, err)
+			continue
+		}
+		PrefillTime, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.RequestPrefillTimeSeconds)
+		if err != nil {
+			klog.V(5).Infof("Could not get RequestPrefillTimeSeconds for pod %s: %v", pod.Name, err)
+			continue
+		}
+		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
+
+		// expected decode latency
+		avgGenerationTokens, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgGenerationToksPerReq)
+		if err != nil {
+			klog.V(5).Infof("Could not get AvgGenerationToksPerReq for pod %s: %v", pod.Name, err)
+			continue
+		}
+		DecodeTime, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.RequestDecodeTimeSeconds)
+		if err != nil {
+			klog.V(5).Infof("Could not get RequestDecodeTimeSeconds for pod %s: %v", pod.Name, err)
+			continue
+		}
+		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens.GetSimpleValue() * guessGenerationTokens
+
+		totalExpectedLatency := queuingLatency.GetSimpleValue() + prefillLatency + decodeLatency
+		klog.V(4).Infof("pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",
+			pod.Name, pod.Status.PodIP, queuingLatency.GetSimpleValue(), prefillLatency, decodeLatency, totalExpectedLatency)
+
+		if totalExpectedLatency <= minExpectedLatency {
+			minExpectedLatency = totalExpectedLatency
+			targetPod = pod
+		}
+	}
+
+	return targetPod
 }

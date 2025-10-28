@@ -454,6 +454,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupExploration(routerCtx.RequestID)
 			utils.CleanupPredictedLatencies(routerCtx.RequestID)
 			utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
+			utils.CleanupEndToEndOverheadForRequest(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
@@ -817,15 +818,18 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
 	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
 
+	prev_reward := -7.0
+	if routerCtx.SubAlgorithm == "scalable_rl_agent" {
+		prev_reward = utils.GetPrevRewardForRequest(routerCtx.RequestID)
+		cur_time_in_microseconds := time.Now().UnixMicro()
+		utils.SetRemainingLatencyForCompletedRequest(routerCtx.RequestID, cur_time_in_microseconds)
+		utils.RemoveLiveRequest(routerCtx.RequestID)
+	}
 	// Get predicted latencies
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
-
-	cur_time_in_microseconds := time.Now().UnixMicro()
-	utils.SetRemainingLatencyForCompletedRequest(routerCtx.RequestID, cur_time_in_microseconds)
-	utils.RemoveLiveRequest(routerCtx.RequestID)
-
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f",
+	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -853,7 +857,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		utils.GetChosenPodPredictedLatency(routerCtx.RequestID),
 		routerCtx.Iteration,
 		routerCtx.SubAlgorithm,
-		utils.GetPrevRewardForRequest(routerCtx.RequestID),
+		prev_reward,
+		endToEndOverhead,
 	)
 
 	// logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",
@@ -884,10 +889,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	// )
 	klog.Infof("%s", logMessage)
 
-	// Write to file asynchronously (non-blocking)
-	writeLatencyMetricsLog(logMessage)
+	//// Write to file asynchronously (non-blocking)
+	// writeLatencyMetricsLog(logMessage)
 
-	// // Notify scalable RL agent of request completion (async, non-blocking)
+	// // Request completion. Callback routine. Notify scalable RL agent of request completion (async, non-blocking)
 	// notifyRLAgentRequestComplete(routerCtx, ttftMs, avgTpotMs)
 
 	return headers, logMessage
