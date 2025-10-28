@@ -11,14 +11,14 @@ CONTAINER_NAME=${CONTAINER_NAME:-client}
 k8s_cluster="vke"
 
 routing_policy_list=(
-    "prefix_cache_1"
+    # "prefix_cache_1"
     # "latency_predictor"
     # "random"
-    # "least-latency"
-    # "least-request"
-    # "least-kv-cache"
+    "least-latency"
+    "least-request"
+    "least-kv-cache"
     # "preble"
-    # "prefix_cache_2"
+    # # "prefix_cache_2"
     # "scalable_rl_agent"
 )
 
@@ -100,11 +100,11 @@ for rps in "${rps_list[@]}"; do
     cut_done=0
     for workload_name in "${workload_name_list[@]}"; do
         if [ "${workload_name}" == "SharingRatio9%" ]; then
-            # rps=7.5 # works in 7*L20
+            rps=7.5 # works in 7*L20
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=6
+            total_num_episodes=4
         elif [ "${workload_name}" == "SharingRatio28%" ]; then
             # rps=8 # works
             # rps=12 # 7*L20 + 8*A30
@@ -153,7 +153,11 @@ for rps in "${rps_list[@]}"; do
 
         for routing_policy in "${routing_policy_list[@]}"; do
             delimiter="+"
-            config="rl-online-router${delimiter}${routing_policy}"
+            if [ "${routing_policy}" == "preble" ]; then
+                config="preble${delimiter}${routing_policy}"
+            else
+                config="rl-online-router${delimiter}${routing_policy}"
+            fi
             routing="${config%%${delimiter}*}"
             subAlgorithm="${config#*${delimiter}}"
             if [ "${subAlgorithm}" != "latency_predictor" ] && [ "${cut_done}" == "0" ]; then
@@ -265,8 +269,8 @@ for rps in "${rps_list[@]}"; do
                 # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
             ship_start_time=$(date +%s)
-            echo "Starting to ship all files to pods"
-            python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
+            # echo "Starting to ship all files to pods"
+            # python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
             
             if [ "${routing_policy}" == "scalable_rl_agent" ]; then
                 scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
