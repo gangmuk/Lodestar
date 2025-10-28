@@ -800,6 +800,22 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	numDecodeTokensForAllPods := utils.GetNumDecodeTokensForAllPods()
 	headers, jsonStrings["numDecodeTokensForAllPods"] = addMetricToHeaders(headers, HeaderNumDecodeTokensForAllPods, numDecodeTokensForAllPods, utils.GetpodTotalDecodeTokensMutex())
 
+	// Create GPU model map for each pod (proper JSON format like other metrics)
+	// Get all pod IPs from the registry
+	allPodIPs := utils.GetAllPodIPsFromRegistry()
+	gpuModelMap := make(map[string]string)
+	for _, podIP := range allPodIPs {
+		// Get GPU model for each pod, with fallback to default
+		gpuModel, exists := utils.GetGPUModel(podIP)
+		if !exists {
+			gpuModel = "GPU-L3c" // Default fallback
+		}
+		gpuModelMap[podIP] = gpuModel
+	}
+	// Use a local mutex for this request-scoped data
+	var gpuMapMutex sync.RWMutex
+	headers, jsonStrings["GPU"] = addMetricToHeaders(headers, "X-GPU-Models", gpuModelMap, &gpuMapMutex)
+
 	// Get selected pod
 	selectedPodIP := "unknown"
 	if routerCtx != nil {
@@ -829,7 +845,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -859,6 +875,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		routerCtx.SubAlgorithm,
 		prev_reward,
 		endToEndOverhead,
+		jsonStrings["GPU"],
 	)
 
 	// logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d",

@@ -21,6 +21,9 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -908,11 +911,50 @@ func GetGPUModel(podIP string) (string, bool) {
 
 	gpuModel, exists := GPUModel[podIP]
 	if !exists {
-		klog.Warningf("Failed GetGPUModel for pod IP: %s, not found. Returning default value: NVIDIA-L20", podIP)
-		return "NVIDIA-L20", false
+		klog.Warningf("Failed GetGPUModel for pod IP: %s, not found. Returning default value: GPU-L3c", podIP)
+		return "GPU-L3c", false
 	}
 	klog.V(5).Infof("GetGPUModel for podIP %s: %s", podIP, gpuModel)
 	return gpuModel, true
+}
+
+// GetGPUModelFromNode fetches the GPU model from the node's labels
+// This function queries the Kubernetes API to get the node's GPU label
+func GetGPUModelFromNode(nodeName string) (string, error) {
+	if nodeName == "" {
+		return "", fmt.Errorf("node name is empty")
+	}
+
+	// Create in-cluster config
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.V(4).Infof("Failed to create in-cluster config: %v", err)
+		return "", fmt.Errorf("failed to create in-cluster config: %w", err)
+	}
+
+	// Create clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.V(4).Infof("Failed to create kubernetes clientset: %v", err)
+		return "", fmt.Errorf("failed to create kubernetes clientset: %w", err)
+	}
+
+	// Get the node
+	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		klog.V(4).Infof("Failed to get node %s: %v", nodeName, err)
+		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	// Check for the VKE GPU label
+	gpuLabel := "machine.cluster.vke.volcengine.com/gpu-name"
+	if gpuModel, ok := node.Labels[gpuLabel]; ok && gpuModel != "" {
+		klog.V(5).Infof("Found GPU model %s from node %s", gpuModel, nodeName)
+		return gpuModel, nil
+	}
+
+	klog.V(4).Infof("Node %s does not have GPU label %s", nodeName, gpuLabel)
+	return "", fmt.Errorf("node %s does not have GPU label", nodeName)
 }
 
 func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
