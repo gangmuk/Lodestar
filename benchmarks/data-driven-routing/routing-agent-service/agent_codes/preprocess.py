@@ -335,7 +335,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         # 'podMetricsLastSecond',  # Optional column - may be empty or missing
         'numPrefillTokensForAllPods',
         'numDecodeTokensForAllPods',
-        # 'GPU_model',
+        'GPU',  # GPU model mapping per pod
         'subAlgorithm', # old training data does not have it... so...
         # 'prev_reward', ## uncomment it for scalable RL agent training
     ]
@@ -344,9 +344,14 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     ## HARDCODE TEMPORARY FIX FOR OLD TRAINING DATA
     if 'subAlgorithm' not in parsed_df.columns:
         parsed_df['subAlgorithm'] = None
+    if 'GPU' not in parsed_df.columns:
+        # For old data without GPU info, create empty dict
+        parsed_df['GPU'] = [{}] * len(parsed_df)
+        logger.warning("GPU column not found in parsed data - adding empty GPU mapping for old training data compatibility")
     ###########################################
 
-    if INCLUDE_GPU_IN_FEATURE:
+    # GPU model encoding is only used during inference, not during initial preprocessing
+    if INCLUDE_GPU_IN_FEATURE and 'pod_ip_to_generalpodid' in RL_MODEL_HYPERPARAMETERS:
         def get_gpu_model_encoded(selected_pod):
             selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
             return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
@@ -407,13 +412,10 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         'subAlgorithm': parsed_df['subAlgorithm'].values,
         # 'prev_reward': parsed_df['prev_reward'].values,
     }
-    if INCLUDE_GPU_IN_FEATURE:
+    
+    # GPU model encoding is only added during inference, not during initial preprocessing
+    if INCLUDE_GPU_IN_FEATURE and 'gpu_model_encoded' in parsed_df.columns:
         base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
-        # Fix 2: Use proper GPU mapping instead of hardcoding
-        if 'pod_gpu_mapping' not in RL_MODEL_HYPERPARAMETERS:
-            logger.error("Error: pod_gpu_mapping not found in RL_MODEL_HYPERPARAMETERS")
-            assert False
-        pod_gpu_models = {pod_id: RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id] for pod_id in sorted_all_pod_ids}
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values
@@ -424,6 +426,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     all_waiting = parsed_df['vllmNumRequestsWaiting'].values
     all_prefill = parsed_df['numPrefillTokensForAllPods'].values
     all_decode = parsed_df['numDecodeTokensForAllPods'].values
+    all_gpu_models = parsed_df['GPU'].values  # Extract GPU model mapping
     # NOTE: podMetricsLastSecond features are not used in training anymore
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
@@ -449,12 +452,9 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
             base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
         if 'decode_tokens' not in excluded_pod_features:
             base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
-        if INCLUDE_GPU_IN_FEATURE:
-            if pod_id not in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']:
-                logger.error(f"Error: Pod ID {pod_id} not found in RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping']")
-                assert False
-            gpu_model = RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'][pod_id]
-            base_data[f"{pod_id}-gpu_model"] = [gpu_model] * len(parsed_df)
+        # Add GPU model for each pod (default to GPU-L3c if not found)
+        if 'GPU' not in excluded_pod_features:
+            base_data[f"{pod_id}-GPU"] = [data.get(pod_id, 'GPU-L3c') for data in all_gpu_models]
     get_value_overhead = time.time() - get_value_start_time # 0ms
     num_rows = len(base_data['request_id'])
     pod_index_start_time = time.time()
@@ -527,16 +527,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     
     if is_training:
         # Training mode: return mapping info for action space creation
-        if INCLUDE_GPU_IN_FEATURE:
-            mapping_info = {
-                'pod_to_index': pod_to_index,
-                'index_to_pod': index_to_pod,
-            }
-            mapping_info['pod_gpu_models'] = pod_gpu_models
-            logger.debug("\nPod GPU model mapping:")
-            for pod_id, gpu_model in pod_gpu_models.items():
-                logger.debug(f"  Pod {pod_id} -> GPU model {gpu_model}")
-        
+        # GPU models are now included as per-pod columns (pod_xxxx-gpu_model) in the processed_df
         return processed_df, sorted_all_pod_ids, preprocess_overhead_summary
     else:
         # Inference mode: simplified return for speed

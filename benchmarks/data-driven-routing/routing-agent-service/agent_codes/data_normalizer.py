@@ -344,7 +344,7 @@ def _get_normalizable_features(processed_df, no_normalize_features: list[str]):
     """
     normalizable_features = ['input_tokens', 'output_tokens', 'total_tokens']
     for col in processed_df.columns:
-        if col.startswith('pod_') and 'gpu_model' not in col:
+        if col.startswith('pod_') and 'gpu_model' not in col and 'GPU' not in col:
             temp = col.split('pod_')[1][5:]
             if temp not in no_normalize_features:
                 normalizable_features.append(col)

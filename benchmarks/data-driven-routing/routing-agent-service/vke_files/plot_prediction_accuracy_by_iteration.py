@@ -66,36 +66,23 @@ def plot_prediction_accuracy_by_iteration(df, routing_policy, output_path):
     # Create figure
     fig, ax = plt.subplots(figsize=(6, 5))
     
-    # Create bar chart with grouped bars for MAE and MAPE
+    # Create bar chart for MAE only
     x = np.arange(len(iterations_with_data))
-    width = 0.35
+    width = 0.6
     
-    # Create twin axis for MAPE
-    ax_right = ax.twinx()
-    
-    # Plot MAE bars (left axis) - all in navy/blue color tone
-    bars1 = ax.bar(x - width/2, mae_values, width, 
-                   color='steelblue',
-                   alpha=0.8, edgecolor='gray', label='MAE (ms)')
-    
-    # Plot MAPE bars (right axis) - all in red color tone with hatch pattern
-    bars2 = ax_right.bar(x + width/2, mape_values, width,
-                         color='tab:orange',
-                         alpha=0.6, edgecolor='gray', hatch='//', label='MAPE (%)')
+    # Plot MAE bars - all in navy/blue color tone
+    bars = ax.bar(x, mae_values, width, 
+                  color='steelblue',
+                  alpha=0.8, edgecolor='gray', label='MAE (ms)')
     
     # Add value labels on bars
-    for i, (bar, mae) in enumerate(zip(bars1, mae_values)):
+    for i, (bar, mae) in enumerate(zip(bars, mae_values)):
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(mae_values)*0.02,
-                f'{mae:.0f}', ha='center', va='bottom', fontsize=12, color='navy', rotation=45)
-    
-    for i, (bar, mape) in enumerate(zip(bars2, mape_values)):
-        ax_right.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(mape_values)*0.02,
-                      f'{mape:.0f}%', ha='center', va='bottom', fontsize=12, color='darkred', rotation=45)
+                f'{mae:.0f}', ha='center', va='bottom', fontsize=14, color='navy', rotation=45, fontweight='bold')
     
     # Set labels and title
-    ax.set_xlabel('Iteration', fontsize=16)
-    ax.set_ylabel('MAE (ms)', fontsize=16, color='navy')
-    ax_right.set_ylabel('MAPE (%)', fontsize=16, color='darkred')
+    ax.set_xlabel('Iteration', fontsize=16, fontweight='bold')
+    ax.set_ylabel('MAE (ms)', fontsize=16, color='navy', fontweight='bold')
     
     # Set x-axis
     ax.set_xticks(x)
@@ -104,19 +91,15 @@ def plot_prediction_accuracy_by_iteration(df, routing_policy, output_path):
     # Set y-axis colors
     ax.tick_params(axis='y', labelcolor='navy', labelsize=14)
     ax.tick_params(axis='x', labelsize=14)
-    ax_right.tick_params(axis='y', labelcolor='darkred', labelsize=14)
     
     # Add grid
     ax.grid(True, alpha=0.3, axis='y')
     
-    # Add legends
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax_right.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=14, loc='upper right', ncol=2)
+    # Add legend
+    ax.legend(fontsize=14, loc='upper right')
     
-    # Set y-limits with same relative padding
+    # Set y-limits with padding
     ax.set_ylim(0, max(mae_values) * 1.4)
-    ax_right.set_ylim(0, max(mape_values) * 1.4)
     
     plt.tight_layout()
     

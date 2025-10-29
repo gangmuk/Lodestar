@@ -28,7 +28,7 @@ class K8sDeployment:
         self.namespace = namespace
         self.app_label = app_label
         # kube_config_file = os.path.expanduser('~/.kube/config')
-        kube_config_file = os.path.expanduser('~/.kube/config-vke')
+        kube_config_file = os.path.expanduser('~/.kube/config')
         if not os.path.exists(kube_config_file):
             print(f"Error: {kube_config_file} does not exist")
             assert False
@@ -97,7 +97,7 @@ class K8sDeployment:
                 self.execute_command(pod_name, f"mkdir -p {remote_dir}")
             
             # Use kubectl cp with the kubeconfig
-            kubeconfig_path = os.path.expanduser('~/.kube/config-vke')
+            kubeconfig_path = os.path.expanduser('~/.kube/config')
             cmd = f"kubectl --kubeconfig={kubeconfig_path} cp {local_path} {self.namespace}/{pod_name}:{remote_path}"
             
             logger.info(f"Executing: {cmd}")
@@ -390,7 +390,7 @@ def main():
             "../agent_codes/data_processor.py": "/app/data_processor.py",
             "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
-            "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
+            # "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
             "../agent_codes/rwlock.py": "/app/rwlock.py",
             "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",

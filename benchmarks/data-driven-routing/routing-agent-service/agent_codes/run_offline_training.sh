@@ -32,7 +32,7 @@ routing_policy_for_data_file_list=(
 
 lr_scheduler_type="constant" # "exponential", "constant", "gradient_adaptive"
 batch_size=256
-training_epochs=50
+training_epochs=30
 lr_scheduler_gamma=0.95
 excluded_pod_features="none" # "prefill_tokens", "none", "cpu_kv_cache"
 no_normalize_features="none" # "kv_hit_ratio", "none"
@@ -65,11 +65,11 @@ for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; d
 
     # data_file="../training_data/L20-7/merged-data/all/data_replaced.csv"
 
-    # data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced.csv"
 
     # data_file="../workload-and-experiment_results/multiturn-chat/training_data/data_replaced.csv"
 
-    data_file="../training_data/A30-8-backup/data.csv"
+    data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced.csv"
+    # data_file="../training_data/A30-8/data.csv"
 
     # data_file="../workload-and-experiment_results/multiturn-chat/prefix_cache_1-L20-rps16--iter2-20251027_215827/filtered-aibrix-gateway-plugins.log.csv"
 

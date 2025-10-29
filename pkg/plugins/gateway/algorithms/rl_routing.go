@@ -111,7 +111,7 @@ func initializeGPUModels(c cache.Cache) {
 		}
 
 		// Extract and cache GPU model for each pod
-		for _, pod := range pods {
+		for _, pod := range pods.All() {
 			if pod.Status.PodIP == "" {
 				continue
 			}
@@ -582,7 +582,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
 			utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
 		}
-		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
+		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s`
 		logMessage = fmt.Sprintf(
 			logFormat,
 			ctx.RequestID,
@@ -602,6 +602,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			ctx.SubAlgorithm,
 			prev_reward,
 			jsonStrings["GPU"],
+			"NotDecidedYet",
 		)
 	} else { // useRealRequest == 0
 		logMessage = utils.GenerateLogMessages(allPodIPs, 1)[0]
@@ -732,6 +733,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
 				utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
+				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
+				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
 				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
 				utils.SetEndToEndOverheadForRequest(float64(end_to_end_overhead), ctx.RequestID)
