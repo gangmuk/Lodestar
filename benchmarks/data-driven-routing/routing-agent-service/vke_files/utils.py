@@ -124,9 +124,9 @@ def check_deployment_ready_kubernetes(deployment_name, k8s_cluster, namespace):
     """
     try:
         if k8s_cluster == "vke":
-            kube_config_file = os.path.expanduser('~/.kube/config-vke')
-        else:
             kube_config_file = os.path.expanduser('~/.kube/config')
+        else:
+            kube_config_file = os.path.expanduser('~/.kube/config-local')
         if not os.path.exists(kube_config_file):
             logger.error(f"Error: {kube_config_file} does not exist")
             assert False

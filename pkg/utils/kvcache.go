@@ -714,6 +714,9 @@ var (
 
 	GPUModelMutex sync.RWMutex
 	GPUModel      = make(map[string]string) // podIP -> GPU model
+
+	SelectedPodGPUMutex sync.RWMutex
+	SelectedPodGPU      = make(map[string]string) // requestID -> selected pod GPU
 )
 
 func init() {
@@ -804,6 +807,10 @@ func init() {
 
 	GPUModel = make(map[string]string) // podIP -> GPU model
 	GPUModelMutex = sync.RWMutex{}
+
+	SelectedPodGPU = make(map[string]string)
+	SelectedPodGPUMutex = sync.RWMutex{}
+
 	klog.Info("Initialized global variables for AIBRIX RL Router")
 }
 
@@ -894,6 +901,38 @@ func RemoveRemainingLatencyFromCompletedRequest(requestID string) {
 	defer RemainingLatencyMutex.Unlock()
 	delete(RemainingLatencyInMicroseconds, requestID)
 	klog.V(5).Infof("RemoveCompletedRequest, requestID: %s", requestID)
+}
+
+func SetSelectedPodGPU(selectedPodGPU string, requestID string) {
+	SelectedPodGPUMutex.Lock()
+	defer SelectedPodGPUMutex.Unlock()
+	if _, exists := SelectedPodGPU[requestID]; exists {
+		klog.Errorf("Error, Failed SetSelectedPodGPU for request ID: %s, already exists", requestID)
+		return
+	}
+	SelectedPodGPU[requestID] = selectedPodGPU
+	klog.V(5).Infof("SetSelectedPodGPU, requestID: %s, selectedPodGPU: %s", requestID, selectedPodGPU)
+}
+
+func GetSelectedPodGPU(requestID string) (string, bool) {
+	SelectedPodGPUMutex.RLock()
+	defer SelectedPodGPUMutex.RUnlock()
+	if val, ok := SelectedPodGPU[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetSelectedPodGPU for request ID: %s, not found, returning NotDecidedYet", requestID)
+	return "NotDecidedYet", false
+}
+
+func CleanupSelectedPodGPU(requestID string) {
+	SelectedPodGPUMutex.Lock()
+	defer SelectedPodGPUMutex.Unlock()
+	if _, exists := SelectedPodGPU[requestID]; !exists {
+		klog.Errorf("Error, Failed CleanupSelectedPodGPU for request ID: %s, not found", requestID)
+		return
+	}
+	delete(SelectedPodGPU, requestID)
+	klog.V(5).Infof("CleanupSelectedPodGPU, requestID: %s", requestID)
 }
 
 func SetGPUModel(podIP string, gpuModel string) {

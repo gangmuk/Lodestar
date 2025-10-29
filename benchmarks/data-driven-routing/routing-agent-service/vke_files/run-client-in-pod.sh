@@ -12,11 +12,11 @@ k8s_cluster="vke"
 
 routing_policy_list=(
     # "prefix_cache_1"
-    # "latency_predictor"
-    "random"
-    "least-latency"
-    "least-request"
-    "least-kv-cache"
+    "latency_predictor"
+    # "random"
+    # "least-latency"
+    # "least-request"
+    # "least-kv-cache"
     # "preble"
     # # "prefix_cache_2"
     # "scalable_rl_agent"
@@ -28,8 +28,8 @@ workload_name_list=(
     # "hundred_request" # 99
     # "SharingRatio9%" # 2053, 265875 (5min)
     "SharingRatio28%" # 1999, 259697 (5min)
-    # "SharingRatio47%" # 2313, 299803
-    # "SharingRatio71%" # 1500, 346602
+    "SharingRatio47%" # 2313, 299803
+    "SharingRatio71%" # 1500, 346602
     # "MixedSharingRatio10_30_50_70%" # 4000
     # "multiturn-chat" # 4752, avg token per turn: 1141, input: 100-3700, avg input len: 1141, sharing ratio: 0.7
 
@@ -59,12 +59,12 @@ workload_name_list=(
 )
 
 # max_input_tokens=8000
-target_gpu="L20" # "A30"
+target_gpu="A30" # "L20"
 EXPLORATION_RATE="0.1"
 
 ENABLE_ONLINE_LEARNING="1"
-MIN_NUM_TRAINING_DATA="4000"
-MIN_NUM_UPDATE_DATA="2000"
+MIN_NUM_TRAINING_DATA="1000" # "4000"
+MIN_NUM_UPDATE_DATA="1000" # "2000"
 ENABLE_FLUSH="1"
 FLUSH_PERIOD="10"
 MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
@@ -93,36 +93,40 @@ rps_list=(
     # 10 # MixedSharingRatio10_30_50_70, mooncake conversation and toolagent
     # 16 # Multiturn Chat tried but not saturate
     # 18 # Multiturn Chat, saturate but not working...
-    12
+    4
+    5
+    # 6
+    # 8
+    # 10
 )
 
 for rps in "${rps_list[@]}"; do
     cut_done=0
     for workload_name in "${workload_name_list[@]}"; do
         if [ "${workload_name}" == "SharingRatio9%" ]; then
-            rps=7.5 # works in 7*L20
-            # rps=12 # 7*L20 + 8*A30
-            max_tokens=50
-            max_tokens_std=5
-            total_num_episodes=4
-        elif [ "${workload_name}" == "SharingRatio28%" ]; then
-            rps=8 # works
+            # rps=7.5 # works in 7*L20
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
             total_num_episodes=6
+        elif [ "${workload_name}" == "SharingRatio28%" ]; then
+            # rps=8 # works
+            # rps=12 # 7*L20 + 8*A30
+            max_tokens=50
+            max_tokens_std=5
+            total_num_episodes=3
         elif [ "${workload_name}" == "SharingRatio47%" ]; then
             # rps=8 # works
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=6
+            total_num_episodes=3
         elif [ "${workload_name}" == "SharingRatio71%" ]; then
             # rps=10 # 8 is same as prefix cache. 9, 10, etc do not work due to kvcache usage hitting 100%.... fuck
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=8
+            total_num_episodes=3
         elif [ "${workload_name}" == "MixedSharingRatio10_30_50_70%" ]; then
             # rps=8
             # rps=12 # 7*L20 + 8*A30
@@ -168,13 +172,14 @@ for rps in "${rps_list[@]}"; do
                 echo "subAlgorithm: ${subAlgorithm}, no need to cut total_num_episodes: ${total_num_episodes}"
             fi
 
-            ship_model=1
+            ship_model=0
             ship_code=1
             if [ "${subAlgorithm}" == "latency_predictor" ]; then
                 ship_offline_training_data=1
             else
                 ship_offline_training_data=0
             fi
+            ship_offline_training_data=0
 
             if [ "${routing_policy}" == "scalable_rl_agent" ]; then
                 final_model_dir="../training_data/scalable_rl_agent/final_model"
@@ -187,7 +192,7 @@ for rps in "${rps_list[@]}"; do
                         # final_model_dir="../training_data/L20-7/merged-data/all/final_model-latency_predictor_ttft"
                     fi
                 elif [ "${target_gpu}" == "A30" ]; then
-                    final_model_dir="../training_data/A30-8/old-version/final_model-latency_predictor_ttft-20251025_231816"
+                    final_model_dir="../training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743"
                 else
                     final_model_dir="../training_data/L20-7/merged-data/all/final_model-latency_predictor_ttft"
                 fi
@@ -255,7 +260,8 @@ for rps in "${rps_list[@]}"; do
                 --env MIN_NUM_TRAINING_DATA=${MIN_NUM_TRAINING_DATA} \
                 --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
                 --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR} \
-                --env EXPLORATION_RATE=${EXPLORATION_RATE}
+                --env EXPLORATION_RATE=${EXPLORATION_RATE} \
+                --env TARGET_GPU_MODEL=${target_gpu}
             
             echo "Starting to update k8s env for aibrix-gateway-plugins"
             python3 update_k8s_env.py \
@@ -269,8 +275,7 @@ for rps in "${rps_list[@]}"; do
                 # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
             ship_start_time=$(date +%s)
-            # echo "Starting to ship all files to pods"
-            # python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
+            python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
             
             if [ "${routing_policy}" == "scalable_rl_agent" ]; then
                 scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
@@ -343,7 +348,8 @@ for rps in "${rps_list[@]}"; do
 
             # Create local experiment result output directory
             timestamp=$(date +%Y%m%d_%H%M%S)
-            experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
+            # experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
+            experiment_result_output_dir="../training_data/A30-8/${workload_name}/${subAlgorithm}"
             if [ "${subAlgorithm}" == "rl_agent" ]; then
                 postfix="total_num_episodes${total_num_episodes}"
                 experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"

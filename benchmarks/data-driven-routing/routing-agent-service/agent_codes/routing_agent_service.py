@@ -66,7 +66,7 @@ TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TOTAL_NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
-
+TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
 # Training data accumulation (offline + online)
 TRAINING_DF = None  # Holds all training data (offline CSV + online appended data)
 TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
@@ -1211,7 +1211,10 @@ def init():
     # Load offline training data for online learning
     global TRAINING_DF, OFFLINE_DATA_SIZE
     if ENABLE_ONLINE_LEARNING:
-        offline_csv_path = "/app/offline_training_data.csv"
+        if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "A30":
+            offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
+        else:
+            offline_csv_path = "/app/offline_training_data.csv"
         if os.path.exists(offline_csv_path):
             try:
                 with TRAINING_DF_LOCK:
