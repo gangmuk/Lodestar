@@ -1,0 +1,1 @@
+python3 offline_routing_agent.py ../training_data/merged-data/all/data_replaced-processed.csv  --final_model_dir ../training_data/merged-data/all/final_model-latency_predictor_ttft --hyperparameters ../training_data/merged-data/all/final_model-latency_predictor_ttft/model_config.json
