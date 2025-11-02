@@ -16,7 +16,7 @@ import shutil
 import re
 import utils as utils
 import random
-from logger import logger, INCLUDE_GPU_IN_FEATURE
+from logger import logger
 import pandas as pd
 import data_normalizer
 
@@ -377,18 +377,48 @@ def test_inference(args, log_message, request_id, final_model_dir):
     # normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
     
     # CRITICAL FIX: Add missing hyperparameters that routing_agent_service.py includes
-    # These affect how encode_for_inference processes the data and may fix the dimension mismatch
+    # Extract GPU mappings from processed data if available
+    if 'pod_gpu_id_mapping' not in RL_MODEL_HYPERPARAMETERS:
+        # Try to extract GPU info from processed_df
+        gpu_columns = [col for col in processed_df.columns if col.endswith('-GPU')]
+        if gpu_columns:
+            logger.info(f"Extracting GPU mappings from processed data for inference")
+            pod_gpu_id_mapping = {}
+            for pod_id in sorted_all_pod_ids:
+                gpu_col = f"{pod_id}-GPU"
+                if gpu_col in processed_df.columns:
+                    gpu_model = processed_df[gpu_col].iloc[0]
+                    if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+                        pod_gpu_id_mapping[pod_id] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
+                    else:
+                        logger.warning(f"Unknown GPU model '{gpu_model}' for {pod_id}, defaulting to 0")
+                        pod_gpu_id_mapping[pod_id] = 0
+                else:
+                    pod_gpu_id_mapping[pod_id] = 0
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+            logger.info(f"Extracted GPU mappings for {len(pod_gpu_id_mapping)} pods: {pod_gpu_id_mapping}")
+        else:
+            # Fallback: Create dummy GPU mapping (all pods same GPU)
+            logger.warning("No GPU columns in processed data - using dummy GPU mapping")
+            pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
+            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+    
     if 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
-        # Create dummy mappings for offline inference (same as production would have)
-        pod_ip_to_generalpodid = {pod_id: pod_id for pod_id in sorted_all_pod_ids}  # Identity mapping for offline
+        # Create remaining mappings for offline inference
+        pod_ip_to_generalpodid = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
         generalpodid_to_pod_ip = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
         
-        # Create simple GPU model mappings (alternating between two model types)
-        pod_ip_to_gpu_model = {pod_id: f"model_type_{i % 2}" for i, pod_id in enumerate(sorted_all_pod_ids)}
-        pod_ip_to_gpu_model_encoded = {pod_id: i % 2 for i, pod_id in enumerate(sorted_all_pod_ids)}
-        generalpodid_to_gpu_model = pod_ip_to_gpu_model  # Same for offline
+        # Use the pod_gpu_id_mapping we just created
+        pod_gpu_id_mapping = RL_MODEL_HYPERPARAMETERS.get('pod_gpu_id_mapping', {})
+        pod_ip_to_gpu_model_encoded = pod_gpu_id_mapping
         
-        # Add all missing hyperparameters that routing_agent_service.py adds
+        # Create GPU model names from IDs
+        reverse_gpu_mapping = {v: k for k, v in utils.GPU_MODEL_TO_ENCODE.items()}
+        pod_ip_to_gpu_model = {pod_id: reverse_gpu_mapping.get(gpu_id, 'GPU-L3c') 
+                               for pod_id, gpu_id in pod_gpu_id_mapping.items()}
+        generalpodid_to_gpu_model = pod_ip_to_gpu_model
+        
+        # Add all missing hyperparameters
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
         RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_all_pod_ids
@@ -396,7 +426,7 @@ def test_inference(args, log_message, request_id, final_model_dir):
         RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
         RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
         
-        logger.info(f"Added missing hyperparameters for offline inference: {len(sorted_all_pod_ids)} pods")
+        logger.info(f"Added hyperparameters for offline inference: {len(sorted_all_pod_ids)} pods")
     
     encode_start_time = time.time()
     tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
@@ -481,6 +511,38 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
     # Extract sorted_all_pod_ids from the processed dataframe column names
     sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', processed_df.columns.tolist())
     logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs: {sorted_all_pod_ids}")
+    
+    # CRITICAL: Extract GPU information from processed CSV and create mappings
+    # This is required for GPU one-hot encoding during training
+    pod_gpu_id_mapping = {}
+    gpu_columns = [col for col in processed_df.columns if col.endswith('-GPU')]
+    
+    if gpu_columns:
+        logger.info(f"Found {len(gpu_columns)} GPU columns - extracting GPU mappings")
+        for pod_id in sorted_all_pod_ids:
+            gpu_col = f"{pod_id}-GPU"
+            if gpu_col in processed_df.columns:
+                # Get the GPU model from the first row (should be consistent)
+                gpu_model = processed_df[gpu_col].iloc[0]
+                if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+                    pod_gpu_id_mapping[pod_id] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
+                    logger.debug(f"Pod {pod_id} -> GPU model {gpu_model} (ID: {pod_gpu_id_mapping[pod_id]})")
+                else:
+                    logger.warning(f"Unknown GPU model '{gpu_model}' for {pod_id}, defaulting to 0")
+                    pod_gpu_id_mapping[pod_id] = 0
+            else:
+                logger.warning(f"No GPU column found for {pod_id}, defaulting to 0")
+                pod_gpu_id_mapping[pod_id] = 0
+        
+        # Add GPU mapping to hyperparameters (required by encoding)
+        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        logger.info(f"Created GPU mappings for {len(pod_gpu_id_mapping)} pods")
+        logger.info(f"GPU mapping: {pod_gpu_id_mapping}")
+    else:
+        logger.warning("No GPU columns found in processed CSV - GPU features will not be encoded")
+        # Create dummy mapping with all pods having GPU ID 0
+        pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
+        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
     
     # Apply normalization using the new data_normalizer module
     normalized_df, updated_stats_instance, summary = data_normalizer.normalize_processed_data(

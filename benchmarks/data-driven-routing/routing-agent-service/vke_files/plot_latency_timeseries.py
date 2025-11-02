@@ -642,12 +642,12 @@ def add_transition_lines(ax, train_transitions, flush_transitions, iteration_tra
     """Add vertical lines for numTrains and iteration transitions"""
     # Add numTrains transition lines (purple)
     for transition in train_transitions:
-        ax.axvline(x=transition['relative_time'], color='purple', linewidth=transition_linewidth, alpha=alpha, zorder=5)
+        ax.axvline(x=transition['relative_time'], color='purple', linewidth=transition_linewidth, alpha=alpha+0.1, zorder=5)
     
     # Add iteration transition lines (orange) if provided
     if iteration_transitions:
         for transition in iteration_transitions:
-            ax.axvline(x=transition['relative_time'], color='orange', linewidth=transition_linewidth, alpha=alpha, zorder=5, linestyle='--')
+            ax.axvline(x=transition['relative_time'], color='orange', linewidth=transition_linewidth, alpha=alpha+0.1, zorder=5, linestyle='-')
 
 def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors):
     """Plot the request rate analysis subplots"""
@@ -1427,7 +1427,7 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_ttft_vals):
-            ax_iter_ttft_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkblue', fontweight='bold')
+            ax_iter_ttft_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='darkblue', fontweight='bold')
         ax_iter_ttft_trends_right.set_ylabel('P99 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
         ax_iter_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
         
@@ -1455,7 +1455,7 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_tpot_vals):
-            ax_iter_tpot_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='darkgreen', fontweight='bold')
+            ax_iter_tpot_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='darkgreen', fontweight='bold')
         ax_iter_tpot_trends_right.set_ylabel('P99 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
         ax_iter_tpot_trends_right.tick_params(axis='y', labelcolor='darkgreen')
         
@@ -1483,7 +1483,7 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_e2e_vals):
-            ax_iter_e2e_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='indigo', fontweight='bold')
+            ax_iter_e2e_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='indigo', fontweight='bold')
         ax_iter_e2e_trends_right.set_ylabel('P99 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
         ax_iter_e2e_trends_right.tick_params(axis='y', labelcolor='indigo')
         

@@ -33,14 +33,15 @@ COPY start.sh .
 # COPY training_data/SharingRatio9%/all/final_model-data-processed final_model
 # COPY training_data/SharingRatio71%/all/final_model-data-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 final_model
 
-COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft final_model/A_GPU-L3c
-COPY training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743 final_model/A_NVIDIA-A30
-# RUN cp -r final_model/A_GPU-L3c/* final_model/
-RUN cp -r final_model/A_NVIDIA-A30/* final_model/
+COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft final_model/GPU-L3c
+COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data_GPU-L3c.csv 
 
-COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data.csv 
-RUN cp offline_training_data.csv offline_training_data_GPU-L3c.csv
+# COPY training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743 final_model/NVIDIA-A30
+COPY training_data/A30-8/final_model-latency_predictor_ttft-20251029_231330 final_model/NVIDIA-A30
 COPY training_data/A30-8/data-processed.csv offline_training_data_NVIDIA-A30.csv 
+
+COPY workload-and-experiment_results/for_paper/hetero/final_model-latency_predictor_ttft-20251029_034844 final_model/hetero
+COPY workload-and-experiment_results/for_paper/hetero/data-processed.csv offline_training_data_hetero.csv 
 
 COPY Dockerfile /app/Dockerfile
 RUN chmod +x /app/start.sh

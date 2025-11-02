@@ -34,12 +34,14 @@ import sys
 import socket
 import utils as utils
 from kubernetes import client, config
-from logger import logger, INCLUDE_GPU_IN_FEATURE
+from logger import logger
 import queue
 from collections import deque
 from rwlock import RWLock
 
-
+# GPU features are now always included as one-hot encoded features
+INCLUDE_GPU_IN_FEATURE = True
+INIT_DONE=False
 ## colors for logging
 BLUE_COLOR = "\033[94m"
 RED_COLOR = "\033[91m"
@@ -52,11 +54,36 @@ RESET_COLOR = "\033[0m"
 # INCLUDE_GPU_IN_FEATURE = True
 
 app = Flask(__name__)
-hyperparameter_file_path = '/app/final_model/model_config.json'
 NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
-final_model_dir = "/app/final_model"
-feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"  # Add this near the top with your other constants;
+
+TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
+if TARGET_GPU_MODEL == "NVIDIA-A30":
+    hyperparameter_file_path = "/app/final_model/NVIDIA-A30/model_config.json"
+    final_model_dir = "/app/final_model/NVIDIA-A30"
+    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+    offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
+elif TARGET_GPU_MODEL == "GPU-L3c":
+    hyperparameter_file_path = "/app/final_model/GPU-L3c/model_config.json"
+    final_model_dir = "/app/final_model/GPU-L3c"
+    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+    offline_csv_path = "/app/offline_training_data_GPU-L3c.csv"
+elif TARGET_GPU_MODEL == "hetero":
+    hyperparameter_file_path = "/app/final_model/hetero/model_config.json"
+    final_model_dir = "/app/final_model/hetero"
+    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+    offline_csv_path = "/app/offline_training_data_hetero.csv"
+else:
+    logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
+    assert False
+
+# hyperparameter_file_path = '/app/final_model/model_config.json'
+# final_model_dir = "/app/final_model"
+# feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+
+
+MAX_TOTAL_DATA = int(os.getenv("MAX_TOTAL_DATA", 20000))
+
 NUM_TRAINS = 0
 MODEL_UPDATED = True
 LOCK_TRAINING_DATA = threading.Lock()
@@ -66,7 +93,6 @@ TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TOTAL_NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
-TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
 # Training data accumulation (offline + online)
 TRAINING_DF = None  # Holds all training data (offline CSV + online appended data)
 TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
@@ -235,7 +261,10 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST
+    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
+    if not INIT_DONE:
+        logger.error(f"init() was not done yet. return 503")
+        return jsonify({"error": "init() was not done yet. return 503"}), 503
     handle_infer_overhead_summary = {}
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
@@ -624,7 +653,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -657,7 +686,6 @@ def online_train_routine():
             logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {total_samples - current_offline_size})")
 
             # Remove overflow from offline data if total exceeds 20,000
-            MAX_TOTAL_DATA = 20000
             if total_samples > MAX_TOTAL_DATA and current_offline_size > 0:
                 overflow = total_samples - MAX_TOTAL_DATA
                 
@@ -1116,7 +1144,7 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def init():
-    global RL_MODEL_HYPERPARAMETERS, stats_instance
+    global RL_MODEL_HYPERPARAMETERS, stats_instance, INIT_DONE, offline_csv_path
     if RL_MODEL_HYPERPARAMETERS is None:
 
         logger.info(f"{GREEN_COLOR}RL_MODEL_HYPERPARAMETERS is None{RESET_COLOR}")
@@ -1139,39 +1167,39 @@ def init():
         if not test_kubernetes_permissions():
             logger.error("Insufficient Kubernetes permissions - using fallback GPU mapping")
             assert False
-        running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
-        sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
-        pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
-        generalpodid_to_pod_ip = {}
-        for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
-            generalpodid_to_pod_ip[generalpodid] = pod_ip
-        generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
-        pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
+        # running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
+        # sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
+        # pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
+        # generalpodid_to_pod_ip = {}
+        # for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
+        #     generalpodid_to_pod_ip[generalpodid] = pod_ip
+        # generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
+        # pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
         
-        logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
-        logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
-        logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
-        logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
-        logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
-        logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
+        # logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
+        # logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
+        # logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
+        # logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
+        # logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
+        # logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
 
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-        RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
-        logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
-        RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-        RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
-        # Additional mappings for GPU features expected by preprocess/encoding
-        RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
-        pod_gpu_id_mapping = {}
-        for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
-            if gpu_model in utils.GPU_MODEL_TO_ENCODE:
-                pod_gpu_id_mapping[generalpodid] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
-            else:
-                logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
-                assert False
-        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+        # RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+        # logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+        # RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
+        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+        # RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+        # # Additional mappings for GPU features expected by preprocess/encoding
+        # RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
+        # pod_gpu_id_mapping = {}
+        # for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
+        #     if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+        #         pod_gpu_id_mapping[generalpodid] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
+        #     else:
+        #         logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
+        #         assert False
+        # RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
         # Load normalization statistics from CSV file
         if os.path.exists(feature_normalization_stats_file):
@@ -1190,6 +1218,40 @@ def init():
             logger.error(f"Normalization statistics file not found: {feature_normalization_stats_file}")
             assert False
     
+    running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
+    sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
+    pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
+    generalpodid_to_pod_ip = {}
+    for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
+        generalpodid_to_pod_ip[generalpodid] = pod_ip
+    generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
+    pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
+    
+    logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
+    logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
+    logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
+    logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
+    logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
+    logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
+
+    RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+    RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+    logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+    RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
+    RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+    RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+    RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+    # Additional mappings for GPU features expected by preprocess/encoding
+    RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
+    pod_gpu_id_mapping = {}
+    for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
+        if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+            pod_gpu_id_mapping[generalpodid] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
+        else:
+            logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
+            assert False
+    RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        
     # Print feature statistics if available
     if stats_instance is not None:
         logger.info("Per-feature statistics loaded:")
@@ -1211,10 +1273,6 @@ def init():
     # Load offline training data for online learning
     global TRAINING_DF, OFFLINE_DATA_SIZE
     if ENABLE_ONLINE_LEARNING:
-        if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "A30":
-            offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
-        else:
-            offline_csv_path = "/app/offline_training_data.csv"
         if os.path.exists(offline_csv_path):
             try:
                 with TRAINING_DF_LOCK:
@@ -1317,7 +1375,7 @@ def init():
         start_scalable_rl_training_worker()
         logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
         logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
-
+    INIT_DONE = True
 
 def periodic_checkpoint_scalable_rl():
     """

@@ -26,45 +26,53 @@ routing_policy_list=(
 workload_name_list=(
     # "ten_request" # 20
     # "hundred_request" # 99
-    # "SharingRatio9%" # 2053, 265875 (5min)
-    "SharingRatio28%" # 1999, 259697 (5min)
-    "SharingRatio47%" # 2313, 299803
-    "SharingRatio71%" # 1500, 346602
-    # "MixedSharingRatio10_30_50_70%" # 4000
-    # "multiturn-chat" # 4752, avg token per turn: 1141, input: 100-3700, avg input len: 1141, sharing ratio: 0.7
 
+    # "SharingRatio71%" # 1500, 346602
+    "SharingRatio28%" # 1999, 259697 (5min)
+    # "SharingRatio47%" # 2313, 299803
+    # "MixedSharingRatio10_30_50_70%" # 4000
+    # "SharingRatio9%" # 2053, 265875 (5min)
+
+    # "multiturn-chat" # 4752, avg token per turn: 1141, input: 100-3700, avg input len: 1141, sharing ratio: 0.7
     # "mooncake-conversation" # 2674, input: 200-8000, avg input: 2354, sharing ratio: 0.04
     # "mooncake-toolagent" # 2713, input: 200-8000, avg input: 1738, sharing ratio: 0.33
     # "text_to_sql"
-
-    # "old-version/input10002000/rps2030/SharingRatio10%_avginput1500_globalrps20"
-    # "old-version/input10002000/rps2030/SharingRatio30%_avginput1500_globalrps20"
-    # "old-version/input10002000/rps2030/SharingRatio50%_avginput1500_globalrps25"
-    # "old-version/input10002000/rps2030/SharingRatio70%_avginput1500_globalrps35"
-
-    # "old-version/input100020004000/SharingRatio10%_avginput2333_globalrps10/"
-    # "old-version/input100020004000/SharingRatio30%_avginput2333_globalrps10/"
-    # "old-version/input100020004000/SharingRatio50%_avginput2333_globalrps10/"
-    # "old-version/input100020004000/SharingRatio70%_avginput2333_globalrps12/"
-
-    # "old-version/SharingRatio10%_avginput2333_globalrps15/"
-    # "old-version/SharingRatio30%_avginput2333_globalrps15/"
-    # "old-version/SharingRatio50%_avginput2333_globalrps16/"
-    # "old-version/SharingRatio70%_avginput2333_globalrps20/"
-
-    # "config_sharing10%"
-    # "config_sharing30%"
-    # "config_sharing50%"
-    # "config_sharing70%"
 )
 
-# max_input_tokens=8000
-target_gpu="A30" # "L20"
-EXPLORATION_RATE="0.1"
+# target_gpu="NVIDIA-A30"
+target_gpu="GPU-L3c"
+# target_gpu="hetero"
 
-ENABLE_ONLINE_LEARNING="1"
 MIN_NUM_TRAINING_DATA="1000" # "4000"
 MIN_NUM_UPDATE_DATA="1000" # "2000"
+
+if [ "${target_gpu}" == "NVIDIA-A30" ]; then
+    MAX_TOTAL_DATA="20000"
+elif [ "${target_gpu}" == "GPU-L3c" ]; then
+    MAX_TOTAL_DATA="20000"
+elif [ "${target_gpu}" == "hetero" ]; then
+    MAX_TOTAL_DATA="40000"
+else
+    echo "Error: Unknown target GPU model: ${target_gpu}"
+    echo "Exiting... 1"
+    exit 1
+fi
+
+if [ "${target_gpu}" == "NVIDIA-A30" ]; then
+    EXPLORATION_RATE="0.1"
+elif [ "${target_gpu}" == "GPU-L3c" ]; then
+    EXPLORATION_RATE="0.1"
+elif [ "${target_gpu}" == "hetero" ]; then
+    EXPLORATION_RATE="0.1"
+else
+    echo "Error: Unknown target GPU model: ${target_gpu}"
+    echo "Exiting... 2"
+    exit 1
+fi
+
+# max_input_tokens=8000
+
+ENABLE_ONLINE_LEARNING="1"
 ENABLE_FLUSH="1"
 FLUSH_PERIOD="10"
 MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
@@ -88,13 +96,14 @@ ipaddr="115.190.180.7" # vke cluster
 port=80
 
 rps_list=(
-    # 8 # SharingRatio71
+    100 # SharingRatio71
     # 10 # MixedSharingRatio10_30_50_70, mooncake conversation and toolagent
     # 10 # MixedSharingRatio10_30_50_70, mooncake conversation and toolagent
     # 16 # Multiturn Chat tried but not saturate
     # 18 # Multiturn Chat, saturate but not working...
-    4
-    5
+    # 12 # perfect for hetero
+    # 14 # hetero mixed
+    # 5
     # 6
     # 8
     # 10
@@ -108,25 +117,25 @@ for rps in "${rps_list[@]}"; do
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=6
+            total_num_episodes=14
         elif [ "${workload_name}" == "SharingRatio28%" ]; then
             # rps=8 # works
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=3
+            total_num_episodes=14
         elif [ "${workload_name}" == "SharingRatio47%" ]; then
             # rps=8 # works
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=3
+            total_num_episodes=14
         elif [ "${workload_name}" == "SharingRatio71%" ]; then
             # rps=10 # 8 is same as prefix cache. 9, 10, etc do not work due to kvcache usage hitting 100%.... fuck
             # rps=12 # 7*L20 + 8*A30
             max_tokens=50
             max_tokens_std=5
-            total_num_episodes=3
+            total_num_episodes=14
         elif [ "${workload_name}" == "MixedSharingRatio10_30_50_70%" ]; then
             # rps=8
             # rps=12 # 7*L20 + 8*A30
@@ -154,6 +163,19 @@ for rps in "${rps_list[@]}"; do
             max_tokens_std=10
             total_num_episodes=6
         fi
+        if [ "${routing_policy}" != "latency_predictor" ]; then
+            total_num_episodes=14
+        elif [ "${routing_policy}" == "prefix_cache_1" ]; then
+            total_num_episodes=8
+        elif [ "${routing_policy}" == "random" ]; then
+            total_num_episodes=4
+        elif [ "${routing_policy}" == "least-latency" ]; then
+            total_num_episodes=4
+        elif [ "${routing_policy}" == "least-request" ]; then
+            total_num_episodes=4
+        elif [ "${routing_policy}" == "least-kv-cache" ]; then
+            total_num_episodes=4
+        fi
 
         for routing_policy in "${routing_policy_list[@]}"; do
             delimiter="+"
@@ -164,16 +186,8 @@ for rps in "${rps_list[@]}"; do
             fi
             routing="${config%%${delimiter}*}"
             subAlgorithm="${config#*${delimiter}}"
-            if [ "${subAlgorithm}" != "latency_predictor" ] && [ "${cut_done}" == "0" ]; then
-                cut_done=1
-                total_num_episodes=$((total_num_episodes/2))
-                echo "subAlgorithm: ${subAlgorithm}, cut half total_num_episodes: ${total_num_episodes}"
-            else
-                echo "subAlgorithm: ${subAlgorithm}, no need to cut total_num_episodes: ${total_num_episodes}"
-            fi
-
             ship_model=0
-            ship_code=1
+            ship_code=0
             if [ "${subAlgorithm}" == "latency_predictor" ]; then
                 ship_offline_training_data=1
             else
@@ -184,38 +198,38 @@ for rps in "${rps_list[@]}"; do
             if [ "${routing_policy}" == "scalable_rl_agent" ]; then
                 final_model_dir="../training_data/scalable_rl_agent/final_model"
             else
-                if [ "${target_gpu}" == "L20" ]; then
-                    if [ "${workload_name}" == "multiturn-chat" ]; then
-                        final_model_dir="../workload-and-experiment_results/multiturn-chat/training_data/final_model-latency_predictor_ttft-20251027_233030"
-                    else
-                        final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
-                        # final_model_dir="../training_data/L20-7/merged-data/all/final_model-latency_predictor_ttft"
-                    fi
-                elif [ "${target_gpu}" == "A30" ]; then
+                if [ "${target_gpu}" == "GPU-L3c" ]; then
+                    final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
+                    # final_model_dir="../training_data/L20-7/merged-data/all/final_model-latency_predictor_ttft"
+                elif [ "${target_gpu}" == "NVIDIA-A30" ]; then
                     final_model_dir="../training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743"
+                elif [ "${target_gpu}" == "hetero" ]; then
+                    final_model_dir="../training_data/hetero/final_model-latency_predictor_ttft-20251029_034844"
                 else
-                    final_model_dir="../training_data/L20-7/merged-data/all/final_model-latency_predictor_ttft"
+                    echo "Error: Unknown target GPU model: ${target_gpu}"
+                    echo "Exiting... 3"
+                    exit 1
                 fi
             fi
 
             if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
                 echo "Error: Final model directory does not exist: ${final_model_dir}"
-                echo "Exiting..."
+                echo "Exiting... 4"
                 exit 1
             fi
             if [ ! -f "${final_model_dir}/model_config.json" ]; then
                 echo "Error: model_config.json does not exist: ${final_model_dir}/model_config.json"
-                echo "Exiting..."
+                echo "Exiting... 5"
                 exit 1
             fi
             if [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
                 echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
-                echo "Exiting..."
+                echo "Exiting... 6"
                 exit 1
             fi
             if [ ! -f "${final_model_dir}/feature_normalization_statistics.csv" ]; then
                 echo "Error: feature_normalization_statistics.csv does not exist: ${final_model_dir}/feature_normalization_statistics.csv"
-                echo "Exiting..."
+                echo "Exiting... 7"
                 exit 1
             fi
             echo "========================================="
@@ -324,6 +338,7 @@ for rps in "${rps_list[@]}"; do
             kubectl wait --for=condition=ready pod/${ACTUAL_POD} -n ${NAMESPACE} --timeout=60s || {
                 echo "Error: Pod did not become ready within 60 seconds"
                 kubectl describe pod ${ACTUAL_POD} -n ${NAMESPACE}
+                echo "Exiting... 8"
                 exit 1
             }
 
@@ -341,6 +356,7 @@ for rps in "${rps_list[@]}"; do
                 echo "Error: Workload file ${workload_path} not found in pod"
                 echo "Available workloads:"
                 kubectl exec -n ${NAMESPACE} ${ACTUAL_POD} -c ${CONTAINER_NAME} -- find /app/workload -name "*.jsonl"
+                echo "Exiting... 9"
                 exit 1
             }
 
@@ -349,7 +365,7 @@ for rps in "${rps_list[@]}"; do
             # Create local experiment result output directory
             timestamp=$(date +%Y%m%d_%H%M%S)
             # experiment_result_output_dir="../workload-and-experiment_results/${workload_name}/${subAlgorithm}"
-            experiment_result_output_dir="../training_data/A30-8/${workload_name}/${subAlgorithm}"
+            experiment_result_output_dir="../training_data/${target_gpu}/${workload_name}/${subAlgorithm}"
             if [ "${subAlgorithm}" == "rl_agent" ]; then
                 postfix="total_num_episodes${total_num_episodes}"
                 experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"

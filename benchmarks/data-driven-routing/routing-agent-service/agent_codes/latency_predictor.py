@@ -893,6 +893,15 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     num_pods = predictor.state_dims['num_pods']
     latency_metric = predictor.latency_metric.upper()
     
+    # Get dataset sizes
+    total_size = len(train_data) + len(val_data)
+    train_size = len(train_data)
+    val_size = len(val_data)
+    train_pct = (train_size / total_size) * 100
+    val_pct = (val_size / total_size) * 100
+    
+    logger.info(f"Dataset sizes - Total: {total_size}, Train: {train_size} ({train_pct:.1f}%), Eval: {val_size} ({val_pct:.1f}%)")
+    
     # ============================================================
     # SAVE CSV FILES FOR FUTURE PLOTTING
     # ============================================================
@@ -900,9 +909,8 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     # 1. Save prediction accuracy scatter data (actual vs predicted)
     if predictor.latest_predictions is not None and predictor.latest_targets is not None:
         scatter_df = pd.DataFrame({
-            'actual': predictor.latest_targets,
-            'predicted': predictor.latest_predictions,
-            'error': predictor.latest_predictions - predictor.latest_targets
+            'actual_ttft': predictor.latest_targets,
+            'predicted_ttft': predictor.latest_predictions
         })
         scatter_csv_path = os.path.join(final_model_dir, f'prediction_accuracy_data-{num_train}.csv')
         scatter_df.to_csv(scatter_csv_path, index=False)
@@ -952,7 +960,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         
         plt.xlabel(f'Actual {latency_metric} (ms)', fontsize=12)
         plt.ylabel(f'Predicted {latency_metric} (ms)', fontsize=12)
-        plt.title(f'{latency_metric} Prediction Accuracy', fontsize=14, fontweight='bold')
+        plt.title(f'{latency_metric} Prediction Accuracy on Evaluation Set (n={val_size})', fontsize=14, fontweight='bold')
         plt.legend(fontsize=10)
         plt.grid(True, alpha=0.3)
         
@@ -1024,6 +1032,11 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     
     # Create figure with subplots
     fig = plt.figure(figsize=(20, 15))
+    
+    # Add main title with dataset information
+    fig.suptitle(f'{latency_metric} Latency Predictor Training Results\n' +
+                 f'Total Dataset: {total_size:,} | Training: {train_size:,} ({train_pct:.1f}%) | Evaluation: {val_size:,} ({val_pct:.1f}%)',
+                 fontsize=16, fontweight='bold', y=0.995)
     
     # 1. Training Loss
     plt.subplot(3, 4, 1)
@@ -1109,7 +1122,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.8))
     
-    # 5. Predicted vs Actual Latency Scatter
+    # 5. Predicted vs Actual Latency Scatter (Evaluation Set)
     plt.subplot(3, 4, 5)
     if predictor.latest_predictions is not None and predictor.latest_targets is not None:
         predictions = predictor.latest_predictions
@@ -1125,7 +1138,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         
         plt.xlabel(f'Actual {latency_metric}')
         plt.ylabel(f'Predicted {latency_metric}')
-        plt.title(f'Prediction Accuracy Scatter')
+        plt.title(f'Prediction Accuracy (Eval Set, n={val_size})')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -1135,7 +1148,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
-    # 6. Prediction Error Distribution
+    # 6. Prediction Error Distribution (Evaluation Set)
     plt.subplot(3, 4, 6)
     if predictor.latest_predictions is not None and predictor.latest_targets is not None:
         errors = predictor.latest_predictions - predictor.latest_targets
@@ -1144,7 +1157,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         plt.axvline(0, color='red', linestyle='--', linewidth=2, label='Zero Error')
         plt.xlabel(f'Prediction Error ({latency_metric})')
         plt.ylabel('Frequency')
-        plt.title('Prediction Error Distribution')
+        plt.title('Error Distribution (Eval Set)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         

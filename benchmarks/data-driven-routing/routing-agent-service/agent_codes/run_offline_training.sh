@@ -68,8 +68,13 @@ for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; d
 
     # data_file="../workload-and-experiment_results/multiturn-chat/training_data/data_replaced.csv"
 
-    data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced.csv"
-    # data_file="../training_data/A30-8/data.csv"
+    # data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced.csv"
+    # data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced_with_gpu.csv"
+    data_file="../training_data/A30-8/data.csv"
+    # data_file="../training_data/hetero/data_replaced_hetero.csv"
+    # data_file="../training_data/hetero/data_replaced-A30.csv"
+    # data_file="../training_data/hetero/data_replaced_with_gpu-L20.csv"
+    # data_file="../training_data/hetero/data.csv"
 
     # data_file="../workload-and-experiment_results/multiturn-chat/prefix_cache_1-L20-rps16--iter2-20251027_215827/filtered-aibrix-gateway-plugins.log.csv"
 

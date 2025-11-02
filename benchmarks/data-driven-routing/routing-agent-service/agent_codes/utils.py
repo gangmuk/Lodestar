@@ -2,7 +2,7 @@
 
 ## utils.py
 
-from logger import logger, INCLUDE_GPU_IN_FEATURE
+from logger import logger
 from kubernetes import client, config
 import re
 import random
