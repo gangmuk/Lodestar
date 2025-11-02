@@ -12,9 +12,11 @@ from datetime import datetime
 import argparse
 import sys
 import time
-from logger import logger, INCLUDE_GPU_IN_FEATURE
+from logger import logger
 import utils as utils
-# INCLUDE_GPU_IN_FEATURE = True
+
+# GPU features are now always included as one-hot encoded features
+INCLUDE_GPU_IN_FEATURE = True
 
 def parse_json_columns(df, json_columns):
     for col in json_columns:
@@ -350,13 +352,9 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         logger.warning("GPU column not found in parsed data - adding empty GPU mapping for old training data compatibility")
     ###########################################
 
-    # GPU model encoding is only used during inference, not during initial preprocessing
-    if INCLUDE_GPU_IN_FEATURE and 'pod_ip_to_generalpodid' in RL_MODEL_HYPERPARAMETERS:
-        def get_gpu_model_encoded(selected_pod):
-            selected_pod_generalpodid = RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'][selected_pod]
-            return RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'][selected_pod_generalpodid]
-        parsed_df['gpu_model_encoded'] = parsed_df['selectedpod'].apply(get_gpu_model_encoded)
-        parsed_df['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].astype(int)
+    # GPU columns (pod_xxxx-GPU) are already parsed above from podMetrics
+    # They contain GPU model names like "NVIDIA-A30", "NVIDIA-L40S", etc.
+    # No need to do anything here - the GPU info is already in the dataframe
     
     # Check for missing expected columns
     missing_columns = [col for col in expected_columns if col not in parsed_df.columns]
@@ -413,9 +411,7 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         # 'prev_reward': parsed_df['prev_reward'].values,
     }
     
-    # GPU model encoding is only added during inference, not during initial preprocessing
-    if INCLUDE_GPU_IN_FEATURE and 'gpu_model_encoded' in parsed_df.columns:
-        base_data['gpu_model_encoded'] = parsed_df['gpu_model_encoded'].values
+    # GPU info is in pod_xxxx-GPU columns, will be extracted later in encoding phase
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values

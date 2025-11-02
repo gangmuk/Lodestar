@@ -16,9 +16,8 @@ import time
 import matplotlib.pyplot as plt
 import glob
 import random
-from logger import logger, INCLUDE_GPU_IN_FEATURE
+from logger import logger
 from training_logger import TrainingLogger
-# INCLUDE_GPU_IN_FEATURE = True
 
 seed = 42
 torch.manual_seed(seed)

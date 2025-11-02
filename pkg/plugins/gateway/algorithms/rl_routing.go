@@ -657,10 +657,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod, _ = r.fallbackRouting(ctx, readyPods)
 				}
 				if ctx.SubAlgorithm == "random" {
-					klog.Infof("random routing, request_id: %s", ctx.RequestID)
+					klog.Infof("subAlgorithm, random routing, request_id: %s", ctx.RequestID)
 					targetPod, _ = selectRandomPod(readyPods, rand.Intn)
 				} else if ctx.SubAlgorithm == "least-latency" {
-					klog.Infof("least-latency routing, request_id: %s", ctx.RequestID)
+					klog.Infof("subAlgorithm, least-latency routing, request_id: %s", ctx.RequestID)
 					targetPod = selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
 					if targetPod == nil {
 						klog.Errorf("least-latency routing, No suitable pod found for least latency routing, requestID: %s", ctx.RequestID)
@@ -668,7 +668,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						klog.Infof("least-latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
 				} else if ctx.SubAlgorithm == "least-request" {
-					klog.Infof("least-request routing, request_id: %s", ctx.RequestID)
+					klog.Infof("subAlgorithm, least-request routing, request_id: %s", ctx.RequestID)
 					targetPod = selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 					if targetPod == nil {
 						klog.Errorf("least-request routing, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
@@ -676,7 +676,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						klog.Infof("least-request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
 				} else if ctx.SubAlgorithm == "least-kv-cache" {
-					klog.Infof("least-kv-cache routing, request_id: %s", ctx.RequestID)
+					klog.Infof("subAlgorithm, least-kv-cache routing, request_id: %s", ctx.RequestID)
 					targetPod = selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
 					if targetPod == nil {
 						klog.Errorf("least-kv-cache routing, No suitable pod found for least kv cache routing, requestID: %s", ctx.RequestID)
@@ -684,8 +684,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 						klog.Infof("least-kv-cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 					}
 				} else if ctx.SubAlgorithm == "prefix_cache_1" {
+					klog.Infof("subAlgorithm, prefix_cache_1 routing, request_id: %s", ctx.RequestID)
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
+					klog.Infof("subAlgorithm, prefix_cache_2 routing, request_id: %s", ctx.RequestID)
 					var isLoadImbalanced bool
 					targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(r.cache, readyPods)
 					if !isLoadImbalanced {
@@ -709,7 +711,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					}
 				} else if ctx.SubAlgorithm == "latency_predictor" && ctx.Iteration == 0 {
 					// Use prefix_cache_1 routing for iteration 0
-					klog.Infof("latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)
+					klog.Infof("subAlgorithm, latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				}
 				// else { // rl, latency_predictor with iteration > 0, or other algorithms
@@ -811,6 +813,60 @@ func (r *rlOnlineRouter) routeWithPrefixCache1(ctx *types.RoutingContext, readyP
 }
 
 func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
+	klog.Infof("Using fallback routing (prefix_cache_1) for request %s", ctx.RequestID)
+	
+	// Try to calculate prefix matches for prefix_cache_1 routing
+	var podIPsWithMatchingRatios map[string]int
+	
+	// Get input tokens if available
+	input_tokens_in_bytearray := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
+	
+	if len(input_tokens_in_bytearray) > 0 {
+		// Build ready pods map
+		readyPodsMap := map[string]struct{}{}
+		for _, pod := range readyPods {
+			readyPodsMap[pod.Status.PodIP] = struct{}{}
+		}
+		
+		// Calculate prefix matches (discard prefix hashes as we don't add to cache in fallback)
+		podIPsWithMatchingRatios, _, _ = r.prefixCacheIndexer.MatchPrefix_returning_matchedprefixes(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
+		
+		// Fill in pods without matches
+		for _, pod := range readyPods {
+			if _, ok := podIPsWithMatchingRatios[pod.Status.PodIP]; !ok {
+				podIPsWithMatchingRatios[pod.Status.PodIP] = 0
+			}
+		}
+		
+		klog.V(4).Infof("Fallback routing calculated prefix matches for request %s: %v", ctx.RequestID, podIPsWithMatchingRatios)
+	} else {
+		klog.V(4).Infof("No input tokens available for fallback routing, will use least request count for request %s", ctx.RequestID)
+		podIPsWithMatchingRatios = make(map[string]int)
+	}
+	
+	// Use prefix_cache_1 routing logic
+	targetPod := r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
+	
+	if targetPod == nil {
+		klog.Errorf("prefix_cache_1 fallback failed, using random routing for request %s", ctx.RequestID)
+		var err error
+		targetPod, err = selectRandomPod(readyPods, rand.Intn)
+		if err != nil {
+			klog.Errorf("Failed to select random pod: %v", err)
+			return nil, err
+		}
+	}
+	
+	if targetPod == nil {
+		klog.Errorf("No suitable pod found for fallback routing")
+		return nil, fmt.Errorf("no suitable pod found for fallback routing")
+	}
+	
+	return targetPod, nil
+}
+
+
+func (r *rlOnlineRouter) fallbackRouting_with_random(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
 	klog.Infof("Using fallback routing (random) for request %s", ctx.RequestID)
 	var err error
 	targetPod, err := selectRandomPod(readyPods, rand.Intn)
