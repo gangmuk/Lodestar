@@ -15,7 +15,7 @@ import json
 import time
 import datetime
 import pytz
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from kubernetes.config import ConfigException
 import hashlib
 import traceback
@@ -30,6 +30,11 @@ GPU_MODEL_TO_ENCODE = {
     'GPU-L3c': 3,
     'NVIDIA-A100': 4,
     'NVIDIA-H100': 5,
+    'NVIDIA-L4': 6,
+    'NVIDIA-L40': 7,
+    'NVIDIA-L40S': 8,
+    'NVIDIA-T4': 9,
+    'NVIDIA-V100': 10,
 }
 
 def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
@@ -69,16 +74,6 @@ def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
 
 
 def get_sorted_all_pod_ids(source_type, data=None):
-    """
-    Centralized function to extract sorted_all_pod_ids from different sources.
-    
-    Args:
-        source_type (str): Type of source - 'batch_dataframe', 'single_row', 'processed_csv_columns'
-        data: The data source (DataFrame, dict, or list of column names)
-    
-    Returns:
-        list: Sorted list of pod IDs
-    """
     if source_type == 'batch_dataframe':
         # Extract from batch dataframe for training (parsed_df)
         all_pods_set = set()
@@ -91,7 +86,7 @@ def get_sorted_all_pod_ids(source_type, data=None):
                             assert False
                         all_pods_set.update(row_data.keys())
         sorted_all_pod_ids = sorted(list(all_pods_set))
-        logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from batch dataframe: {sorted_all_pod_ids}")
+        logger.debug(f"Extracted {len(sorted_all_pod_ids)} pod IDs from batch dataframe: {sorted_all_pod_ids}")
         return sorted_all_pod_ids
         
     elif source_type == 'single_row':
@@ -160,7 +155,12 @@ def replace_pod_ip_with_generalpodid(data_input):
         str: Path to the processed file or the processed log message
     """
     # Determine if input is a file path or log message
-    is_file = os.path.isfile(data_input) if isinstance(data_input, str) and len(data_input) < 260 else False
+    is_file = False
+    if isinstance(data_input, str):
+        try:
+            is_file = os.path.isfile(data_input)
+        except (OSError, ValueError):
+            is_file = False
     
     if is_file:
         # Handle file input (existing logic)
@@ -284,22 +284,56 @@ def create_pod_ip_to_generalpodid_mapping(unique_pod_ips):
 
 def create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid):
     global GPU_MODEL_TO_ENCODE
+    
+    # Get fallback GPU model from environment variable
+    import os
+    target_gpu_model = os.getenv("TARGET_GPU_MODEL")
+    
+    # Special handling for 'hetero' - use a default from available models
+    if target_gpu_model == "hetero":
+        # For heterogeneous clusters, we'll try to detect each pod's GPU
+        # If detection fails, use a common GPU model as fallback
+        fallback_gpu_model = "NVIDIA-A30"
+        logger.info(f"TARGET_GPU_MODEL is 'hetero', will use '{fallback_gpu_model}' as fallback for unknown GPUs")
+    else:
+        fallback_gpu_model = target_gpu_model
+        logger.info(f"Using TARGET_GPU_MODEL '{fallback_gpu_model}' as fallback for unknown GPUs")
+    
     pod_ip_to_gpu_model = {}
     for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
         if generalpodid in generalpodid_to_gpu_model:
-            pod_ip_to_gpu_model[pod_ip] = generalpodid_to_gpu_model[generalpodid]
+            gpu_model = generalpodid_to_gpu_model[generalpodid]
+            
+            # Handle 'unknown' GPU model by using fallback
+            if gpu_model == 'unknown':
+                logger.warning(f"GPU model unknown for {generalpodid} (pod IP {pod_ip}), using fallback: {fallback_gpu_model}")
+                gpu_model = fallback_gpu_model
+            
+            pod_ip_to_gpu_model[pod_ip] = gpu_model
         else:
             logger.error(f"GeneralPodID {generalpodid} not found in generalpodid_to_gpu_model mapping for pod IP {pod_ip}")
             assert False
+    
     pod_ip_to_gpu_model_encoded = {}
     for pod_ip, gpu_model in pod_ip_to_gpu_model.items():
         if gpu_model in GPU_MODEL_TO_ENCODE:
             pod_ip_to_gpu_model_encoded[pod_ip] = GPU_MODEL_TO_ENCODE[gpu_model]
         else:
-            logger.error(f"Unknown GPU model: {gpu_model}, for pod IP {pod_ip}")
+            logger.error(f"GPU model '{gpu_model}' not found in GPU_MODEL_TO_ENCODE for pod IP {pod_ip}")
+            logger.error(f"Available GPU models: {list(GPU_MODEL_TO_ENCODE.keys())}")
             logger.error(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
             logger.error(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
-            assert False
+            
+            # Try to use fallback if it exists in mapping
+            if fallback_gpu_model in GPU_MODEL_TO_ENCODE:
+                logger.warning(f"Using fallback GPU model '{fallback_gpu_model}' for pod {pod_ip}")
+                pod_ip_to_gpu_model[pod_ip] = fallback_gpu_model
+                pod_ip_to_gpu_model_encoded[pod_ip] = GPU_MODEL_TO_ENCODE[fallback_gpu_model]
+            else:
+                logger.error(f"Fallback GPU model '{fallback_gpu_model}' also not in GPU_MODEL_TO_ENCODE!")
+                logger.error("Please set TARGET_GPU_MODEL environment variable to one of: " + ", ".join(GPU_MODEL_TO_ENCODE.keys()))
+                assert False
+    
     return pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded
 
 def get_running_pods_by_label(POD_LABEL_SELECTOR):
@@ -322,6 +356,59 @@ def fetch_running_pod_ips(running_pods: client.V1PodList):
     pod_ips = sorted(pod_ips)  # Sort to ensure consistent order
     return pod_ips
 
+def map_aws_instance_type_to_gpu_model(instance_type: str) -> Optional[str]:
+    """
+    Map AWS EC2 instance types to GPU model names.
+    
+    Args:
+        instance_type: AWS instance type (e.g., 'g4dn.xlarge', 'p3.2xlarge')
+    
+    Returns:
+        GPU model name compatible with GPU_MODEL_TO_ENCODE, or None if instance_type is empty
+    """
+    if not instance_type:
+        return None
+    
+    # Extract instance family (e.g., 'g4dn', 'p3', 'g5')
+    instance_family = instance_type.split('.')[0] if '.' in instance_type else instance_type
+    
+    # AWS GPU instance type mappings
+    aws_gpu_mapping = {
+        # P Family - High-performance ML/HPC instances
+        'p2': 'NVIDIA-K80',           # NVIDIA Tesla K80
+        'p3': 'NVIDIA-V100',          # NVIDIA Tesla V100
+        'p3dn': 'NVIDIA-V100',        # NVIDIA Tesla V100 (32GB variant)
+        'p4': 'NVIDIA-A100',          # NVIDIA A100
+        'p4d': 'NVIDIA-A100',         # NVIDIA A100 (40GB)
+        'p4de': 'NVIDIA-A100',        # NVIDIA A100 (80GB)
+        'p5': 'NVIDIA-H100',          # NVIDIA H100
+        'p5d': 'NVIDIA-H100',         # NVIDIA H100
+        'p5dn': 'NVIDIA-H100',        # NVIDIA H100
+        'p5e': 'NVIDIA-H200',         # NVIDIA H200 (newer variant)
+        'p5en': 'NVIDIA-H100',        # NVIDIA H100 (enhanced networking)
+        'p6-b200': 'NVIDIA-B200',     # NVIDIA Blackwell B200
+        'p6e-gb200': 'NVIDIA-GB200',  # NVIDIA Grace Blackwell GB200
+        
+        # G Family - Graphics and ML inference instances
+        'g3': 'NVIDIA-M60',           # NVIDIA Tesla M60
+        'g4dn': 'NVIDIA-T4',          # NVIDIA T4
+        'g4ad': 'NVIDIA-T4',          # AMD-based but uses similar T4 equivalent
+        'g5': 'NVIDIA-A10G',          # NVIDIA A10G (not A10)
+        'g5g': 'NVIDIA-T4G',          # ARM-based NVIDIA T4G
+        'g6': 'NVIDIA-L4',            # NVIDIA L4
+        'g6e': 'NVIDIA-L40S',         # NVIDIA L40S (not L40)
+        'g6f': 'NVIDIA-L4',           # NVIDIA L4 with fractional GPU support
+    }
+    
+    gpu_model = aws_gpu_mapping.get(instance_family)
+    if gpu_model:
+        logger.info(f"Mapped AWS instance type '{instance_type}' to GPU model '{gpu_model}'")
+        return gpu_model
+    else:
+        logger.error(f"Unknown AWS instance family '{instance_family}' for instance type '{instance_type}'")
+        assert False
+
+
 def fetch_generalpodid_to_gpu_model(running_pods: client.V1PodList, pod_ip_to_generalpodid):
     # kube_config_file = '~/.kube/config'
     # if not os.path.exists(kube_config_file):
@@ -331,6 +418,7 @@ def fetch_generalpodid_to_gpu_model(running_pods: client.V1PodList, pod_ip_to_ge
     config.load_incluster_config()
     v1 = client.CoreV1Api()
     generalpodid_to_gpu_model = {}
+    
     for pod in running_pods.items:
         if pod.status.phase == "Running" and pod.status.pod_ip:
             pod_ip = pod.status.pod_ip
@@ -343,17 +431,32 @@ def fetch_generalpodid_to_gpu_model(running_pods: client.V1PodList, pod_ip_to_ge
                 try:
                     node = v1.read_node(name=node_name)
                     node_labels = node.metadata.labels or {}
-                    if 'machine.cluster.vke.volcengine.com/gpu-name' not in node_labels:
-                        logger.error(f"machine.cluster.vke.volcengine.com/gpu-name must exist in node.metadata.labels. It does not.")
+                    
+                    gpu_model = None
+                    
+                    # First, try NVIDIA GPU product label (most direct and accurate source, works across all cloud providers)
+                    if 'nvidia.com/gpu.product' in node_labels:
+                        gpu_model = node_labels['nvidia.com/gpu.product']
+                        logger.info(f"Pod {generalpodid}: GPU model from NVIDIA GPU product label: {gpu_model}")
+                    
+                    # Second, try VKE GPU label (Volcengine-specific fallback)
+                    elif 'machine.cluster.vke.volcengine.com/gpu-name' in node_labels:
+                        gpu_model = node_labels['machine.cluster.vke.volcengine.com/gpu-name']
+                        logger.info(f"Pod {generalpodid}: GPU model from VKE label: {gpu_model}")
+                    
+                    if not gpu_model:
+                        logger.error(f"Could not determine GPU model for node {node_name}. Checked nvidia.com/gpu.product and machine.cluster.vke.volcengine.com/gpu-name labels")
                         assert False
-                    gpu_model = node_labels['machine.cluster.vke.volcengine.com/gpu-name']
+                    
                     generalpodid_to_gpu_model[generalpodid] = gpu_model
+                    
                 except Exception as e:
                     logger.warning(f"Failed to get node info for {node_name}: {e}")
                     generalpodid_to_gpu_model[generalpodid] = 'unknown'
             else:
                 logger.warning(f"Pod {pod.metadata.name} has no node assignment")
                 generalpodid_to_gpu_model[generalpodid] = 'unknown'
+    
     return generalpodid_to_gpu_model
 
 

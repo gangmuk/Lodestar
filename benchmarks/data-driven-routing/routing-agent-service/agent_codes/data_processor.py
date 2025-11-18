@@ -14,7 +14,6 @@ Key features:
 """
 
 import pandas as pd
-import numpy as np
 import os
 import time
 import argparse
@@ -23,16 +22,17 @@ import preprocess
 from logger import logger
 
 
-def process_raw_data_to_csv(input_file, 
+def process_raw_data_to_csv(input_file,
                            output_file,
-                           HYPERPARAMETERS):
+                           hyperparameters=None):
     """
     Process raw text log file to structured CSV with all features but no normalization.
     
     Args:
         input_file: Path to raw text log file
-        HYPERPARAMETERS: Model HYPERPARAMETERS dict (read from JSON)
-        
+        output_file: Destination for the processed CSV
+        hyperparameters: Optional configuration dictionary (unused)
+
     Returns:
         str: Path to created processed CSV file
     """
@@ -53,13 +53,13 @@ def process_raw_data_to_csv(input_file,
     else:
         replaced_file = input_file
         logger.info("File already has pod IPs replaced")
-    
+
     # Step 2: Use existing preprocessing logic but keep raw values
     logger.info("Running preprocessing to extract features...")
     processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(
-        replaced_file, "", HYPERPARAMETERS
+        replaced_file, "", hyperparameters
     )
-    
+
     # Step 3: Ensure we preserve critical raw values for reward calculation
     required_columns = ['ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_id']
     missing_columns = [col for col in required_columns if col not in processed_df.columns]
@@ -68,24 +68,9 @@ def process_raw_data_to_csv(input_file,
         raise ValueError(f"Processed data missing required columns: {missing_columns}")
     
     # Step 4: Add metadata columns for tracking
-    processed_df['ttft_slo_used'] = HYPERPARAMETERS['TTFT_SLO']
-    processed_df['avg_tpot_slo_used'] = HYPERPARAMETERS['AVG_TPOT_SLO']
     processed_df['source_file'] = os.path.basename(input_file)
-    processed_df['ttft_reward_weight_used'] = HYPERPARAMETERS['TTFT_REWARD_WEIGHT']
-    processed_df['reward_function_used'] = HYPERPARAMETERS['REWARD_FUNCTION']
-    
-    # Step 5: Optionally drop excluded per-pod features (e.g., prefill_tokens)
-    excluded_pod_features = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
-    if excluded_pod_features:
-        drop_cols = []
-        for feat in excluded_pod_features:
-            suffix = f"-{feat}"
-            drop_cols.extend([c for c in processed_df.columns if c.startswith('pod_') and c.endswith(suffix)])
-        if drop_cols:
-            logger.info(f"Excluding {len(drop_cols)} columns due to EXCLUDED_POD_FEATURES: {sorted(list(excluded_pod_features))}")
-            processed_df = processed_df.drop(columns=drop_cols, errors='ignore')
 
-    # Step 6: Save to CSV
+    # Step 5: Save to CSV
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     processed_df.to_csv(output_file, index=False)
     logger.info(f"** Processed CSV saved to: {output_file}")
@@ -98,12 +83,9 @@ def process_raw_data_to_csv(input_file,
         'num_samples': int(len(processed_df)),
         'num_columns': int(len(processed_df.columns)),
         'processing_time': processing_time,
-        'ttft_slo': HYPERPARAMETERS['TTFT_SLO'],
-        'avg_tpot_slo': HYPERPARAMETERS['AVG_TPOT_SLO'],
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
-        'excluded_pod_features': list(excluded_pod_features),
     }
     
     # Save summary
@@ -116,14 +98,14 @@ def process_raw_data_to_csv(input_file,
     return output_file
 
 
-def process_directory_batch(input_dir, output_file, HYPERPARAMETERS):
+def process_directory_batch(input_dir, output_file, hyperparameters=None):
     """
     Process all raw data files in a directory.
     
     Args:
         input_dir: Directory containing raw CSV files
-        ttft_slo: TTFT SLO threshold
-        avg_tpot_slo: Average TPOT SLO threshold
+        output_file: Shared output file path (batch mode)
+        hyperparameters: Optional configuration dictionary (unused)
     """
     
     # Find all data files in directory
@@ -142,7 +124,7 @@ def process_directory_batch(input_dir, output_file, HYPERPARAMETERS):
     processed_files = []
     for data_file in data_files:
         try:
-            processed_file = process_raw_data_to_csv(data_file, output_file,HYPERPARAMETERS)
+            processed_file = process_raw_data_to_csv(data_file, output_file, hyperparameters)
             processed_files.append(processed_file)
             logger.info(f"✓ Processed: {data_file} → {processed_file}")
         except Exception as e:
@@ -228,8 +210,6 @@ def main():
     parser.add_argument('--output_file', help='Output file to save processed CSV')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
-    parser.add_argument('--hyperparameters', type=str, default=None, help='Path to JSON hyperparameters (single source of truth)')
-    parser.add_argument('--exclude-pod-features', type=str, default=None, help='Comma-separated pod feature names to exclude (e.g., prefill_tokens,decode_tokens)')
     args = parser.parse_args()
     
     if args.validate:
@@ -243,29 +223,10 @@ def main():
         else:
             logger.error(f"✗ CSV validation failed: {results['error']}")
         return
-    # Load hyperparameters JSON (required)
-    if not args.hyperparameters or not os.path.exists(args.hyperparameters):
-        logger.error("--hyperparameters JSON is required and must exist")
-        return
-    try:
-        import json
-        with open(args.hyperparameters, 'r') as f:
-            HYPERPARAMETERS = json.load(f)
-        logger.info(f"Loaded hyperparameters from {args.hyperparameters}")
-    except Exception as e:
-        logger.error(f"Failed to read hyperparameters file {args.hyperparameters}: {e}")
-        return
-
-    # Merge CLI exclude list (highest precedence)
-    if args.exclude_pod_features:
-        excl = [x.strip() for x in args.exclude_pod_features.split(',') if x.strip()]
-        if excl:
-            HYPERPARAMETERS['EXCLUDED_POD_FEATURES'] = excl
-            logger.info(f"EXCLUDED_POD_FEATURES set via CLI: {excl}")
     
     if args.batch:
         # Batch processing mode
-        process_directory_batch(args.input_file, args.output_file, HYPERPARAMETERS)
+        process_directory_batch(args.input_file, args.output_file)
     else:
         # Single file processing mode
         if not os.path.exists(args.input_file):
@@ -275,7 +236,7 @@ def main():
 
         print(f"args.output_file: {args.output_file}")
         processed_file = process_raw_data_to_csv(
-            args.input_file, args.output_file, HYPERPARAMETERS
+            args.input_file, args.output_file
         )
         
         # Validate the output
