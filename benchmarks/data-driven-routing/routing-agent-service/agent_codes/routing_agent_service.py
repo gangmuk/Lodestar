@@ -58,12 +58,12 @@ NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 
 TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
-if TARGET_GPU_MODEL == "NVIDIA-A30":
+if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
     hyperparameter_file_path = "/app/final_model/NVIDIA-A30/model_config.json"
     final_model_dir = "/app/final_model/NVIDIA-A30"
     feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
     offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
-elif TARGET_GPU_MODEL == "GPU-L3c":
+elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S":
     hyperparameter_file_path = "/app/final_model/GPU-L3c/model_config.json"
     final_model_dir = "/app/final_model/GPU-L3c"
     feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -137,8 +137,10 @@ TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
 SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing for latency predictor
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
+LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model, 0=start from scratch
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
-           f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}")
+           f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
+           f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}")
 RL_MODEL_HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
@@ -261,7 +263,7 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
+    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
     if not INIT_DONE:
         logger.error(f"init() was not done yet. return 503")
         return jsonify({"error": "init() was not done yet. return 503"}), 503
@@ -312,7 +314,7 @@ def handle_infer():
             logger.info(f"processed_df.columns: {list(processed_df.columns)}")
             logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
             PRINT_ONCE_AT_THE_FIRST_REQUEST = False
-        handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time
+        handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time # quite slow 65ms
 
         normalize_start = time.time()
         if stats_instance is None:
@@ -356,21 +358,28 @@ def handle_infer():
 
         infer_from_tensor_start_time = time.time()
         
-        # Route to appropriate model based on model type
-        # model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        get_subAlgorithm_start_time = time.time()
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
-        logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
+        logger.debug(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
+        handle_infer_overhead_summary["get_subAlgorithm"] = time.time() - get_subAlgorithm_start_time
         
         # "random"
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
         if subAlgorithm == 'latency_predictor' or subAlgorithm == 'random' or subAlgorithm == 'least-latency' or subAlgorithm == 'least-request' or subAlgorithm == 'least-kv-cache' or subAlgorithm == 'prefix_cache_1':
-            global LATENCY_PREDICTOR
-            # Check if initialization needed without blocking
+            global LATENCY_PREDICTOR, LOAD_PRETRAINED_MODEL
+            
+            # OPTIMIZATION: Check without lock first (fast path for initialized state)
+            # Only acquire expensive write lock if truly uninitialized
             if LATENCY_PREDICTOR is None:
+                latency_predictor_write_lock_contention_start_time = time.time()
                 with LATENCY_PREDICTOR_LOCK.write():
-                    # Double-check after acquiring lock
+                    latency_predictor_write_lock_contention_overhead = time.time() - latency_predictor_write_lock_contention_start_time
+                    handle_infer_overhead_summary['latency_predictor_write_lock_contention'] = latency_predictor_write_lock_contention_overhead
+                    
+                    # Double-check after acquiring lock (another thread may have initialized)
+                    latency_predictor_object_create_start_time = time.time()
                     if LATENCY_PREDICTOR is None:
                         state_dims = {
                             'pod_features': tensor_data['pod_features_with_staleness'].shape[2],
@@ -379,23 +388,33 @@ def handle_infer():
                             'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
                         }
                         
-                        logger.info(f"Initializing latency predictor with state_dims={state_dims}")
+                        logger.info(f"🔄 One-time initialization of LATENCY_PREDICTOR with state_dims={state_dims}")
                         LATENCY_PREDICTOR = latency_predictor.LatencyPredictor(state_dims, RL_MODEL_HYPERPARAMETERS, final_model_dir)
 
-                        # Load pretrained model
+                        # Load pretrained model based on LOAD_PRETRAINED_MODEL env var
                         model_path = os.path.join(final_model_dir, 'latency_predictor.pth')
-                        if os.path.exists(model_path):
-                            try:
-                                LATENCY_PREDICTOR.load(final_model_dir)
-                                logger.info(f"Loaded latency predictor from {final_model_dir}")
-                            except Exception as e:
-                                logger.error(f"Failed to load latency predictor: {e}")
+                        if LOAD_PRETRAINED_MODEL:
+                            if os.path.exists(model_path):
+                                try:
+                                    LATENCY_PREDICTOR.load(final_model_dir)
+                                    logger.info(f"✅ LOAD_PRETRAINED_MODEL=1, loaded latency predictor from {final_model_dir}")
+                                except Exception as e:
+                                    logger.error(f"❌ LOAD_PRETRAINED_MODEL=1 but failed to load: {e}")
+                                    raise
+                            else:
+                                logger.error(f"❌ LOAD_PRETRAINED_MODEL=1 but no model found at {model_path}")
+                                logger.error("Set LOAD_PRETRAINED_MODEL=0 to use random weights, or provide a trained model")
+                                raise FileNotFoundError(f"Missing model file: {model_path}")
                         else:
-                            logger.warning(f"No pretrained latency predictor found at {model_path}, using untrained model")
-
+                            logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0, using RANDOM WEIGHTS (untrained model)")
+                            logger.warning(f"⚠️  Model will make poor routing decisions until trained!")
+                    handle_infer_overhead_summary["latency_predictor_object_create"] = time.time() - latency_predictor_object_create_start_time
+            
+            latency_predictor_read_lock_contention_start_time = time.time()
             # Inference with read lock (allows concurrent requests)
             with LATENCY_PREDICTOR_LOCK.read():
                 global EXPLORATION_RATE, SMOOTHING_ENABLED, SMOOTHING_THRESHOLD
+                handle_infer_overhead_summary["latency_predictor_read_lock_contention"] = time.time() - latency_predictor_read_lock_contention_start_time
                 # Get exploration and smoothing parameters
                 result, infer_from_tensor_overhead_summary = latency_predictor.infer_latency_predictor_with_model(
                     predictor=LATENCY_PREDICTOR,
@@ -404,7 +423,8 @@ def handle_infer():
                     sorted_all_pod_ids=sorted_all_pod_ids,
                     exploration_rate=EXPLORATION_RATE,
                     smoothing=bool(SMOOTHING_ENABLED),
-                    smoothing_threshold=SMOOTHING_THRESHOLD
+                    smoothing_threshold=SMOOTHING_THRESHOLD,
+                    generalpodid_to_gpu_model=RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
                 
         elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
@@ -618,13 +638,15 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
             
-            
+        logger.debug(f"overhead_log: {overhead_log}")
+        
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
             "request_timestamp": time.time() - first_request_starting_time,
             "selected_pod": selected_pod_ip,
             "selected_pod_generalpodid": selected_pod_generalpodid,
+            "selected_pod_gpu_type": result.get('selected_pod_gpu_type', 'unknown'),
             "confidence": result['confidence'],
             "exploration": result['explore_mask'],
             "exploration_enabled": EXPLORATION_ENABLED,
@@ -1298,7 +1320,6 @@ def init():
     # Initialize scalable RL agent if configured
     TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
     logger.info(f"{BLUE_COLOR}model_type: {RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
-
 
     # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
     if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':

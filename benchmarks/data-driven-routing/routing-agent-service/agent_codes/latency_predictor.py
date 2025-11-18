@@ -720,7 +720,8 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
 
 
 def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids, 
-                                        exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1):
+                                        exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1,
+                                        generalpodid_to_gpu_model=None):
     """
     Inference function using a cached latency predictor model.
 
@@ -732,6 +733,7 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         exploration_rate: Probability of random exploration (epsilon-greedy, 0.0 = pure exploitation)
         smoothing: If True, randomly select from pods within smoothing_threshold of min latency
         smoothing_threshold: Percentage threshold for smoothing (default 0.1 = 10%)
+        generalpodid_to_gpu_model: Optional dict mapping pod IDs to GPU model names
 
     Returns:
         Dict with prediction results. predicted_latencies will be a dict {pod_id: latency}
@@ -767,31 +769,35 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
     overhead_summary['prepare_tensors'] = time.time() - prepare_start
 
     # Make prediction with exploration and smoothing
-    predict_start = time.time()
+    model_inference_start = time.time()
     result = predictor.predict(
         pod_features, kv_hit_ratios, request_features, 
         exploration_rate=exploration_rate,
         smoothing=smoothing,
         smoothing_threshold=smoothing_threshold
     )
-    overhead_summary['model_inference'] = time.time() - predict_start
+    overhead_summary['model_inference'] = time.time() - model_inference_start
     
     # Log smoothing details if it was applied
-    if result.get('smoothing_mask', 0) == 1 and smoothing:
-        predicted_latencies_tensor = result['predicted_latencies'][0]
-        min_latency_value = torch.min(predicted_latencies_tensor)
-        threshold = min_latency_value * (1.0 + smoothing_threshold)
-        candidate_mask = predicted_latencies_tensor <= threshold
-        candidate_indices = torch.where(candidate_mask)[0].cpu().numpy()
-        candidate_latencies = [float(predicted_latencies_tensor[i].item()) for i in candidate_indices]
-        selected_idx = result['selected_pod_index'][0].item()
-        
-        logger.info(f"SMOOTHING applied for requestID {request_id}: "
-                   f"min_latency={float(min_latency_value):.2f}, threshold={float(threshold):.2f}, "
-                   f"candidates={len(candidate_indices)} pods {candidate_indices.tolist()}, "
-                   f"latencies={[f'{l:.2f}' for l in candidate_latencies]}, "
-                   f"selected=pod_{selected_idx}")
-    
+    smoothing_start = time.time()
+    if smoothing:
+        if result.get('smoothing_mask', 0) == 1:
+            predicted_latencies_tensor = result['predicted_latencies'][0]
+            min_latency_value = torch.min(predicted_latencies_tensor)
+            threshold = min_latency_value * (1.0 + smoothing_threshold)
+            candidate_mask = predicted_latencies_tensor <= threshold
+            candidate_indices = torch.where(candidate_mask)[0].cpu().numpy()
+            candidate_latencies = [float(predicted_latencies_tensor[i].item()) for i in candidate_indices]
+            selected_idx = result['selected_pod_index'][0].item()
+            
+            logger.debug(f"SMOOTHING applied for requestID {request_id}: "
+                    f"min_latency={float(min_latency_value):.2f}, threshold={float(threshold):.2f}, "
+                    f"candidates={len(candidate_indices)} pods {candidate_indices.tolist()}, "
+                    f"latencies={[f'{l:.2f}' for l in candidate_latencies]}, "
+                    f"selected=pod_{selected_idx}")
+        else:
+            logger.debug(f"SMOOTHING, no smoothing is needed for requestID {request_id}")
+    overhead_summary['smoothing'] = time.time() - smoothing_start
     # # DEBUG: Log predictions for all pods (sample every 10th request)
     # if int(request_id) % 10 == 0:
     #     all_predictions = result['predicted_latencies'][0].cpu().numpy()
@@ -822,6 +828,15 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
     # Format predicted_latencies as dict
     predicted_latencies_formatted = {sorted_all_pod_ids[i]: float(latency.item()) for i, latency in enumerate(predicted_latencies)}
     chosen_pod_predicted_latency = float(predicted_latencies_formatted[sorted_all_pod_ids[selected_pod_index]])
+    
+    # Get GPU type for selected pod
+    selected_pod_id = sorted_all_pod_ids[selected_pod_index]
+    if generalpodid_to_gpu_model and selected_pod_id in generalpodid_to_gpu_model:
+        selected_pod_gpu_type = generalpodid_to_gpu_model[selected_pod_id]
+    else:
+        logger.error(f"Selected pod ID {selected_pod_id} not found in generalpodid_to_gpu_model mapping")
+        return None, None
+    
     overhead_summary['format_results'] = time.time() - format_start
 
     return {
@@ -829,6 +844,7 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         'predicted_latencies': predicted_latencies_formatted,
         'chosen_pod_predicted_latency': chosen_pod_predicted_latency,
         'confidence': confidence,
+        'selected_pod_gpu_type': selected_pod_gpu_type,
         'pod_probabilities': [float(p) for p in softmax_probs.tolist()],
         'latency_metric': predictor.latency_metric,
         'explore_mask': result['explore_mask'],  # 0 = exploitation, 1 = exploration
