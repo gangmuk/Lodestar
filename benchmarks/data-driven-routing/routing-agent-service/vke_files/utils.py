@@ -123,7 +123,7 @@ def check_deployment_ready_kubernetes(deployment_name, k8s_cluster, namespace):
         bool: True if all pods and their containers are ready, False otherwise (will keep checking).
     """
     try:
-        if k8s_cluster == "vke":
+        if k8s_cluster == "vke" or k8s_cluster == "aws":
             kube_config_file = os.path.expanduser('~/.kube/config')
         else:
             kube_config_file = os.path.expanduser('~/.kube/config-local')

@@ -10,17 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Copy requirements and install Python dependencies
-COPY vke_files/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy client script and utilities
-COPY vke_files/async-client.py .
-COPY vke_files/utils.py .
-COPY vke_files/logger.py .
-
 # Create workload directory structure
-RUN mkdir -p /app/workload/ten_request \
+RUN mkdir -p \
     /app/workload/hundred_request \
     /app/workload/SharingRatio71% \
     /app/workload/SharingRatio47% \
@@ -82,11 +73,7 @@ COPY workload-and-experiment_results/workload-generator/mooncake/workload-conver
 # mooncake toolagent
 COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
 
-# test purpose
-COPY workload-and-experiment_results/ten_request/workload.jsonl /app/workload/ten_request/
 COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
-
-# working
 COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workload/SharingRatio71%/
 COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
 COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/
@@ -95,6 +82,17 @@ COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/c
 
 # Create output directory
 RUN mkdir -p /app/output
+
+
+# Copy requirements and install Python dependencies
+COPY vke_files/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy client script and utilities
+COPY vke_files/async-client.py .
+COPY vke_files/async-client-og.py .
+COPY vke_files/utils.py .
+COPY vke_files/logger.py .
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -343,7 +343,7 @@ def main():
     parser.add_argument('--ship_model', type=int, default=1, help='ship_model')
     parser.add_argument('--ship_offline_training_data', type=int, default=0, help='ship_offline_training_data')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
-    parser.add_argument('--k8s_cluster', type=str, default='vke', choices=['vke', 'local'], help='Kubernetes cluster')
+    parser.add_argument('--k8s_cluster', type=str, default='vke', choices=['vke', 'aws', 'local'], help='Kubernetes cluster')
     args = parser.parse_args()
     
     if args.ship_code == 0 and args.ship_model == 0:

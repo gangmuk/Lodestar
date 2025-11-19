@@ -19,18 +19,6 @@ import random
 import numpy as np
 from transformers import AutoTokenizer
 
-# Optional: Use uvloop for better performance (set USE_UVLOOP=1 to enable)
-USE_UVLOOP = os.getenv("USE_UVLOOP", "0") == "1"
-if USE_UVLOOP:
-    try:
-        import uvloop
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        print("Using uvloop for enhanced async performance")
-    except ImportError:
-        print("uvloop not available, using default asyncio event loop")
-else:
-    print("Using default asyncio event loop (set USE_UVLOOP=1 to try uvloop)")
-
 def static_hash(input_str: str) -> str:
     """Generate a 64-character unique hash for the given input"""
     return hashlib.sha256(input_str.encode()).hexdigest()  # Returns 64 hex characters
@@ -78,28 +66,10 @@ def estimate_tokens_from_text(text: str, use_word_count: bool = True) -> int:
             word_count = len(text.split())
             return int(word_count * 1.33)
 
-# Configure logging - set up our own logger
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Create a console handler with custom format
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Custom format for our logger (includes function name and line number)
-formatter = logging.Formatter('[%(levelname)s] %(funcName)s:%(lineno)d - %(message)s')
-console_handler.setFormatter(formatter)
-
-# Add handler to our logger (only if it doesn't already have one)
-if not logger.handlers:
-    logger.addHandler(console_handler)
-
-# Prevent propagation to root logger to avoid duplicate logs
-logger.propagate = False
-
-# Disable OpenAI library's internal logging to keep logs clean
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("openai._client").setLevel(logging.WARNING)
 
 # Global variables
 session_history = {}
@@ -144,10 +114,22 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
     actual_start_time = time.time()
     
     try:
-        # Note: Scheduling is handled by schedule_task(), so we start immediately
-        scheduling_accuracy = actual_start_time - target_time if target_time else 0
-        logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
-                  f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, " 
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+            
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
         
         # # Double-check prompt format
         # if not isinstance(prompt, list):
@@ -220,7 +202,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
                     total_tokens = chunk.usage.total_tokens
         # Combine text chunks to get full response
         response_text = "".join(text_chunks)
-        # logger.info(f"Request {request_id}, response_text: {response_text}")
+        # print(f"Request {request_id}, response_text: {response_text}")
         response_time = asyncio.get_running_loop().time()
         completion_time = time.time()
     
@@ -254,17 +236,18 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
         logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+                    f"Total time: {total_elapsed:.0f}ms, "
                     f"Tokens: {prompt_tokens} in / {output_tokens} out, "
                     f"TTFT: {ttft:.0f}ms, "
                     f"Avg_tpot: {avg_tpot:.0f}ms, "
-                    f"Total_tpot: {total_decode_time:.0f}ms, "
+                    f"Total_decode_time: {total_decode_time:.0f}ms, "
                     f"E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms")
         
         # Log scheduling information
         if scheduled_time:
             scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
             actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
-            logger.info(f"Request {request_id}: Scheduling - "
+            logger.info(f"Request {request_id}: Scheduling summary - "
                         f"Scheduled: {scheduled_dt}, "
                         f"Started: {actual_dt}, "
                         f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
@@ -322,10 +305,22 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
     actual_start_time = time.time()
 
     try:
-        # Note: Scheduling is handled by schedule_task_token_ids(), so we start immediately
-        scheduling_accuracy = actual_start_time - target_time if target_time else 0
-        logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
-                  f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, "
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
 
         # Use provided token IDs from workload
         logger.info(f"Request {request_id}: Using {len(token_ids)} token IDs from workload: {token_ids[:10]}...")
@@ -357,7 +352,7 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
             # Extract headers data
             transport = patch_openai_client(client)
             headers_data = extract_headers_data(transport.captured_headers)
-            logger.info(f"Request {request_id}, headers_data: {headers_data}")
+            print(f"Request {request_id}, headers_data: {headers_data}")
             # Extract response time and token counts
             response_time = asyncio.get_running_loop().time()
             completion_time = time.time()
@@ -770,10 +765,22 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
     actual_start_time = time.time()
     
     try:
-        # Note: Scheduling is handled by schedule_task(), so we start immediately
-        scheduling_accuracy = actual_start_time - target_time if target_time else 0
-        logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
-                  f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, " 
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+            
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
         
         # # Double-check prompt format
         # if not isinstance(prompt, list):
@@ -814,7 +821,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
             # Extract headers data
             headers_data = extract_headers_data(transport.captured_headers)
-            logger.info(f"Request {request_id}, headers_data: {headers_data}")
+            print(f"Request {request_id}, headers_data: {headers_data}")
             # Extract response time and token counts
             response_time = asyncio.get_running_loop().time()
             completion_time = time.time()
@@ -1290,6 +1297,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             request_id += 1
         
         logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
         
         # Execute only this iteration's tasks
         start_time = time.time()
@@ -1384,7 +1392,7 @@ async def main(args):
         end_time = time.time()
         
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
-        logger.info(f"** output_csv_file_name: {output_csv_file_name}")
+        print(f"** output_csv_file_name: {output_csv_file_name}")
 
 def write_experiment_config_to_file(output_dir, args):
         config_file = f'{output_dir}/experiment_config.txt'
@@ -1395,7 +1403,7 @@ def write_experiment_config_to_file(output_dir, args):
         return config_file
 
 if __name__ == "__main__":
-    logger.info(f"starting async-client.py")
+    print(f"starting async-client.py")
     """Main entry point for the script"""
     parser = argparse.ArgumentParser(description='Async Workload Generator')
     parser.add_argument("--workload_path", type=str, required=True, help="File path to the workload file.")

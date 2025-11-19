@@ -5,6 +5,7 @@ build=$1
 if [ -z "$build" ]; then
   echo "Please provide a build type:"
   echo "  vke          - Build for VKE cluster"
+  echo "  dockerhub    - Build for DockerHub"
   echo "  local-linux  - Build for local Linux K8s"
   echo "  local-mac    - Build for local Mac K8s"
   exit 1
