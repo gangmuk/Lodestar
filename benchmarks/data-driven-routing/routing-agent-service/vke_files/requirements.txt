@@ -4,3 +4,4 @@ transformers
 kubernetes
 tqdm
 httpx
+uvloop
