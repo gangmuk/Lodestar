@@ -34,8 +34,9 @@ import json
 from functools import lru_cache
 import utils
 
-# GPU features are now always included as one-hot encoded features
-INCLUDE_GPU_IN_FEATURE = True
+# GPU features can now be toggled via INCLUDE_GPU_FEATURES in HYPERPARAMETERS
+# Default kept for backward compatibility, but will be overridden by HYPERPARAMETERS
+INCLUDE_GPU_IN_FEATURE = True  # Legacy default, overridden by HYPERPARAMETERS['INCLUDE_GPU_FEATURES']
 
 random_seed = 42
 np.random.seed(random_seed)
@@ -380,7 +381,7 @@ class DataEncoder:
         n_pod_numeric = len(POD_NUMERIC_FEATURES)
         
         # Calculate feature dimensions (for pod features only, not including kv_hit_ratio)
-        # GPU one-hot encoding is always included
+        # GPU one-hot encoding is conditional based on INCLUDE_GPU_FEATURES
         gpu_onehot_dim = self.num_gpu_types
         total_feature_dim = n_pod_numeric + gpu_onehot_dim
         
@@ -388,56 +389,61 @@ class DataEncoder:
         pod_features_2d = np.zeros((n_pods, total_feature_dim), dtype=np.float32)
         kv_hit_ratios_1d = np.zeros(n_pods, dtype=np.float32)
         
-        # GPU encoding setup (always enabled)
+        # GPU encoding setup (conditional)
         # Extract GPU info from training data (CSV) or runtime state
         gpu_encoded_per_pod = {}
-        for pod_id in self.sorted_all_pod_ids:
-            gpu_model_id = None
-            
-            # First, try to get GPU from the data itself (training CSV or inference data)
-            if pod_id in pod_data and 'GPU' in pod_data[pod_id]:
-                # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
-                gpu_column = pod_data[pod_id]['GPU']
-                # Handle both Series (batch) and single value (inference)
-                if hasattr(gpu_column, 'iloc'):
-                    gpu_model_name = gpu_column.iloc[0]
-                else:
-                    gpu_model_name = gpu_column
+        
+        # Only process GPU features if enabled
+        if gpu_onehot_dim == 0:
+            logger.debug("Skipping GPU encoding (INCLUDE_GPU_FEATURES=0)")
+        else:
+            for pod_id in self.sorted_all_pod_ids:
+                gpu_model_id = None
                 
-                # Check if GPU value is NaN (missing data in CSV)
-                if pd.isna(gpu_model_name):
-                    logger.warning(f"GPU value is NaN for pod {pod_id} in CSV, trying runtime mapping fallback")
-                    gpu_model_id = None  # Signal to use fallback
-                # Look up in static mapping
-                elif gpu_model_name in utils.GPU_MODEL_TO_ENCODE:
-                    gpu_model_id = utils.GPU_MODEL_TO_ENCODE[gpu_model_name]
-                else:
-                    logger.error(f"Unknown GPU model name: {gpu_model_name} for pod {pod_id}")
-                    logger.error(f"Available GPU models: {list(utils.GPU_MODEL_TO_ENCODE.keys())}")
+                # First, try to get GPU from the data itself (training CSV or inference data)
+                if pod_id in pod_data and 'GPU' in pod_data[pod_id]:
+                    # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
+                    gpu_column = pod_data[pod_id]['GPU']
+                    # Handle both Series (batch) and single value (inference)
+                    if hasattr(gpu_column, 'iloc'):
+                        gpu_model_name = gpu_column.iloc[0]
+                    else:
+                        gpu_model_name = gpu_column
+                    
+                    # Check if GPU value is NaN (missing data in CSV)
+                    if pd.isna(gpu_model_name):
+                        logger.warning(f"GPU value is NaN for pod {pod_id} in CSV, trying runtime mapping fallback")
+                        gpu_model_id = None  # Signal to use fallback
+                    # Look up in static mapping
+                    elif gpu_model_name in utils.GPU_MODEL_TO_ENCODE:
+                        gpu_model_id = utils.GPU_MODEL_TO_ENCODE[gpu_model_name]
+                    else:
+                        logger.error(f"Unknown GPU model name: {gpu_model_name} for pod {pod_id}")
+                        logger.error(f"Available GPU models: {list(utils.GPU_MODEL_TO_ENCODE.keys())}")
+                        assert False
+                
+                # If still None, try runtime mapping fallback (for inference or when CSV has NaN)
+                if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
+                    gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
+                    logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
+                
+                # No GPU info available anywhere
+                if gpu_model_id is None:
+                    logger.error(f"No GPU info found for pod {pod_id}")
+                    logger.error(f"Pod not in pod_data GPU column and not in HYPERPARAMETERS['pod_gpu_id_mapping']")
+                    logger.error(f"Available pods in pod_data: {list(pod_data.keys())}")
+                    if pod_id in pod_data:
+                        logger.error(f"Available features for {pod_id}: {list(pod_data[pod_id].keys())}")
+                    logger.error(f"Available pods in HYPERPARAMETERS: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
                     assert False
-            
-            # If still None, try runtime mapping fallback (for inference or when CSV has NaN)
-            if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
-                gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
-                logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
-            
-            # No GPU info available anywhere
-            if gpu_model_id is None:
-                logger.error(f"No GPU info found for pod {pod_id}")
-                logger.error(f"Pod not in pod_data GPU column and not in HYPERPARAMETERS['pod_gpu_id_mapping']")
-                logger.error(f"Available pods in pod_data: {list(pod_data.keys())}")
-                if pod_id in pod_data:
-                    logger.error(f"Available features for {pod_id}: {list(pod_data[pod_id].keys())}")
-                logger.error(f"Available pods in HYPERPARAMETERS: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
-                assert False
-            
-            # Validate GPU model ID
-            if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
-                logger.error(f"Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
-                logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
-                assert False
-            
-            gpu_encoded_per_pod[pod_id] = gpu_model_id
+                
+                # Validate GPU model ID
+                if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
+                    logger.error(f"Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
+                    logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
+                    assert False
+                
+                gpu_encoded_per_pod[pod_id] = gpu_model_id
         
         # Direct value extraction for single row (no array indexing)
         for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
@@ -455,11 +461,12 @@ class DataEncoder:
                     kv_value = pod_features['kv_hit_ratio'].iloc[0] if hasattr(pod_features['kv_hit_ratio'], 'iloc') else pod_features['kv_hit_ratio']
                     kv_hit_ratios_1d[pod_idx] = kv_value
                 
-                # GPU one-hot encoding (always enabled)
-                gpu_model_id = gpu_encoded_per_pod[pod_id]
-                gpu_onehot = np.zeros(gpu_onehot_dim)
-                gpu_onehot[gpu_model_id] = 1
-                pod_features_2d[pod_idx, n_pod_numeric:] = gpu_onehot
+                # GPU one-hot encoding (conditional)
+                if gpu_onehot_dim > 0:
+                    gpu_model_id = gpu_encoded_per_pod[pod_id]
+                    gpu_onehot = np.zeros(gpu_onehot_dim)
+                    gpu_onehot[gpu_model_id] = 1
+                    pod_features_2d[pod_idx, n_pod_numeric:] = gpu_onehot
         
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         overhead_summary['vectorized_extraction'] = vectorized_extraction_overhead
@@ -505,62 +512,67 @@ class DataEncoder:
         n_pods = len(self.sorted_all_pod_ids)
         n_numeric = len(ALL_NUMERIC_FEATURES)
         
-        # Calculate total feature dimensions including GPU one-hot encoding (always enabled)
+        # Calculate total feature dimensions including GPU one-hot encoding (conditional)
         gpu_onehot_dim = self.num_gpu_types
         total_feature_dim = n_numeric + gpu_onehot_dim
         
         all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
 
-        # GPU encoding setup (always enabled)
+        # GPU encoding setup (conditional)
         # Extract GPU info from training data (CSV) or runtime state
         gpu_encoded_per_pod = {}
-        for pod_id in self.sorted_all_pod_ids:
-            gpu_model_id = None
-            
-            # First, try to get GPU from the data itself (training CSV or inference data)
-            if pod_id in pod_data and 'GPU' in pod_data[pod_id]:
-                # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
-                gpu_column = pod_data[pod_id]['GPU']
-                # Handle both Series (batch) and single value
-                if hasattr(gpu_column, 'iloc'):
-                    gpu_model_name = gpu_column.iloc[0]
-                else:
-                    gpu_model_name = gpu_column
+        
+        # Only process GPU features if enabled
+        if gpu_onehot_dim == 0:
+            logger.debug("Skipping GPU encoding in batch processing (INCLUDE_GPU_FEATURES=0)")
+        else:
+            for pod_id in self.sorted_all_pod_ids:
+                gpu_model_id = None
                 
-                # Check if GPU value is NaN (missing data in CSV)
-                if pd.isna(gpu_model_name):
-                    logger.warning(f"GPU value is NaN for pod {pod_id} in CSV, trying runtime mapping fallback")
-                    gpu_model_id = None  # Signal to use fallback
-                # Look up in static mapping
-                elif gpu_model_name in utils.GPU_MODEL_TO_ENCODE:
-                    gpu_model_id = utils.GPU_MODEL_TO_ENCODE[gpu_model_name]
-                else:
-                    logger.error(f"Unknown GPU model name: {gpu_model_name} for pod {pod_id}")
-                    logger.error(f"Available GPU models: {list(utils.GPU_MODEL_TO_ENCODE.keys())}")
+                # First, try to get GPU from the data itself (training CSV or inference data)
+                if pod_id in pod_data and 'GPU' in pod_data[pod_id]:
+                    # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
+                    gpu_column = pod_data[pod_id]['GPU']
+                    # Handle both Series (batch) and single value
+                    if hasattr(gpu_column, 'iloc'):
+                        gpu_model_name = gpu_column.iloc[0]
+                    else:
+                        gpu_model_name = gpu_column
+                    
+                    # Check if GPU value is NaN (missing data in CSV)
+                    if pd.isna(gpu_model_name):
+                        logger.warning(f"GPU value is NaN for pod {pod_id} in CSV, trying runtime mapping fallback")
+                        gpu_model_id = None  # Signal to use fallback
+                    # Look up in static mapping
+                    elif gpu_model_name in utils.GPU_MODEL_TO_ENCODE:
+                        gpu_model_id = utils.GPU_MODEL_TO_ENCODE[gpu_model_name]
+                    else:
+                        logger.error(f"Unknown GPU model name: {gpu_model_name} for pod {pod_id}")
+                        logger.error(f"Available GPU models: {list(utils.GPU_MODEL_TO_ENCODE.keys())}")
+                        assert False
+                
+                # If still None, try runtime mapping fallback (for inference or when CSV has NaN)
+                if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
+                    gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
+                    logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
+                
+                # No GPU info available anywhere
+                if gpu_model_id is None:
+                    logger.error(f"No GPU info found for pod {pod_id}")
+                    logger.error(f"Pod not in pod_data GPU column and not in HYPERPARAMETERS['pod_gpu_id_mapping']")
+                    logger.error(f"Available pods in pod_data: {list(pod_data.keys())}")
+                    if pod_id in pod_data:
+                        logger.error(f"Available features for {pod_id}: {list(pod_data[pod_id].keys())}")
+                    logger.error(f"Available pods in HYPERPARAMETERS: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
                     assert False
-            
-            # If still None, try runtime mapping fallback (for inference or when CSV has NaN)
-            if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
-                gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
-                logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
-            
-            # No GPU info available anywhere
-            if gpu_model_id is None:
-                logger.error(f"No GPU info found for pod {pod_id}")
-                logger.error(f"Pod not in pod_data GPU column and not in HYPERPARAMETERS['pod_gpu_id_mapping']")
-                logger.error(f"Available pods in pod_data: {list(pod_data.keys())}")
-                if pod_id in pod_data:
-                    logger.error(f"Available features for {pod_id}: {list(pod_data[pod_id].keys())}")
-                logger.error(f"Available pods in HYPERPARAMETERS: {list(HYPERPARAMETERS.get('pod_gpu_id_mapping', {}).keys())}")
-                assert False
-            
-            # Validate GPU model ID
-            if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
-                logger.error(f"Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
-                logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
-                assert False
-            
-            gpu_encoded_per_pod[pod_id] = gpu_model_id
+                
+                # Validate GPU model ID
+                if gpu_model_id < 0 or gpu_model_id >= self.num_gpu_types:
+                    logger.error(f"Invalid GPU model ID {gpu_model_id} for pod {pod_id}")
+                    logger.error(f"Expected GPU model ID in range [0, {self.num_gpu_types-1}]")
+                    assert False
+                
+                gpu_encoded_per_pod[pod_id] = gpu_model_id
 
         ## THIS IS WHERE THE BUG MANIFESTS:
         ## The all_pods order determines how features are arranged in tensors
@@ -585,11 +597,12 @@ class DataEncoder:
                     if feat_name in pod_features:
                         all_features_array[:, pod_idx, feat_index] = pod_features[feat_name].fillna(0)
                 
-                # GPU one-hot encoding (always enabled)
-                gpu_model_id = gpu_encoded_per_pod[pod_id]
-                gpu_onehot = np.zeros(gpu_onehot_dim)
-                gpu_onehot[gpu_model_id] = 1
-                all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
+                # GPU one-hot encoding (conditional)
+                if gpu_onehot_dim > 0:
+                    gpu_model_id = gpu_encoded_per_pod[pod_id]
+                    gpu_onehot = np.zeros(gpu_onehot_dim)
+                    gpu_onehot[gpu_model_id] = 1
+                    all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
 
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         
@@ -702,10 +715,16 @@ class DataEncoder:
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
         
-        # Initialize GPU one-hot dimension from STATIC mapping (always enabled)
-        # Use fixed size from utils.GPU_MODEL_TO_ENCODE to ensure consistency across training/inference
-        self.num_gpu_types = len(utils.GPU_MODEL_TO_ENCODE)
-        logger.debug(f"GPU one-hot encoding initialized from static mapping: {self.num_gpu_types} GPU types")
+        # Initialize GPU one-hot dimension based on INCLUDE_GPU_FEATURES flag
+        # Default to True for backward compatibility if not specified
+        include_gpu_features = HYPERPARAMETERS['INCLUDE_GPU_FEATURES']
+        if include_gpu_features:
+            # Use fixed size from utils.GPU_MODEL_TO_ENCODE to ensure consistency across training/inference
+            self.num_gpu_types = len(utils.GPU_MODEL_TO_ENCODE)
+            logger.info(f"✅ GPU one-hot encoding ENABLED: {self.num_gpu_types} GPU types")
+        else:
+            self.num_gpu_types = 0
+            logger.warning(f"⚠️  GPU one-hot encoding DISABLED (INCLUDE_GPU_FEATURES=0)")
         extract_pod_columns_start = time.time()
         pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids)
         overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start

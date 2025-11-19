@@ -75,21 +75,6 @@ def _find_reference_tensor(search_roots: Optional[str]) -> Optional[str]:
     return None
 
 
-def _load_model_config(final_model_dir: str) -> Dict[str, Any]:
-    cfg_path = os.path.join(final_model_dir, "latency_predictor_config.json")
-    if os.path.exists(cfg_path):
-        with open(cfg_path, "r") as f:
-            cfg = json.load(f)
-        return cfg
-    logger.warning(f"latency_predictor_config.json not found in {final_model_dir}, using minimal defaults")
-    return {
-        "hidden_dim": 64,
-        "weight_initialization": "xavier",
-        "learning_rate": 1e-3,
-        "latency_metric": "ttft",
-    }
-
-
 def _infer_dims_from_tensor(tensor_path: str) -> Tuple[int, int, int, int]:
     data = torch.load(tensor_path, map_location="cpu")
     pod = data["pod_features_with_staleness"]
@@ -106,24 +91,19 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _build_predictor(model_cfg: Dict[str, Any], num_pods: int, pod_feat_dim: int, kv_dim: int, req_feat_dim: int, final_model_dir: str) -> lp.LatencyPredictor:
+def _build_predictor(hyperparameters, num_pods: int, pod_feat_dim: int, kv_dim: int, req_feat_dim: int, final_model_dir: str) -> lp.LatencyPredictor:
     state_dims = {
         "pod_features": pod_feat_dim,
         "kv_hit_ratios": kv_dim,
         "request_features": req_feat_dim,
         "num_pods": num_pods,
     }
-    H = dict(model_cfg)
-    if "hidden_dim" not in H:
-        H["hidden_dim"] = 64
-    if "weight_initialization" not in H:
-        H["weight_initialization"] = "xavier"
-    if "learning_rate" not in H:
-        H["learning_rate"] = 1e-3
-    if "latency_metric" not in H:
-        H["latency_metric"] = "ttft"
+    # hyperparameters["hidden_dim"] = 64
+    # hyperparameters["weight_initialization"] = "xavier"
+    # hyperparameters["learning_rate"] = 1e-3
+    # hyperparameters["latency_metric"] = "ttft"
     
-    predictor = lp.LatencyPredictor(state_dims, H, final_model_dir=final_model_dir)
+    predictor = lp.LatencyPredictor(state_dims, hyperparameters, final_model_dir=final_model_dir)
     predictor.load(final_model_dir)
     predictor.network.eval()
     return predictor
@@ -1056,8 +1036,17 @@ def main():
             "When no reference dataset is found, you must supply --num_pods --pod_feat_dim --kv_dim --req_feat_dim"
         num_pods, pod_feat_dim, kv_dim, req_feat_dim = args.num_pods, args.pod_feat_dim, args.kv_dim, args.req_feat_dim
 
-    model_cfg = _load_model_config(final_model_dir)
-    predictor = _build_predictor(model_cfg, num_pods, pod_feat_dim, kv_dim, req_feat_dim, final_model_dir)
+
+
+    cfg_path = os.path.join(final_model_dir, "model_config.json")
+    if not os.path.exists(cfg_path):
+        logger.error(f"model_config.json not found in {final_model_dir}")
+        assert False
+    with open(cfg_path, "r") as f:
+        model_cfg = json.load(f)
+    logger.info(f"Loaded hyperparameters: {model_cfg}")
+    hyperparameters = dict(model_cfg)
+    predictor = _build_predictor(hyperparameters, num_pods, pod_feat_dim, kv_dim, req_feat_dim, final_model_dir)
 
     # Prepare contexts and ranges
     pod_ctx, kv_ctx, req_ctx = _select_base_samples(reference_tensor, args.samples, num_pods, pod_feat_dim, kv_dim, req_feat_dim)

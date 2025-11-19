@@ -37,7 +37,9 @@ GPU_MODEL_TO_ENCODE = {
     'NVIDIA-V100': 10,
 }
 
-def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
+def load_hyperparameter_file(file_path):
+    logger.info(f"Loading RL hyperparameters from {file_path}")
+    hyperparameters = {}
     if not os.path.exists(file_path):
         logger.error(f"Hyperparameter file {file_path} does not exist")
         assert False
@@ -46,32 +48,32 @@ def load_rl_hyperparameters(file_path, RL_MODEL_HYPERPARAMETERS):
     for key, value in data.items():
         if key == 'normalization':
             # Handle nested normalization parameters
-            RL_MODEL_HYPERPARAMETERS[key] = {}
+            hyperparameters[key] = {}
             for sub_key, sub_value in value.items():
                 if sub_key == 'FEATURES_NORMALIZED':
                     # Convert string representation of set to actual set
                     if sub_value and sub_value != "set()":
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
+                        hyperparameters[key][sub_key] = ast.literal_eval(sub_value)
                     else:
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
+                        hyperparameters[key][sub_key] = set()
                 elif sub_key == 'FEATURES_AMPLIFIED':
                     # Convert string representation of set to actual set
                     if sub_value and sub_value != "set()":
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = ast.literal_eval(sub_value)
+                        hyperparameters[key][sub_key] = ast.literal_eval(sub_value)
                     else:
-                        RL_MODEL_HYPERPARAMETERS[key][sub_key] = set()
+                        hyperparameters[key][sub_key] = set()
                 else:
-                    RL_MODEL_HYPERPARAMETERS[key][sub_key] = sub_value
+                    hyperparameters[key][sub_key] = sub_value
         else:
-            RL_MODEL_HYPERPARAMETERS[key] = value
+            hyperparameters[key] = value
 
-    for key, value in RL_MODEL_HYPERPARAMETERS.items():
+    for key, value in hyperparameters.items():
         if key == 'normalization':
             for sub_key, sub_value in value.items():
-                logger.info(f"load_rl_hyperparameters, {key}.{sub_key}: {sub_value}")
+                logger.info(f"load_hyperparameter_file, {key}.{sub_key}: {sub_value}")
         else:
-            logger.info(f"load_rl_hyperparameters, {key}: {value}")
-
+            logger.info(f"load_hyperparameter_file, {key}: {value}")
+    return hyperparameters
 
 def get_sorted_all_pod_ids(source_type, data=None):
     if source_type == 'batch_dataframe':

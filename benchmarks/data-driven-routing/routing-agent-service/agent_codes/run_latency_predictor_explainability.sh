@@ -29,11 +29,8 @@ echo "=========================================="
 echo "Model directory: $FINAL_MODEL_DIR"
 echo ""
 
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
 # Run the explainability script
-python3 "$SCRIPT_DIR/latency_predictor_explainability.py" \
+python3 latency_predictor_explainability.py \
     --final_model_dir "$FINAL_MODEL_DIR" \
     --samples 32 \
     --seed 42

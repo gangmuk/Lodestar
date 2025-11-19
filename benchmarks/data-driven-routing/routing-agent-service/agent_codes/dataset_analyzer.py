@@ -449,13 +449,20 @@ class RLDatasetAnalyzer:
             return 0.0
     
     def _extract_feature_types(self):
-        """Dynamically extract all feature types from the dataset columns."""
+        """Dynamically extract all numeric feature types from the dataset columns."""
         feature_types = set()
         for col in self.df.columns:
             if col.startswith('pod_') and '-' in col:
                 # Extract feature type from pod_XXXX-feature_type format
                 feature_type = col.split('-', 1)[1]  # Get everything after first '-'
-                feature_types.add(feature_type)
+                
+                # Only include numeric features - check if this feature type has numeric values
+                try:
+                    if pd.api.types.is_numeric_dtype(self.df[col]):
+                        feature_types.add(feature_type)
+                except:
+                    # Skip if we can't determine type
+                    continue
         return sorted(list(feature_types))
     
     def _get_pod_state_features(self, feature_types=None):
@@ -640,21 +647,17 @@ class RLDatasetAnalyzer:
                     # Skip constant features
                     if np.var(feature_values) < 1e-8:
                         continue
-                    
-                    try:
-                        corr, p_value = pearsonr(feature_values, pod_rewards)
-                        if not np.isnan(corr) and abs(corr) > 0.1:  # Meaningful correlation
-                            correlations.append({
-                                'feature': feature_type,
-                                'correlation': corr,
-                                'p_value': p_value,
-                                'significant': p_value < 0.05
-                            })
-                            total_features += 1
-                            if p_value < 0.05:
-                                significant_correlations += 1
-                    except:
-                        continue
+                    corr, p_value = pearsonr(feature_values, pod_rewards)
+                    if not np.isnan(corr) and abs(corr) > 0.1:  # Meaningful correlation
+                        correlations.append({
+                            'feature': feature_type,
+                            'correlation': corr,
+                            'p_value': p_value,
+                            'significant': p_value < 0.05
+                        })
+                        total_features += 1
+                        if p_value < 0.05:
+                            significant_correlations += 1
             
             if correlations:
                 print(f"  {pod_id}:")
@@ -1063,20 +1066,21 @@ class RLDatasetAnalyzer:
         print(f"\nPod state diversity:")
         pod_diversities = {}
         
+        # Get numeric feature types only
+        pod_feature_types = self._extract_feature_types()
+        
         for pod_id in self.pod_ids:
-            pod_cols = [col for col in self.df.columns if col.startswith(f'{pod_id}-')]
-            
-            if not pod_cols:
-                continue
-                
             pod_ranges = []
-            for col in pod_cols:
-                values = self.df[col].values
-                if len(values) > 1:
-                    range_val = np.max(values) - np.min(values)
-                    mean_val = np.abs(np.mean(values))
-                    relative_range = range_val / (mean_val + 1e-8) if mean_val > 0 else 0
-                    pod_ranges.append(relative_range)
+            
+            for feature_type in pod_feature_types:
+                col = f"{pod_id}-{feature_type}"
+                if col in self.df.columns:
+                    values = self.df[col].values
+                    if len(values) > 1:
+                        range_val = np.max(values) - np.min(values)
+                        mean_val = np.abs(np.mean(values))
+                        relative_range = range_val / (mean_val + 1e-8) if mean_val > 0 else 0
+                        pod_ranges.append(relative_range)
             
             avg_pod_diversity = np.mean(pod_ranges) if pod_ranges else 0
             pod_diversities[pod_id] = avg_pod_diversity
@@ -1358,6 +1362,7 @@ class RLDatasetAnalyzer:
         
         # Generate visualizations
         pdf_filename = self.create_visualizations(rewards, routing_metrics, ttft_slo, tpot_slo, reward_function, self.processed_csv)
+        print(f"pdf_filename: {pdf_filename}")
         return pdf_filename
     
     def create_visualizations(self, rewards, routing_metrics, ttft_slo=1000, tpot_slo=50, reward_function='linear_simple', processed_csv=None):
@@ -1397,10 +1402,13 @@ class RLDatasetAnalyzer:
             # 2. Feature Distribution Analysis
             self._plot_feature_distributions(pdf)
             
-            # 3. State-Performance Correlation Heatmap
+            # 3. Feature-Latency Correlation Analysis
+            self._plot_feature_latency_correlation(pdf)
+            
+            # 4. State-Performance Correlation Heatmap
             self._plot_correlation_heatmap(pdf, rewards)
             
-            # 4. NEW: Reward Variance & Confidence Prediction Analysis
+            # 5. NEW: Reward Variance & Confidence Prediction Analysis
             self._plot_reward_variance_analysis(pdf, rewards)
         
         print(f"✅ Visualizations saved to: {pdf_filename}")
@@ -1569,6 +1577,184 @@ class RLDatasetAnalyzer:
         plt.close()
         
         print("✅ Feature distribution plots generated")
+    
+    def _plot_feature_latency_correlation(self, pdf):
+        """Plot scatter plots showing relationship between features and latency metrics (TTFT and avg_tpot)."""
+        print("Generating feature-latency scatter plots...")
+        
+        # Get TTFT and TPOT values
+        ttft_values = self.df['ttft'].values
+        tpot_values = self.df['avg_tpot'].values
+        
+        # Get pod feature types and non-pod features
+        pod_feature_types = self._extract_feature_types()
+        non_pod_features = self._extract_non_pod_numeric_features()
+        
+        # Collect feature data
+        feature_data = []
+        
+        # Analyze pod features - use mean across all pods for each sample
+        for feature_type in pod_feature_types:
+            # Calculate mean feature value across all pods for each sample
+            feature_cols = [f"{pod_id}-{feature_type}" for pod_id in self.pod_ids 
+                           if f"{pod_id}-{feature_type}" in self.df.columns]
+            
+            if not feature_cols:
+                continue
+            
+            # Take mean across pods for each sample
+            feature_values = self.df[feature_cols].mean(axis=1).values
+            
+            # Skip if no variance
+            if np.var(feature_values) < 1e-8:
+                continue
+            
+            try:
+                # Calculate correlations
+                ttft_corr, ttft_pval = pearsonr(feature_values, ttft_values)
+                tpot_corr, tpot_pval = pearsonr(feature_values, tpot_values)
+                
+                if not np.isnan(ttft_corr) and not np.isnan(tpot_corr):
+                    feature_data.append({
+                        'name': f"{feature_type} (pod avg)",
+                        'values': feature_values,
+                        'ttft_corr': ttft_corr,
+                        'ttft_pval': ttft_pval,
+                        'tpot_corr': tpot_corr,
+                        'tpot_pval': tpot_pval
+                    })
+            except Exception as e:
+                print(f"Warning: Could not calculate correlation for {feature_type}: {e}")
+                continue
+        
+        # Analyze non-pod features
+        for feature_name in non_pod_features:
+            if feature_name not in self.df.columns:
+                continue
+            
+            feature_values = self.df[feature_name].values
+            
+            # Skip if no variance
+            if np.var(feature_values) < 1e-8:
+                continue
+            
+            try:
+                # Calculate correlations
+                ttft_corr, ttft_pval = pearsonr(feature_values, ttft_values)
+                tpot_corr, tpot_pval = pearsonr(feature_values, tpot_values)
+                
+                if not np.isnan(ttft_corr) and not np.isnan(tpot_corr):
+                    feature_data.append({
+                        'name': feature_name,
+                        'values': feature_values,
+                        'ttft_corr': ttft_corr,
+                        'ttft_pval': ttft_pval,
+                        'tpot_corr': tpot_corr,
+                        'tpot_pval': tpot_pval
+                    })
+            except Exception as e:
+                print(f"Warning: Could not calculate correlation for {feature_name}: {e}")
+                continue
+        
+        if not feature_data:
+            print("Warning: No valid features for correlation plots")
+            return
+        
+        print(f"Creating scatter plots for {len(feature_data)} features")
+        
+        # Sort by absolute TTFT correlation (primary) and feature name (secondary for consistency)
+        feature_data.sort(key=lambda x: (-abs(x['ttft_corr']), x['name']))
+        
+        # Create scatter plots (top features only for readability)
+        n_features = min(len(feature_data), 12)  # Show top 12 features
+        n_cols = 3
+        n_rows_per_section = int(np.ceil(n_features / n_cols))
+        n_rows = n_rows_per_section * 2  # One section for TTFT, one for TPOT
+        
+        fig = plt.figure(figsize=(18, 5 * n_rows))
+        fig.suptitle('Feature-Latency Relationship Analysis (Scatter Plots)', 
+                    fontsize=18, fontweight='bold', y=0.995)
+        
+        # First, plot all TTFT scatter plots
+        plot_idx = 1
+        for i, feat_info in enumerate(feature_data[:n_features]):
+            feature_name = feat_info['name']
+            feature_values = feat_info['values']
+            
+            # Plot TTFT scatter
+            ax_ttft = plt.subplot(n_rows, n_cols, plot_idx)
+            plot_idx += 1
+            
+            scatter = ax_ttft.scatter(feature_values, ttft_values, 
+                                     alpha=0.7, s=20, c=ttft_values, 
+                                     cmap='RdYlGn_r', edgecolors='none')
+            
+            # Add regression line
+            try:
+                z = np.polyfit(feature_values, ttft_values, 1)
+                p = np.poly1d(z)
+                x_line = np.linspace(feature_values.min(), feature_values.max(), 100)
+                ax_ttft.plot(x_line, p(x_line), 'r--', alpha=0.8, linewidth=2, label='Trend')
+            except:
+                pass
+            
+            # Formatting
+            ax_ttft.set_xlabel(feature_name.replace('_', ' ').title(), fontsize=13, fontweight='bold')
+            ax_ttft.set_ylabel('TTFT (ms)', fontsize=13, fontweight='bold')
+            sig_marker = '***' if feat_info['ttft_pval'] < 0.001 else '**' if feat_info['ttft_pval'] < 0.01 else '*' if feat_info['ttft_pval'] < 0.05 else ''
+            ax_ttft.set_title(f'r={feat_info["ttft_corr"]:.3f}{sig_marker}', 
+                            fontsize=11, fontweight='bold',
+                            color='darkgreen' if feat_info["ttft_corr"] > 0 else 'darkred')
+            ax_ttft.grid(True, alpha=0.3)
+        
+        # Add section separator text
+        if n_features > 0:
+            fig.text(0.5, 0.5, 'TTFT Correlations ↑     |     Avg TPOT Correlations ↓', 
+                    ha='center', va='center', fontsize=14, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.8', facecolor='lightgray', alpha=0.8))
+        
+        # Then, plot all TPOT scatter plots
+        plot_idx = n_rows_per_section * n_cols + 1
+        for i, feat_info in enumerate(feature_data[:n_features]):
+            feature_name = feat_info['name']
+            feature_values = feat_info['values']
+            
+            # Plot TPOT scatter
+            ax_tpot = plt.subplot(n_rows, n_cols, plot_idx)
+            plot_idx += 1
+            
+            scatter = ax_tpot.scatter(feature_values, tpot_values,
+                                     alpha=0.7, s=20, c=tpot_values,
+                                     cmap='RdYlBu_r', edgecolors='none')
+            
+            # Add regression line
+            try:
+                z = np.polyfit(feature_values, tpot_values, 1)
+                p = np.poly1d(z)
+                x_line = np.linspace(feature_values.min(), feature_values.max(), 100)
+                ax_tpot.plot(x_line, p(x_line), 'b--', alpha=0.8, linewidth=2, label='Trend')
+            except:
+                pass
+            
+            # Formatting
+            ax_tpot.set_xlabel(feature_name.replace('_', ' ').title(), fontsize=13, fontweight='bold')
+            ax_tpot.set_ylabel('Avg TPOT (ms)', fontsize=13, fontweight='bold')
+            sig_marker = '***' if feat_info['tpot_pval'] < 0.001 else '**' if feat_info['tpot_pval'] < 0.01 else '*' if feat_info['tpot_pval'] < 0.05 else ''
+            ax_tpot.set_title(f'r={feat_info["tpot_corr"]:.3f}{sig_marker}', 
+                            fontsize=11, fontweight='bold',
+                            color='darkblue' if feat_info["tpot_corr"] > 0 else 'darkred')
+            ax_tpot.grid(True, alpha=0.3)
+        
+        # Add legend
+        legend_text = 'Significance: *** p<0.001, ** p<0.01, * p<0.05 | r = Pearson correlation'
+        fig.text(0.5, 0.005, legend_text, ha='center', fontsize=11, style='italic',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout(rect=[0, 0.015, 1, 0.99])
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✅ Feature-latency scatter plots generated for top {n_features} features")
         
     def _plot_action_distribution(self, pdf):
         """Plot action distribution and balance analysis."""
@@ -1695,12 +1881,12 @@ class RLDatasetAnalyzer:
             axes[0].set_yticklabels(pod_labels)
             axes[0].set_title('Pod State-Performance Correlations')
             
-            # Add correlation values as text
-            for i in range(len(pod_labels)):
-                for j in range(len(feature_labels)):
-                    text = axes[0].text(j, i, f'{corr_array[i, j]:.2f}',
-                                       ha="center", va="center", 
-                                       color="white" if abs(corr_array[i, j]) > 0.5 else "black")
+            # # Add correlation values as text
+            # for i in range(len(pod_labels)):
+            #     for j in range(len(feature_labels)):
+            #         text = axes[0].text(j, i, f'{corr_array[i, j]:.2f}',
+            #                            ha="center", va="center", 
+            #                            color="white" if abs(corr_array[i, j]) > 0.5 else "black")
             
             cbar = plt.colorbar(im, ax=axes[0])
             cbar.set_label('Correlation Coefficient')

@@ -15,8 +15,10 @@ import time
 from logger import logger
 import utils as utils
 
-# GPU features are now always included as one-hot encoded features
-INCLUDE_GPU_IN_FEATURE = True
+# NOTE: GPU feature inclusion is now controlled by INCLUDE_GPU_FEATURES 
+# environment variable in routing_agent_service.py, not here.
+# GPU column extraction here just parses raw data - actual one-hot 
+# encoding happens in encoding.py based on hyperparameters['INCLUDE_GPU_FEATURES']
 
 def parse_json_columns(df, json_columns):
     for col in json_columns:
@@ -274,8 +276,7 @@ def calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, a
 
 
 ## new - unified preprocessing function
-def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training):
-    RL_MODEL_HYPERPARAMETERS = RL_MODEL_HYPERPARAMETERS or {}
+def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training):
     num_rows = len(parsed_df)
     processing_type = "batch" if num_rows > 1 else "single row"
     logger.debug(f"Processing {num_rows} rows ({processing_type}) with is_training={is_training}")
@@ -428,7 +429,8 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
-    excluded_pod_features = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+    logger.info(f"** hyperparameters: {hyperparameters}")
+    excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
     if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
         excluded_pod_features = set()
     for pod_id in sorted_all_pod_ids:
@@ -479,12 +481,12 @@ def preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_
         })
 
         reward_keys = {'TTFT_SLO', 'AVG_TPOT_SLO', 'TTFT_REWARD_WEIGHT', 'REWARD_FUNCTION'}
-        if reward_keys.issubset(RL_MODEL_HYPERPARAMETERS.keys()):
+        if reward_keys.issubset(hyperparameters.keys()):
             reward_calc_start_time = time.time()
-            ttft_slo = RL_MODEL_HYPERPARAMETERS['TTFT_SLO']
-            avg_tpot_slo = RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO']
-            ttft_reward_weight = RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT']
-            reward_function = RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION']
+            ttft_slo = hyperparameters['TTFT_SLO']
+            avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
+            ttft_reward_weight = hyperparameters['TTFT_REWARD_WEIGHT']
+            reward_function = hyperparameters['REWARD_FUNCTION']
 
             if reward_function == "linear_simple":
                 reward = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
@@ -590,8 +592,7 @@ def parse_log_message(log_message):
         return pd.DataFrame(), []
 
 
-def main(input_file, log_message, RL_MODEL_HYPERPARAMETERS=None):
-    RL_MODEL_HYPERPARAMETERS = RL_MODEL_HYPERPARAMETERS or {}
+def main(input_file, log_message, hyperparameters):
     preprocess_dataset_overhead_summary = {}
     if input_file == None and (log_message == "" or log_message is None):
         logger.error("Error: Both input_file and log_message are empty or None.")
@@ -616,13 +617,13 @@ def main(input_file, log_message, RL_MODEL_HYPERPARAMETERS=None):
         # Inference mode: single row, no training-specific features needed
         preprocess_start_time = time.time()
         is_training = False
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training)
         preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
         mapping_info = None  # No mapping info needed for inference
     else:
         # Training mode: batch processing with full features
         preprocess_start_time = time.time()
         is_training = True
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, RL_MODEL_HYPERPARAMETERS, sorted_all_pod_ids, is_training)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training)
         preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
     return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
