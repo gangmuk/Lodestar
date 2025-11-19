@@ -22,17 +22,10 @@ import preprocess
 from logger import logger
 
 
-def process_raw_data_to_csv(input_file,
-                           output_file,
-                           hyperparameters=None):
+def process_raw_data_to_csv(input_file, output_file, hyperparameters):
     """
     Process raw text log file to structured CSV with all features but no normalization.
     
-    Args:
-        input_file: Path to raw text log file
-        output_file: Destination for the processed CSV
-        hyperparameters: Optional configuration dictionary (unused)
-
     Returns:
         str: Path to created processed CSV file
     """
@@ -56,9 +49,7 @@ def process_raw_data_to_csv(input_file,
 
     # Step 2: Use existing preprocessing logic but keep raw values
     logger.info("Running preprocessing to extract features...")
-    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(
-        replaced_file, "", hyperparameters
-    )
+    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(replaced_file, "", hyperparameters)
 
     # Step 3: Ensure we preserve critical raw values for reward calculation
     required_columns = ['ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_id']
@@ -98,17 +89,7 @@ def process_raw_data_to_csv(input_file,
     return output_file
 
 
-def process_directory_batch(input_dir, output_file, hyperparameters=None):
-    """
-    Process all raw data files in a directory.
-    
-    Args:
-        input_dir: Directory containing raw CSV files
-        output_file: Shared output file path (batch mode)
-        hyperparameters: Optional configuration dictionary (unused)
-    """
-    
-    # Find all data files in directory
+def process_directory_batch(input_dir, output_file, hyperparameters):
     data_files = []
     for file in os.listdir(input_dir):
         if file.startswith('data') and file.endswith('.csv'):
@@ -202,6 +183,27 @@ def validate_processed_csv(csv_file):
     logger.info(f"Validation results: {validation_results}")
     return validation_results
 
+def load_hyperparameter_file(hyperparameters_file_path):
+    import json
+    # 1) Load JSON hyperparameters_file_path (required)
+    if not os.path.exists(hyperparameters_file_path):
+        logger.error(f"Hyperparameters JSON not found: {hyperparameters_file_path}")
+        return
+    # file does not exist or is empty
+    if hyperparameters_file_path is None or hyperparameters_file_path == "" or os.path.getsize(hyperparameters_file_path) == 0:
+        logger.error(f"Hyperparameters JSON is empty: {hyperparameters_file_path}")
+        assert False
+    with open(hyperparameters_file_path, 'r') as f:
+        logger.info(f"Loading hyperparameters from {hyperparameters_file_path}")
+        hp = json.load(f)
+        logger.info(f"args.hyperparameters_file_path: {hyperparameters_file_path}")
+        logger.info(f"Loaded hyperparameters_file_path: {hp}")
+    if not isinstance(hp, dict):
+        logger.error(f"Hyperparameters file is not a JSON object: {hyperparameters_file_path}")
+        assert False
+    hyperparameters = {}
+    hyperparameters.update(hp)
+    return hyperparameters
 
 def main():
     """Command line interface for data processing."""
@@ -209,9 +211,13 @@ def main():
     parser.add_argument('--input_file', help='Raw text log file or directory to process')
     parser.add_argument('--output_file', help='Output file to save processed CSV')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
+    parser.add_argument('--hyperparameters_file_path', help='Hyperparameters file path')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
     args = parser.parse_args()
-    
+
+    hyperparameters = load_hyperparameter_file(args.hyperparameters_file_path)
+    logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
+    logger.info(f"Loaded hyperparameters: {hyperparameters}")
     if args.validate:
         # Validation mode
         results = validate_processed_csv(args.input_file)
@@ -226,7 +232,7 @@ def main():
     
     if args.batch:
         # Batch processing mode
-        process_directory_batch(args.input_file, args.output_file)
+        process_directory_batch(args.input_file, args.output_file, hyperparameters)
     else:
         # Single file processing mode
         if not os.path.exists(args.input_file):
@@ -234,10 +240,9 @@ def main():
             return
         
 
-        print(f"args.output_file: {args.output_file}")
-        processed_file = process_raw_data_to_csv(
-            args.input_file, args.output_file
-        )
+        logger.info(f"args.output_file: {args.output_file}")
+        logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
+        processed_file = process_raw_data_to_csv(args.input_file, args.output_file, hyperparameters)
         
         # Validate the output
         validation = validate_processed_csv(processed_file)

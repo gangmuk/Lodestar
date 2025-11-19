@@ -289,11 +289,11 @@ class LatencyPredictor:
         self.final_model_dir = final_model_dir
         
         # Model configuration
-        self.latency_metric = HYPERPARAMETERS['LATENCY_METRIC']
+        self.latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
         self.hidden_dim = HYPERPARAMETERS['hidden_dim']
         self.learning_rate = HYPERPARAMETERS['OFFLINE_LEARNING_RATE']
         self.weight_initialization = HYPERPARAMETERS['weight_initialization']
-        
+    
         # Create network
         self.network = LatencyPredictionNetwork(
             pod_feature_size=state_dims['pod_features'],
@@ -655,7 +655,7 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
     logger.info(f"State dimensions: {state_dims}")
     
     # Create model
-    latency_metric = HYPERPARAMETERS['LATENCY_METRIC']
+    latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
     predictor = LatencyPredictor(state_dims, HYPERPARAMETERS, final_model_dir)
     
     # Create dataset and dataloader

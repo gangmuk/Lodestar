@@ -40,7 +40,6 @@ from collections import deque
 from rwlock import RWLock
 
 # GPU features are now always included as one-hot encoded features
-INCLUDE_GPU_IN_FEATURE = True
 INIT_DONE=False
 ## colors for logging
 BLUE_COLOR = "\033[94m"
@@ -50,8 +49,6 @@ PURPLE_COLOR = "\033[95m"
 CYAN_COLOR = "\033[96m"
 MAGENTA_COLOR = "\033[95m"
 RESET_COLOR = "\033[0m" 
-
-# INCLUDE_GPU_IN_FEATURE = True
 
 app = Flask(__name__)
 NUM_FLUSH = 0
@@ -138,74 +135,15 @@ EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
 SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing for latency predictor
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
 LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model, 0=start from scratch
+INCLUDE_GPU_FEATURES = int(os.getenv("INCLUDE_GPU_FEATURES", 1))  # 1=include GPU one-hot encoding, 0=exclude GPU features
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
-           f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}")
-RL_MODEL_HYPERPARAMETERS = None
+           f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}")
+HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
 
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
-# request_features_reward = ['ttft', 'avg_tpot', 'e2e_latency']
-
-# @app.route("/request_complete", methods=["POST"])
-# def handle_request_complete():
-#     """
-#     Endpoint for async request completion notifications (for scalable_rl_agent).
-    
-#     Expected payload:
-#     {
-#         "request_id": "req_12345",
-#         "ttft": 45.6,           # milliseconds
-#         "tpot": 12.3,           # milliseconds  
-#         "selected_pod": "10.0.1.30"
-#     }
-#     """
-#     global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
-    
-#     try:
-#         data = request.json
-#         request_id = data.get('request_id')
-#         ttft = data.get('ttft')
-#         tpot = data.get('tpot')
-#         selected_pod = data.get('selected_pod')
-        
-#         if not request_id or ttft is None or tpot is None:
-#             logger.error(f"Missing required fields in request completion: {data}")
-#             return jsonify({"error": "Missing required fields"}), 400
-        
-#         if SCALABLE_RL_AGENT is None:
-#             logger.debug(f"Scalable RL agent not initialized, ignoring completion for {request_id}")
-#             return jsonify({"status": "ok", "message": "agent not initialized"}), 200
-        
-#         # Get current cluster state (after completion)
-#         try:
-#             pod_features, kv_hit_ratios, request_features = get_current_cluster_features()
-#             current_state = (pod_features, kv_hit_ratios, request_features)
-            
-#             # Complete the experience
-#             on_request_complete_callback(
-#                 rl_agent=SCALABLE_RL_AGENT,
-#                 request_id=request_id,
-#                 current_cluster_state=current_state,
-#                 ttft=ttft,
-#                 tpot=tpot,
-#                 hyperparameters=RL_MODEL_HYPERPARAMETERS
-#             )
-            
-#             logger.debug(f"✅ Completed experience for request {request_id} (ttft={ttft}ms, tpot={tpot}ms)")
-#             return jsonify({"status": "ok"}), 200
-            
-#         except NotImplementedError:
-#             logger.debug(f"⚠️  get_current_cluster_features() not implemented, skipping completion for {request_id}")
-#             return jsonify({"status": "ok", "message": "cluster state fetch not implemented"}), 200
-            
-#     except Exception as e:
-#         logger.error(f"Error in request completion handler: {e}")
-#         import traceback
-#         logger.error(traceback.format_exc())
-#         return jsonify({"error": str(e)}), 500
-
 
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
@@ -232,7 +170,7 @@ def handle_flush():
         ts_preprocess = time.time()
         ##################################################
         ## Preprocess
-        processed_df, sorted_all_pod_ids, _ = preprocess.main(podip_replaced_data_path, "", RL_MODEL_HYPERPARAMETERS)
+        processed_df, sorted_all_pod_ids, _ = preprocess.main(podip_replaced_data_path, "", HYPERPARAMETERS)
         ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
 
@@ -263,7 +201,7 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, RL_MODEL_HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
+    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
     if not INIT_DONE:
         logger.error(f"init() was not done yet. return 503")
         return jsonify({"error": "init() was not done yet. return 503"}), 503
@@ -309,7 +247,7 @@ def handle_infer():
         
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, HYPERPARAMETERS)
         if PRINT_ONCE_AT_THE_FIRST_REQUEST:
             logger.info(f"processed_df.columns: {list(processed_df.columns)}")
             logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
@@ -326,7 +264,7 @@ def handle_infer():
             logger.error(f"Stats instance count is 0, no data available for normalization")
             assert False
 
-        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
         if stats_instance.get_max_count() == 0:
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
@@ -353,7 +291,7 @@ def handle_infer():
 
         ## Encode data (normalization already done)
         encode_start_time = time.time()
-        tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
+        tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS)
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
 
         infer_from_tensor_start_time = time.time()
@@ -389,7 +327,7 @@ def handle_infer():
                         }
                         
                         logger.info(f"🔄 One-time initialization of LATENCY_PREDICTOR with state_dims={state_dims}")
-                        LATENCY_PREDICTOR = latency_predictor.LatencyPredictor(state_dims, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+                        LATENCY_PREDICTOR = latency_predictor.LatencyPredictor(state_dims, HYPERPARAMETERS, final_model_dir)
 
                         # Load pretrained model based on LOAD_PRETRAINED_MODEL env var
                         model_path = os.path.join(final_model_dir, 'latency_predictor.pth')
@@ -424,12 +362,12 @@ def handle_infer():
                     exploration_rate=EXPLORATION_RATE,
                     smoothing=bool(SMOOTHING_ENABLED),
                     smoothing_threshold=SMOOTHING_THRESHOLD,
-                    generalpodid_to_gpu_model=RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model']
+                    generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
                 
         elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
             logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, RL_MODEL_HYPERPARAMETERS, final_model_dir)
+            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, HYPERPARAMETERS, final_model_dir)
             result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
             result['chosen_pod_predicted_latency'] = -1
         elif subAlgorithm == 'rl_agent':
@@ -459,9 +397,9 @@ def handle_infer():
                     RL_AGENT = create_rl_routing_agent_sb3(
                         state_dim=state_dim,
                         action_dim=n_pods,
-                        **RL_MODEL_HYPERPARAMETERS
+                        **HYPERPARAMETERS
                     )
-                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+                    ckpt_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
                     if ckpt_path and os.path.exists(ckpt_path):
                         try:
                             RL_AGENT.load(ckpt_path)
@@ -480,7 +418,7 @@ def handle_infer():
                 sorted_all_pod_ids=sorted_all_pod_ids,
                 processed_df=processed_df,
                 rl_agent=current_agent,
-                hyperparameters=RL_MODEL_HYPERPARAMETERS,
+                hyperparameters=HYPERPARAMETERS,
                 agent_lock=RL_AGENT_LOCK  # RWLock for read (predict) and write (buffer)
             )
             
@@ -573,11 +511,11 @@ def handle_infer():
                         per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
                         request_dim=req_dim,             # 3
                         max_pods=100,                    # Max expected pods
-                        **RL_MODEL_HYPERPARAMETERS
+                        **HYPERPARAMETERS
                     )
                     
                     # Load checkpoint if available
-                    ckpt_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+                    ckpt_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
                     if ckpt_path and os.path.exists(ckpt_path):
                         try:
                             SCALABLE_RL_AGENT.load(ckpt_path)
@@ -597,7 +535,7 @@ def handle_infer():
                 sorted_all_pod_ids=sorted_all_pod_ids,
                 processed_df=processed_df,
                 rl_agent=current_agent,
-                hyperparameters=RL_MODEL_HYPERPARAMETERS,
+                hyperparameters=HYPERPARAMETERS,
                 agent_lock=None  # New agent doesn't need lock for prediction
             )
         else:
@@ -617,11 +555,11 @@ def handle_infer():
             logger.error(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
             assert False
         selected_pod_generalpodid = sorted_all_pod_ids[selected_pod_index]
-        if selected_pod_generalpodid not in RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']:
-            logger.error(f"selected_pod_generalpodid: {selected_pod_generalpodid} not found in RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']")
-            logger.error(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+        if selected_pod_generalpodid not in HYPERPARAMETERS['generalpodid_to_pod_ip']:
+            logger.error(f"selected_pod_generalpodid: {selected_pod_generalpodid} not found in HYPERPARAMETERS['generalpodid_to_pod_ip']")
+            logger.error(f"HYPERPARAMETERS['generalpodid_to_pod_ip']: {HYPERPARAMETERS['generalpodid_to_pod_ip']}")
             assert False
-        selected_pod_ip = RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'][selected_pod_generalpodid]
+        selected_pod_ip = HYPERPARAMETERS['generalpodid_to_pod_ip'][selected_pod_generalpodid]
             
         logger.debug(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
         
@@ -659,7 +597,7 @@ def handle_infer():
         
         # if subAlgorithm == 'latency_predictor' and NUM_TRAINS <= 0:
         #     random_generalpodid = sorted_all_pod_ids[random.randint(0, len(sorted_all_pod_ids)-1)]
-        #     random_pod_ip = RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'][random_generalpodid]
+        #     random_pod_ip = HYPERPARAMETERS['generalpodid_to_pod_ip'][random_generalpodid]
         #     response['selected_pod'] = random_pod_ip
         #     response['selected_pod_generalpodid'] = random_generalpodid
         #     logger.info(f"Training never done yet, selected random pod for exploration! selected_pod_generalpodid: {random_generalpodid}, selected_pod_ip: {random_pod_ip}")
@@ -675,7 +613,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, RL_MODEL_HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -690,7 +628,7 @@ def online_train_routine():
     logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
     try:
         # Route to appropriate training function based on model type
-        model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
+        model_type = HYPERPARAMETERS['MODEL_TYPE']
         if model_type == 'latency_predictor':
             logger.info(f"Training with latency predictor model on entire dataset (offline({len(TRAINING_DF)}) + online({NUM_NEW_DATA}))")
 
@@ -756,7 +694,7 @@ def online_train_routine():
             
             # Normalize the entire dataset
             normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(
-                training_df_copy, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+                training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
 
             # VERIFICATION: Log normalization stats BEFORE normalization
             logger.info(f"VERIFICATION: Checking normalization stats before online training #{NUM_TRAINS}")
@@ -815,12 +753,12 @@ def online_train_routine():
             encode_start_time = time.time()
             os.makedirs(ENCODED_DATA_DIR, exist_ok=True)
             encoded_training_dir = os.path.join(ENCODED_DATA_DIR, "full_training_data")
-            encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
+            encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, HYPERPARAMETERS)
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
 
             # Train on the encoded dataset
             train_start_time = time.time()
-            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, RL_MODEL_HYPERPARAMETERS, NUM_TRAINS)
+            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, HYPERPARAMETERS, NUM_TRAINS)
             logger.info(f"train_latency_predictor done, train time: {time.time() - train_start_time} seconds")
 
             # Reload model in training thread (non-blocking for inference)
@@ -831,7 +769,7 @@ def online_train_routine():
                     logger.info(f"Reloaded latency predictor after training, load time: {time.time() - load_start_time} seconds")
         else:
             logger.info(f"Training with contextual bandit model")
-            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
+            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
             logger.info(f"train_contextual_bandit done")
     except Exception as e:
         import traceback
@@ -961,13 +899,13 @@ def scalable_rl_training_worker():
                     # The agent's learn() will internally call env.step() which pulls from BROKER
                     logger.info(f"{PURPLE_COLOR}Training scalable RL agent...{RESET_COLOR}")
                     # Create proper checkpoint file path (not just directory)
-                    checkpoint_file = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'scalable_rl_agent')
+                    checkpoint_file = os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], 'scalable_rl_agent')
                     
-                    eval_freq = (RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'] + 1) * RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
+                    eval_freq = (HYPERPARAMETERS['num_requests_per_episode'] + 1) * HYPERPARAMETERS['num_episodes_per_iteration'] # how often to evaluate the model, the eval will be triggered every eval_freq steps. Hence, eval_freq should be the number of requests per iteration
                     SCALABLE_RL_AGENT.train(
                         save_path=checkpoint_file,
                         eval_freq=eval_freq,
-                        n_eval_episodes=RL_MODEL_HYPERPARAMETERS['n_eval_episodes'],
+                        n_eval_episodes=HYPERPARAMETERS['n_eval_episodes'],
                         )
                 except Exception as e:
                     if not SCALABLE_RL_TRAINING_SHUTDOWN.is_set():
@@ -1035,7 +973,7 @@ def get_current_cluster_features():
         kv_hit_ratios: [num_pods, 1] - Current cache hit ratios (zeros for now)
         request_features: [3] - Dummy request features (not used for next_obs)
     """
-    global RL_MODEL_HYPERPARAMETERS, stats_instance
+    global HYPERPARAMETERS, stats_instance
     
     try:
         # Get current running pods (same as init())
@@ -1056,8 +994,8 @@ def get_current_cluster_features():
         pod_features = np.zeros((num_pods, 10), dtype=np.float32)
         
         # Get pod_ip to general_pod_id mapping
-        pod_ip_to_generalpodid = RL_MODEL_HYPERPARAMETERS.get('pod_ip_to_generalpodid', {})
-        pod_ip_to_gpu_model_encoded = RL_MODEL_HYPERPARAMETERS.get('pod_ip_to_gpu_model_encoded', {})
+        pod_ip_to_generalpodid = HYPERPARAMETERS.get('pod_ip_to_generalpodid', {})
+        pod_ip_to_gpu_model_encoded = HYPERPARAMETERS.get('pod_ip_to_gpu_model_encoded', {})
         
         # For each pod, fetch current metrics
         for i, pod_ip in enumerate(sorted_pod_ips):
@@ -1166,24 +1104,24 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def init():
-    global RL_MODEL_HYPERPARAMETERS, stats_instance, INIT_DONE, offline_csv_path
-    if RL_MODEL_HYPERPARAMETERS is None:
+    global HYPERPARAMETERS, stats_instance, INIT_DONE, offline_csv_path, hyperparameter_file_path
+    if HYPERPARAMETERS is None:
 
-        logger.info(f"{GREEN_COLOR}RL_MODEL_HYPERPARAMETERS is None{RESET_COLOR}")
+        logger.info(f"{GREEN_COLOR}HYPERPARAMETERS is None{RESET_COLOR}")
 
-        RL_MODEL_HYPERPARAMETERS = {}
-        RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
-        RL_MODEL_HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
-        RL_MODEL_HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
-        logger.info("Loading RL hyperparameters from model_config.json")
-        utils.load_rl_hyperparameters(hyperparameter_file_path, RL_MODEL_HYPERPARAMETERS)
-        model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+        
+        HYPERPARAMETERS = utils.load_hyperparameter_file(hyperparameter_file_path)
+        HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
+        HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
+        HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
+        HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
+        model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
         logger.info(f"Model type configured: {model_type}")
         if model_type == 'latency_predictor':
-            latency_metric = RL_MODEL_HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
+            latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
             logger.info(f"Latency metric for prediction: {latency_metric}")
         else:
-            logger.info(f"Using contextual bandit with exploration rate: {RL_MODEL_HYPERPARAMETERS.get('exploration_rate', 0)}")
+            logger.info(f"Using contextual bandit with exploration rate: {HYPERPARAMETERS.get('exploration_rate', 0)}")
         # Test permissions first
         logger.info("Testing Kubernetes API permissions...")
         if not test_kubernetes_permissions():
@@ -1205,15 +1143,15 @@ def init():
         # logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
         # logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
 
-        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-        # RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
-        # logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
-        # RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
-        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-        # RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-        # RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+        # HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+        # HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+        # logger.info(f"HYPERPARAMETERS['generalpodid_to_pod_ip']: {HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+        # HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
+        # HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+        # HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+        # HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
         # # Additional mappings for GPU features expected by preprocess/encoding
-        # RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
+        # HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
         # pod_gpu_id_mapping = {}
         # for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
         #     if gpu_model in utils.GPU_MODEL_TO_ENCODE:
@@ -1221,7 +1159,7 @@ def init():
         #     else:
         #         logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
         #         assert False
-        # RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        # HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
         # Load normalization statistics from CSV file
         if os.path.exists(feature_normalization_stats_file):
@@ -1256,15 +1194,15 @@ def init():
     logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
     logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
 
-    RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-    RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
-    logger.info(f"RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']: {RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip']}")
-    RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
-    RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-    RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-    RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+    HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+    HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+    logger.info(f"HYPERPARAMETERS['generalpodid_to_pod_ip']: {HYPERPARAMETERS['generalpodid_to_pod_ip']}")
+    HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
+    HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+    HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+    HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
     # Additional mappings for GPU features expected by preprocess/encoding
-    RL_MODEL_HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
+    HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
     pod_gpu_id_mapping = {}
     for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
         if gpu_model in utils.GPU_MODEL_TO_ENCODE:
@@ -1272,7 +1210,7 @@ def init():
         else:
             logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
             assert False
-    RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+    HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
     # Print feature statistics if available
     if stats_instance is not None:
@@ -1284,13 +1222,13 @@ def init():
         assert False
     
     # Add checkpointing configuration to hyperparameters
-    RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
-    RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')
+    HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
+    HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')
     
     # Create checkpoint directory if it doesn't exist
-    os.makedirs(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], exist_ok=True)
-    logger.info(f"Checkpoint directory: {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR']}")
-    logger.info(f"Checkpointing every {RL_MODEL_HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
+    os.makedirs(HYPERPARAMETERS['CHECKPOINT_DIR'], exist_ok=True)
+    logger.info(f"Checkpoint directory: {HYPERPARAMETERS['CHECKPOINT_DIR']}")
+    logger.info(f"Checkpointing every {HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
 
     # Load offline training data for online learning
     global TRAINING_DF, OFFLINE_DATA_SIZE
@@ -1319,10 +1257,10 @@ def init():
     
     # Initialize scalable RL agent if configured
     TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
-    logger.info(f"{BLUE_COLOR}model_type: {RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
+    logger.info(f"{BLUE_COLOR}model_type: {HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
 
-    # if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-    if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+    # if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+    if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
         import scalable_rl_routing_agent
         from scalable_rl_routing_agent import BROKER
         
@@ -1335,17 +1273,17 @@ def init():
             
             # # Create agent with hyperparameters
             # SCALABLE_RL_AGENT = create_scalable_rl_agent(
-            #     per_pod_dim=RL_MODEL_HYPERPARAMETERS.get('per_pod_dim', 8),
-            #     request_dim=RL_MODEL_HYPERPARAMETERS.get('request_dim', 3),
-            #     max_pods=RL_MODEL_HYPERPARAMETERS.get('max_pods', 100),
-            #     learning_rate=RL_MODEL_HYPERPARAMETERS.get('learning_rate', 3e-4),
-            #     reward_decay_factor=RL_MODEL_HYPERPARAMETERS.get('reward_decay_factor', 1.0),
-            #     gae_lambda=RL_MODEL_HYPERPARAMETERS.get('gae_lambda', 0.95),
-            #     n_steps=RL_MODEL_HYPERPARAMETERS.get('n_steps', 256),
-            #     horizon=RL_MODEL_HYPERPARAMETERS.get('horizon', 1024),
-            #     batch_size=RL_MODEL_HYPERPARAMETERS.get('batch_size', 64),
-            #     last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS.get('last_layer_dim_vf', 1),
-            #     rl=RL_MODEL_HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
+            #     per_pod_dim=HYPERPARAMETERS.get('per_pod_dim', 8),
+            #     request_dim=HYPERPARAMETERS.get('request_dim', 3),
+            #     max_pods=HYPERPARAMETERS.get('max_pods', 100),
+            #     learning_rate=HYPERPARAMETERS.get('learning_rate', 3e-4),
+            #     reward_decay_factor=HYPERPARAMETERS.get('reward_decay_factor', 1.0),
+            #     gae_lambda=HYPERPARAMETERS.get('gae_lambda', 0.95),
+            #     n_steps=HYPERPARAMETERS.get('n_steps', 256),
+            #     horizon=HYPERPARAMETERS.get('horizon', 1024),
+            #     batch_size=HYPERPARAMETERS.get('batch_size', 64),
+            #     last_layer_dim_vf=HYPERPARAMETERS.get('last_layer_dim_vf', 1),
+            #     rl=HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
             #     static_num_pods=True,
             # )
             
@@ -1354,36 +1292,36 @@ def init():
                 # per_pod_dim=11, 
                 request_dim=3, 
                 max_pods=100, 
-                num_requests_per_episode=RL_MODEL_HYPERPARAMETERS['num_requests_per_episode'], 
-                num_episodes_per_iteration=RL_MODEL_HYPERPARAMETERS['num_episodes_per_iteration'],
-                num_iterations=RL_MODEL_HYPERPARAMETERS['num_iterations'],   
-                rl=RL_MODEL_HYPERPARAMETERS['rl_algorithm'], 
+                num_requests_per_episode=HYPERPARAMETERS['num_requests_per_episode'], 
+                num_episodes_per_iteration=HYPERPARAMETERS['num_episodes_per_iteration'],
+                num_iterations=HYPERPARAMETERS['num_iterations'],   
+                rl=HYPERPARAMETERS['rl_algorithm'], 
                 static_num_pods=True, 
-                learning_rate=RL_MODEL_HYPERPARAMETERS['rl_learning_rate'], 
-                hidden_dim=RL_MODEL_HYPERPARAMETERS['hidden_dim'], 
-                gamma=RL_MODEL_HYPERPARAMETERS['gamma'], 
-                gae_lambda=RL_MODEL_HYPERPARAMETERS['gae_lambda'], 
-                tb_log_dir=os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
-                batch_size=RL_MODEL_HYPERPARAMETERS['batch_size'], 
-                n_epochs=RL_MODEL_HYPERPARAMETERS['training_epochs'], 
-                clip_range=RL_MODEL_HYPERPARAMETERS['clip_range'], 
-                entropy_coeff=RL_MODEL_HYPERPARAMETERS['entropy_coeff'], 
-                vf_coef=RL_MODEL_HYPERPARAMETERS['vf_coef'], 
-                max_grad_norm=RL_MODEL_HYPERPARAMETERS['max_grad_norm'], 
-                last_layer_dim_pi=RL_MODEL_HYPERPARAMETERS['last_layer_dim_pi'], 
-                last_layer_dim_vf=RL_MODEL_HYPERPARAMETERS['last_layer_dim_vf'], 
+                learning_rate=HYPERPARAMETERS['rl_learning_rate'], 
+                hidden_dim=HYPERPARAMETERS['hidden_dim'], 
+                gamma=HYPERPARAMETERS['gamma'], 
+                gae_lambda=HYPERPARAMETERS['gae_lambda'], 
+                tb_log_dir=os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
+                batch_size=HYPERPARAMETERS['batch_size'], 
+                n_epochs=HYPERPARAMETERS['training_epochs'], 
+                clip_range=HYPERPARAMETERS['clip_range'], 
+                entropy_coeff=HYPERPARAMETERS['entropy_coeff'], 
+                vf_coef=HYPERPARAMETERS['vf_coef'], 
+                max_grad_norm=HYPERPARAMETERS['max_grad_norm'], 
+                last_layer_dim_pi=HYPERPARAMETERS['last_layer_dim_pi'], 
+                last_layer_dim_vf=HYPERPARAMETERS['last_layer_dim_vf'], 
                 use_prioritized_replay=False, 
-                buffer_size=RL_MODEL_HYPERPARAMETERS['buffer_size'], 
-                priority_alpha=RL_MODEL_HYPERPARAMETERS['priority_alpha'], 
-                priority_beta=RL_MODEL_HYPERPARAMETERS['priority_beta'],
-                lr_scheduler_type=RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'],
+                buffer_size=HYPERPARAMETERS['buffer_size'], 
+                priority_alpha=HYPERPARAMETERS['priority_alpha'], 
+                priority_beta=HYPERPARAMETERS['priority_beta'],
+                lr_scheduler_type=HYPERPARAMETERS['lr_scheduler_type'],
                 load_tb_best='/app/final_model/init_model/best_model.zip',
                 )
             
             logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
             
             # Load checkpoint if available
-            checkpoint_path = RL_MODEL_HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+            checkpoint_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
             if checkpoint_path and os.path.exists(checkpoint_path):
                 try:
                     SCALABLE_RL_AGENT.load(checkpoint_path)
@@ -1409,7 +1347,7 @@ def periodic_checkpoint_scalable_rl():
     - Buffer statistics
     - Human-readable JSON metadata
     """
-    global SCALABLE_RL_AGENT, RL_MODEL_HYPERPARAMETERS
+    global SCALABLE_RL_AGENT, HYPERPARAMETERS
     
     try:
         if SCALABLE_RL_AGENT is None:
@@ -1418,14 +1356,14 @@ def periodic_checkpoint_scalable_rl():
         with SCALABLE_RL_AGENT_LOCK.read():
             # Check if it's time to checkpoint
 
-            checkpoint_interval = RL_MODEL_HYPERPARAMETERS.get('CHECKPOINT_INTERVAL_STEPS', 1000)
+            checkpoint_interval = HYPERPARAMETERS.get('CHECKPOINT_INTERVAL_STEPS', 1000)
             total_steps = SCALABLE_RL_AGENT.total_steps
             
             # Checkpoint at regular intervals
             if total_steps > 0 and total_steps % checkpoint_interval < 64:  # 64 = typical batch size
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 checkpoint_name = f"scalable_rl_step_{total_steps}_{timestamp}"
-                checkpoint_path = os.path.join(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], checkpoint_name)
+                checkpoint_path = os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], checkpoint_name)
                 
                 try:
                     # Upgrade to write lock for saving
@@ -1445,7 +1383,7 @@ def periodic_checkpoint_scalable_rl():
                             logger.info(f"scalable_rl_routing_agent, Success rate: {metrics['success_rate']:.2%}")
                         
                         # Clean up old checkpoints (keep only last 5)
-                        # cleanup_old_checkpoints(RL_MODEL_HYPERPARAMETERS['CHECKPOINT_DIR'], keep_latest=5)
+                        # cleanup_old_checkpoints(HYPERPARAMETERS['CHECKPOINT_DIR'], keep_latest=5)
                         
                 except Exception as e:
                     logger.error(f"scalable_rl_routing_agent, Failed to save checkpoint: {e}")
@@ -1527,7 +1465,7 @@ if __name__ == "__main__":
     atexit.register(lambda: scheduler.shutdown())
     
     # Start RL update worker thread
-    if RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
+    if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
         logger.info(f"{GREEN_COLOR}Starting RL update worker in main()...{RESET_COLOR}")
         start_rl_update_worker()
         

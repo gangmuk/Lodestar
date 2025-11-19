@@ -22,55 +22,13 @@ import data_normalizer
 
 utils.set_all_seeds(42)
 
-
-# Hyperparameters are loaded later inside main() from the single source JSON
-RL_MODEL_HYPERPARAMETERS = {}
-
-# RL_MODEL_HYPERPARAMETERS = {
-#     'hidden_dim': 64, # 256,
-#     'batch_size': 64,
-#     # 'offline_learning_rate': 0.001,
-#     'ONLINE_LEARNING_RATE': 0.0005,
-#     'training_epochs': 5, # 5,
-#     'learning_every_x_iter': 5,
-#     'weight_decay': 0.0001,
-#     'max_updates_per_epoch': 1000, # 1000000000
-#     'exploration_rate': 0.1, # 0.1
-#     'explore': True,
-#     'weight_initialization': 'xavier', # 'kaiming', 'xavier', 'static'
-    
-#     'eval_interval': 10,
-#     'entropy_bonus_factor': 0.02,
-#     'per_learn_reward_normalization': False,
-#     'normalization': {
-#         "SIGNAL_AMPLIFICATION_DEGREE": 1.0,  # 1.5
-#         "REWARD_AMPLIFICATION_DEGREE": 1.0,
-#         "REWARD_AMPLIFICATION_THRESHOLD": 0.5,
-#         "STD_THRESHOLD_FOR_REQ_FEAT_NORMALIZATION": 0.1,
-#         "STD_THRESHOLD_FOR_POD_FEAT_NORMALIZATION": 0.1,
-#         "FEATURES_NORMALIZED": set(),
-#         "NUM_FEATURES_NORMALIZED": 0,
-#         "FEATURE_AMPLIFICATION": False,
-#         "FEATURES_AMPLIFIED": set(),
-#         "NUM_FEATURES_AMPLIFIED": 0,
-#     },
-#     'dataset_analysis': None,
-#     'deterministic_training': True,
-#     'training_seed': 42,
-#     # 'REWARD_FUNCTION': 'linear_simple',
-#     # 'TTFT_SLO': 1000,  # Default TTFT SLO threshold (ms)
-#     # 'AVG_TPOT_SLO': 50,  # Default average TPOT SLO threshold (ms)
-# }
-
-# Global variables (simplified for offline use)
-# excluded_pod_feature = ["kv_hit_ratio"]
-# excluded_pod_feature = []
+HYPERPARAMETERS = {}
 NUM_TRAINS = 0
 MODEL_UPDATED = False
 TRAINING_DATA_UPDATED = False
 POD_LABEL_SELECTOR="model.aibrix.ai/name=llama3-1-8b"
 TOTAL_NUM_DATA = 0
-MIN_NUM_TRAINING_DATA = 50  # Reduced for testing with smaller datasets
+MIN_NUM_TRAINING_DATA = 50
 LOCK_TRAINING_DATA = threading.Lock()
 stats_instance = None
 request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
@@ -85,21 +43,21 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
         training_start_time = time.time()
         logger.info(f"Starting {NUM_TRAINS}th training of routing agent")
         try:
-            utils.set_all_seeds(RL_MODEL_HYPERPARAMETERS['training_seed'])
+            utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
             
             # Select model type based on hyperparameters
-            model_type = RL_MODEL_HYPERPARAMETERS['MODEL_TYPE']
+            model_type = HYPERPARAMETERS['MODEL_TYPE']
             
             if model_type == 'latency_predictor':
                 logger.info("Training with latency predictor model")
-                saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, num_train=0)
+                saved_plot_path = latency_predictor.train_latency_predictor(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, num_train=0)
             elif model_type == 'rl_contextual_bandit_sb3':
                 logger.info("Training with SB3 RL contextual bandit model")
                 import rl_contextual_bandit_sb3
-                saved_plot_path = rl_contextual_bandit_sb3.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
+                saved_plot_path = rl_contextual_bandit_sb3.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
             else:
                 logger.info("Training with contextual bandit model")
-                saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, RL_MODEL_HYPERPARAMETERS, is_online_learning)
+                saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
             
             MODEL_UPDATED = True
             TRAINING_DATA_UPDATED = False
@@ -136,7 +94,7 @@ def create_test_data_from_processed_csv(processed_csv_file):
     df = pd.read_csv(processed_csv_file)
     
     # Use last 10% or 10 samples as test data
-    test_size = min(10, max(1, int(len(df) * RL_MODEL_HYPERPARAMETERS['test_size_ratio'])))
+    test_size = min(10, max(1, int(len(df) * HYPERPARAMETERS['test_size_ratio'])))
     test_df = df.tail(test_size)
     
     # Extract actual pod IDs from the processed data
@@ -158,7 +116,7 @@ def create_test_data_from_processed_csv(processed_csv_file):
         decode_tokens = {pod: 50000 for pod in all_pod_ids}
         
         # Reflect EXCLUDED_POD_FEATURES in the generated log by blanking those maps
-        excluded = set(RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
+        excluded = set(HYPERPARAMETERS['EXCLUDED_POD_FEATURES'])
         if 'none' in excluded or 'None' in excluded:
             excluded = set()
         if 'kv_hit_ratio' in excluded:
@@ -210,289 +168,289 @@ def create_test_data_from_processed_csv(processed_csv_file):
     return test_data
 
 
-def run_test_inference_phase(args, test_data):
-    """
-    Run the test inference phase with the provided test data.
+# def run_test_inference_phase(args, test_data):
+#     """
+#     Run the test inference phase with the provided test data.
     
-    Args:
-        args: Command line arguments
-        test_data: List of test samples with mock log messages
-    """
-    logger.info("=== STARTING TESTING PHASE ===")
-    success_count = 0
-    match_count = 0
-    mismatch_count = 0
-    unknown_original_count = 0
-    test_count = 10
+#     Args:
+#         args: Command line arguments
+#         test_data: List of test samples with mock log messages
+#     """
+#     logger.info("=== STARTING TESTING PHASE ===")
+#     success_count = 0
+#     match_count = 0
+#     mismatch_count = 0
+#     unknown_original_count = 0
+#     test_count = 10
     
-    for td in test_data:
-        log_message = td['message']
-        request_id = td['request_id']
-        result = test_inference(args, log_message, request_id, args.final_model_dir)
+#     for td in test_data:
+#         log_message = td['message']
+#         request_id = td['request_id']
+#         result = test_inference(args, log_message, request_id, args.final_model_dir)
         
-        print()
-        print(f"Request_id: {request_id}, Selected Pod: {result['selected_pod']}")
-        print(f"pod_probabilities_list: ", end="")
-        for prob in result['pod_probabilities']:
-            print(f"{prob:.2f}", end=", ")
-        print()
+#         print()
+#         print(f"Request_id: {request_id}, Selected Pod: {result['selected_pod']}")
+#         print(f"pod_probabilities_list: ", end="")
+#         for prob in result['pod_probabilities']:
+#             print(f"{prob:.2f}", end=", ")
+#         print()
         
-        # Print latency predictions if available
-        if 'predicted_latencies' in result and result['predicted_latencies']:
-            if isinstance(result['predicted_latencies'], dict):
-                print(f"predicted_latencies: {result['predicted_latencies']}")
-            print(f"chosen_pod_predicted_latency: {result.get('chosen_pod_predicted_latency', 'N/A')}")
-        print()
+#         # Print latency predictions if available
+#         if 'predicted_latencies' in result and result['predicted_latencies']:
+#             if isinstance(result['predicted_latencies'], dict):
+#                 print(f"predicted_latencies: {result['predicted_latencies']}")
+#             print(f"chosen_pod_predicted_latency: {result.get('chosen_pod_predicted_latency', 'N/A')}")
+#         print()
         
-        if result:
-            success_count += 1
-            if result['prediction_matches'] is True:
-                match_count += 1
-            elif result['prediction_matches'] is False:
-                mismatch_count += 1
-            else:
-                unknown_original_count += 1
+#         if result:
+#             success_count += 1
+#             if result['prediction_matches'] is True:
+#                 match_count += 1
+#             elif result['prediction_matches'] is False:
+#                 mismatch_count += 1
+#             else:
+#                 unknown_original_count += 1
                 
-            # Log detailed results
-            if result['original_pod_choice']:
-                match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
-                latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
-                logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}{latency_info}")
-            else:
-                latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
-                logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}{latency_info}")
-        else:
-            logger.error(f"✗ Failed inference for {request_id}")
+#             # Log detailed results
+#             if result['original_pod_choice']:
+#                 match_status = "MATCH" if result['prediction_matches'] else "MISMATCH"
+#                 latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
+#                 logger.info(f"  → Predicted: {result['selected_pod']}, Original: {result['original_pod_choice']}, Status: {match_status}, Confidence: {result['confidence']:.3f}{latency_info}")
+#             else:
+#                 latency_info = f", Predicted Latency: {result.get('chosen_pod_predicted_latency', 'N/A')}" if result.get('chosen_pod_predicted_latency', -1) != -1 else ""
+#                 logger.info(f"  → Predicted: {result['selected_pod']}, Original: UNKNOWN, Confidence: {result['confidence']:.3f}{latency_info}")
+#         else:
+#             logger.error(f"✗ Failed inference for {request_id}")
                 
-        test_count -= 1
-        if test_count <= 0:
-            break
+#         test_count -= 1
+#         if test_count <= 0:
+#             break
             
-    logger.info(f"Testing complete: {success_count} successful inferences")
-    logger.info(f"Prediction matches: {match_count}, mismatches: {mismatch_count}, unknown: {unknown_original_count}")
+#     logger.info(f"Testing complete: {success_count} successful inferences")
+#     logger.info(f"Prediction matches: {match_count}, mismatches: {mismatch_count}, unknown: {unknown_original_count}")
 
 
-def test_inference(args, log_message, request_id, final_model_dir):
-    global NUM_TRAINS, MODEL_UPDATED, stats_instance, RL_MODEL_HYPERPARAMETERS
-    utils.set_all_seeds(42)
-    if NUM_TRAINS == 0:
-        logger.warning("No trained model available, please train first")
-        return None
+# def test_inference(args, log_message, request_id, final_model_dir):
+#     global NUM_TRAINS, MODEL_UPDATED, stats_instance, HYPERPARAMETERS
+#     utils.set_all_seeds(42)
+#     if NUM_TRAINS == 0:
+#         logger.warning("No trained model available, please train first")
+#         return None
     
-    # CRITICAL FIX: Load hyperparameters from trained model to match training configuration
-    # This ensures inference uses the EXACT same hyperparameters as training
-    config_path = f"{final_model_dir}/model_config.json"
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            import json
-            model_config = json.load(f)
-        # Update RL_MODEL_HYPERPARAMETERS with values from the trained model
-        RL_MODEL_HYPERPARAMETERS.update(model_config)
-        logger.info(f"Updated hyperparameters from trained model: {config_path}")
-    else:
-        logger.warning(f"Model config not found at {config_path}, using static hyperparameters")
+#     # CRITICAL FIX: Load hyperparameters from trained model to match training configuration
+#     # This ensures inference uses the EXACT same hyperparameters as training
+#     config_path = f"{final_model_dir}/model_config.json"
+#     if os.path.exists(config_path):
+#         with open(config_path, 'r') as f:
+#             import json
+#             model_config = json.load(f)
+#         # Update HYPERPARAMETERS with values from the trained model
+#         HYPERPARAMETERS.update(model_config)
+#         logger.info(f"Updated hyperparameters from trained model: {config_path}")
+#     else:
+#         logger.warning(f"Model config not found at {config_path}, using static hyperparameters")
     
-    handle_infer_start_time = time.time()
+#     handle_infer_start_time = time.time()
     
-    # CRITICAL FIX: Use exactly the same preprocessing as routing_agent_service.py for consistency
-    # Step 1: Replace pod IPs with generalpodid format (pod_0000, pod_0001, etc.) if needed
-    # This converts IP-based columns to pod_xxxx- format that encoding expects
-    pod_ips = utils.extract_pod_ips_from_content(log_message)
-    if pod_ips:
-        log_message = utils.replace_pod_ip_with_generalpodid(log_message)
-        logger.info(f"Replaced {len(pod_ips)} pod IPs with generalpodid format")
-    else:
-        logger.info("No pod IPs found in log message - likely already in pod_xxxx format")
+#     # CRITICAL FIX: Use exactly the same preprocessing as routing_agent_service.py for consistency
+#     # Step 1: Replace pod IPs with generalpodid format (pod_0000, pod_0001, etc.) if needed
+#     # This converts IP-based columns to pod_xxxx- format that encoding expects
+#     pod_ips = utils.extract_pod_ips_from_content(log_message)
+#     if pod_ips:
+#         log_message = utils.replace_pod_ip_with_generalpodid(log_message)
+#         logger.info(f"Replaced {len(pod_ips)} pod IPs with generalpodid format")
+#     else:
+#         logger.info("No pod IPs found in log message - likely already in pod_xxxx format")
     
-    # Step 2: Preprocess using the same path as production
-    processed_df, sorted_all_pod_ids, _ = preprocess.main(None, log_message, RL_MODEL_HYPERPARAMETERS)
+#     # Step 2: Preprocess using the same path as production
+#     processed_df, sorted_all_pod_ids, _ = preprocess.main(None, log_message, HYPERPARAMETERS)
     
-    preprocess_overhead = time.time() - handle_infer_start_time
-    original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
+#     preprocess_overhead = time.time() - handle_infer_start_time
+#     original_pod_choice = processed_df['selected_pod'].iloc[0] if len(processed_df) > 0 else None
     
-    ## new way
-    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
-    logger.info(f"normalizable_features: {normalizable_features}")
-    logger.info(f"non_normalizable_features: {non_normalizable_features}")
-    if not stats_instance.feature_stats:
-        logger.error(f"request_id,{request_id},No normalization statistics available for inference")
-        assert False
+#     ## new way
+#     normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+#     logger.info(f"normalizable_features: {normalizable_features}")
+#     logger.info(f"non_normalizable_features: {non_normalizable_features}")
+#     if not stats_instance.feature_stats:
+#         logger.error(f"request_id,{request_id},No normalization statistics available for inference")
+#         assert False
     
-    # CRITICAL FIX: Add the same feature validation as routing_agent_service.py
-    # This excludes last_second_* features that cause dimension mismatch
-    non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_start_time', 'request_end_time']
-    non_interest += non_normalizable_features
-    features_must_exist_in_stats_instance = []
-    for feature in processed_df.columns:
-        # NOTE: ignoring last_second_* features (same as routing_agent_service.py)
-        if "last_second_" not in feature and feature not in non_interest and feature in normalizable_features:
-            features_must_exist_in_stats_instance.append(feature)
-    for feature in features_must_exist_in_stats_instance:
-        if feature not in stats_instance.feature_stats:
-            logger.error(f"Feature {feature} not found in stats_instance")
-            logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
-            # logger.error(f"processed_df.columns: {list(processed_df.columns)}")
-            # logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
-            assert False
+#     # CRITICAL FIX: Add the same feature validation as routing_agent_service.py
+#     # This excludes last_second_* features that cause dimension mismatch
+#     non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_start_time', 'request_end_time']
+#     non_interest += non_normalizable_features
+#     features_must_exist_in_stats_instance = []
+#     for feature in processed_df.columns:
+#         # NOTE: ignoring last_second_* features (same as routing_agent_service.py)
+#         if "last_second_" not in feature and feature not in non_interest and feature in normalizable_features:
+#             features_must_exist_in_stats_instance.append(feature)
+#     for feature in features_must_exist_in_stats_instance:
+#         if feature not in stats_instance.feature_stats:
+#             logger.error(f"Feature {feature} not found in stats_instance")
+#             logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
+#             # logger.error(f"processed_df.columns: {list(processed_df.columns)}")
+#             # logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+#             assert False
             
-    for feature in normalizable_features:
-        stats = stats_instance.feature_stats[feature]
+#     for feature in normalizable_features:
+#         stats = stats_instance.feature_stats[feature]
         
-        # Check data type and convert if necessary
-        feature_value = processed_df[feature].iloc[0]
-        if not pd.api.types.is_numeric_dtype(processed_df[feature]):
-            logger.warning(f"request_id,{request_id},Feature {feature} is not numeric (type: {type(feature_value)}), attempting conversion")
-            try:
-                processed_df[feature] = pd.to_numeric(processed_df[feature], errors='coerce')
-                feature_value = processed_df[feature].iloc[0]
-                if pd.isna(feature_value):
-                    logger.error(f"request_id,{request_id},Feature {feature} could not be converted to numeric")
-                    continue
-            except Exception as e:
-                logger.error(f"request_id,{request_id},Failed to convert feature {feature} to numeric: {e}")
-                continue
+#         # Check data type and convert if necessary
+#         feature_value = processed_df[feature].iloc[0]
+#         if not pd.api.types.is_numeric_dtype(processed_df[feature]):
+#             logger.warning(f"request_id,{request_id},Feature {feature} is not numeric (type: {type(feature_value)}), attempting conversion")
+#             try:
+#                 processed_df[feature] = pd.to_numeric(processed_df[feature], errors='coerce')
+#                 feature_value = processed_df[feature].iloc[0]
+#                 if pd.isna(feature_value):
+#                     logger.error(f"request_id,{request_id},Feature {feature} could not be converted to numeric")
+#                     continue
+#             except Exception as e:
+#                 logger.error(f"request_id,{request_id},Failed to convert feature {feature} to numeric: {e}")
+#                 continue
         
-        try:
-            logger.info(f"before normalize, {feature}: value={feature_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-        except Exception as e:
-            logger.error(f"request_id,{request_id},Feature {feature} formatting error: {e}")
-            continue
+#         try:
+#             logger.info(f"before normalize, {feature}: value={feature_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+#         except Exception as e:
+#             logger.error(f"request_id,{request_id},Feature {feature} formatting error: {e}")
+#             continue
             
-        data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
+#         data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
         
-        try:
-            normalized_value = processed_df[feature].iloc[0]
-            logger.info(f"after normalize, {feature}: value={normalized_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
-        except Exception as e:
-            logger.error(f"request_id,{request_id},Feature {feature} post-normalization formatting error: {e}")
-            continue
-        if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
-            if feature in processed_df.columns:
-                processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
-                logger.info(f"request_id,{request_id},Amplified critical feature {feature} after normalization")
-            else:
-                logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
-                assert False
-    ## old way
-    # normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
+#         try:
+#             normalized_value = processed_df[feature].iloc[0]
+#             logger.info(f"after normalize, {feature}: value={normalized_value:.2f} → Has stats: count={stats.count}, min={stats.min}, max={stats.max}, mean={stats.mean.item():.2f}, std={stats.std.item():.2f}")
+#         except Exception as e:
+#             logger.error(f"request_id,{request_id},Feature {feature} post-normalization formatting error: {e}")
+#             continue
+#         if feature in stats_instance.CONFIG.get("FEATURES_AMPLIFIED", set()):
+#             if feature in processed_df.columns:
+#                 processed_df[feature] = processed_df[feature] * stats_instance.CONFIG['SIGNAL_AMPLIFICATION_DEGREE']
+#                 logger.info(f"request_id,{request_id},Amplified critical feature {feature} after normalization")
+#             else:
+#                 logger.error(f"request_id,{request_id},Feature {feature} not found in DataFrame for amplification")
+#                 assert False
+#     ## old way
+#     # normalized_df = feature_normalization.normalize_features_for_inference(processed_df, stats_instance, request_id)
     
-    # CRITICAL FIX: Add missing hyperparameters that routing_agent_service.py includes
-    # Extract GPU mappings from processed data if available
-    if 'pod_gpu_id_mapping' not in RL_MODEL_HYPERPARAMETERS:
-        # Try to extract GPU info from processed_df
-        gpu_columns = [col for col in processed_df.columns if col.endswith('-GPU')]
-        if gpu_columns:
-            logger.info(f"Extracting GPU mappings from processed data for inference")
-            pod_gpu_id_mapping = {}
-            for pod_id in sorted_all_pod_ids:
-                gpu_col = f"{pod_id}-GPU"
-                if gpu_col in processed_df.columns:
-                    gpu_model = processed_df[gpu_col].iloc[0]
-                    if gpu_model in utils.GPU_MODEL_TO_ENCODE:
-                        pod_gpu_id_mapping[pod_id] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
-                    else:
-                        logger.warning(f"Unknown GPU model '{gpu_model}' for {pod_id}, defaulting to 0")
-                        pod_gpu_id_mapping[pod_id] = 0
-                else:
-                    pod_gpu_id_mapping[pod_id] = 0
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
-            logger.info(f"Extracted GPU mappings for {len(pod_gpu_id_mapping)} pods: {pod_gpu_id_mapping}")
-        else:
-            # Fallback: Create dummy GPU mapping (all pods same GPU)
-            logger.warning("No GPU columns in processed data - using dummy GPU mapping")
-            pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
-            RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+#     # CRITICAL FIX: Add missing hyperparameters that routing_agent_service.py includes
+#     # Extract GPU mappings from processed data if available
+#     if 'pod_gpu_id_mapping' not in HYPERPARAMETERS:
+#         # Try to extract GPU info from processed_df
+#         gpu_columns = [col for col in processed_df.columns if col.endswith('-GPU')]
+#         if gpu_columns:
+#             logger.info(f"Extracting GPU mappings from processed data for inference")
+#             pod_gpu_id_mapping = {}
+#             for pod_id in sorted_all_pod_ids:
+#                 gpu_col = f"{pod_id}-GPU"
+#                 if gpu_col in processed_df.columns:
+#                     gpu_model = processed_df[gpu_col].iloc[0]
+#                     if gpu_model in utils.GPU_MODEL_TO_ENCODE:
+#                         pod_gpu_id_mapping[pod_id] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
+#                     else:
+#                         logger.warning(f"Unknown GPU model '{gpu_model}' for {pod_id}, defaulting to 0")
+#                         pod_gpu_id_mapping[pod_id] = 0
+#                 else:
+#                     pod_gpu_id_mapping[pod_id] = 0
+#             HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+#             logger.info(f"Extracted GPU mappings for {len(pod_gpu_id_mapping)} pods: {pod_gpu_id_mapping}")
+#         else:
+#             # Fallback: Create dummy GPU mapping (all pods same GPU)
+#             logger.warning("No GPU columns in processed data - using dummy GPU mapping")
+#             pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
+#             HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
     
-    if 'pod_ip_to_gpu_model_encoded' not in RL_MODEL_HYPERPARAMETERS:
-        # Create remaining mappings for offline inference
-        pod_ip_to_generalpodid = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
-        generalpodid_to_pod_ip = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
+#     if 'pod_ip_to_gpu_model_encoded' not in HYPERPARAMETERS:
+#         # Create remaining mappings for offline inference
+#         pod_ip_to_generalpodid = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
+#         generalpodid_to_pod_ip = {pod_id: pod_id for pod_id in sorted_all_pod_ids}
         
-        # Use the pod_gpu_id_mapping we just created
-        pod_gpu_id_mapping = RL_MODEL_HYPERPARAMETERS.get('pod_gpu_id_mapping', {})
-        pod_ip_to_gpu_model_encoded = pod_gpu_id_mapping
+#         # Use the pod_gpu_id_mapping we just created
+#         pod_gpu_id_mapping = HYPERPARAMETERS.get('pod_gpu_id_mapping', {})
+#         pod_ip_to_gpu_model_encoded = pod_gpu_id_mapping
         
-        # Create GPU model names from IDs
-        reverse_gpu_mapping = {v: k for k, v in utils.GPU_MODEL_TO_ENCODE.items()}
-        pod_ip_to_gpu_model = {pod_id: reverse_gpu_mapping.get(gpu_id, 'GPU-L3c') 
-                               for pod_id, gpu_id in pod_gpu_id_mapping.items()}
-        generalpodid_to_gpu_model = pod_ip_to_gpu_model
+#         # Create GPU model names from IDs
+#         reverse_gpu_mapping = {v: k for k, v in utils.GPU_MODEL_TO_ENCODE.items()}
+#         pod_ip_to_gpu_model = {pod_id: reverse_gpu_mapping.get(gpu_id, 'GPU-L3c') 
+#                                for pod_id, gpu_id in pod_gpu_id_mapping.items()}
+#         generalpodid_to_gpu_model = pod_ip_to_gpu_model
         
-        # Add all missing hyperparameters
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-        RL_MODEL_HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
-        RL_MODEL_HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_all_pod_ids
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-        RL_MODEL_HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-        RL_MODEL_HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+#         # Add all missing hyperparameters
+#         HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+#         HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+#         HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_all_pod_ids
+#         HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+#         HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+#         HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
         
-        logger.info(f"Added hyperparameters for offline inference: {len(sorted_all_pod_ids)} pods")
+#         logger.info(f"Added hyperparameters for offline inference: {len(sorted_all_pod_ids)} pods")
     
-    encode_start_time = time.time()
-    tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, RL_MODEL_HYPERPARAMETERS)
-    handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
-    infer_from_tensor_start_time = time.time()
+#     encode_start_time = time.time()
+#     tensor_dataset, _ = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS)
+#     handle_infer_total_total_encoding_overhead = time.time() - encode_start_time
+#     infer_from_tensor_start_time = time.time()
     
-    # Select model type for inference
-    model_type = RL_MODEL_HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+#     # Select model type for inference
+#     model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
     
-    if model_type == 'latency_predictor':
-        result, _ = latency_predictor.infer_latency_predictor(
-            tensor_data=tensor_dataset, 
-            request_id=request_id,
-            model_updated=MODEL_UPDATED,
-            HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
-            final_model_dir=args.final_model_dir,
-            sorted_all_pod_ids=sorted_all_pod_ids,
-        )
-    else:
-        result, _ = simpler_contextual_bandit.infer_from_tensor(
-            tensor_data=tensor_dataset, 
-            request_id=request_id,
-            model_updated=MODEL_UPDATED,
-            HYPERPARAMETERS=RL_MODEL_HYPERPARAMETERS,
-            final_model_dir=args.final_model_dir,
-        )
-        result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
-        result['chosen_pod_predicted_latency'] = -1
-    if MODEL_UPDATED:
-        logger.info("Model updated flag consumed, resetting to False")
-        MODEL_UPDATED = False
-    handle_infer_total_total_infer_from_tensor_overhead = time.time() - infer_from_tensor_start_time
-    selected_pod_index = result['selected_pod_index']
-    if selected_pod_index >= len(sorted_all_pod_ids):
-        logger.warning(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
-        selected_pod_index = 0
-    selected_pod = sorted_all_pod_ids[selected_pod_index]
-    handle_infer_total_overhead = time.time() - handle_infer_start_time
-    prediction_matches = (selected_pod == original_pod_choice) if original_pod_choice else None
-    result_summary = {
-        "selected_pod": selected_pod,
-        "original_pod_choice": original_pod_choice,
-        "pod_probabilities": result['pod_probabilities'],
-        "prediction_matches": prediction_matches,
-        "confidence": result['confidence'],
-        "predicted_latencies": result.get('predicted_latencies', {pod_id: -1 for pod_id in sorted_all_pod_ids}),
-        "chosen_pod_predicted_latency": result.get('chosen_pod_predicted_latency', -1),
-        "total_inference_time_ms": handle_infer_total_overhead * 1000,
-        "preprocess_time_ms": preprocess_overhead * 1000,
-        "encoding_time_ms": handle_infer_total_total_encoding_overhead * 1000,
-        "inference_time_ms": handle_infer_total_total_infer_from_tensor_overhead * 1000,
-    }
+#     if model_type == 'latency_predictor':
+#         result, _ = latency_predictor.infer_latency_predictor(
+#             tensor_data=tensor_dataset, 
+#             request_id=request_id,
+#             model_updated=MODEL_UPDATED,
+#             HYPERPARAMETERS=HYPERPARAMETERS,
+#             final_model_dir=args.final_model_dir,
+#             sorted_all_pod_ids=sorted_all_pod_ids,
+#         )
+#     else:
+#         result, _ = simpler_contextual_bandit.infer_from_tensor(
+#             tensor_data=tensor_dataset, 
+#             request_id=request_id,
+#             model_updated=MODEL_UPDATED,
+#             HYPERPARAMETERS=HYPERPARAMETERS,
+#             final_model_dir=args.final_model_dir,
+#         )
+#         result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
+#         result['chosen_pod_predicted_latency'] = -1
+#     if MODEL_UPDATED:
+#         logger.info("Model updated flag consumed, resetting to False")
+#         MODEL_UPDATED = False
+#     handle_infer_total_total_infer_from_tensor_overhead = time.time() - infer_from_tensor_start_time
+#     selected_pod_index = result['selected_pod_index']
+#     if selected_pod_index >= len(sorted_all_pod_ids):
+#         logger.warning(f"Selected pod index {selected_pod_index} out of range, defaulting to first pod")
+#         selected_pod_index = 0
+#     selected_pod = sorted_all_pod_ids[selected_pod_index]
+#     handle_infer_total_overhead = time.time() - handle_infer_start_time
+#     prediction_matches = (selected_pod == original_pod_choice) if original_pod_choice else None
+#     result_summary = {
+#         "selected_pod": selected_pod,
+#         "original_pod_choice": original_pod_choice,
+#         "pod_probabilities": result['pod_probabilities'],
+#         "prediction_matches": prediction_matches,
+#         "confidence": result['confidence'],
+#         "predicted_latencies": result.get('predicted_latencies', {pod_id: -1 for pod_id in sorted_all_pod_ids}),
+#         "chosen_pod_predicted_latency": result.get('chosen_pod_predicted_latency', -1),
+#         "total_inference_time_ms": handle_infer_total_overhead * 1000,
+#         "preprocess_time_ms": preprocess_overhead * 1000,
+#         "encoding_time_ms": handle_infer_total_total_encoding_overhead * 1000,
+#         "inference_time_ms": handle_infer_total_total_infer_from_tensor_overhead * 1000,
+#     }
     
-    # Enhanced logging with match/mismatch status
-    if prediction_matches:
-        match_status = "original routing == model routing"
-    else:
-        match_status = "original routing != model routing"
+#     # Enhanced logging with match/mismatch status
+#     if prediction_matches:
+#         match_status = "original routing == model routing"
+#     else:
+#         match_status = "original routing != model routing"
     
-    latency_info = ""
-    if result.get('chosen_pod_predicted_latency', -1) != -1:
-        latency_info = f", predicted_latency={result['chosen_pod_predicted_latency']:.2f}"
+#     latency_info = ""
+#     if result.get('chosen_pod_predicted_latency', -1) != -1:
+#         latency_info = f", predicted_latency={result['chosen_pod_predicted_latency']:.2f}"
     
-    logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}{latency_info}")
+#     logger.info(f"Inference result: predicted={selected_pod}, original={original_pod_choice}, {match_status}, confidence={result['confidence']:.4f}{latency_info}")
 
-    return result_summary
+#     return result_summary
 
 def normalize_and_encode_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
@@ -535,22 +493,22 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
                 pod_gpu_id_mapping[pod_id] = 0
         
         # Add GPU mapping to hyperparameters (required by encoding)
-        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         logger.info(f"Created GPU mappings for {len(pod_gpu_id_mapping)} pods")
         logger.info(f"GPU mapping: {pod_gpu_id_mapping}")
     else:
         logger.warning("No GPU columns found in processed CSV - GPU features will not be encoded")
         # Create dummy mapping with all pods having GPU ID 0
         pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
-        RL_MODEL_HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+        HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
     
     # Apply normalization using the new data_normalizer module
     normalized_df, updated_stats_instance, summary = data_normalizer.normalize_processed_data(
         processed_csv_file,
         output_csv_file=None,  # Don't save, just return normalized data
-        reward_function=RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'],
+        reward_function=HYPERPARAMETERS['REWARD_FUNCTION'],
         stats_file=None,  # Don't save stats yet
-        hyperparameters=RL_MODEL_HYPERPARAMETERS
+        hyperparameters=HYPERPARAMETERS
     )
     
     # Update the stats instance
@@ -563,7 +521,7 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
     # encoding (use normalized data for training)
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
-    encoding.encode_for_train(sorted_all_pod_ids, normalized_df, encoded_data_output_dir, request_features_train, RL_MODEL_HYPERPARAMETERS)
+    encoding.encode_for_train(sorted_all_pod_ids, normalized_df, encoded_data_output_dir, request_features_train, HYPERPARAMETERS)
     logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
     # Verify encoded data
@@ -590,7 +548,7 @@ def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMET
     logger.info("🔍 VERIFYING TRAINING DETERMINISM")
     
     # Train model twice with same settings
-    model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
+    model_type = HYPERPARAMETERS['MODEL_TYPE']
     
     logger.info("Training model #1...")
     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
@@ -655,30 +613,37 @@ def main():
     parser.add_argument('processed_csv', help='Processed CSV file containing training data with raw values')
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
     parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
+    parser.add_argument('--hyperparameter_file_path', type=str, required=True, help='Path to JSON hyperparameter file (single source of truth)')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
-    # Only this argument is required; JSON is the source of truth. Other flags are optional overrides.
-    parser.add_argument('--hyperparameters', type=str, required=True, help='Path to JSON hyperparameter file (single source of truth)')
     args = parser.parse_args()
     
-    # 1) Load JSON hyperparameters (required)
-    if not os.path.exists(args.hyperparameters):
-        logger.error(f"Hyperparameters JSON not found: {args.hyperparameters}")
-        return
-    try:
-        with open(args.hyperparameters, 'r') as f:
-            hp = json.load(f)
-        if not isinstance(hp, dict):
-            logger.error(f"Hyperparameters file is not a JSON object: {args.hyperparameters}")
+    def load_hyperparameter_file(hyperparameter_file_path):
+        # 1) Load JSON hyperparameter_file_path (required)
+        if not os.path.exists(hyperparameter_file_path):
+            logger.error(f"Hyperparameters JSON not found: {hyperparameter_file_path}")
+            return
+        # file does not exist or is empty
+        if hyperparameter_file_path is None or hyperparameter_file_path == "" or os.path.getsize(hyperparameter_file_path) == 0:
+            logger.error(f"Hyperparameters JSON is empty: {hyperparameter_file_path}")
             assert False
-        RL_MODEL_HYPERPARAMETERS.clear()
-        RL_MODEL_HYPERPARAMETERS.update(hp)
-        logger.info(f"Loaded hyperparameters from {args.hyperparameters}")
-    except Exception as e:
-        logger.error(f"Failed to read hyperparameters from {args.hyperparameters}: {e}")
-        assert False
+        with open(hyperparameter_file_path, 'r') as f:
+            logger.info(f"Loading hyperparameters from {hyperparameter_file_path}")
+            hp = json.load(f)
+            logger.info(f"args.hyperparameter_file_path: {hyperparameter_file_path}")
+            logger.info(f"Loaded hyperparameter_file_path: {hp}")
+        if not isinstance(hp, dict):
+            logger.error(f"Hyperparameters file is not a JSON object: {hyperparameter_file_path}")
+            assert False
+        hyperparameters = {}
+        hyperparameters.update(hp)
+        return hyperparameters
+            
+    hyperparameters = load_hyperparameter_file(args.hyperparameter_file_path)
+    HYPERPARAMETERS.clear()
+    HYPERPARAMETERS.update(hyperparameters)
 
-    logger.info(f"EXCLUDED_POD_FEATURES: {RL_MODEL_HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', [])}")
+    logger.info(f"EXCLUDED_POD_FEATURES: {HYPERPARAMETERS['EXCLUDED_POD_FEATURES']}")
     
     # Validate processed CSV file
     if not os.path.exists(args.processed_csv):
@@ -708,7 +673,7 @@ def main():
     processed_df = pd.read_csv(args.processed_csv)
     
     # Get normalizable features and create stats instance
-    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, RL_MODEL_HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
     stats_instance = data_normalizer.FeatureStats(normalizable_features)
 
     ENCODED_DATA_DIR = f"{args.final_model_dir}/encoded_data"
