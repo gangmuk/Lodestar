@@ -20,6 +20,10 @@ kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/routin
 
 kubectl apply -f ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/sa-clusterrole-rolebinding.yaml
 
+
+## give permission to get nodes label (gpu model)
+kubectl patch clusterrole aibrix-gateway-plugins-role --type='json' -p='[{"op": "add", "path": "/rules/-", "value": {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "list"]}}]'
+
 ## Mock application
 
 kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/mock-app-yamls/mock-deployment-svc-sa.yaml 

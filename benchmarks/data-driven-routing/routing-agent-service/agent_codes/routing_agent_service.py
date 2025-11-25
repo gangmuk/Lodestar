@@ -7,13 +7,13 @@ import numpy as np
 import random
 # import uvicorn
 # from pydantic import BaseModel
-import os
 import time
 # import asyncio
 # from concurrent.futures import ThreadPoolExecutor
 import sys
 # import concurrent.futures
 import encoding
+import os
 # import sac
 # import ppo
 # import contextual_bandit
@@ -55,24 +55,14 @@ NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 
 TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
-if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
-    hyperparameter_file_path = "/app/final_model/NVIDIA-A30/model_config.json"
-    final_model_dir = "/app/final_model/NVIDIA-A30"
-    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
-elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S":
-    hyperparameter_file_path = "/app/final_model/GPU-L3c/model_config.json"
-    final_model_dir = "/app/final_model/GPU-L3c"
-    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    offline_csv_path = "/app/offline_training_data_GPU-L3c.csv"
-elif TARGET_GPU_MODEL == "hetero":
-    hyperparameter_file_path = "/app/final_model/hetero/model_config.json"
-    final_model_dir = "/app/final_model/hetero"
-    feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    offline_csv_path = "/app/offline_training_data_hetero.csv"
-else:
-    logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
-    assert False
+WORKLOAD = os.getenv("WORKLOAD", "Unknown")
+
+# Feature normalization statistics are ALWAYS based on GPU-L3c (reference baseline)
+# This ensures consistent feature space across all GPU types and experiments
+feature_normalization_stats_file = None
+final_model_dir = None
+hyperparameter_file_path = None
+offline_csv_path = None
 
 # hyperparameter_file_path = '/app/final_model/model_config.json'
 # final_model_dir = "/app/final_model"
@@ -134,7 +124,7 @@ TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
 SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing for latency predictor
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
-LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model, 0=start from scratch
+LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model+offline data, 0=train from scratch (random weights, no offline data, but USE pretrained normalization stats)
 INCLUDE_GPU_FEATURES = int(os.getenv("INCLUDE_GPU_FEATURES", 1))  # 1=include GPU one-hot encoding, 0=exclude GPU features
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
@@ -143,7 +133,9 @@ HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
 
-request_features_train = ['input_tokens', 'output_tokens', 'total_tokens']
+# request_features_train will be set dynamically after loading HYPERPARAMETERS
+# to respect EXCLUDED_REQUEST_FEATURES from the offline trained model
+request_features_train = None
 
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
@@ -264,35 +256,64 @@ def handle_infer():
             logger.error(f"Stats instance count is 0, no data available for normalization")
             assert False
 
-        normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+        normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
         if stats_instance.get_max_count() == 0:
             logger.error(f"request_id,{request_id},No normalization statistics available for inference")
             assert False
             
-        non_interest = ['request_id', 'requestID', 'ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_start_time', 'request_end_time']
-        features_must_exist_in_stats_instance = []
-        for feature in processed_df.columns:
-            # NOTE: ignoring last_second_* features
-            if "last_second_" not in feature and feature not in non_interest and feature in normalizable_features:
-                features_must_exist_in_stats_instance.append(feature)
-        for feature in features_must_exist_in_stats_instance:
-            if feature not in stats_instance.feature_stats:
-                logger.error(f"Feature {feature} not found in stats_instance")
-                # logger.error(f"processed_df.columns: {list(processed_df.columns)}")
-                # logger.error(f"features_must_exist_in_stats_instance: {features_must_exist_in_stats_instance}")
-                # logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+        # Validate that pooled pod feature types have statistics
+        for feature_type in pod_feature_types:
+            if feature_type not in stats_instance.feature_stats:
+                logger.error(f"request_id,{request_id},Pooled feature type '{feature_type}' not found in stats_instance")
+                logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
+                assert False
+        
+        # Validate that request features have statistics  
+        for feature in normalizable_features:
+            if feature not in pod_feature_types and feature not in stats_instance.feature_stats:
+                logger.error(f"request_id,{request_id},Request feature '{feature}' not found in stats_instance")
+                logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
                 
+        # Normalize features (with special handling for pooled pod features)
         for feature in normalizable_features:
             ##################################################
-            data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, is_training=False, request_id=request_id)
+            # Check if this is a pooled pod feature type (not a column name)
+            if feature in pod_feature_types:
+                # Find all pod columns for this feature type and normalize each
+                matching_columns = [col for col in processed_df.columns 
+                                  if data_normalizer._extract_pod_feature_type(col) == feature]
+                for col in matching_columns:
+                    data_normalizer._normalize_single_feature(processed_df, col, stats_instance, update_statistics=False, request_id=request_id)
+            else:
+                # Regular feature - normalize directly
+                data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, update_statistics=False, request_id=request_id)
             ##################################################
         handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
+        
+        # 🔍 CHECKPOINT 2: Log NORMALIZED values (for request_id % 10 == 0)
+        if int(request_id) % 10 == 0:
+            logger.info(f"🔍 CHECKPOINT 2 - AFTER NORMALIZATION (requestID {request_id}):")
+            logger.info(f"   Request features: input_tokens={processed_df['input_tokens'].iloc[0]:.4f}, output_tokens={processed_df['output_tokens'].iloc[0]:.4f}")
+            for pod_id in sorted_all_pod_ids[:3]:
+                kv = processed_df[f'{pod_id}-kv_hit_ratio'].iloc[0]
+                inflight = processed_df[f'{pod_id}-inflight_requests'].iloc[0]
+                prefill = processed_df[f'{pod_id}-prefill_tokens'].iloc[0]
+                logger.info(f"   {pod_id}: kv_hit_ratio={kv:.4f}, inflight={inflight:.4f}, prefill={prefill:.4f}")
 
         ## Encode data (normalization already done)
         encode_start_time = time.time()
         tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS)
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
+        
+        # 🔍 CHECKPOINT 3: Log TENSOR values after encoding (for request_id % 10 == 0)
+        if int(request_id) % 10 == 0:
+            logger.info(f"🔍 CHECKPOINT 3 - AFTER ENCODING TO TENSORS (requestID {request_id}):")
+            logger.info(f"   request_features shape: {tensor_data['request_features'].shape}, values: {tensor_data['request_features'][0].numpy()}")
+            logger.info(f"   pod_features_with_staleness shape: {tensor_data['pod_features_with_staleness'].shape}")
+            logger.info(f"   pod_0000 features: {tensor_data['pod_features_with_staleness'][0, 0, :].numpy()}")
+            logger.info(f"   kv_hit_ratios shape: {tensor_data['kv_hit_ratios'].shape}")
+            logger.info(f"   pod_0000 kv: {tensor_data['kv_hit_ratios'][0, 0, :].numpy()}")
 
         infer_from_tensor_start_time = time.time()
         
@@ -305,9 +326,8 @@ def handle_infer():
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
-        if subAlgorithm == 'latency_predictor' or subAlgorithm == 'random' or subAlgorithm == 'least-latency' or subAlgorithm == 'least-request' or subAlgorithm == 'least-kv-cache' or subAlgorithm == 'prefix_cache_1':
+        if subAlgorithm in {'latency_predictor', 'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1'}:
             global LATENCY_PREDICTOR, LOAD_PRETRAINED_MODEL
-            
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             # Only acquire expensive write lock if truly uninitialized
             if LATENCY_PREDICTOR is None:
@@ -328,14 +348,14 @@ def handle_infer():
                         
                         logger.info(f"🔄 One-time initialization of LATENCY_PREDICTOR with state_dims={state_dims}")
                         LATENCY_PREDICTOR = latency_predictor.LatencyPredictor(state_dims, HYPERPARAMETERS, final_model_dir)
-
-                        # Load pretrained model based on LOAD_PRETRAINED_MODEL env var
+                        # Load model weights based on LOAD_PRETRAINED_MODEL setting
                         model_path = os.path.join(final_model_dir, 'latency_predictor.pth')
                         if LOAD_PRETRAINED_MODEL:
+                            # LOAD_PRETRAINED_MODEL=1: Must load pretrained model (fail if missing)
                             if os.path.exists(model_path):
                                 try:
                                     LATENCY_PREDICTOR.load(final_model_dir)
-                                    logger.info(f"✅ LOAD_PRETRAINED_MODEL=1, loaded latency predictor from {final_model_dir}")
+                                    logger.info(f"✅ LOAD_PRETRAINED_MODEL=1, loaded pretrained model from final_model_dir: {final_model_dir}, model_path: {model_path}, offline_csv_path: {offline_csv_path}, hyperparameter_file_path: {hyperparameter_file_path}")
                                 except Exception as e:
                                     logger.error(f"❌ LOAD_PRETRAINED_MODEL=1 but failed to load: {e}")
                                     raise
@@ -344,8 +364,18 @@ def handle_infer():
                                 logger.error("Set LOAD_PRETRAINED_MODEL=0 to use random weights, or provide a trained model")
                                 raise FileNotFoundError(f"Missing model file: {model_path}")
                         else:
-                            logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0, using RANDOM WEIGHTS (untrained model)")
-                            logger.warning(f"⚠️  Model will make poor routing decisions until trained!")
+                            # LOAD_PRETRAINED_MODEL=0: Only load if model was created by online training
+                            # Check if model exists AND was created by our training (NUM_TRAINS > 0)
+                            if NUM_TRAINS > 0 and os.path.exists(model_path):
+                                try:
+                                    LATENCY_PREDICTOR.load(final_model_dir)
+                                    logger.info(f"✅ LOAD_PRETRAINED_MODEL=0, loaded model from online training (NUM_TRAINS={NUM_TRAINS})")
+                                except Exception as e:
+                                    logger.warning(f"⚠️  Failed to load online-trained model: {e}")
+                                    logger.warning(f"⚠️  Continuing with random weights")
+                            else:
+                                logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0: Using RANDOM WEIGHTS (NUM_TRAINS={NUM_TRAINS})")
+                                logger.warning(f"⚠️  Model will make poor decisions until first training completes ({MIN_NUM_TRAINING_DATA} samples)")
                     handle_infer_overhead_summary["latency_predictor_object_create"] = time.time() - latency_predictor_object_create_start_time
             
             latency_predictor_read_lock_contention_start_time = time.time()
@@ -546,7 +576,6 @@ def handle_infer():
         remaining_work_start = time.time()
         result["requestID"] = request_id
         result["num_trains"] = NUM_TRAINS
-        result["request_timestamp"] = time.time() - first_request_starting_time
         logger.info(f"requestID: {request_id}, inference result: {result}")
         
         # Map the pod index back to the actual pod ID
@@ -581,11 +610,11 @@ def handle_infer():
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
-            "request_timestamp": time.time() - first_request_starting_time,
+            "request_timestamp": int(time.time() - first_request_starting_time),
             "selected_pod": selected_pod_ip,
             "selected_pod_generalpodid": selected_pod_generalpodid,
             "selected_pod_gpu_type": result.get('selected_pod_gpu_type', 'unknown'),
-            "confidence": result['confidence'],
+            "confidence": round(result['confidence'], 2),
             "exploration": result['explore_mask'],
             "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
@@ -595,12 +624,17 @@ def handle_infer():
             "smoothing": result.get('smoothing_mask', 0),  # Include smoothing indicator
         }
         
-        # if subAlgorithm == 'latency_predictor' and NUM_TRAINS <= 0:
-        #     random_generalpodid = sorted_all_pod_ids[random.randint(0, len(sorted_all_pod_ids)-1)]
-        #     random_pod_ip = HYPERPARAMETERS['generalpodid_to_pod_ip'][random_generalpodid]
-        #     response['selected_pod'] = random_pod_ip
-        #     response['selected_pod_generalpodid'] = random_generalpodid
-        #     logger.info(f"Training never done yet, selected random pod for exploration! selected_pod_generalpodid: {random_generalpodid}, selected_pod_ip: {random_pod_ip}")
+        # Return 503 if using random weights (LOAD_PRETRAINED_MODEL=0 and no training yet)
+        # Pipeline still runs (for verification/warmup) but client gets proper "not ready" signal
+        if LOAD_PRETRAINED_MODEL == 0 and NUM_TRAINS == 0:
+            logger.warning(f"⚠️  Inference completed with RANDOM WEIGHTS (NUM_TRAINS=0), returning 503")
+            logger.warning(f"⚠️  Need {MIN_NUM_TRAINING_DATA - TOTAL_NUM_NEW_DATA} more samples before first training")
+            response["error"] = "Model not trained yet"
+            response["reason"] = "LOAD_PRETRAINED_MODEL=0 and NUM_TRAINS=0 (using random weights)"
+            response["samples_needed"] = MIN_NUM_TRAINING_DATA
+            response["samples_collected"] = TOTAL_NUM_NEW_DATA
+            response["message"] = f"Service will be ready after first training ({MIN_NUM_TRAINING_DATA} samples)"
+            return jsonify(response), 503
             
         return jsonify(response), 200
         
@@ -693,9 +727,22 @@ def online_train_routine():
             ############################################################################
             
             # Normalize the entire dataset
-            normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(
+            normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
                 training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
-
+            
+            # CRITICAL: Skip pooled statistics computation during online training
+            # The pretrained model was trained with PER-POD normalization (each pod normalized separately).
+            # Computing pooled statistics (all pods normalized together) creates incompatible feature distributions
+            # that cause catastrophic model divergence (loss explodes to millions, R² becomes negative).
+            # During online training, we MUST maintain the same normalization strategy as the pretrained model.
+            if pod_feature_types:
+                logger.info(f"🔄 Found {len(pod_feature_types)} pod feature types: {pod_feature_types}")
+                logger.info(f"⚠️  SKIPPING pooled statistics computation during online training")
+                logger.info(f"   Reason: Pretrained model uses per-pod normalization - must maintain compatibility")
+                logger.info(f"   Using existing per-pod stats from loaded stats_instance")
+            # Note: stats_instance already contains per-pod stats loaded from pretrained model
+            # We do NOT call _compute_pooled_pod_statistics() during online training
+            
             # VERIFICATION: Log normalization stats BEFORE normalization
             logger.info(f"VERIFICATION: Checking normalization stats before online training #{NUM_TRAINS}")
             for feature in normalizable_features:
@@ -703,8 +750,8 @@ def online_train_routine():
                     stats = stats_instance.feature_stats[feature]
                     logger.info(f"VERIFICATION BEFORE: {feature} - OLD stats: count={stats.count}, mean={stats.mean}, std={stats.std}")
                     
-                    # Log actual feature values in the new data
-                    if feature in training_df_copy.columns:
+                    # For request features, log actual values
+                    if feature not in pod_feature_types and feature in training_df_copy.columns:
                         actual_values = training_df_copy[feature].values
                         new_mean = actual_values.mean()
                         new_std = actual_values.std()
@@ -715,24 +762,28 @@ def online_train_routine():
                         sample_value = actual_values[0]
                         old_mean = stats.mean[0] if hasattr(stats.mean, '__getitem__') else stats.mean
                         old_std = stats.std[0] if hasattr(stats.std, '__getitem__') else stats.std
-                        
                         if old_std > 0 and new_std > 0:
                             normalized_with_old_stats = (sample_value - old_mean) / old_std
                             normalized_with_new_stats = (sample_value - new_mean) / new_std
-                            
-                            logger.warning(f"VERIFICATION PROOF: {feature} sample_value={sample_value:.3f}")
-                            logger.warning(f"VERIFICATION PROOF: {feature} normalized_with_OLD_stats = ({sample_value:.3f} - {old_mean:.3f}) / {old_std:.3f} = {normalized_with_old_stats:.3f}")
-                            logger.warning(f"VERIFICATION PROOF: {feature} normalized_with_NEW_stats = ({sample_value:.3f} - {new_mean:.3f}) / {new_std:.3f} = {normalized_with_new_stats:.3f}")
-                            logger.warning(f"VERIFICATION PROOF: {feature} DIFFERENCE = {abs(normalized_with_old_stats - normalized_with_new_stats):.3f}")
-                            
+                            logger.info(f"VERIFICATION PROOF: {feature} sample_value={sample_value:.3f}")
+                            logger.info(f"VERIFICATION PROOF: {feature} normalized_with_OLD_stats = ({sample_value:.3f} - {old_mean:.3f}) / {old_std:.3f} = {normalized_with_old_stats:.3f}")
+                            logger.info(f"VERIFICATION PROOF: {feature} normalized_with_NEW_stats = ({sample_value:.3f} - {new_mean:.3f}) / {new_std:.3f} = {normalized_with_new_stats:.3f}")
+                            logger.info(f"VERIFICATION PROOF: {feature} DIFFERENCE = {abs(normalized_with_old_stats - normalized_with_new_stats):.3f}")
                             if abs(normalized_with_old_stats) > 5:
                                 logger.error(f"VERIFICATION PROOF: {feature} OUTLIER CREATED! Using old stats produces {normalized_with_old_stats:.3f} (should be ~{normalized_with_new_stats:.3f})")
 
+            # Normalize features (with special handling for pooled pod features)
             for feature in normalizable_features:
-                # FIX: Changed from is_training=False to is_training=True
-                # This allows normalization stats to update during online training,
-                # preventing outlier creation when new data has different distributions
-                data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, is_training=True)
+                # Check if this is a pooled pod feature type (not a column name)
+                if feature in pod_feature_types:
+                    # Find all pod columns for this feature type and normalize each
+                    matching_columns = [col for col in training_df_copy.columns 
+                                      if data_normalizer._extract_pod_feature_type(col) == feature]
+                    for col in matching_columns:
+                        data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
+                else:
+                    # Regular feature - normalize directly
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=False)
             
             # VERIFICATION: Log normalization stats AFTER normalization
             logger.info(f"VERIFICATION: Checking normalization stats after online training #{NUM_TRAINS}")
@@ -740,8 +791,9 @@ def online_train_routine():
                 if feature in stats_instance.feature_stats:
                     stats = stats_instance.feature_stats[feature]
                     logger.info(f"VERIFICATION AFTER: {feature} - count={stats.count}, mean={stats.mean}, std={stats.std}")
-                    # Log normalized values
-                    if feature in training_df_copy.columns:
+                    
+                    # For request features, log normalized values
+                    if feature not in pod_feature_types and feature in training_df_copy.columns:
                         normalized_values = training_df_copy[feature].values
                         logger.info(f"VERIFICATION AFTER: {feature} - normalized: min={normalized_values.min():.3f}, max={normalized_values.max():.3f}, mean={normalized_values.mean():.3f}, std={normalized_values.std():.3f}")
 
@@ -757,16 +809,40 @@ def online_train_routine():
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
 
             # Train on the encoded dataset
+            # Pass NUM_NEW_DATA so the training function can evaluate separately on new samples
             train_start_time = time.time()
-            latency_predictor.train_latency_predictor(encoded_training_dir, final_model_dir, HYPERPARAMETERS, NUM_TRAINS)
+            latency_predictor.train_latency_predictor(
+                encoded_training_dir, 
+                final_model_dir, 
+                HYPERPARAMETERS, 
+                NUM_TRAINS,
+                num_new_samples=NUM_NEW_DATA  # Track newly collected online data for separate evaluation
+            )
             logger.info(f"train_latency_predictor done, train time: {time.time() - train_start_time} seconds")
 
-            # Reload model in training thread (non-blocking for inference)
-            with LATENCY_PREDICTOR_LOCK.write():
-                if LATENCY_PREDICTOR is not None:
-                    load_start_time = time.time()
-                    LATENCY_PREDICTOR.load(final_model_dir)
-                    logger.info(f"Reloaded latency predictor after training, load time: {time.time() - load_start_time} seconds")
+            # Reload model in training thread (truly non-blocking for inference)
+            # Strategy: Load new model WITHOUT lock, then atomic swap with brief lock
+            if LATENCY_PREDICTOR is not None:
+                load_start_time = time.time()
+                
+                # Step 1: Load new model WITHOUT holding lock (no blocking!)
+                # Get model architecture from existing predictor
+                new_predictor = latency_predictor.LatencyPredictor(
+                    LATENCY_PREDICTOR.state_dims, 
+                    HYPERPARAMETERS, 
+                    final_model_dir
+                )
+                new_predictor.load(final_model_dir)
+                load_time = time.time() - load_start_time
+                logger.info(f"Loaded new model weights (no blocking), load time: {load_time:.3f}s")
+                
+                # Step 2: Atomic swap with VERY brief write lock (microseconds, not milliseconds!)
+                swap_start_time = time.time()
+                with LATENCY_PREDICTOR_LOCK.write():
+                    LATENCY_PREDICTOR = new_predictor  # Atomic reference swap
+                swap_time = time.time() - swap_start_time
+                logger.info(f"Swapped model reference (atomic), swap time: {swap_time*1000:.2f}ms")
+                logger.info(f"✅ Model reload complete with ZERO inference blocking during load")
         else:
             logger.info(f"Training with contextual bandit model")
             simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
@@ -1104,17 +1180,80 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def init():
-    global HYPERPARAMETERS, stats_instance, INIT_DONE, offline_csv_path, hyperparameter_file_path
-    if HYPERPARAMETERS is None:
-
-        logger.info(f"{GREEN_COLOR}HYPERPARAMETERS is None{RESET_COLOR}")
-
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path
+    
+    # Model directory and offline data are GPU-specific
+    if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
+        final_model_dir = "/app/final_model/NVIDIA-A30"
+        hyperparameter_file_path = f"${final_model_dir}/model_config.json"
+        offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
+        feature_normalization_stats_file = "/app/final_model/NVIDIA-A30/feature_normalization_statistics.csv"
+    elif TARGET_GPU_MODEL == "NVIDIA-A10":
+        # if WORKLOAD not in {"MixedSharingRatio10_30_50_70%", "SharingRatio71%"}:
+        #     WORKLOAD = "MixedSharingRatio10_30_50_70%"
+        # logger.info(f"WORKLOAD: {WORKLOAD}")
+        # os.system(f"mv /app/final_model/NVIDIA-A10/{WORKLOAD}/* /app/final_model/NVIDIA-A10")
+        # os.system(f"rm -r /app/final_model/NVIDIA-A10/MixedSharingRatio10_30_50_70%")
+        # os.system(f"rm -r /app/final_model/NVIDIA-A10/SharingRatio71%")
+        # offline_csv_path = f"/app/offline_training_data_NVIDIA-A10_{WORKLOAD}.csv"
+        # os.system(f"mv /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0/* /app/final_model/NVIDIA-A10")
+        # logger.info(f"mv /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0/* /app/final_model/NVIDIA-A10")
+        # os.system(f"rm -r /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0")
+        # logger.info(f"rm -r /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0")
         
+        feature_normalization_stats_file = "/app/final_model/NVIDIA-A10/feature_normalization_statistics.csv"
+        # feature_normalization_stats_file = "/app/final_model/GPU-L3c/feature_normalization_statistics.csv"
+        final_model_dir = f"/app/final_model/NVIDIA-A10"
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        offline_csv_path = "/app/offline_training_data_NVIDIA-A10_maxTokens_1-maxTokensStd_0.csv"
+    elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S":
+        hyperparameter_file_path = "/app/final_model/GPU-L3c/model_config.json"
+        final_model_dir = "/app/final_model/GPU-L3c"
+        offline_csv_path = "/app/offline_training_data_GPU-L3c.csv"
+        feature_normalization_stats_file = "/app/final_model/GPU-L3c/feature_normalization_statistics.csv"
+    elif TARGET_GPU_MODEL == "hetero":
+        hyperparameter_file_path = "/app/final_model/hetero/model_config.json"
+        final_model_dir = "/app/final_model/hetero"
+        offline_csv_path = "/app/offline_training_data_hetero.csv"
+        feature_normalization_stats_file = "/app/final_model/hetero/feature_normalization_statistics.csv"
+    else:
+        logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
+        assert False
+
+    logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
+    logger.info(f"WORKLOAD: {WORKLOAD}")
+    logger.info(f"final_model_dir: {final_model_dir}")
+    logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
+    logger.info(f"offline_csv_path: {offline_csv_path}")
+    logger.info(f"Feature normalization stats: {feature_normalization_stats_file}")
+    
+    assert final_model_dir is not None, f"final_model_dir is None for {TARGET_GPU_MODEL}"
+    assert hyperparameter_file_path is not None, f"hyperparameter_file_path is None for {TARGET_GPU_MODEL}"
+    assert offline_csv_path is not None, f"offline_csv_path is None for {TARGET_GPU_MODEL}"
+    assert feature_normalization_stats_file is not None, f"feature_normalization_stats_file is None for {TARGET_GPU_MODEL}"
+    assert os.path.exists(final_model_dir), f"final_model_dir does not exist: {final_model_dir}"
+    assert os.path.exists(hyperparameter_file_path), f"hyperparameter_file_path does not exist: {hyperparameter_file_path}"
+    assert os.path.exists(offline_csv_path), f"offline_csv_path does not exist: {offline_csv_path}"
+    assert os.path.exists(feature_normalization_stats_file), f"feature_normalization_stats_file does not exist: {feature_normalization_stats_file}"
+    
+    if HYPERPARAMETERS is None:
+        logger.info(f"{GREEN_COLOR}HYPERPARAMETERS is None{RESET_COLOR}")
         HYPERPARAMETERS = utils.load_hyperparameter_file(hyperparameter_file_path)
         HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
         HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
+        
+        # 🔧 CRITICAL: Apply EXCLUDED_REQUEST_FEATURES to match offline trained model architecture
+        global request_features_train
+        all_request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+        excluded_features = set(HYPERPARAMETERS.get('EXCLUDED_REQUEST_FEATURES', []))
+        # Filter out 'none' placeholder
+        if 'none' in excluded_features:
+            excluded_features.remove('none')
+        request_features_train = [f for f in all_request_features if f not in excluded_features]
+        logger.info(f"🔧 Request features for inference (after excluding {excluded_features}): {request_features_train}")
+        
         model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
         logger.info(f"Model type configured: {model_type}")
         if model_type == 'latency_predictor':
@@ -1162,12 +1301,18 @@ def init():
         # HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
         # Load normalization statistics from CSV file
+        # NOTE: Feature stats are ALWAYS based on GPU-L3c (reference baseline)
+        # This ensures consistent feature space across all GPU types and experiments
+        # Stats can be updated by online learning, but the base is always GPU-L3c
         if os.path.exists(feature_normalization_stats_file):
-            logger.info(f"Loading normalization statistics from: {feature_normalization_stats_file}")
+            logger.info(f"Loading normalization statistics (ALWAYS GPU-L3c baseline): {feature_normalization_stats_file}")
             try:
                 stats_instance = data_normalizer.FeatureStats.load_from_csv(feature_normalization_stats_file)
                 if stats_instance is not None:
-                    logger.info(f"Successfully loaded stats for {len(stats_instance.feature_stats)} features")
+                    logger.info(f"✅ Successfully loaded GPU-L3c baseline stats for {len(stats_instance.feature_stats)} features")
+                    logger.info(f"   These stats will be used regardless of TARGET_GPU_MODEL={TARGET_GPU_MODEL}")
+                    if LOAD_PRETRAINED_MODEL == 0:
+                        logger.info(f"   LOAD_PRETRAINED_MODEL=0: Will train model from scratch but use GPU-L3c normalization baseline")
                 else:
                     logger.error("Failed to load normalization statistics")
                     assert False
@@ -1176,6 +1321,7 @@ def init():
                 assert False
         else:
             logger.error(f"Normalization statistics file not found: {feature_normalization_stats_file}")
+            logger.error(f"Expected GPU-L3c baseline stats at: /app/final_model/GPU-L3c/feature_normalization_statistics.csv")
             assert False
     
     running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
@@ -1233,7 +1379,15 @@ def init():
     # Load offline training data for online learning
     global TRAINING_DF, OFFLINE_DATA_SIZE
     if ENABLE_ONLINE_LEARNING:
-        if os.path.exists(offline_csv_path):
+        # Skip loading offline data if LOAD_PRETRAINED_MODEL=0 (pure online learning from scratch)
+        if LOAD_PRETRAINED_MODEL == 0:
+            logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0: Skipping offline training data")
+            logger.warning(f"⚠️  Will train from scratch using ONLY online data")
+            logger.warning(f"⚠️  Inference will use RANDOM WEIGHTS until first training completes ({MIN_NUM_TRAINING_DATA} samples)")
+            logger.info(f"ℹ️  Normalization stats are still loaded to maintain consistent feature space")
+            TRAINING_DF = pd.DataFrame()
+            OFFLINE_DATA_SIZE = 0
+        elif os.path.exists(offline_csv_path):
             try:
                 with TRAINING_DF_LOCK:
                     TRAINING_DF = pd.read_csv(offline_csv_path)

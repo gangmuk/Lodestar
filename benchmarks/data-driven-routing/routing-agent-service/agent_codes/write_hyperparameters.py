@@ -54,6 +54,7 @@ def main():
     parser.add_argument('--reward_function', type=str, default=None)
     parser.add_argument('--offline_learning_rate', type=float, default=None)
     parser.add_argument('--excluded_pod_features', type=str, default='', help='Comma-separated pod features to exclude')
+    parser.add_argument('--excluded_request_features', type=str, default='', help='Comma-separated request features to exclude')
     parser.add_argument('--no_normalize_features', type=str, default='', help='Comma-separated features to not normalize')
     parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive', 'constant'], help='Learning rate scheduler type')
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
@@ -82,23 +83,25 @@ def main():
     args = parser.parse_args()
 
     excluded = [x.strip() for x in args.excluded_pod_features.split(',') if x.strip()]
+    excluded_request_features = [x.strip() for x in args.excluded_request_features.split(',') if x.strip()]
     no_normalize_features = [x.strip() for x in args.no_normalize_features.split(',') if x.strip()]
 
     RL_MODEL_HYPERPARAMETERS = {}
-    RL_MODEL_HYPERPARAMETERS['test_size_ratio'] = float(args.test_size_ratio)
-    RL_MODEL_HYPERPARAMETERS['weight_initialization'] = args.weight_initialization
-    RL_MODEL_HYPERPARAMETERS['training_seed'] = int(args.training_seed)
-    RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = float(args.ttft_slo)
-    RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = float(args.avg_tpot_slo)
-    RL_MODEL_HYPERPARAMETERS['hidden_dim'] = int(args.hidden_dim)
-    RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = float(args.ttft_reward_weight)
-    RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = args.reward_function
-    RL_MODEL_HYPERPARAMETERS['OFFLINE_LEARNING_RATE'] = float(args.offline_learning_rate)
+    RL_MODEL_HYPERPARAMETERS['test_size_ratio'] = float(args.test_size_ratio) if args.test_size_ratio is not None else 0.2
+    RL_MODEL_HYPERPARAMETERS['weight_initialization'] = args.weight_initialization or 'xavier'
+    RL_MODEL_HYPERPARAMETERS['training_seed'] = int(args.training_seed) if args.training_seed is not None else 42
+    RL_MODEL_HYPERPARAMETERS['TTFT_SLO'] = float(args.ttft_slo) if args.ttft_slo is not None else 1000.0
+    RL_MODEL_HYPERPARAMETERS['AVG_TPOT_SLO'] = float(args.avg_tpot_slo) if args.avg_tpot_slo is not None else 50.0
+    RL_MODEL_HYPERPARAMETERS['hidden_dim'] = int(args.hidden_dim) if args.hidden_dim is not None else 64
+    RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = float(args.ttft_reward_weight) if args.ttft_reward_weight is not None else 1.0
+    RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = args.reward_function or 'linear_simple'
+    RL_MODEL_HYPERPARAMETERS['OFFLINE_LEARNING_RATE'] = float(args.offline_learning_rate) if args.offline_learning_rate is not None else 0.001
     RL_MODEL_HYPERPARAMETERS['EXCLUDED_POD_FEATURES'] = excluded
-    RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'] = args.lr_scheduler_type
-    RL_MODEL_HYPERPARAMETERS['lr_scheduler_gamma'] = float(args.lr_scheduler_gamma)
+    RL_MODEL_HYPERPARAMETERS['EXCLUDED_REQUEST_FEATURES'] = excluded_request_features
+    RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'] = args.lr_scheduler_type or 'constant'
+    RL_MODEL_HYPERPARAMETERS['lr_scheduler_gamma'] = float(args.lr_scheduler_gamma) if args.lr_scheduler_gamma is not None else 0.95
     RL_MODEL_HYPERPARAMETERS['NO_NORMALIZE_FEATURES'] = no_normalize_features
-    RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] = args.model_type
+    RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] = args.model_type or 'latency_predictor'
     RL_MODEL_HYPERPARAMETERS['learning_rate'] = float(args.learning_rate)
     RL_MODEL_HYPERPARAMETERS['n_steps'] = int(args.n_steps)
     RL_MODEL_HYPERPARAMETERS['n_epochs'] = int(args.n_epochs)

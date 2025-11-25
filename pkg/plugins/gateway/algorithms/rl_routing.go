@@ -86,12 +86,10 @@ func NewRLOnlineRouter() (types.Router, error) {
 	return router, nil
 }
 
-// initializeGPUModels pre-populates GPU model information for all pods
+//  pre-populates GPU model information for all pods
 // This runs in the background to avoid blocking router initialization
 func initializeGPUModels(c cache.Cache) {
 	// Wait a bit for pods to be registered in cache
-	time.Sleep(2 * time.Second)
-
 	klog.InfoS("Starting GPU model initialization for all pods")
 
 	// Get all models
@@ -332,10 +330,10 @@ func GetPod(podIP string, pods []*v1.Pod) *v1.Pod {
 	return nil
 }
 
-// extractGPUModelFromPod extracts GPU model information from pod metadata
+// extracts GPU model information from pod metadata
 // It checks multiple sources in order of preference:
 // 1. Pod label "machine.cluster.vke.volcengine.com/gpu-name" (if inherited from node)
-// 2. Fetch from node (using pod.Spec.NodeName) - calls utils.GetGPUModelFromNode()
+// 2. Fetch from node (using pod.Spec.NodeName)
 // 3. Pod label "gpu-model" or "nvidia.com/gpu.product"
 // 4. Pod annotation "gpu-model"
 // 5. Falls back to "GPU-L3c" as default

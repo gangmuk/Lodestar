@@ -61,24 +61,24 @@ RUN mkdir -p \
 # COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing70%/SharingRatio70%_avginput3750_multirps12-15-12_rep10/workload.jsonl /app/workload/config_sharing70%/
 
 
-# text to sql
-COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/text_to_sql/SharingRatio31%_avginput4160_multirps10-12-10_rep10/workload.jsonl /app/workload/text_to_sql/
+# # text to sql
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/text_to_sql/SharingRatio31%_avginput4160_multirps10-12-10_rep10/workload.jsonl /app/workload/text_to_sql/
 
-# multiturn chat
-COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/multiturn-chat/multiturn_sessions300_avgturns5_turnlen1000_rps10/workload.jsonl /app/workload/multiturn-chat/
+# # multiturn chat
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/multiturn-chat/multiturn_sessions300_avgturns5_turnlen1000_rps10/workload.jsonl /app/workload/multiturn-chat/
 
-# mooncake conversation
-COPY workload-and-experiment_results/workload-generator/mooncake/workload-conversation/workload.jsonl /app/workload/mooncake-conversation/
+# # mooncake conversation
+# COPY workload-and-experiment_results/workload-generator/mooncake/workload-conversation/workload.jsonl /app/workload/mooncake-conversation/
 
-# mooncake toolagent
-COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
+# # mooncake toolagent
+# COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
 
-COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
+# COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
 COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workload/SharingRatio71%/
 COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
 COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/
 COPY workload-and-experiment_results/SharingRatio9%/workload.jsonl /app/workload/SharingRatio9%/
-COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing_mixed_10_30_50_70%/SharingRatio39%_avginput3750_globalrps12/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
+# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing_mixed_10_30_50_70%/SharingRatio39%_avginput3750_globalrps12/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
 
 # Create output directory
 RUN mkdir -p /app/output

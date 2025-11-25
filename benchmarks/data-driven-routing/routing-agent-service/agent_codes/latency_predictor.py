@@ -627,7 +627,7 @@ def load_encoded_data(encoded_data_dir):
     return combined_data
 
 
-def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, num_train):
+def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, num_train, num_new_samples=0):
     """
     Main training function for latency predictor.
     
@@ -635,8 +635,11 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
         encoded_data_dir: Directory containing encoded tensor data
         final_model_dir: Directory to save trained model
         HYPERPARAMETERS: Model hyperparameters
+        num_train: Training iteration number
+        num_new_samples: Number of newly collected online samples (for separate evaluation)
     """
     logger.info("Starting latency predictor training...")
+    logger.info(f"Training iteration: {num_train}, New online samples: {num_new_samples}")
     
     # Load encoded data
     combined_data = load_encoded_data(encoded_data_dir)
@@ -707,9 +710,54 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
     
     logger.info("Training completed!")
     
+    # Evaluate on NEW online data only (if available)
+    new_data_eval_results = None
+    if num_new_samples > 0:
+        try:
+            logger.info(f"Evaluating on {num_new_samples} newly collected online samples...")
+            total_samples = len(dataset)
+            
+            # New samples are at the END of the dataset (most recently appended)
+            new_data_start_idx = total_samples - num_new_samples
+            
+            if new_data_start_idx >= 0 and new_data_start_idx < total_samples:
+                # Extract new samples from the full dataset
+                new_indices = list(range(new_data_start_idx, total_samples))
+                new_dataset = torch.utils.data.Subset(dataset, new_indices)
+                
+                new_loader = DataLoader(new_dataset, batch_size=batch_size, shuffle=False)
+                
+                # Evaluate on new data
+                new_eval_metrics = predictor.evaluate(new_loader)
+                
+                new_data_eval_results = {
+                    'predictions': new_eval_metrics['predictions'],
+                    'targets': new_eval_metrics['targets'],
+                    'mae': new_eval_metrics['mae'],
+                    'r2': new_eval_metrics['r2'],
+                    'loss': new_eval_metrics['loss'],
+                }
+                
+                logger.info(f"✅ New data evaluation - MAE: {new_eval_metrics['mae']:.4f}, "
+                          f"R²: {new_eval_metrics['r2']:.4f}, Loss: {new_eval_metrics['loss']:.4f}")
+            else:
+                logger.warning(f"Invalid new data indices: start={new_data_start_idx}, total={total_samples}")
+        except Exception as e:
+            logger.error(f"Error evaluating on new data: {e}")
+            import traceback
+            traceback.print_exc()
+    
     # Generate comprehensive training plots
+    plot_path = None  # Initialize to avoid "referenced before assignment" error
     try:
-        plot_path = plot_latency_predictor_metrics(predictor, train_dataset, val_dataset, final_model_dir, num_train)
+        plot_path = plot_latency_predictor_metrics(
+            predictor, 
+            train_dataset, 
+            val_dataset, 
+            final_model_dir, 
+            num_train,
+            new_data_eval_results=new_data_eval_results
+        )
         logger.info(f"Generated training plots: {plot_path}")
     except Exception as e:
         logger.error(f"Error generating plots: {e}")
@@ -720,7 +768,7 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
 
 
 def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids, 
-                                        exploration_rate=0.0, smoothing=False, smoothing_threshold=0.1,
+                                        exploration_rate=0.0, smoothing=True, smoothing_threshold=0.1,
                                         generalpodid_to_gpu_model=None):
     """
     Inference function using a cached latency predictor model.
@@ -746,18 +794,18 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
     kv_hit_ratios = tensor_data['kv_hit_ratios'].to(device)
     request_features = tensor_data['request_features'].to(device)
     
-    # # DEBUG: Log all pod features (sample every 10th request to reduce verbosity)
-    # if len(pod_features.shape) == 3 and int(request_id) % 10 == 0:
-    #     logger.info(f"DEBUG requestID {request_id}: Logging all pod features:")
-    #     for pod_id in range(pod_features.shape[1]):
-    #         pod_features_pod_id = pod_features[0, pod_id, :].cpu().numpy()
-    #         pod_kv_ratio = kv_hit_ratios[0, pod_id, :].cpu().numpy()
-    #         logger.info(f", pod_{pod_id:04d} features={pod_features_pod_id}, kv_ratio={pod_kv_ratio}")
+    # DEBUG: Log all pod features (sample every 10th request to reduce verbosity)
+    if len(pod_features.shape) == 3 and int(request_id) % 10 == 0:
+        logger.info(f"🔍 DEBUG requestID {request_id}: Logging all pod features:")
+        for pod_id in range(pod_features.shape[1]):
+            pod_features_pod_id = pod_features[0, pod_id, :].cpu().numpy()
+            pod_kv_ratio = kv_hit_ratios[0, pod_id, :].cpu().numpy()
+            logger.info(f"   pod_{pod_id:04d} features={pod_features_pod_id}, kv_ratio={pod_kv_ratio}")
             
-    #         # VERIFICATION: Check for outlier features (normalized values should be roughly -3 to +3)
-    #         outlier_indices = np.where(np.abs(pod_features_pod_id) > 5)[0]
-    #         if len(outlier_indices) > 0:
-    #             logger.warning(f"VERIFICATION: requestID {request_id} pod_{pod_id:04d} has OUTLIER features at indices {outlier_indices.tolist()}: {pod_features_pod_id[outlier_indices]}")
+            # VERIFICATION: Check for outlier features (normalized values should be roughly -3 to +3)
+            outlier_indices = np.where(np.abs(pod_features_pod_id) > 5)[0]
+            if len(outlier_indices) > 0:
+                logger.warning(f"⚠️  VERIFICATION: requestID {request_id} pod_{pod_id:04d} has OUTLIER features at indices {outlier_indices.tolist()}: {pod_features_pod_id[outlier_indices]}")
 
     # Ensure batch format
     if len(pod_features.shape) == 2:
@@ -798,22 +846,24 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         else:
             logger.debug(f"SMOOTHING, no smoothing is needed for requestID {request_id}")
     overhead_summary['smoothing'] = time.time() - smoothing_start
-    # # DEBUG: Log predictions for all pods (sample every 10th request)
-    # if int(request_id) % 10 == 0:
-    #     all_predictions = result['predicted_latencies'][0].cpu().numpy()
-    #     logger.info(f"DEBUG requestID {request_id}: ALL pod predictions = {all_predictions}")
+    # DEBUG: Log predictions for all pods (sample every 10th request)
+    if int(request_id) % 10 == 0:
+        all_predictions = result['predicted_latencies'][0].cpu().numpy()
+        logger.info(f"🔍 CHECKPOINT 4 - RAW MODEL OUTPUT (requestID {request_id}):")
+        logger.info(f"   All pod predictions (RAW from model): {all_predictions}")
+        logger.info(f"   Min: {all_predictions.min():.1f}, Max: {all_predictions.max():.1f}, Mean: {all_predictions.mean():.1f}")
         
-    #     # VERIFICATION: Check for exploding predictions (should be < 5000ms for TTFT typically)
-    #     exploding_pods = np.where(all_predictions > 3000)[0]
-    #     if len(exploding_pods) > 0:
-    #         logger.warning(f"VERIFICATION: requestID {request_id} has EXPLODING predictions for pods {exploding_pods.tolist()}: {all_predictions[exploding_pods]}")
-    #         # Check if these pods had outlier features
-    #         if len(pod_features.shape) == 3:
-    #             for pod_idx in exploding_pods:
-    #                 pod_feat = pod_features[0, pod_idx, :].cpu().numpy()
-    #                 outliers = np.where(np.abs(pod_feat) > 5)[0]
-    #                 if len(outliers) > 0:
-    #                     logger.warning(f"VERIFICATION: pod_{pod_idx:04d} with exploding prediction ({all_predictions[pod_idx]:.1f}ms) HAS OUTLIER features at {outliers.tolist()}: {pod_feat[outliers]}")
+        # VERIFICATION: Check for exploding predictions (should be < 5000ms for TTFT typically)
+        exploding_pods = np.where(all_predictions > 3000)[0]
+        if len(exploding_pods) > 0:
+            logger.warning(f"⚠️  VERIFICATION: requestID {request_id} has EXPLODING predictions for pods {exploding_pods.tolist()}: {all_predictions[exploding_pods]}")
+            # Check if these pods had outlier features
+            if len(pod_features.shape) == 3:
+                for pod_idx in exploding_pods:
+                    pod_feat = pod_features[0, pod_idx, :].cpu().numpy()
+                    outliers = np.where(np.abs(pod_feat) > 5)[0]
+                    if len(outliers) > 0:
+                        logger.warning(f"⚠️  VERIFICATION: pod_{pod_idx:04d} with exploding prediction ({all_predictions[pod_idx]:.1f}ms) HAS OUTLIER features at {outliers.tolist()}: {pod_feat[outliers]}")
 
     # Format result for compatibility
     format_start = time.time()
@@ -825,9 +875,21 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
     # Apply softmax to convert latencies to probabilities (lower latency = higher probability)
     softmax_probs = torch.softmax(-predicted_latencies_tensor, dim=0).cpu().numpy()
 
+    # 🔍 CHECKPOINT 5: Log conversion to final format (for request_id % 10 == 0)
+    if int(request_id) % 10 == 0:
+        logger.info(f"🔍 CHECKPOINT 5 - FINAL CONVERSION (requestID {request_id}):")
+        logger.info(f"   predicted_latencies_tensor type: {type(predicted_latencies_tensor)}, dtype: {predicted_latencies_tensor.dtype}")
+        logger.info(f"   predicted_latencies numpy: {predicted_latencies}")
+        logger.info(f"   Converting to int...")
+        
     # Format predicted_latencies as dict
-    predicted_latencies_formatted = {sorted_all_pod_ids[i]: float(latency.item()) for i, latency in enumerate(predicted_latencies)}
-    chosen_pod_predicted_latency = float(predicted_latencies_formatted[sorted_all_pod_ids[selected_pod_index]])
+    predicted_latencies_formatted = {sorted_all_pod_ids[i]: int(latency.item()) for i, latency in enumerate(predicted_latencies)}
+    chosen_pod_predicted_latency = int(predicted_latencies_formatted[sorted_all_pod_ids[selected_pod_index]])
+    
+    # 🔍 CHECKPOINT 5 continued
+    if int(request_id) % 10 == 0:
+        logger.info(f"   predicted_latencies_formatted (after int()): {list(predicted_latencies_formatted.values())[:3]}")
+        logger.info(f"   chosen_pod_predicted_latency: {chosen_pod_predicted_latency}")
     
     # Get GPU type for selected pod
     selected_pod_id = sorted_all_pod_ids[selected_pod_index]
@@ -845,7 +907,7 @@ def infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorte
         'chosen_pod_predicted_latency': chosen_pod_predicted_latency,
         'confidence': confidence,
         'selected_pod_gpu_type': selected_pod_gpu_type,
-        'pod_probabilities': [float(p) for p in softmax_probs.tolist()],
+        'pod_probabilities': [round(float(p), 2) for p in softmax_probs.tolist()],
         'latency_metric': predictor.latency_metric,
         'explore_mask': result['explore_mask'],  # 0 = exploitation, 1 = exploration
         'smoothing_mask': result['smoothing_mask']  # 0 = single best pod, 1 = smoothed selection
@@ -888,7 +950,7 @@ def infer_latency_predictor(tensor_data, request_id, model_updated, HYPERPARAMET
     return infer_latency_predictor_with_model(predictor, tensor_data, request_id, sorted_all_pod_ids)
 
 
-def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_dir, num_train):
+def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_dir, num_train, new_data_eval_results=None):
     """
     Create comprehensive training metrics visualization for latency predictor.
     
@@ -897,6 +959,9 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         train_data: Training dataset for analysis
         val_data: Validation dataset for analysis  
         final_model_dir: Directory to save plots
+        num_train: Training iteration number
+        new_data_eval_results: Optional dict with evaluation results on newly collected online data only
+            Expected keys: 'predictions', 'targets', 'loss', 'mae', 'r2'
     
     Returns:
         Path to saved plot file
@@ -923,6 +988,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     # ============================================================
     
     # 1. Save prediction accuracy scatter data (actual vs predicted)
+    # ALL DATA (validation set from entire dataset)
     if predictor.latest_predictions is not None and predictor.latest_targets is not None:
         scatter_df = pd.DataFrame({
             'actual_ttft': predictor.latest_targets,
@@ -930,14 +996,36 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         })
         scatter_csv_path = os.path.join(final_model_dir, f'prediction_accuracy_data-{num_train}.csv')
         scatter_df.to_csv(scatter_csv_path, index=False)
-        logger.info(f"Saved prediction accuracy data to {scatter_csv_path}")
+        logger.info(f"Saved prediction accuracy data (ALL) to {scatter_csv_path}")
+    
+    # 1b. Save prediction accuracy for NEW DATA ONLY (newly collected online data)
+    if new_data_eval_results is not None:
+        new_scatter_df = pd.DataFrame({
+            'actual_ttft': new_data_eval_results['targets'],
+            'predicted_ttft': new_data_eval_results['predictions']
+        })
+        new_scatter_csv_path = os.path.join(final_model_dir, f'prediction_accuracy_data_NEW-{num_train}.csv')
+        new_scatter_df.to_csv(new_scatter_csv_path, index=False)
+        logger.info(f"Saved prediction accuracy data (NEW online data only) to {new_scatter_csv_path}")
     
     # 2. Save loss data (training and validation loss per epoch)
     if predictor.training_losses:
+        num_epochs = len(predictor.training_losses)
+        # Ensure validation losses match training losses length
+        if predictor.validation_losses and len(predictor.validation_losses) == num_epochs:
+            val_losses = predictor.validation_losses
+        else:
+            # Pad with None if lengths don't match or validation_losses is empty
+            val_losses = [None] * num_epochs
+            if predictor.validation_losses:
+                # Copy available validation losses
+                for i in range(min(len(predictor.validation_losses), num_epochs)):
+                    val_losses[i] = predictor.validation_losses[i]
+        
         loss_df = pd.DataFrame({
-            'epoch': list(range(len(predictor.training_losses))),
+            'epoch': list(range(num_epochs)),
             'train_loss': predictor.training_losses,
-            'val_loss': predictor.validation_losses if predictor.validation_losses else [None] * len(predictor.training_losses)
+            'val_loss': val_losses
         })
         loss_csv_path = os.path.join(final_model_dir, f'training_loss_data-{num_train}.csv')
         loss_df.to_csv(loss_csv_path, index=False)
@@ -945,12 +1033,26 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     
     # 3. Save additional metrics for comprehensive analysis
     if predictor.validation_mae:
+        num_epochs = len(predictor.validation_mae)
+        
+        # Helper function to pad/truncate list to match length
+        def match_length(lst, target_len):
+            if not lst:
+                return [None] * target_len
+            if len(lst) == target_len:
+                return lst
+            # Pad with None or truncate
+            result = [None] * target_len
+            for i in range(min(len(lst), target_len)):
+                result[i] = lst[i]
+            return result
+        
         metrics_df = pd.DataFrame({
-            'epoch': list(range(len(predictor.validation_mae))),
+            'epoch': list(range(num_epochs)),
             'mae': predictor.validation_mae,
-            'r2': predictor.validation_r2 if predictor.validation_r2 else [None] * len(predictor.validation_mae),
-            'routing_accuracy': predictor.routing_accuracies if predictor.routing_accuracies else [None] * len(predictor.validation_mae),
-            'learning_rate': predictor.learning_rates if predictor.learning_rates else [None] * len(predictor.validation_mae)
+            'r2': match_length(predictor.validation_r2, num_epochs),
+            'routing_accuracy': match_length(predictor.routing_accuracies, num_epochs),
+            'learning_rate': match_length(predictor.learning_rates, num_epochs)
         })
         metrics_csv_path = os.path.join(final_model_dir, f'training_metrics_data-{num_train}.csv')
         metrics_df.to_csv(metrics_csv_path, index=False)
@@ -960,7 +1062,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     # CREATE INDIVIDUAL PLOTS
     # ============================================================
     
-    # INDIVIDUAL PLOT 1: Prediction Accuracy Scatter
+    # INDIVIDUAL PLOT 1a: Prediction Accuracy Scatter (ALL DATA)
     if predictor.latest_predictions is not None and predictor.latest_targets is not None:
         fig_scatter = plt.figure(figsize=(10, 8))
         predictions = predictor.latest_predictions
@@ -976,7 +1078,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         
         plt.xlabel(f'Actual {latency_metric} (ms)', fontsize=12)
         plt.ylabel(f'Predicted {latency_metric} (ms)', fontsize=12)
-        plt.title(f'{latency_metric} Prediction Accuracy on Evaluation Set (n={val_size})', fontsize=14, fontweight='bold')
+        plt.title(f'{latency_metric} Prediction Accuracy on Evaluation Set - ALL DATA (n={val_size})', fontsize=14, fontweight='bold')
         plt.legend(fontsize=10)
         plt.grid(True, alpha=0.3)
         
@@ -1000,7 +1102,51 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         scatter_pdf_path = os.path.join(final_model_dir, f'prediction_accuracy_scatter-{num_train}.pdf')
         plt.savefig(scatter_pdf_path, dpi=150, bbox_inches='tight')
         plt.close()
-        logger.info(f"Saved individual prediction accuracy scatter plot: {scatter_pdf_path}")
+        logger.info(f"Saved individual prediction accuracy scatter plot (ALL): {scatter_pdf_path}")
+    
+    # INDIVIDUAL PLOT 1b: Prediction Accuracy Scatter (NEW ONLINE DATA ONLY)
+    if new_data_eval_results is not None:
+        fig_scatter_new = plt.figure(figsize=(10, 8))
+        new_predictions = new_data_eval_results['predictions']
+        new_targets = new_data_eval_results['targets']
+        new_size = len(new_targets)
+        
+        plt.scatter(new_targets, new_predictions, alpha=0.6, s=35, color='orange', edgecolors='black', linewidth=0.5)
+        
+        # Perfect prediction line
+        min_val = min(min(new_targets), min(new_predictions))
+        max_val = max(max(new_targets), max(new_predictions))
+        plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2,
+                label='Perfect Prediction')
+        
+        plt.xlabel(f'Actual {latency_metric} (ms)', fontsize=12)
+        plt.ylabel(f'Predicted {latency_metric} (ms)', fontsize=12)
+        plt.title(f'{latency_metric} Prediction Accuracy - NEW ONLINE DATA ONLY (n={new_size})', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        # Add correlation and metrics
+        corr_new = np.corrcoef(new_targets, new_predictions)[0, 1]
+        mae_new = new_data_eval_results['mae']
+        r2_new = new_data_eval_results['r2']
+        mse_new = mean_squared_error(new_targets, new_predictions)
+        rmse_new = np.sqrt(mse_new)
+        
+        stats_text = f'Correlation: {corr_new:.3f}\n'
+        stats_text += f'R²: {r2_new:.3f}\n'
+        stats_text += f'MAE: {mae_new:.3f}\n'
+        stats_text += f'RMSE: {rmse_new:.3f}\n'
+        stats_text += f'[NEW data only]'
+        
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                verticalalignment='top', fontsize=11,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout()
+        scatter_new_pdf_path = os.path.join(final_model_dir, f'prediction_accuracy_scatter_NEW-{num_train}.pdf')
+        plt.savefig(scatter_new_pdf_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved individual prediction accuracy scatter plot (NEW online data only): {scatter_new_pdf_path}")
     
     # INDIVIDUAL PLOT 2: Prediction Loss
     if predictor.training_losses:
@@ -1009,8 +1155,13 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         
         plt.plot(epochs, predictor.training_losses, 'b-', linewidth=2, marker='o', 
                 markersize=4, label='Training Loss')
-        if predictor.validation_losses:
+        if predictor.validation_losses and len(predictor.validation_losses) == len(predictor.training_losses):
             plt.plot(epochs, predictor.validation_losses, 'r-', linewidth=2, marker='s',
+                    markersize=4, label='Validation Loss')
+        elif predictor.validation_losses:
+            # Validation losses have different length - plot with their own x-axis
+            val_epochs = list(range(len(predictor.validation_losses)))
+            plt.plot(val_epochs, predictor.validation_losses, 'r-', linewidth=2, marker='s',
                     markersize=4, label='Validation Loss')
         
         plt.title(f'{latency_metric} Prediction Loss (MSE)', fontsize=14, fontweight='bold')
@@ -1057,9 +1208,12 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     # 1. Training Loss
     plt.subplot(3, 4, 1)
     if predictor.training_losses:
-        plt.plot(predictor.training_losses, 'b-', linewidth=2, label='Training Loss')
+        train_epochs = list(range(len(predictor.training_losses)))
+        plt.plot(train_epochs, predictor.training_losses, 'b-', linewidth=2, label='Training Loss')
         if predictor.validation_losses:
-            plt.plot(predictor.validation_losses, 'r-', linewidth=2, label='Validation Loss')
+            # Plot validation with its own x-axis to handle different lengths
+            val_epochs = list(range(len(predictor.validation_losses)))
+            plt.plot(val_epochs, predictor.validation_losses, 'r-', linewidth=2, label='Validation Loss')
         plt.title(f'{latency_metric} Prediction Loss')
         plt.xlabel('Epoch')
         plt.ylabel('MSE Loss')
@@ -1290,12 +1444,17 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
         train_loss_norm = (train_loss_norm - train_loss_norm.min()) / (train_loss_norm.max() - train_loss_norm.min() + 1e-8)
         val_loss_norm = (val_loss_norm - val_loss_norm.min()) / (val_loss_norm.max() - val_loss_norm.min() + 1e-8)
         
-        plt.plot(train_loss_norm, label='Training Loss', alpha=0.7)
-        plt.plot(val_loss_norm, label='Validation Loss', alpha=0.7)
+        # Plot with explicit x-axis to handle different lengths
+        train_epochs = np.arange(len(train_loss_norm))
+        val_epochs = np.arange(len(val_loss_norm))
+        
+        plt.plot(train_epochs, train_loss_norm, label='Training Loss', alpha=0.7)
+        plt.plot(val_epochs, val_loss_norm, label='Validation Loss', alpha=0.7)
         
         if predictor.routing_accuracies:
             acc_norm = np.array(predictor.routing_accuracies)
-            plt.plot(acc_norm, label='Routing Accuracy', alpha=0.7)
+            acc_epochs = np.arange(len(acc_norm))
+            plt.plot(acc_epochs, acc_norm, label='Routing Accuracy', alpha=0.7)
         
         plt.title('Learning Curves (Normalized)')
         plt.xlabel('Epoch')
@@ -1375,6 +1534,14 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
             summary_text += "Moderate Fit\n"
         else:
             summary_text += "Poor Fit\n"
+    
+    # Add NEW data performance if available
+    if new_data_eval_results is not None:
+        summary_text += "\n" + "-"*18 + "\n"
+        summary_text += "NEW DATA ONLY:\n"
+        summary_text += f"MAE: {new_data_eval_results['mae']:.4f}\n"
+        summary_text += f"R²: {new_data_eval_results['r2']:.4f}\n"
+        summary_text += f"n={len(new_data_eval_results['targets'])}\n"
     
     plt.text(0.1, 0.9, summary_text, transform=plt.gca().transAxes, 
             fontsize=10, verticalalignment='top', fontfamily='monospace',

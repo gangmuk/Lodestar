@@ -581,18 +581,8 @@ class DataEncoder:
             if pod_id in pod_data:
                 pod_features = pod_data[pod_id]
                 
-                # Hardcoded feature assignments (matching ALL_NUMERIC_FEATURES order)
-                if 'inflight_requests' in pod_features:
-                    all_features_array[:, pod_idx, 0] = pod_features['inflight_requests'].fillna(0)
-                if 'gpu_kv_cache' in pod_features:
-                    all_features_array[:, pod_idx, 1] = pod_features['gpu_kv_cache'].fillna(0)
-                if 'cpu_kv_cache' in pod_features:
-                    all_features_array[:, pod_idx, 2] = pod_features['cpu_kv_cache'].fillna(0)
-                if 'running_requests' in pod_features:
-                    all_features_array[:, pod_idx, 3] = pod_features['running_requests'].fillna(0)
-                if 'waiting_requests' in pod_features:
-                    all_features_array[:, pod_idx, 4] = pod_features['waiting_requests'].fillna(0)
-                # Assign dynamically based on ALL_NUMERIC_FEATURES order
+                # Assign features dynamically based on ALL_NUMERIC_FEATURES order
+                # This correctly handles feature exclusion by adjusting indices
                 for feat_index, feat_name in enumerate(ALL_NUMERIC_FEATURES):
                     if feat_name in pod_features:
                         all_features_array[:, pod_idx, feat_index] = pod_features[feat_name].fillna(0)
@@ -712,6 +702,7 @@ class DataEncoder:
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
     
     def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS):
+        logger.info(f"prepare_for_encoding received request_features_train: {request_features_train}")
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
         
@@ -721,10 +712,10 @@ class DataEncoder:
         if include_gpu_features:
             # Use fixed size from utils.GPU_MODEL_TO_ENCODE to ensure consistency across training/inference
             self.num_gpu_types = len(utils.GPU_MODEL_TO_ENCODE)
-            logger.info(f"✅ GPU one-hot encoding ENABLED: {self.num_gpu_types} GPU types")
+            logger.debug(f"✅ GPU one-hot encoding ENABLED: {self.num_gpu_types} GPU types")
         else:
             self.num_gpu_types = 0
-            logger.warning(f"⚠️  GPU one-hot encoding DISABLED (INCLUDE_GPU_FEATURES=0)")
+            logger.debug(f"⚠️  GPU one-hot encoding DISABLED (INCLUDE_GPU_FEATURES=0)")
         extract_pod_columns_start = time.time()
         pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids)
         overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
@@ -838,22 +829,21 @@ class DataEncoder:
     
     def extract_request_features(self, processed_df, request_features_train, n_samples):
         request_features_start_time = time.time()
-        
+
         if request_features_train:
-            # Use hardcoded indices instead of column name lookup
-            if len(request_features_train) == 3:  # input_tokens, output_tokens, total_tokens
-                # Hardcode indices [2, 3, 4] for maximum speed
-                request_features = processed_df.values[:, 2:5].astype(np.float32, copy=False)
-            else:
-                # # Fallback for different feature counts
-                # request_features = processed_df[request_features_train].values.astype(np.float32, copy=False)
-                logger.error(f"Unexpected request features count: {len(request_features_train)}, expected 3")
+            # Extract request features by column names (supports variable length)
+            try:
+                request_features = processed_df[request_features_train].values.astype(np.float32, copy=False)
+                logger.debug(f"Extracted {len(request_features_train)} request features: {request_features_train}")
+            except KeyError as e:
+                logger.error(f"Missing request feature column: {e}")
+                logger.error(f"Available columns: {list(processed_df.columns)}")
+                logger.error(f"Requested features: {request_features_train}")
                 assert False
         else:
-            logger.error("No request features provided for inference, using empty array")
-            # request_features = np.zeros((n_samples, 0), dtype=np.float32)
-            assert False
-        
+            logger.warning("No request features provided for inference, using empty array")
+            request_features = np.zeros((n_samples, 0), dtype=np.float32)
+
         request_features_overhead = time.time() - request_features_start_time
         return request_features, request_features_overhead
 
@@ -893,45 +883,86 @@ class DataEncoder:
 
         return actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency
 
-    def save_processed_data(self, processed_data):
+    def save_processed_data(self, processed_data, max_samples_for_reference=10000000):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_dir, exist_ok=True)
-           
+
+        # Randomly sample max_samples_for_reference samples for explainability reference
+        n_samples = len(processed_data['actions'])
+        if n_samples > max_samples_for_reference:
+            # Randomly sample indices
+            np.random.seed(42)  # For reproducibility
+            sample_indices = np.random.choice(n_samples, max_samples_for_reference, replace=False)
+            sample_indices = np.sort(sample_indices)  # Sort for better memory access
+
+            logger.info(f"Sampling {max_samples_for_reference} out of {n_samples} samples for reference dataset (explainability)")
+
+            def sample_array(arr, indices):
+                if arr.ndim == 1:
+                    return arr[indices]
+                elif arr.ndim == 2:
+                    return arr[indices, :]
+                elif arr.ndim == 3:
+                    return arr[indices, :, :]
+                else:
+                    return arr[indices]
+
+        else:
+            sample_indices = None
+            logger.info(f"Saving all {n_samples} samples (fewer than max_samples_for_reference)")
+
         # Create a PyTorch tensor dataset
         tensor_data = {
             # Basic tensors
-            'pod_features': torch.FloatTensor(processed_data['pod_features']),
-            'kv_hit_ratios': torch.FloatTensor(processed_data['kv_hit_ratios']),
-            'request_features': torch.FloatTensor(processed_data['request_features']),
-            'actions': torch.LongTensor(processed_data['actions']),
-            'rewards': torch.FloatTensor(processed_data['rewards']),
-            'ttft': torch.FloatTensor(processed_data['ttft']),
-            'avg_tpot': torch.FloatTensor(processed_data['avg_tpot']),
-            'e2e_latency': torch.FloatTensor(processed_data['e2e_latency']),
-            # Enhanced features for transformer
-            'positional_encodings': torch.FloatTensor(processed_data['positional_encodings']),
-            'pod_features_with_staleness': torch.FloatTensor(processed_data['pod_features_with_staleness']),
+            'pod_features': torch.FloatTensor(
+                processed_data['pod_features'][sample_indices] if sample_indices is not None else processed_data['pod_features']
+            ),
+            'kv_hit_ratios': torch.FloatTensor(
+                processed_data['kv_hit_ratios'][sample_indices] if sample_indices is not None else processed_data['kv_hit_ratios']
+            ),
+            'request_features': torch.FloatTensor(
+                processed_data['request_features'][sample_indices] if sample_indices is not None else processed_data['request_features']
+            ),
+            'actions': torch.LongTensor(
+                processed_data['actions'][sample_indices] if sample_indices is not None else processed_data['actions']
+            ),
+            # 'rewards': torch.FloatTensor(processed_data['rewards']),
+            'ttft': torch.FloatTensor(
+                processed_data['ttft'][sample_indices] if sample_indices is not None else processed_data['ttft']
+            ),
+            'avg_tpot': torch.FloatTensor(
+                processed_data['avg_tpot'][sample_indices] if sample_indices is not None else processed_data['avg_tpot']
+            ),
+            'e2e_latency': torch.FloatTensor(
+                processed_data['e2e_latency'][sample_indices] if sample_indices is not None else processed_data['e2e_latency']
+            ),
             
+            'pod_features_with_staleness': torch.FloatTensor(
+                processed_data['pod_features_with_staleness'][sample_indices] if sample_indices is not None else processed_data['pod_features_with_staleness']
+            ),
+            
+            # Enhanced features for transformer
+            # 'positional_encodings': torch.FloatTensor(processed_data['positional_encodings']),
             # Cross-attention components
-            'query': torch.FloatTensor(processed_data['cross_attention_inputs']['query']),
-            'key_value': torch.FloatTensor(processed_data['cross_attention_inputs']['key_value']),
+            # 'query': torch.FloatTensor(processed_data['cross_attention_inputs']['query']),
+            # 'key_value': torch.FloatTensor(processed_data['cross_attention_inputs']['key_value']),
         }
         
         # Add interaction features if available
         if processed_data['interaction_features'] is not None:
-            tensor_data['interaction_features'] = torch.FloatTensor(processed_data['interaction_features'])
-            
+            tensor_data['interaction_features'] = torch.FloatTensor(
+                processed_data['interaction_features'][sample_indices] if sample_indices is not None else processed_data['interaction_features']
+            )
+
         # Add additional reward components if available
         if 'ttft_rewards' in processed_data and processed_data['ttft_rewards'] is not None:
-            tensor_data['ttft_rewards'] = torch.FloatTensor(processed_data['ttft_rewards'])
+            tensor_data['ttft_rewards'] = torch.FloatTensor(
+                processed_data['ttft_rewards'][sample_indices] if sample_indices is not None else processed_data['ttft_rewards']
+            )
         if 'tpot_rewards' in processed_data and processed_data['tpot_rewards'] is not None:
-            tensor_data['tpot_rewards'] = torch.FloatTensor(processed_data['tpot_rewards'])
-        if 'ttft' in processed_data and processed_data['ttft'] is not None:
-            tensor_data['ttft'] = torch.FloatTensor(processed_data['ttft'])
-        if 'avg_tpot' in processed_data and processed_data['avg_tpot'] is not None:
-            tensor_data['avg_tpot'] = torch.FloatTensor(processed_data['avg_tpot'])
-        if 'e2e_latency' in processed_data and processed_data['e2e_latency'] is not None:
-            tensor_data['e2e_latency'] = torch.FloatTensor(processed_data['e2e_latency'])
+            tensor_data['tpot_rewards'] = torch.FloatTensor(
+                processed_data['tpot_rewards'][sample_indices] if sample_indices is not None else processed_data['tpot_rewards']
+            )
         # global_tensor_path = "global_tensor_dataset.pt"
         # self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
         torch.save(tensor_data, os.path.join(self.output_dir, "tensor_dataset.pt"))
@@ -948,8 +979,13 @@ class DataEncoder:
             logger.debug("📝 Stored reference tensor data for future validation")
 
 
+        # Update metadata to reflect sampled dataset size
+        sampled_dataset_size = max_samples_for_reference if sample_indices is not None else n_samples
+
         metadata = {
-            'dataset_size': len(processed_data['actions']),
+            'dataset_size': sampled_dataset_size,
+            'original_dataset_size': n_samples,
+            'sampling_applied': sample_indices is not None,
             'num_pods': len(processed_data['pod_ids']),
             # Names for correct XAI labeling
             'pod_features_list': processed_data.get('pod_features_list', []),
@@ -964,13 +1000,13 @@ class DataEncoder:
                 'positional_encodings': processed_data['positional_encodings'].shape[2],
             },
             'reward_statistics': {
-                'mean': float(np.mean(processed_data['rewards'])),
-                'std': float(np.std(processed_data['rewards'])),
-                'min': float(np.min(processed_data['rewards'])),
-                'max': float(np.max(processed_data['rewards'])),
+                'mean': float(np.mean(processed_data['rewards'][sample_indices] if sample_indices is not None else processed_data['rewards'])),
+                'std': float(np.std(processed_data['rewards'][sample_indices] if sample_indices is not None else processed_data['rewards'])),
+                'min': float(np.min(processed_data['rewards'][sample_indices] if sample_indices is not None else processed_data['rewards'])),
+                'max': float(np.max(processed_data['rewards'][sample_indices] if sample_indices is not None else processed_data['rewards'])),
             },
             'action_distribution': {
-                str(i): int(np.sum(processed_data['actions'] == i)) 
+                str(i): int(np.sum((processed_data['actions'][sample_indices] if sample_indices is not None else processed_data['actions']) == i))
                 for i in range(len(processed_data['pod_ids']))
             },
             'timestamp': timestamp,
@@ -1093,6 +1129,7 @@ class DataEncoder:
 
 
 def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_features_train, HYPERPARAMETERS):
+    logger.info(f"encode_for_train received request_features_train: {request_features_train}")
     if len(processed_df) > 0:
         logger.info("First row selected_pod value: " + str(processed_df.iloc[0].get('selected_pod', 'N/A')))
     # Check if data contains the expected column pattern
@@ -1100,7 +1137,7 @@ def encode_for_train(sorted_all_pod_ids, processed_df, output_dir, request_featu
     if not pod_cols:
         logger.warning("No columns with 'pod_' prefix or '-pod' pattern found")
 
-    assert processed_df['selected_pod'].iloc[0] in sorted_all_pod_ids
+    assert processed_df['selected_pod'].iloc[0] in sorted_all_pod_ids, f"Selected pod {processed_df['selected_pod'].iloc[0]} not in sorted_all_pod_ids {sorted_all_pod_ids}"
 
     # Basic data quality checks
     logger.info("Performing data quality checks...")

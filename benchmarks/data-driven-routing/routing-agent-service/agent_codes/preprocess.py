@@ -429,7 +429,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
     
     # Process pod features for all rows at once
-    logger.info(f"** hyperparameters: {hyperparameters}")
+    logger.debug(f"** hyperparameters: {hyperparameters}")
     excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
     if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
         excluded_pod_features = set()

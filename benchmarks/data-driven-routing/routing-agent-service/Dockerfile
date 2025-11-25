@@ -33,15 +33,36 @@ COPY start.sh .
 # COPY training_data/SharingRatio9%/all/final_model-data-processed final_model
 # COPY training_data/SharingRatio71%/all/final_model-data-processed-linear_simple-lr_0.001-ttft_weight_2.0-ttftslo_1000-avgtpotslo_50 final_model
 
-COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft final_model/GPU-L3c
-COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data_GPU-L3c.csv 
+################################################################################################################
+#### GPU-L3c, NVIDIA-L20
+COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft-20251101_205621 final_model/GPU-L3c
+COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data_GPU-L3c.csv
 
+#### NVIDIA-A30
 # COPY training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743 final_model/NVIDIA-A30
-COPY training_data/A30-8/final_model-latency_predictor_ttft-20251029_231330 final_model/NVIDIA-A30
-COPY training_data/A30-8/data-processed.csv offline_training_data_NVIDIA-A30.csv 
+COPY training_data/A30-8/final_model-latency_predictor_ttft-20251101_205321 final_model/NVIDIA-A30
+COPY training_data/A30-8/data-processed.csv offline_training_data_NVIDIA-A30.csv
 
-COPY workload-and-experiment_results/for_paper/hetero/final_model-latency_predictor_ttft-20251029_034844 final_model/hetero
-COPY workload-and-experiment_results/for_paper/hetero/data-processed.csv offline_training_data_hetero.csv 
+#### hetero
+COPY training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60 final_model/hetero
+COPY training_data/hetero/data-processed.csv offline_training_data_hetero.csv
+
+#### NVIDIA-A10
+COPY workload-and-experiment_results/NVIDIA-A10/MixedSharingRatio10_30_50_70%/rps5/final_model-latency_predictor_ttft-20251120_173020 final_model/NVIDIA-A10/MixedSharingRatio10_30_50_70%
+COPY workload-and-experiment_results/NVIDIA-A10/MixedSharingRatio10_30_50_70%/rps5/data-processed.csv offline_training_data_NVIDIA-A10_MixedSharingRatio10_30_50_70%.csv
+
+COPY workload-and-experiment_results/NVIDIA-A10/SharingRatio71%/rps6.5/final_model-latency_predictor_ttft-20251120_172727 final_model/NVIDIA-A10/SharingRatio71%
+COPY workload-and-experiment_results/NVIDIA-A10/SharingRatio71%/rps6.5/data-processed.csv offline_training_data_NVIDIA-A10_SharingRatio71%.csv
+
+# CRITICAL FIX: Copy model directly to /app/final_model/NVIDIA-A10/ (not a subdirectory)
+# to match the path expected by routing_agent_service.py
+# COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-0 final_model/NVIDIA-A10
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-without-output final_model/NVIDIA-A10/
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/data-processed.csv offline_training_data_NVIDIA-A10_maxTokens_1-maxTokensStd_0.csv
+
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-with-output final_model/NVIDIA-A10/with-output_tokens
+
+################################################################################################################
 
 COPY Dockerfile /app/Dockerfile
 RUN chmod +x /app/start.sh

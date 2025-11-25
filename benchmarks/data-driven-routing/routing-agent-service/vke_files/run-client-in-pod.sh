@@ -7,72 +7,83 @@ set -e
 # Configuration
 CLIENT_SERVICE_POD_NAME=client-service
 CLIENT_SERVICE_CONTAINER_NAME=client
-# k8s_cluster="vke"
-k8s_cluster="aws"
-target_gpu="NVIDIA-L40S"
+k8s_cluster="vke"
+# k8s_cluster="aws"
+# target_gpu="NVIDIA-L40S"
+# target_gpu="NVIDIA-A10"
 # Define experiment configurations
 # Format: "routing_policy|workload_name|target_gpu|rps|total_num_episodes"
+
+target_gpu="NVIDIA-A10"
+
 experiment_configs=(
     ## test
     # "latency_predictor|hundred_request|${target_gpu}|1|1"
 
-    ## SharingRatio71%, total number of requests: 1500
-    # "latency_predictor|SharingRatio71%|${target_gpu}|10|4"
-    # "prefix_cache_1|SharingRatio71%|${target_gpu}|10|4"
-    # "least-latency|SharingRatio71%|${target_gpu}|10|4"
-    # "least-request|SharingRatio71%|${target_gpu}|10|4"
-    # "least-kv-cache|SharingRatio71%|${target_gpu}|10|4"
+    # # ## SharingRatio71%, total number of requests: 1500
+    "latency_predictor|SharingRatio71%|${target_gpu}|8|7"
+    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|3"
+    # "least_latency|SharingRatio71%|${target_gpu}|8|2"
+    # "least_request|SharingRatio71%|${target_gpu}|8|2"
+    # "least_kv_cache|SharingRatio71%|${target_gpu}|8|2"
+    # "random|SharingRatio71%|${target_gpu}|8|2"
 
-    # ## SharingRatio47%, total number of requests: 2000
-    # "latency_predictor|SharingRatio47%|${target_gpu}|10|4"
-    # "prefix_cache_1|SharingRatio47%|${target_gpu}|10|4"
-    # "least-latency|SharingRatio47%|${target_gpu}|10|4"
-    # "least-request|SharingRatio47%|${target_gpu}|10|4"
-    # "least-kv-cache|SharingRatio47%|${target_gpu}|10|4"
+    # # # # # ## SharingRatio47%, total number of requests: 2000
+    "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
+    # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
+    # "least_latency|SharingRatio47%|${target_gpu}|6|1"
+    # "least_request|SharingRatio47%|${target_gpu}|6|1"
+    # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
+    # "random|SharingRatio47%|${target_gpu}|6|1"
 
-    # ## SharingRatio28%, total number of requests: 2000
-    # "latency_predictor|SharingRatio28%|${target_gpu}|10|4"
-    # "prefix_cache_1|SharingRatio28%|${target_gpu}|10|4"
-    # "least-latency|SharingRatio28%|${target_gpu}|10|4"
-    # "least-request|SharingRatio28%|${target_gpu}|10|4"
-    # "least-kv-cache|SharingRatio28%|${target_gpu}|10|4"
+    # # # # ## SharingRatio28%, total number of requests: 2000
+    "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
+    # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
+    # "least_latency|SharingRatio28%|${target_gpu}|5|1"
+    # # "least_request|SharingRatio28%|${target_gpu}|5|1"
+    # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
+    # "random|SharingRatio28%|${target_gpu}|5|1"
 
-    # ## SharingRatio9%, total number of requests: 2000
-    # "latency_predictor|SharingRatio9%|${target_gpu}|10|4"
-    # "prefix_cache_1|SharingRatio9%|${target_gpu}|10|4"
-    # "least-latency|SharingRatio9%|${target_gpu}|10|4"
-    # "least-request|SharingRatio9%|${target_gpu}|10|4"
-    # "least-kv-cache|SharingRatio9%|${target_gpu}|10|4"
+    # # # # ## SharingRatio9%, total number of requests: 2000
+    "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
+    # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
+    # "least_latency|SharingRatio9%|${target_gpu}|5|1"
+    # "least_request|SharingRatio9%|${target_gpu}|5|1"
+    # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
+    # "random|SharingRatio9%|${target_gpu}|5|1"
 
-    ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
-    # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
-    # "prefix_cache_2|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
-    # "least-latency|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
-    # "least-request|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
-    # "least-kv-cache|MixedSharingRatio10_30_50_70%|${target_gpu}|12|4"
+    # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
+    # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
 )
 
 INCLUDE_GPU_FEATURES=0
-LOAD_PRETRAINED_MODEL=0
-MAX_TOTAL_DATA="20000"
-MIN_NUM_TRAINING_DATA="4000" # "4000"
-MIN_NUM_UPDATE_DATA="1000" # "2000"
+LOAD_PRETRAINED_MODEL=1
 
-EXPLORATION_RATE="0.1"
+ENABLE_ONLINE_LEARNING=1
+MAX_TOTAL_DATA=40000
+MIN_NUM_TRAINING_DATA=2000
+MIN_NUM_UPDATE_DATA=1000
+EXPLORATION_ENABLED=0
+EXPLORATION_RATE=0.1
+
+max_input_tokens=8000
+override_workload_output_length=1
+max_tokens=1
+max_tokens_std=0
+force_exact_output_tokens=1
+
 ship_model=0
-ship_code=0
+ship_code=1
 ship_offline_training_data=0
 
-max_input_tokens=1000000
-max_tokens=10
-max_tokens_std=10
-
-ENABLE_ONLINE_LEARNING="1"
-ENABLE_FLUSH="1"
-FLUSH_PERIOD="10"
-MIN_NUM_LOG_MESSAGES_TO_FLUSH="100"
-EXPLORATION_ENABLED="0"
+ENABLE_FLUSH=1
+FLUSH_PERIOD=10
+MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
 
 
 # Configuration for the client
@@ -106,6 +117,7 @@ done
 echo "========================================="
 
 for experiment_idx in $(seq 0 $((num_experiments-1))); do
+    experiment_start_time=$(date +%s)
     IFS='|' read -r routing_policy workload_name target_gpu rps total_num_episodes <<< "${experiment_configs[$experiment_idx]}"
     echo ""
     echo "========================================="
@@ -129,8 +141,11 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         final_model_dir="../training_data/scalable_rl_agent/final_model"
     else
         if [ "${target_gpu}" == "GPU-L3c" ] || [ "${target_gpu}" == "NVIDIA-L40" ] || [ "${target_gpu}" == "NVIDIA-L40S" ]; then
-            final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
-        elif [ "${target_gpu}" == "NVIDIA-A30" ] || [ "${target_gpu}" == "NVIDIA-L4" ]; then
+            # final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
+
+            final_model_dir="../workload-and-experiment_results/GPU-L3c/SharingRatio71%/rps8/final_model-latency_predictor_ttft-20251119_192610"
+
+        elif [ "${target_gpu}" == "NVIDIA-A30" ] || [ "${target_gpu}" == "NVIDIA-L4" ] || [ "${target_gpu}" == "NVIDIA-A10" ]; then
             final_model_dir="../training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743"
         elif [ "${target_gpu}" == "hetero" ]; then
             # final_model_dir="../training_data/hetero/used-in-paper/final_model-latency_predictor_ttft-20251029_034844"
@@ -142,29 +157,72 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         fi
     fi
 
-    if [ "${ship_model}" == "1" ] && [ ! -d "${final_model_dir}" ]; then
+
+    if [ "${ship_model}" == "1" ]; then
+        if [ ! -d "${final_model_dir}" ]; then
         echo "Error: Final model directory does not exist: ${final_model_dir}"
-        echo "Exiting... 4"
-        exit 1
+            echo "Exiting... 4"
+            exit 1
+        fi
+
+        if [ ! -f "${final_model_dir}/model_config.json" ]; then
+            echo "Error: model_config.json does not exist: ${final_model_dir}/model_config.json"
+            echo "Exiting... 5"
+            exit 1
+        fi
+
+        if [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
+            echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
+            echo "Exiting... 6"
+            exit 1
+        fi
+
+        if [ ! -f "${final_model_dir}/feature_normalization_statistics.csv" ]; then
+            echo "Error: feature_normalization_statistics.csv does not exist: ${final_model_dir}/feature_normalization_statistics.csv"
+            echo "Exiting... 7"
+            exit 1
+        fi
     fi
-    if [ "${ship_model}" == "1" ] && [ ! -f "${final_model_dir}/model_config.json" ]; then
-        echo "Error: model_config.json does not exist: ${final_model_dir}/model_config.json"
-        echo "Exiting... 5"
-        exit 1
+
+
+    workload_path_in_pod="/app/workload/${workload_name}/workload.jsonl"
+    workload_path_in_host="../workload-and-experiment_results/${workload_name}/workload.jsonl"
+    output_dir="/app/output/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
+    output_jsonl_path="${output_dir}/output.jsonl"
+
+    # Create local experiment result output directory
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    experiment_result_output_dir="../workload-and-experiment_results/${target_gpu}/maxTokens_${max_tokens}-maxTokensStd_${max_tokens_std}/${workload_name}/rps${rps}/${subAlgorithm}"
+    if [ "${subAlgorithm}" == "rl_naive" ]; then
+        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+        hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
+        hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
+        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-total_num_episodes${total_num_episodes}"
+        experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
+    elif [ "${subAlgorithm}" == "latency_predictor" ]; then
+        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+        prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
+        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+        # postfix="trained_on_${trained_model_data_name}_${used_data_name}"
+        # postfix="trained_on_${used_data_name}"
+        # experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}"
+        experiment_result_output_dir="${experiment_result_output_dir}_ttft"
     fi
-    if [ "${ship_model}" == "1" ] && [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
-        echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
-        echo "Exiting... 6"
-        exit 1
+    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${postfix}-${timestamp}"
+
+    echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
+    if [ ! -d "${experiment_result_output_dir}" ]; then
+        mkdir -p "${experiment_result_output_dir}"
     fi
-    if [ "${ship_model}" == "1" ] && [ ! -f "${final_model_dir}/feature_normalization_statistics.csv" ]; then
-        echo "Error: feature_normalization_statistics.csv does not exist: ${final_model_dir}/feature_normalization_statistics.csv"
-        echo "Exiting... 7"
-        exit 1
-    fi
+
     echo "========================================="
-    echo "!!! workload_name: ${workload_name} !!!"
-    echo "!!! final_model_dir: ${final_model_dir} !!!"
+    echo "* workload_name: ${workload_name}"
+    echo "* target_gpu: ${target_gpu}"
+    echo "* rps: ${rps}"
+    echo "* total_num_episodes: ${total_num_episodes}"
+    echo "* final_model_dir: ${final_model_dir}"
+    echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
     echo "========================================="
 
     if [ "${routing_policy}" == "scalable_rl_agent" ]; then
@@ -210,7 +268,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env TARGET_GPU_MODEL=${target_gpu} \
         --env MAX_TOTAL_DATA=${MAX_TOTAL_DATA} \
         --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
-        --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL}
+        --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
+        --env WORKLOAD=${workload_name}
     
     echo "Starting to update k8s env for aibrix-gateway-plugins"
     python3 update_k8s_env.py \
@@ -223,6 +282,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env useRealRequest=1
         # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
+    sleep 2
+
     ship_start_time=$(date +%s)
     python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
     
@@ -232,17 +293,17 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     fi
     
     python kubectl_cp_from_host_to_pod.py async-client.py /app client-service default
-    python kubectl_cp_from_host_to_pod.py async-client-og.py /app client-service default
 
     ship_end_time=$(date +%s)
     ship_took=$((ship_end_time - ship_start_time))
     echo "* ship_all took: ${ship_took}s"
 
+    sleep 2
     python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
     python3 check_ready.py --deployment aibrix-gateway-plugins --namespace aibrix-system
     python3 check_ready.py --deployment routing-agent-service --namespace default
     python3 check_ready.py --deployment client-service --namespace default
-    sleep 5
+    sleep 2
 
     echo "========================================="
     echo "Running Client in K8s Pod"
@@ -256,6 +317,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     echo "total_num_episodes:  ${total_num_episodes}"
     echo "Max Tokens:          ${max_tokens}"
     echo "Max Tokens Std:      ${max_tokens_std}"
+    echo "Override Workload Output Length: ${override_workload_output_length}"
     echo "RPS:                 ${rps}"
     echo "========================================="
 
@@ -279,11 +341,6 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         exit 1
     }
 
-    workload_path_in_pod="/app/workload/${workload_name}/workload.jsonl"
-    workload_path_in_host="../workload-and-experiment_results/${workload_name}/workload.jsonl"
-    output_dir="/app/output/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
-    output_jsonl_path="${output_dir}/output.jsonl"
-
     # Create output directory in pod
     echo "Creating output directory in pod..."
     kubectl exec ${ACTUAL_POD} -c ${CLIENT_SERVICE_CONTAINER_NAME} -- mkdir -p ${output_dir}
@@ -297,30 +354,6 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         echo "Exiting... 9"
         exit 1
     }
-
-    # Create local experiment result output directory
-    timestamp=$(date +%Y%m%d_%H%M%S)
-    experiment_result_output_dir="../workload-and-experiment_results/${target_gpu}/${workload_name}/rps${rps}/${subAlgorithm}"
-    if [ "${subAlgorithm}" == "rl_naive" ]; then
-        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
-        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
-        hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
-        hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
-        postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-total_num_episodes${total_num_episodes}"
-        experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
-    elif [ "${subAlgorithm}" == "latency_predictor" ]; then
-        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
-        prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
-        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
-        postfix="trained_on_${trained_model_data_name}_${used_data_name}"
-        experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}"
-    fi
-    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${postfix}-${timestamp}"
-
-    echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
-    if [ ! -d "${experiment_result_output_dir}" ]; then
-        mkdir -p "${experiment_result_output_dir}"
-    fi
 
     echo "Starting log collection..."
     
@@ -368,12 +401,12 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     collect_logs_continuously "default" "routing-agent-service" "${experiment_result_output_dir}/all-routing-agent-service.log.txt" &
     pid_2=$!
     
-    # Start periodic checkpoint copying for scalable_rl_agent
-    if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
-        echo "Starting periodic checkpoint copying (every 5 minutes)..."
-        copy_checkpoints_periodically "${experiment_result_output_dir}" &
-        pid_checkpoint=$!
-    fi
+    # # Start periodic checkpoint copying for scalable_rl_agent
+    # if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+    #     echo "Starting periodic checkpoint copying (every 5 minutes)..."
+    #     copy_checkpoints_periodically "${experiment_result_output_dir}" &
+    #     pid_checkpoint=$!
+    # fi
 
     echo "Starting client in pod..."
     echo "Output will be saved to: ${output_dir}"
@@ -387,7 +420,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     # Run the client using kubectl exec
         # python3 /app/async-client.py \
     kubectl exec ${ACTUAL_POD} -c ${CLIENT_SERVICE_CONTAINER_NAME} -- \
-        python3 /app/async-client-og.py \
+        python3 /app/async-client.py \
             --workload_path ${workload_path_in_pod} \
             --model ${llm_model} \
             --endpoint http://${ipaddr}:${port} \
@@ -396,36 +429,24 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --routing_strategy ${routing} \
             --subAlgorithm ${subAlgorithm} \
             --max_tokens ${max_tokens} \
-            --max-tokens-std ${max_tokens_std} \
+            --max_tokens_std ${max_tokens_std} \
+            --override_workload_output_length ${override_workload_output_length} \
+            --force_exact_output_tokens ${force_exact_output_tokens} \
             --output_dir ${output_dir} \
-            --prompt-type chat \
+            --prompt_type chat \
             --rps ${rps} \
-            --poisson-arrivals \
-            --shuffle-requests \
+            --poisson_arrivals \
+            --shuffle_requests \
             --iterations ${total_num_episodes} \
             --streaming \
-            --max-input-tokens ${max_input_tokens} \
+            --max_input_tokens ${max_input_tokens} \
             2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
     sleep 5
     # kubectl rollout restart deployment llama-3-8b-instruct
 
-    # Copy final model
-    echo "Copying final_model from pod..."
-    python kubectl_cp_from_pod_to_host.py /app/final_model "${experiment_result_output_dir}/final_model" routing-agent-service default
-
-    # python kubectl_cp_from_pod_to_host.py /tmp/latency_metrics.log "${experiment_result_output_dir}/latency_metrics.log.txt" gateway-plugins aibrix-system
-
-    # Copy checkpoints (for scalable_rl_agent)
-    if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
-        checkpoint_ts=$(date +%Y%m%d_%H%M%S)
-        echo "Copying scalable RL agent checkpoints..."
-        python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${experiment_result_output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default || echo "⚠️  No checkpoints found (agent may not have trained enough steps)"
-    fi
-
     # Process logs
     cat ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt | grep "**@latency_metrics" | grep -v "infer:" > ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
-    python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv-processed.csv
     echo "* processed gateway log: ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv-processed.csv"
     echo "* all gateway log: ${experiment_result_output_dir}/all-aibrix-gateway-plugins.log.txt"
     echo "* filtered gateway log: ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv"
@@ -435,7 +456,30 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         echo "* checkpoints (periodic snapshots): ${experiment_result_output_dir}/checkpoints_*/"
         echo "* final checkpoint: ${experiment_result_output_dir}/checkpoints_${checkpoint_ts}/"
     fi
+
     python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
+
+    
+    # Copy final model
+    kubectl_cp_start_time=$(date +%s)
+    echo "Copying final_model from pod..."
+    # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default
+    python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default --skip-files "tensor_dataset.pt"
+    kubectl_cp_end_time=$(date +%s)
+    echo "* copying final_model took: $((end_time - start_time))s"
+
+    # it needs to be run after the final model is copied to the host
+    python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv --hyperparameters_file_path ${experiment_result_output_dir}/final_model/${target_gpu}/model_config.json
+
+    # python kubectl_cp_from_pod_to_host.py /tmp/latency_metrics.log "${experiment_result_output_dir}/latency_metrics.log.txt" gateway-plugins aibrix-system
+
+    # # Copy checkpoints (for scalable_rl_agent)
+    # if [ "${subAlgorithm}" == "scalable_rl_agent" ]; then
+    #     checkpoint_ts=$(date +%Y%m%d_%H%M%S)
+    #     echo "Copying scalable RL agent checkpoints..."
+    #     python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${experiment_result_output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default || echo "⚠️  No checkpoints found (agent may not have trained enough steps)"
+    # fi
+
     
     # Kill background processes
     kill $pid_1 2>/dev/null || true
@@ -445,12 +489,21 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     fi
 
     
+    experiment_end_time=$(date +%s)
     echo ""
     echo "========================================="
     echo "Experiment $((experiment_idx+1))/${num_experiments} completed!"
+    echo "* experiment took: $((experiment_end_time - experiment_start_time))s"
+    echo "* workload:            ${workload_name}"
+    echo "* routing strategy:    ${routing}"
+    echo "* sub-algorithm:       ${subAlgorithm}"
+    echo "* max tokens:          ${max_tokens}"
+    echo "* max tokens std:      ${max_tokens_std}"
+    echo "* override workload output length: ${override_workload_output_length}"
+    echo "* rps:                 ${rps}"
     echo "========================================="
 
-    kubectl rollout restart deployment client-service
-    kubectl rollout restart deployment routing-agent-service
-    kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
+    # kubectl rollout restart deployment client-service
+    # kubectl rollout restart deployment routing-agent-service
+    # kubectl rollout restart deployment aibrix-gateway-plugins -n aibrix-system
 done

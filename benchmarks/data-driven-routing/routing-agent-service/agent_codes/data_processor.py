@@ -22,9 +22,16 @@ import preprocess
 from logger import logger
 
 
-def process_raw_data_to_csv(input_file, output_file, hyperparameters):
+def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0):
     """
     Process raw text log file to structured CSV with all features but no normalization.
+    
+    Args:
+        input_file: Path to raw input CSV file
+        output_file: Path to save processed CSV file
+        hyperparameters: Dictionary of hyperparameters
+        ttft_threshold: Optional threshold for filtering samples by TTFT (in ms)
+        avg_tpot_threshold: Optional threshold for filtering samples by avg_tpot (in ms)
     
     Returns:
         str: Path to created processed CSV file
@@ -58,10 +65,47 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters):
         logger.error(f"Missing required columns for reward calculation: {missing_columns}")
         raise ValueError(f"Processed data missing required columns: {missing_columns}")
     
-    # Step 4: Add metadata columns for tracking
+    # Step 4: Filter samples based on latency thresholds
+    original_count = len(processed_df)
+    ttft_filtered_count = 0
+    tpot_filtered_count = 0
+    
+    if ttft_threshold is not None and ttft_threshold > 0:
+        logger.info(f"Filtering samples with TTFT > {ttft_threshold}ms")
+        before_filter = len(processed_df)
+        processed_df = processed_df[processed_df['ttft'] <= ttft_threshold]
+        ttft_filtered_count = before_filter - len(processed_df)
+        logger.info(f"  Filtered out {ttft_filtered_count} samples by TTFT threshold")
+    
+    if avg_tpot_threshold is not None and avg_tpot_threshold > 0:
+        logger.info(f"Filtering samples with avg_tpot > {avg_tpot_threshold}ms")
+        before_filter = len(processed_df)
+        processed_df = processed_df[processed_df['avg_tpot'] <= avg_tpot_threshold]
+        tpot_filtered_count = before_filter - len(processed_df)
+        logger.info(f"  Filtered out {tpot_filtered_count} samples by avg_tpot threshold")
+    
+    total_filtered = original_count - len(processed_df)
+    if total_filtered > 0:
+        logger.info(f"Total filtered: {total_filtered}/{original_count} samples ({total_filtered/original_count*100:.2f}%)")
+        logger.info(f"Remaining samples: {len(processed_df)}")
+    else:
+        logger.info("No filtering applied, keeping all samples")
+
+    # Step 5: Apply random sampling if requested
+    sampled_count = 0
+    if sampling_ratio < 1.0:
+        logger.info(f"Applying random sampling with ratio: {sampling_ratio}")
+        before_sample = len(processed_df)
+        # Random sampling with fixed seed for reproducibility
+        processed_df = processed_df.sample(frac=sampling_ratio, random_state=42)
+        sampled_count = before_sample - len(processed_df)
+        logger.info(f"  Sampled {len(processed_df)}/{before_sample} samples ({sampled_count} removed)")
+        logger.info(f"  Sampling ratio applied: {len(processed_df)/before_sample:.3f}")
+
+    # Step 6: Add metadata columns for tracking
     processed_df['source_file'] = os.path.basename(input_file)
 
-    # Step 5: Save to CSV
+    # Step 6: Save to CSV
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     processed_df.to_csv(output_file, index=False)
     logger.info(f"** Processed CSV saved to: {output_file}")
@@ -71,12 +115,26 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters):
     summary = {
         'input_file': input_file,
         'output_file': output_file,
+        'original_num_samples': int(original_count),
         'num_samples': int(len(processed_df)),
         'num_columns': int(len(processed_df.columns)),
         'processing_time': processing_time,
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
+        'filtering': {
+            'ttft_threshold': ttft_threshold,
+            'avg_tpot_threshold': avg_tpot_threshold,
+            'ttft_filtered_count': ttft_filtered_count,
+            'tpot_filtered_count': tpot_filtered_count,
+            'total_filtered': total_filtered,
+            'filter_percentage': float(total_filtered/original_count*100) if original_count > 0 else 0.0
+        },
+        'sampling': {
+            'sampling_ratio': sampling_ratio,
+            'sampled_count': sampled_count,
+            'sampling_applied': sampling_ratio < 1.0
+        }
     }
     
     # Save summary
@@ -89,7 +147,7 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters):
     return output_file
 
 
-def process_directory_batch(input_dir, output_file, hyperparameters):
+def process_directory_batch(input_dir, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0):
     data_files = []
     for file in os.listdir(input_dir):
         if file.startswith('data') and file.endswith('.csv'):
@@ -105,7 +163,7 @@ def process_directory_batch(input_dir, output_file, hyperparameters):
     processed_files = []
     for data_file in data_files:
         try:
-            processed_file = process_raw_data_to_csv(data_file, output_file, hyperparameters)
+            processed_file = process_raw_data_to_csv(data_file, output_file, hyperparameters, ttft_threshold, avg_tpot_threshold, sampling_ratio)
             processed_files.append(processed_file)
             logger.info(f"✓ Processed: {data_file} → {processed_file}")
         except Exception as e:
@@ -208,16 +266,29 @@ def load_hyperparameter_file(hyperparameters_file_path):
 def main():
     """Command line interface for data processing."""
     parser = argparse.ArgumentParser(description='Process raw text logs to structured CSV')
+    parser.add_argument('--sampling_ratio', type=float, default=1.0,
+                        help='Sampling ratio for the data. If not specified, no sampling is applied.')
     parser.add_argument('--input_file', help='Raw text log file or directory to process')
     parser.add_argument('--output_file', help='Output file to save processed CSV')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
     parser.add_argument('--hyperparameters_file_path', help='Hyperparameters file path')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
+    parser.add_argument('--ttft_threshold', type=float, default=None, 
+                        help='Filter samples with TTFT exceeding this threshold (in ms). If not specified, no TTFT filtering is applied.')
+    parser.add_argument('--avg_tpot_threshold', type=float, default=None,
+                        help='Filter samples with avg_tpot exceeding this threshold (in ms). If not specified, no TPOT filtering is applied.')
     args = parser.parse_args()
 
     hyperparameters = load_hyperparameter_file(args.hyperparameters_file_path)
     logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
     logger.info(f"Loaded hyperparameters: {hyperparameters}")
+    
+    # Log filtering settings
+    if args.ttft_threshold is not None:
+        logger.info(f"TTFT filtering threshold: {args.ttft_threshold}ms")
+    if args.avg_tpot_threshold is not None:
+        logger.info(f"avg_tpot filtering threshold: {args.avg_tpot_threshold}ms")
+    
     if args.validate:
         # Validation mode
         results = validate_processed_csv(args.input_file)
@@ -232,7 +303,7 @@ def main():
     
     if args.batch:
         # Batch processing mode
-        process_directory_batch(args.input_file, args.output_file, hyperparameters)
+        process_directory_batch(args.input_file, args.output_file, hyperparameters, args.ttft_threshold, args.avg_tpot_threshold, args.sampling_ratio)
     else:
         # Single file processing mode
         if not os.path.exists(args.input_file):
@@ -242,7 +313,7 @@ def main():
 
         logger.info(f"args.output_file: {args.output_file}")
         logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
-        processed_file = process_raw_data_to_csv(args.input_file, args.output_file, hyperparameters)
+        processed_file = process_raw_data_to_csv(args.input_file, args.output_file, hyperparameters, args.ttft_threshold, args.avg_tpot_threshold, args.sampling_ratio)
         
         # Validate the output
         validation = validate_processed_csv(processed_file)

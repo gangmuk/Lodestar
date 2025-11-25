@@ -17,7 +17,7 @@ from numpy.polynomial.polynomial import polyfit
 # from logger import logger
 
 linewidth = 1.5
-transition_linewidth = 1.0
+transition_linewidth = 1.5
 edgecolor = 'gray'
 alpha = 0.7
 marker_size = 50
@@ -642,12 +642,12 @@ def add_transition_lines(ax, train_transitions, flush_transitions, iteration_tra
     """Add vertical lines for numTrains and iteration transitions"""
     # Add numTrains transition lines (purple)
     for transition in train_transitions:
-        ax.axvline(x=transition['relative_time'], color='purple', linewidth=transition_linewidth, alpha=alpha+0.1, zorder=5)
+        ax.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth, zorder=5, linestyle='--')
     
     # Add iteration transition lines (orange) if provided
     if iteration_transitions:
         for transition in iteration_transitions:
-            ax.axvline(x=transition['relative_time'], color='orange', linewidth=transition_linewidth, alpha=alpha+0.1, zorder=5, linestyle='-')
+            ax.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth, zorder=5, linestyle='-.')
 
 def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors):
     """Plot the request rate analysis subplots"""
@@ -2076,7 +2076,7 @@ parser.add_argument('log_file', type=str, help='Path to the log file')
 parser.add_argument('--setylim', type=int, default=0, help='Set y-axis limits')
 parser.add_argument('--slo_ttft', type=int, default=1000, help='SLO TTFT')
 parser.add_argument('--slo_tpot', type=int, default=50, help='SLO TPOT')
-parser.add_argument('--skip-first-seconds', type=float, default=30, help='Skip/truncate the first X seconds of data (default: 30s)')
+parser.add_argument('--skip-first-seconds', type=float, default=0, help='Skip/truncate the first X seconds of data (default: 30s)')
 
 
 if __name__ == "__main__":

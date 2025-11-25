@@ -13,6 +13,7 @@ import csv
 # import training.preprocess as preprocess
 import preprocess
 from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Patch
 
 maintitle_fontsize = 30
 subtitle_fontsize = 26
@@ -29,6 +30,9 @@ e2e_latency_predictor_routing="latency_predictor_e2e_latency"
 ttft_latency_predictor_routing="latency_predictor_ttft"
 avg_tpot_latency_predictor_routing="latency_predictor_avg_tpot"
 random_routing="random"
+least_kv_cache_routing="least_kv_cache"
+least_latency_routing="least_latency"
+least_request_routing="least_request"
 
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
@@ -50,6 +54,12 @@ def categorize_strategy(strategy_name):
         return preble_routing
     elif random_routing in strategy_lower:
         return random_routing
+    elif least_kv_cache_routing in strategy_lower:
+        return least_kv_cache_routing
+    elif least_latency_routing in strategy_lower:
+        return least_latency_routing
+    elif least_request_routing in strategy_lower:
+        return least_request_routing
     else:
         return strategy_name  # Return original if no category match
 
@@ -492,8 +502,14 @@ def get_strategy_priority(strategy_name):
         return (6, strategy_name)  # Second priority
     elif random_routing in strategy_name.lower():
         return (7, strategy_name)  # Third priority
+    elif least_kv_cache_routing in strategy_name.lower():
+        return (8, strategy_name)
+    elif least_latency_routing in strategy_name.lower():
+        return (9, strategy_name)
+    elif least_request_routing in strategy_name.lower():
+        return (10, strategy_name)
     else:
-        return (8, strategy_name)  # Others last
+        return (11, strategy_name)  # Others last
 
 
 # Set up colors by category
@@ -515,6 +531,12 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']  # Orange/Gold family
     elif random_routing in strategy_name.lower():
         base_colors = ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']  # Light green family
+    elif least_kv_cache_routing in strategy_name.lower():
+        base_colors = ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460']  # Brown/Tan family
+    elif least_latency_routing in strategy_name.lower():
+        base_colors = ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']  # Slate blue family
+    elif least_request_routing in strategy_name.lower():
+        base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']  # Cyan/Teal family
     else:
         base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
     # Use modulo to cycle through colors if more strategies than colors
@@ -537,7 +559,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
     # Create color dictionary with grouped coloring
     color_dict = {}
-    category_counts = {rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0, preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0, random_routing: 0, 'other': 0}
+    category_counts = {rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0, preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0, random_routing: 0, least_kv_cache_routing: 0, least_latency_routing: 0, least_request_routing: 0, 'other': 0}
 
     for strategy in strategy_order:
         if rl_naive_routing in strategy.lower():
@@ -564,130 +586,67 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif random_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[random_routing])
             category_counts[random_routing] += 1
+        elif least_kv_cache_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[least_kv_cache_routing])
+            category_counts[least_kv_cache_routing] += 1
+        elif least_latency_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[least_latency_routing])
+            category_counts[least_latency_routing] += 1
+        elif least_request_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[least_request_routing])
+            category_counts[least_request_routing] += 1
         else:
             color_dict[strategy] = get_strategy_color(strategy, category_counts['other'])
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(36, 24))  # Increased width for 9 columns
+    fig = plt.figure(figsize=(18, 18))  # Increased height for 4 rows
 
-    # MODIFIED GridSpec: 6 rows (bar charts, rewards, CDFs, avg)
-    gs = GridSpec(6, 9, figure=fig,
-                  height_ratios=[0.8, 1, 1, 1, 1, 1],
-                  hspace=0.6,
+    # MODIFIED GridSpec: 4 rows (CDFs, bar chart, time series graphs)
+    gs = GridSpec(4, 9, figure=fig,
+                  height_ratios=[1, 1, 1, 1],
+                  hspace=0.5,
                   wspace=0.35)
     
-    fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.96)
+    # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
     
-    # FIRST ROW: All 8 bar chart plots
-    # Plot 1: Average TTFT
-    if 'avg_ttft' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 0])
-        plot_metric_bar(ax, metrics_df, 'avg_ttft', 'Average TTFT', strategy_order, color_dict)
-
-    # Plot 2: P99 TTFT
-    if 'p99_ttft' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 1])
-        plot_metric_bar(ax, metrics_df, 'p99_ttft', 'P99 TTFT', strategy_order, color_dict)
-
-    # Plot 3: Average TPOT
-    if 'avg_tpot' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 2])
-        plot_metric_bar(ax, metrics_df, 'avg_tpot', 'Average TPOT', strategy_order, color_dict)
-
-    # Plot 4: P99 TPOT
-    if 'p99_tpot' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 3])
-        plot_metric_bar(ax, metrics_df, 'p99_tpot', 'P99 TPOT', strategy_order, color_dict)
-
-    # Plot 5: End-to-End
-    if 'avg_end_to_end' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 4])
-        plot_metric_bar(ax, metrics_df, 'avg_end_to_end', 'Average End-to-End', strategy_order, color_dict)
-
-    # Plot 6: P99 End-to-End
-    if 'p99_end_to_end' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 5])
-        plot_metric_bar(ax, metrics_df, 'p99_end_to_end', 'P99 End-to-End', strategy_order, color_dict)
-
-    # Plot 7: Total Requests
-    if 'num_requests' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 6])
-        plot_metric_bar(ax, metrics_df, 'num_requests', 'Total Requests', strategy_order, color_dict)
-
-    # Plot 8: Token Throughput
-    if 'throughput_tps' in metrics_df.columns:
-        ax = fig.add_subplot(gs[0, 7])
-        plot_metric_bar(ax, metrics_df, 'throughput_tps', 'Throughput (Tokens/sec)', strategy_order, color_dict)
-    
-    # NEW REWARD PLOTS - Each occupying a full row with more spacing
+    # NEW: CDF plots, bar chart, and time series graphs
     if csv_data_dict:
-        # Calculate rewards for each strategy
-        for strategy in strategy_order:
-            if strategy in csv_data_dict:
-                df = csv_data_dict[strategy]
-                df['ttft_reward'] = df['ttft'].apply(lambda x: calculate_ttft_reward(x, slo_ttft))
-                df['tpot_reward'] = df['avg_tpot'].apply(lambda x: calculate_tpot_reward(x, slo_tpot))
-                df['total_reward'] = df['ttft_reward'] + df['tpot_reward']
-
-        # Plot 7: TTFT Reward Time Series (full width)
-        ax = fig.add_subplot(gs[1, :])  # Full width of row 1
-        plot_reward_timeseries(ax, csv_data_dict, 'ttft_reward', 'TTFT Reward', 
-                      strategy_order, color_dict, slo_ttft, 'TTFT')
-
-        # Plot 8: TPOT Reward Time Series (full width)
-        ax = fig.add_subplot(gs[2, :])  # Full width of row 2
-        plot_reward_timeseries(ax, csv_data_dict, 'tpot_reward', 'TPOT Reward', 
-                      strategy_order, color_dict, slo_tpot, 'TPOT')
-
-        # Plot 9: Total Reward Time Series (full width)
-        ax = fig.add_subplot(gs[3, :])  # Full width of row 3
-        plot_reward_timeseries(ax, csv_data_dict, 'total_reward', 'Total Reward', 
-                      strategy_order, color_dict, None, 'Total')
-
-        # Plot 10: TTFT Latency CDF (left third of row 4)
-        ax = fig.add_subplot(gs[4, :3])
+        # Plot 1: TTFT Latency CDF (left half of row 0)
+        ax = fig.add_subplot(gs[0, :4])
         plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Latency CDF', 'TTFT (ms)')
 
-        # Plot 11: Avg TPOT Latency CDF (middle third of row 4)
-        ax = fig.add_subplot(gs[4, 3:6])
+        # Plot 2: Avg TPOT Latency CDF (right half of row 0)
+        ax = fig.add_subplot(gs[0, 5:])
         plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Latency CDF', 'Avg TPOT (ms)')
 
-        # Plot 12: End-to-End Latency CDF (right third of row 4)
-        ax = fig.add_subplot(gs[4, 6:])
-        plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, 'end_to_end_latency', 'End-to-End Latency CDF', 'End-to-End (ms)')
-
-        # Plot 13: Average TTFT, TPOT, and End-to-End Comparison (full width, now row 5)
-        ax = fig.add_subplot(gs[5, :])
+        # Plot 3: Average TTFT and TPOT Comparison (full width, row 1)
+        ax = fig.add_subplot(gs[1, :])
         plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict)
+        
+        # Plot 4: TTFT Time Series (full width, row 2)
+        ax = fig.add_subplot(gs[2, :])
+        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1s averages)', 'TTFT (ms)')
+        
+        # Plot 5: Avg TPOT Time Series (full width, row 3)
+        ax = fig.add_subplot(gs[3, :])
+        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1s averages)', 'Avg TPOT (ms)')
     else:
-        # If no CSV data provided, show placeholder text for reward plots
-        for row in [1, 2, 3, 4, 5]:
-            if row == 4:
-                # CDFs: left, middle, and right thirds
-                ax = fig.add_subplot(gs[4, :3])
-                ax.text(0.5, 0.5, 'No time series data available\n(csv_data_dict not provided)',
-                        ha='center', va='center', fontsize=12,
-                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax = fig.add_subplot(gs[4, 3:6])
-                ax.text(0.5, 0.5, 'No time series data available\n(csv_data_dict not provided)',
-                        ha='center', va='center', fontsize=12,
-                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax = fig.add_subplot(gs[4, 6:])
-                ax.text(0.5, 0.5, 'No time series data available\n(csv_data_dict not provided)',
-                        ha='center', va='center', fontsize=12,
-                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-                ax.set_xticks([])
-                ax.set_yticks([])
+        # If no CSV data provided, show placeholder text for all plots
+        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]), (3, [slice(None)])]:
+            if row_idx == 0:
+                for col_slice in plot_cols:
+                    ax = fig.add_subplot(gs[row_idx, col_slice])
+                    ax.text(0.5, 0.5, 'No data available\n(csv_data_dict not provided)',
+                           ha='center', va='center', fontsize=12,
+                           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+                    ax.set_xticks([])
+                    ax.set_yticks([])
             else:
-                ax = fig.add_subplot(gs[row, :])
-                ax.text(0.5, 0.5, 'No time series data available\n(csv_data_dict not provided)', 
-                        ha='center', va='center', fontsize=12, 
-                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+                ax = fig.add_subplot(gs[row_idx, :])
+                ax.text(0.5, 0.5, 'No data available\n(csv_data_dict not provided)', 
+                       ha='center', va='center', fontsize=12, 
+                       bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
                 ax.set_xticks([])
                 ax.set_yticks([])
     
@@ -702,8 +661,8 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     #           fontsize=legend_fontsize, 
     #           ncol=1)
     
-    # MODIFIED layout parameters for better spacing
-    plt.subplots_adjust(top=0.93, bottom=0.08, left=0.04, right=0.96)
+    # MODIFIED layout parameters for better spacing (more bottom space for large strategy labels)
+    plt.subplots_adjust(top=0.96, bottom=0.08, left=0.05, right=0.95)
     
     # Save the figure
     output_file = f"{base_dir}/routing_strategy_comparison.pdf"
@@ -748,13 +707,13 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             #                   reward_stats['mean'] + reward_se,
             #                   color=color, alpha=0.15)
     
-    # Set title with SLO info
-    if slo_value:
-        full_title = f'{title} Trend Over Time (1s averages) - SLO: {metric_type} ≤ {slo_value}ms'
-    else:
-        full_title = f'{title} Trend Over Time (1s averages)'
+    # # Set title with SLO info
+    # if slo_value:
+    #     full_title = f'{title} Trend Over Time (1s averages) - SLO: {metric_type} ≤ {slo_value}ms'
+    # else:
+    #     full_title = f'{title} Trend Over Time (1s averages)'
     
-    ax.set_title(full_title, fontsize=subtitle_fontsize+2, pad=15)  # Slightly larger title
+    # ax.set_title(full_title, fontsize=subtitle_fontsize+2, pad=15)  # Slightly larger title
     ax.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
     ax.set_ylabel(f'Average {title}', fontsize=ylabel_fontsize)
     
@@ -780,78 +739,111 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             ax.axhline(y=0.5, color='green', linestyle=':', alpha=0.7, linewidth=1.5)
 
 
-# New function to plot triple-axis comparison (TTFT, TPOT, End-to-End)
+# New function to plot dual-axis comparison (TTFT, TPOT)
 def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
-    """Plot bar chart with triple y-axis: left for avg TTFT, middle for avg TPOT, right for avg end-to-end across strategies."""
+    """Plot bar chart with TTFT and TPOT grouped by strategy - dual y-axes (left: TTFT, right: TPOT)."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
-    label_list = []
-    for s in strategies:
-        len_s = len(s)
-        # label_list.append(f"{s[:len_s//2]}\n{s[len_s//2:]}")
-        label_list.append(f"{s.split('-')[0]}")
     n_strategies = len(strategies)
+    
+    # Extract metrics for each strategy
     avg_ttft = [metrics_df.set_index('strategy').loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
     avg_tpot = [metrics_df.set_index('strategy').loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
-    avg_e2e = [metrics_df.set_index('strategy').loc[s, 'avg_end_to_end'] if 'avg_end_to_end' in metrics_df.columns else 0 for s in strategies]
-    x = np.arange(n_strategies)
-    bar_width = 0.5
-    strategy_colors = [color_dict[s] for s in strategies]
-
-    # Bars for TTFT (left y-axis)
-    bars1 = ax.bar(x - bar_width/3, avg_ttft, bar_width/3, label='Avg TTFT (ms)', color=strategy_colors, alpha=0.9, edgecolor='black', linewidth=1)
-    ax.set_ylabel('Avg TTFT (ms)', fontsize=ylabel_fontsize, color='#222266')
-    ax.tick_params(axis='y', labelcolor='#222266', labelsize=tick_fontsize)
-
-    # Add value labels for TTFT
-    for i, bar in enumerate(bars1):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height + 0.5, f'{height:.0f}', rotation=90, ha='center', va='bottom', fontsize=12, fontweight='bold', color='#222266')
-
-    # Twin axis for TPOT (middle y-axis)
-    ax2 = ax.twinx()
-    bars2 = ax2.bar(x, avg_tpot, bar_width/3, label='Avg TPOT (ms)', color=strategy_colors, alpha=0.6, edgecolor='black', linewidth=1)
-    ax2.set_ylabel('Avg TPOT (ms)', fontsize=ylabel_fontsize, color='#226622')
-    ax2.tick_params(axis='y', labelcolor='#226622', labelsize=tick_fontsize)
-
-    # Add value labels for TPOT
-    for i, bar in enumerate(bars2):
-        height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 0.5, f'{height:.0f}', rotation=90, ha='center', va='bottom', fontsize=12, color='#226622')
-
-    # Twin axis for End-to-End (right y-axis)
-    ax3 = ax.twinx()
-    # Offset the third axis to the right
-    ax3.spines["right"].set_position(("axes", 1.1))
-    bars3 = ax3.bar(x + bar_width/3, avg_e2e, bar_width/3, label='Avg End-to-End (ms)', color=strategy_colors, alpha=0.3, edgecolor='black', linewidth=1)
-    ax3.set_ylabel('Avg End-to-End (ms)', fontsize=ylabel_fontsize, color='#662222')
-    ax3.tick_params(axis='y', labelcolor='#662222', labelsize=tick_fontsize)
-
-    # Add value labels for End-to-End
-    for i, bar in enumerate(bars3):
-        height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height + 0.5, f'{height:.0f}', rotation=90, ha='center', va='bottom', fontsize=12, color='#662222')
-
-    # X-axis and title
-    ax.set_title('Average TTFT (left), TPOT (middle), End-to-End (right) Comparison', fontsize=subtitle_fontsize)
-    # ax.set_xlabel('Routing Strategy', fontsize=ylabel_fontsize)
-    ax.set_xticks(x)
-    ax.set_xticklabels(label_list, rotation=45, ha='right', fontsize=tick_fontsize)
-    ax.grid(axis='y', alpha=0.3)
-    ax.set_zorder(2)
-    ax.patch.set_visible(False)
-    # Set y-axis limits with padding
+    
+    # Get max values for each y-axis
     max_ttft = max(avg_ttft or [0])
     max_tpot = max(avg_tpot or [0])
-    max_e2e = max(avg_e2e or [0])
-    ax.set_ylim(0, max_ttft * 1.4 if max_ttft > 0 else 1)
-    ax2.set_ylim(0, max_tpot * 1.4 if max_tpot > 0 else 1)
-    ax3.set_ylim(0, max_e2e * 1.4 if max_e2e > 0 else 1)
     
+    # Create bar positions - 2 bars per strategy with spacing between groups
+    bar_width = 0.35
+    group_width = 2 * bar_width + 0.4  # Space between groups
+    group_centers = np.arange(n_strategies) * group_width
     
-    ## Custom legend
-    # lines = [bars1, bars2]
-    # labels = ['Avg TTFT (ms)', 'Avg TPOT (ms)']
-    # ax.legend(lines, labels, fontsize=legend_fontsize, loc='upper right')
+    # Create x positions for each metric within each group
+    ttft_positions = []
+    tpot_positions = []
+    ttft_values = []
+    tpot_values = []
+    ttft_colors = []
+    tpot_colors = []
+    ttft_labels = []
+    tpot_labels = []
+    
+    for i, strategy in enumerate(strategies):
+        strategy_color = color_dict[strategy]
+        group_center = group_centers[i]
+        
+        # Position for TTFT bar (left side of group)
+        ttft_pos = group_center - bar_width/2
+        ttft_positions.append(ttft_pos)
+        ttft_values.append(avg_ttft[i])
+        ttft_colors.append(strategy_color)
+        ttft_labels.append('TTFT')
+        
+        # Position for TPOT bar (right side of group)
+        tpot_pos = group_center + bar_width/2
+        tpot_positions.append(tpot_pos)
+        tpot_values.append(avg_tpot[i])
+        tpot_colors.append(strategy_color)
+        tpot_labels.append('TPOT')
+    
+    # Create TTFT bars on left y-axis
+    bars1 = ax.bar(ttft_positions, ttft_values, bar_width, color=ttft_colors, 
+                   edgecolor='black', linewidth=1, alpha=0.9, label='TTFT')
+    
+    # Add value labels for TTFT
+    for bar, value in zip(bars1, ttft_values):
+        if value > 0:
+            ax.text(bar.get_x() + bar.get_width()/2., value + max_ttft * 0.05, 
+                   f'{value:.0f}', rotation=45, ha='left', va='bottom', 
+                   fontsize=18, fontweight='bold', color='#222266')
+    
+    # Create TPOT bars on right y-axis
+    ax2 = ax.twinx()
+    bars2 = ax2.bar(tpot_positions, tpot_values, bar_width, color=tpot_colors, 
+                    edgecolor='black', linewidth=1, alpha=0.6, label='TPOT')
+    
+    # Add value labels for TPOT
+    for bar, value in zip(bars2, tpot_values):
+        if value > 0:
+            ax2.text(bar.get_x() + bar.get_width()/2., value + max_tpot * 0.05, 
+                    f'{value:.0f}', rotation=45, ha='left', va='bottom', 
+                    fontsize=18, fontweight='bold', color='#226622')
+    
+    # Combine all positions and labels for x-axis
+    all_positions = ttft_positions + tpot_positions
+    all_labels = ttft_labels + tpot_labels
+    # Sort by position
+    sorted_indices = sorted(range(len(all_positions)), key=lambda i: all_positions[i])
+    all_positions_sorted = [all_positions[i] for i in sorted_indices]
+    all_labels_sorted = [all_labels[i] for i in sorted_indices]
+    
+    # Set up x-axis with metric names on each bar
+    ax.set_xticks(all_positions_sorted)
+    ax.set_xticklabels(all_labels_sorted, fontsize=16, rotation=0)
+    
+    # Add strategy names as text annotations below the bars
+    strategy_labels = [s.split('-')[0] for s in strategies]  # Shorten strategy names
+    for i, (center, label) in enumerate(zip(group_centers, strategy_labels)):
+        ax.text(center, -0.15, label, 
+               ha='center', va='top',
+               fontsize=24,
+               transform=ax.get_xaxis_transform())
+    
+    # Styling
+    ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize, color='#222266')
+    ax2.set_ylabel('Avg TPOT (ms)', fontsize=ylabel_fontsize, color='#226622')
+    ax.set_title('Average TTFT and TPOT Latency Comparison', fontsize=subtitle_fontsize)
+    ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
+    ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#226622')
+    ax.tick_params(axis='x', which='both', length=5)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, max_ttft * 1.6)
+    ax2.set_ylim(0, max_tpot * 1.6)
+    
+    # Add legend
+    legend_elements = [Patch(facecolor=color_dict[s], edgecolor='black', label=s.split('-')[0]) 
+                      for s in strategies]
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=min(3, n_strategies))
 
 
 def plot_metric_bar(ax, metrics_df, metric, title, strategy_order, color_dict):
@@ -965,14 +957,45 @@ def plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, column, titl
             if len(data) == 0:
                 continue
             y = np.linspace(0, 1, len(data))
-            ax.plot(data, y, label=strategy, color=color_dict[strategy], linewidth=2, alpha=0.8)
+            # Shorten strategy name for legend
+            legend_label = strategy.split('-')[0]
+            ax.plot(data, y, label=legend_label, color=color_dict[strategy], linewidth=2, alpha=0.8)
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.set_xlabel(xlabel, fontsize=ylabel_fontsize)
     ax.set_ylabel('CDF', fontsize=ylabel_fontsize)
-    # ax.legend(fontsize=legend_fontsize, loc='lower right')
+    ax.legend(fontsize=16, loc='lower right')
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
 
+
+# New function to plot latency time series with 1-second averages
+def plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, column, title, ylabel):
+    """Plot time series with 1-second window averages for a given latency column for each strategy."""
+    for strategy in strategy_order:
+        if strategy in csv_data_dict and column in csv_data_dict[strategy].columns:
+            df = csv_data_dict[strategy]
+            
+            # Create 1-second time bins
+            df_copy = df.copy()
+            df_copy['time_bin'] = np.floor(df_copy['relative_time']).astype(int)
+            
+            # Calculate average latency for each 1-second bin
+            latency_stats = df_copy.groupby('time_bin')[column].agg(['mean', 'count']).reset_index()
+            latency_stats = latency_stats[latency_stats['count'] > 0]  # Only bins with data
+            
+            # Shorten strategy name for legend
+            legend_label = strategy.split('-')[0]
+            
+            # Plot the time series
+            ax.plot(latency_stats['time_bin'], latency_stats['mean'], 
+                   color=color_dict[strategy], linewidth=2, alpha=0.8, label=legend_label)
+    
+    ax.set_title(title, fontsize=subtitle_fontsize)
+    ax.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
+    ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
+    ax.legend(fontsize=16, loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
 
 
 if __name__ == "__main__":
@@ -1038,12 +1061,12 @@ if __name__ == "__main__":
             csv_data_dict = category_csv_dict
     
     # ADD: Debug information
-    print(f"CSV data dict keys: {list(csv_data_dict.keys())}")
+    # print(f"CSV data dict keys: {list(csv_data_dict.keys())}")
     if csv_data_dict:
         first_key = list(csv_data_dict.keys())[0]
         sample_df = csv_data_dict[first_key]
-        print(f"Sample DataFrame columns: {list(sample_df.columns)}")
-        print(f"Sample DataFrame shape: {sample_df.shape}")
+        # print(f"Sample DataFrame columns: {list(sample_df.columns)}")
+        # print(f"Sample DataFrame shape: {sample_df.shape}")
 
         # Check for required columns
         required_cols = ['ttft', 'avg_tpot', 'relative_time']

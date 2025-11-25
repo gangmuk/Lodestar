@@ -79,7 +79,7 @@ def get_sorted_all_pod_ids(source_type, data=None):
     if source_type == 'batch_dataframe':
         # Extract from batch dataframe for training (parsed_df)
         all_pods_set = set()
-        for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods']:
+        for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'vllmGPUKVCacheUsage', 'vllmCPUKVCacheUsage', 'vllmNumRequestsRunning', 'vllmNumRequestsWaiting']:
             if col in data.columns:
                 for row_data in data[col]:
                     if row_data:
@@ -120,8 +120,17 @@ def get_sorted_all_pod_ids(source_type, data=None):
         # Extract from already processed CSV columns
         pod_ids_set = set()
         for col in data:  # data is list of column names
-            if '-kv_hit_ratio' in col:
-                pod_id = col.replace('-kv_hit_ratio', '')
+            if '-kv_hit_ratio' in col or '-gpu_kv_cache' in col or '-cpu_kv_cache' in col or '-running_requests' in col or '-waiting_requests' in col:
+                if '-kv_hit_ratio' in col:
+                    pod_id = col.replace('-kv_hit_ratio', '')
+                elif '-gpu_kv_cache' in col:
+                    pod_id = col.replace('-gpu_kv_cache', '')
+                elif '-cpu_kv_cache' in col:
+                    pod_id = col.replace('-cpu_kv_cache', '')
+                elif '-running_requests' in col:
+                    pod_id = col.replace('-running_requests', '')
+                elif '-waiting_requests' in col:
+                    pod_id = col.replace('-waiting_requests', '')
                 pod_ids_set.add(pod_id)
         sorted_all_pod_ids = sorted(list(pod_ids_set))
         logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from processed CSV columns: {sorted_all_pod_ids}")
