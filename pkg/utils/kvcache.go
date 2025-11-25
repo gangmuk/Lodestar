@@ -957,7 +957,7 @@ func GetGPUModel(podIP string) (string, bool) {
 	return gpuModel, true
 }
 
-// GetGPUModelFromNode fetches the GPU model from the node's labels
+// fetches the GPU model from the node's labels
 // This function queries the Kubernetes API to get the node's GPU label
 func GetGPUModelFromNode(nodeName string) (string, error) {
 	if nodeName == "" {
@@ -967,21 +967,21 @@ func GetGPUModelFromNode(nodeName string) (string, error) {
 	// Create in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		klog.V(4).Infof("Failed to create in-cluster config: %v", err)
+		klog.Errorf("Failed to create in-cluster config: %v", err)
 		return "", fmt.Errorf("failed to create in-cluster config: %w", err)
 	}
 
 	// Create clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		klog.V(4).Infof("Failed to create kubernetes clientset: %v", err)
+		klog.Errorf("Failed to create kubernetes clientset: %v", err)
 		return "", fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
 
 	// Get the node
 	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	if err != nil {
-		klog.V(4).Infof("Failed to get node %s: %v", nodeName, err)
+		klog.Errorf("Failed to get node %s: %v", nodeName, err)
 		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
@@ -992,7 +992,7 @@ func GetGPUModelFromNode(nodeName string) (string, error) {
 		return gpuModel, nil
 	}
 
-	klog.V(4).Infof("Node %s does not have GPU label %s", nodeName, gpuLabel)
+	klog.Errorf("Node %s does not have GPU label %s", nodeName, gpuLabel)
 	return "", fmt.Errorf("node %s does not have GPU label", nodeName)
 }
 
@@ -1382,7 +1382,7 @@ func StoreKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
 	} else {
 		klog.Errorf("Error, requestID: %s, already exists in requestAllPodsKVCache", requestID)
 	}
-	klog.Infof("StoreKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
+	klog.V(5).Infof("StoreKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
 }
 
 func GetAllPodsKVCacheHitRatios(requestID string) map[string]int {
@@ -1491,7 +1491,7 @@ func GetNumOutputTokensForPrefix(hash_of_prefixHashes uint64) (int, bool) {
 	defer hashToNumOutputTokensMutex.RUnlock()
 	numOutputTokens, exists := hashToNumOutputTokens[hash_of_prefixHashes]
 	if !exists {
-		klog.Warningf("GetNumOutputTokensForPrefix, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
+		klog.V(5).Infof("GetNumOutputTokensForPrefix, Hash %d not found in hashToNumOutputTokens", hash_of_prefixHashes)
 		return DefaultNumOutputTokens, false
 	}
 	klog.V(5).Infof("GetNumOutputTokensForPrefix, Retrieved num output tokens for hash %d: %d", hash_of_prefixHashes, numOutputTokens)

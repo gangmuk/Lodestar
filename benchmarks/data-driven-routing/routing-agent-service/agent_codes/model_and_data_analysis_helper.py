@@ -55,38 +55,38 @@ def diagnose_training_data_issues(ENCODED_DATA_DIR):
     if imbalance_ratio > 5:
         logger.warning(f"⚠️  SEVERE IMBALANCE: Pod {torch.argmax(action_counts).item()} dominates training data!")
     
-    # 2. REWARD SIGNAL ANALYSIS
-    logger.info("\n2️⃣ REWARD SIGNAL ANALYSIS:")
-    logger.info("-" * 40)
+    # # 2. REWARD SIGNAL ANALYSIS
+    # logger.info("\n2️⃣ REWARD SIGNAL ANALYSIS:")
+    # logger.info("-" * 40)
     
-    rewards = tensor_data['rewards']
-    logger.info(f"Reward range: [{rewards.min().item():.4f}, {rewards.max().item():.4f}]")
-    logger.info(f"Reward std: {rewards.std().item():.4f}")
+    # rewards = tensor_data['rewards']
+    # logger.info(f"Reward range: [{rewards.min().item():.4f}, {rewards.max().item():.4f}]")
+    # logger.info(f"Reward std: {rewards.std().item():.4f}")
     
-    # Reward by action
-    reward_by_pod = {}
-    for pod_id in range(7):
-        pod_mask = actions == pod_id
-        if pod_mask.sum() > 0:
-            pod_rewards = rewards[pod_mask]
-            reward_by_pod[pod_id] = {
-                'mean': pod_rewards.mean().item(),
-                'std': pod_rewards.std().item(),
-                'count': pod_mask.sum().item()
-            }
-            logger.info(f"Pod {pod_id}: μ={reward_by_pod[pod_id]['mean']:.4f}, "
-                       f"σ={reward_by_pod[pod_id]['std']:.4f}, n={reward_by_pod[pod_id]['count']}")
+    # # Reward by action
+    # reward_by_pod = {}
+    # for pod_id in range(7):
+    #     pod_mask = actions == pod_id
+    #     if pod_mask.sum() > 0:
+    #         pod_rewards = rewards[pod_mask]
+    #         reward_by_pod[pod_id] = {
+    #             'mean': pod_rewards.mean().item(),
+    #             'std': pod_rewards.std().item(),
+    #             'count': pod_mask.sum().item()
+    #         }
+    #         logger.info(f"Pod {pod_id}: μ={reward_by_pod[pod_id]['mean']:.4f}, "
+    #                    f"σ={reward_by_pod[pod_id]['std']:.4f}, n={reward_by_pod[pod_id]['count']}")
     
-    # Check reward differentiation
-    if len(reward_by_pod) > 1:
-        pod_means = [stats['mean'] for stats in reward_by_pod.values()]
-        reward_gap = max(pod_means) - min(pod_means)
-        logger.info(f"Reward gap between best/worst pods: {reward_gap:.4f}")
+    # # Check reward differentiation
+    # if len(reward_by_pod) > 1:
+    #     pod_means = [stats['mean'] for stats in reward_by_pod.values()]
+    #     reward_gap = max(pod_means) - min(pod_means)
+    #     logger.info(f"Reward gap between best/worst pods: {reward_gap:.4f}")
         
-        if reward_gap < 0.01:
-            logger.warning("⚠️  VERY WEAK REWARD SIGNAL: Pods have nearly identical rewards!")
-        elif reward_gap < 0.05:
-            logger.warning("⚠️  WEAK REWARD SIGNAL: Small differences between pods")
+    #     if reward_gap < 0.01:
+    #         logger.warning("⚠️  VERY WEAK REWARD SIGNAL: Pods have nearly identical rewards!")
+    #     elif reward_gap < 0.05:
+    #         logger.warning("⚠️  WEAK REWARD SIGNAL: Small differences between pods")
     
     # 3. FEATURE VARIANCE ANALYSIS
     logger.info("\n3️⃣ FEATURE VARIANCE ANALYSIS:")
@@ -141,7 +141,7 @@ def diagnose_training_data_issues(ENCODED_DATA_DIR):
     for i in range(min(3, len(actions))):
         logger.info(f"\nSample {i}:")
         logger.info(f"  Action (selected pod): {actions[i].item()}")
-        logger.info(f"  Reward: {rewards[i].item():.4f}")
+        # logger.info(f"  Reward: {rewards[i].item():.4f}")
         logger.info(f"  Request features: {request_features[i].numpy()}")
         logger.info(f"  KV ratios: {kv_ratios[i].numpy().flatten()}")
         logger.info(f"  Pod features (first 3): {pod_features[i, :, :3].numpy()}")
@@ -155,8 +155,8 @@ def diagnose_training_data_issues(ENCODED_DATA_DIR):
     if imbalance_ratio > 5:
         recommendations.append("🔴 CRITICAL: Balance training data - consider data augmentation or stratified sampling")
     
-    if reward_gap < 0.01:
-        recommendations.append("🔴 CRITICAL: Amplify reward differences or use different reward calculation")
+    # if reward_gap < 0.01:
+    #     recommendations.append("🔴 CRITICAL: Amplify reward differences or use different reward calculation")
     
     if low_variance_features > 3:
         recommendations.append("🟡 Add more dynamic pod state features (current load, temperature, etc.)")
@@ -181,7 +181,7 @@ def diagnose_training_data_issues(ENCODED_DATA_DIR):
     return {
         'action_distribution': action_counts,
         'imbalance_ratio': imbalance_ratio,
-        'reward_gap': reward_gap if 'reward_gap' in locals() else 0,
+        # 'reward_gap': reward_gap if 'reward_gap' in locals() else 0,
         'low_variance_features': low_variance_features,
         'recommendations': recommendations
     }

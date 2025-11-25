@@ -452,7 +452,7 @@ def create_test_data_from_processed_csv(processed_csv_file):
 
 #     return result_summary
 
-def normalize_and_encode_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR):
+def normalize_and_encode_training_data(args, processed_csv_file, stats_instance, ENCODED_DATA_DIR, request_features_train):
     global NUM_TRAINS, MODEL_UPDATED, TRAINING_DATA_UPDATED, TOTAL_NUM_DATA
     flush_start_time = time.time()
     
@@ -521,6 +521,7 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
     # encoding (use normalized data for training)
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
+    logger.info(f"Encoding with request_features_train: {request_features_train}")
     encoding.encode_for_train(sorted_all_pod_ids, normalized_df, encoded_data_output_dir, request_features_train, HYPERPARAMETERS)
     logger.info(f"Successfully encoded data to {encoded_data_output_dir}, took {time.time() - ts_encode} seconds")
 
@@ -644,6 +645,12 @@ def main():
     HYPERPARAMETERS.update(hyperparameters)
 
     logger.info(f"EXCLUDED_POD_FEATURES: {HYPERPARAMETERS['EXCLUDED_POD_FEATURES']}")
+
+    # Filter request features based on exclusions
+    excluded_request_features = set(HYPERPARAMETERS.get('EXCLUDED_REQUEST_FEATURES', []))
+    request_features_train = [f for f in ['input_tokens', 'output_tokens', 'total_tokens'] if f not in excluded_request_features]
+    logger.info(f"Request features for training: {request_features_train}")
+    logger.info(f"EXCLUDED_REQUEST_FEATURES: {excluded_request_features}")
     
     # Validate processed CSV file
     if not os.path.exists(args.processed_csv):
@@ -673,7 +680,7 @@ def main():
     processed_df = pd.read_csv(args.processed_csv)
     
     # Get normalizable features and create stats instance
-    normalizable_features, non_normalizable_features = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+    normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(processed_df, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
     stats_instance = data_normalizer.FeatureStats(normalizable_features)
 
     ENCODED_DATA_DIR = f"{args.final_model_dir}/encoded_data"
@@ -685,7 +692,7 @@ def main():
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
     
     # Process training data using the new simplified approach
-    normalize_and_encode_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR)
+    normalize_and_encode_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR, request_features_train)
 
     # Save stats using CSV format
     stats_file = f"{args.final_model_dir}/feature_normalization_statistics.csv"

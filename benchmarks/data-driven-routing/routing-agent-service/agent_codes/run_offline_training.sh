@@ -1,41 +1,26 @@
 #!/bin/bash
 
-# filename: run_offline_training.sh
-
 set -e
 
-
-# workload_dataset="SharingRatio9%-p200_s1800_rps8_spp_20_ndp80-p400_s3600_rps8_spp_20_ndp80-p800_s7200_rps3_spp_20_ndp80-half"
-# workload_dataset="SharingRatio28%-p600_s1400_rps8_spp_20_ndp80-p1200_s2800_rps8_spp_20_ndp80-p2400_s5600_rps3_spp_20_ndp80-half"
-# workload_dataset="SharingRatio47%-p1024_s1024_rps8_spp_20_ndp80-p2048_s2048_rps8_spp_20_ndp80-p4096_s4096_rps3_spp_20_ndp80-half"
-# workload_dataset="SharingRatio71%-p2048_s512_rps5_spp_10_ndp50-p4096_s1024_rps8_spp_10_ndp50-p8096_s2048_rps3_spp_10_ndp50-half"
-
-# workload_dataset_list=(
-#     # "temp"
-#     "merged-data"
-#     # "p4096_s1024_rps20"
-#     # "SharingRatio71%"
-#     # "SharingRatio47%"
-#     # "SharingRatio28%"
-#     # "SharingRatio9%"
-# )
-# csv_filename="data_replaced.csv" # "data_replaced.csv", "data.csv"
-
-
-routing_policy_for_data_file_list=(
-    # "prefix"
-    # "rl"
-    # "random"
-    # "latency_predictor"
-    "all"
-)
-
 lr_scheduler_type="constant" # "exponential", "constant", "gradient_adaptive"
+hidden_dim=128 # 64, 128, 256, 128 was very very slightly better than 64
 batch_size=256
 training_epochs=50
-lr_scheduler_gamma=0.95
-excluded_pod_features="prefill_tokens,cpu_kv_cache" 
-# "prefill_tokens", "none", "cpu_kv_cache"
+sampling_ratio=0.3
+
+# excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
+# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # kinda bad
+# excluded_pod_features="gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # this is also kinda bad
+# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,inflight_requests" #
+# excluded_pod_features="gpu_kv_cache,running_requests,inflight_requests" #
+excluded_pod_features="none" #
+# kv_hit_ratio is not really helpful.... at least in 28% workload
+# excluded_request_features="input_tokens,total_tokens" # very bad
+excluded_request_features="output_tokens"
+# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,inflight_requests" # slightly better 2
+# excluded_pod_features="gpu_kv_cache,inflight_requests" # same
+
+include_gpu_features=0
 
 ## For excluded_pod_features, you need to use the same name in preprocess.py
 # 'kv_hit_ratio': f"{pod_id}-kv_hit_ratio"]
@@ -46,78 +31,37 @@ excluded_pod_features="prefill_tokens,cpu_kv_cache"
 # 'waiting_requests': f"{pod_id}-waiting_requests"]
 # 'prefill_tokens': f"{pod_id}-prefill_tokens"]
 # 'decode_tokens': f"{pod_id}-decode_tokens"]
-# 'GPU': f"{pod_id}-GPU"] = 
+# 'GPU': f"{pod_id}-GPU"] 
 
 no_normalize_features="none" # "kv_hit_ratio", "none"
 model_type="latency_predictor" # "contextual_bandit", "latency_predictor", "rl_agent"
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
-use_sampled_data=false # true, false
 analyze_behavior=false # true, false
-analyze_dataset=true # true, false
+analyze_dataset=false # true, false
 reward_decay_factor=0.91
-hidden_dim=64 # 64, 128, 256
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
 REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
 offline_learning_rate=0.001
 time_stamp=$(date +%Y%m%d_%H%M%S)
-include_gpu_features=0
+lr_scheduler_gamma=0.95
 
-# for workload_dataset in "${workload_dataset_list[@]}"; do
-# for routing_policy_for_data_file in "${routing_policy_for_data_file_list[@]}"; do
-
-
-
-# data_file="../training_data/${workload_dataset}/${routing_policy_for_data_file}/${csv_filename}"
-# data_file="../training_data/A30-8/config_sharing30%/data.csv"
-# data_file="../training_data/A30-8/config_sharing10%/data.csv"
-# data_file="../training_data/A30-8/old-version/data.csv"
-
-# data_file="../workload-and-experiment_results/MixedSharingRatio10_30_50_70%/prefix_cache_1-L20-rps8--iter4-20251027_114215/filtered-aibrix-gateway-plugins.log.csv"
-# data_file="../workload-and-experiment_results/MixedSharingRatio10_30_50_70%/prefix_cache_1-L20-rps10--iter8-20251027_133521/filtered-aibrix-gateway-plugins.log.csv"
-# data_file="../workload-and-experiment_results/MixedSharingRatio10_30_50_70%/prefix_cache_1-L20-rps12--iter8-20251027_163145/filtered-aibrix-gateway-plugins.log.csv"
-# data_file="../workload-and-experiment_results/MixedSharingRatio10_30_50_70%/random-L20-rps8--iter4-20251027_121944/filtered-aibrix-gateway-plugins.log.csv"
-# data_file="../workload-and-experiment_results/MixedSharingRatio10_30_50_70%/random-L20-rps10--iter8-20251027_143423/filtered-aibrix-gateway-plugins.log.csv"
-
-# data_file="../training_data/L20-7/merged-data/all/data_replaced.csv"
-
-
-# data_file="../workload-and-experiment_results/multiturn-chat/training_data/data_replaced.csv"
-
-# data_file="../training_data/L20-7/merged-data/all-with-mixed/data_replaced_with_gpu.csv" # use this for L20-7
-# data_file="../training_data/A30-8/data.csv" # use this for A30-8
-# data_file="../training_data/hetero/data.csv"
-# data_file="../training_data/hetero/data.csv"
-
-# data_file=../workload-and-experiment_results/NVIDIA-L40S/MixedSharingRatio10_30_50_70%/rps12/data.csv
-data_file=../workload-and-experiment_results/NVIDIA-L40S/MixedSharingRatio10_30_50_70%/rps12/latency_predictor_ttft-iter5-trained_on_L20-7_merged-data-20251117_210745/filtered-aibrix-gateway-plugins.log.csv
-# data_file=../workload-and-experiment_results/NVIDIA-L40S/MixedSharingRatio10_30_50_70%/rps12/prefix_cache_1-iter4--20251117_234347/filtered-aibrix-gateway-plugins.log.csv
-
-
-
-# data_file="../workload-and-experiment_results/multiturn-chat/prefix_cache_1-L20-rps16--iter2-20251027_215827/filtered-aibrix-gateway-plugins.log.csv"
-
-
-# data_file="../workload-and-experiment_results/config_sharing10%/latency_predictor_ttft-20251025_071353-trained_on_A30-8_config_sharing10%-iter2-20251025_075801/temp/filtered-aibrix-gateway-plugins.log.csv"
-
+# data_file=../workload-and-experiment_results/NVIDIA-A10/data.csv
+data_file=$1
 data_dir=$(dirname "${data_file}")
-
 if [ ! -f "${data_file}" ]; then
     echo "❌ Data file not found: ${data_file}"
     exit 1
 fi
 echo "✓ Found data file: ${data_file}"
 
-# data_file="../workload-and-experiment_results/SharingRatio28%/latency_predictor-trained_on_merged-data_all-20250925_190503/filtered-aibrix-gateway-plugins.log.csv"
-
 # Generate processed CSV filename automatically
 data_basename=$(basename -- "${data_file}")
 data_name="${data_basename%.*}"  # Remove .csv extension
 processed_csv="${data_dir}/${data_name}-processed.csv"
 
-
-##########################################################
+## final_mode_dir naming
 final_model_dir="${data_dir}/final_model"
 if [ "${model_type}" == "contextual_bandit" ]; then
     final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
@@ -163,8 +107,9 @@ python3 write_hyperparameters.py \
 --ttft_reward_weight ${ttft_reward_weight} \
 --reward_function ${REWARD_FUNCTION} \
 --offline_learning_rate ${offline_learning_rate} \
---excluded_pod_features ${excluded_pod_features} \
---no_normalize_features ${no_normalize_features} \
+--excluded_pod_features "${excluded_pod_features}" \
+--excluded_request_features "${excluded_request_features}" \
+--no_normalize_features "${no_normalize_features}" \
 --lr_scheduler_type ${lr_scheduler_type} \
 --training_epochs ${training_epochs} \
 --batch_size ${batch_size} \
@@ -175,7 +120,7 @@ python3 write_hyperparameters.py \
 --include_gpu_features ${include_gpu_features}
 
 echo "📄 STEP 1: start data_processor"
-python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --hyperparameters_file_path ${hyper_json} 2>&1 | tee ${data_processor_log}
+python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold 10000 2>&1 | tee ${data_processor_log}
 echo "finished data_processor"
 
 if [ ! -f "${processed_csv}" ]; then
@@ -187,16 +132,6 @@ if [ "${analyze_dataset}" = "true" ]; then
     python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset 2>&1 | tee ${dataset_analyzer_log}
 fi
 
-exit 0
-
-sampled_processed_csv="${processed_csv%.*}-sampled.csv"
-echo "Sampled processed CSV: ${sampled_processed_csv}"
-
-if [ ${use_sampled_data} = "true" ]; then
-    processed_csv="${sampled_processed_csv}"
-fi
-
-# Step 2: Setup model directory
 training_data_dir=$(dirname "${processed_csv}")
 training_data_filename=$(basename -- "${processed_csv}")
 training_data_filename="${training_data_filename%.*}"

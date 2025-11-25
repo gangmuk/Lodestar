@@ -55,6 +55,8 @@ spec:
         - sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi
         - --dtype
         - float16
+        # - --quantization
+        # - bitsandbytes
         - --disable-fastapi-docs
         - --enable-chunked-prefill
         - --enable-prefix-caching
@@ -62,31 +64,13 @@ spec:
         - "30000"
         image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.5
         imagePullPolicy: IfNotPresent
-        lifecycle:
-          preStop:
-            exec:
-              command:
-              - /bin/sh
-              - -c
-              - |
-                while true; do
-                  RUNNING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_running' | grep -v '#' | awk '{print $2}')
-                  WAITING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_waiting' | grep -v '#' | awk '{print $2}')
-                  if [ "$RUNNING" = "0.0" ] && [ "$WAITING" = "0.0" ]; then
-                    echo "Terminating: No active or waiting requests, safe to terminate" >> /proc/1/fd/1
-                    exit 0
-                  else
-                    echo "Terminating: Running: $RUNNING, Waiting: $WAITING" >> /proc/1/fd/1
-                    sleep 5
-                  fi
-                done
         livenessProbe:
           failureThreshold: 3
           httpGet:
             path: /health
             port: 8000
             scheme: HTTP
-          initialDelaySeconds: 90
+          initialDelaySeconds: 300
           periodSeconds: 5
           successThreshold: 1
           timeoutSeconds: 1
@@ -100,7 +84,7 @@ spec:
             path: /health
             port: 8000
             scheme: HTTP
-          initialDelaySeconds: 90
+          initialDelaySeconds: 300
           periodSeconds: 5
           successThreshold: 1
           timeoutSeconds: 1

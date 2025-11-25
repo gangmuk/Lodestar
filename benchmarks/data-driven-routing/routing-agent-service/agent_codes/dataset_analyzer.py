@@ -1388,7 +1388,7 @@ class RLDatasetAnalyzer:
             # Save in the same directory as the input CSV file
             input_dir = os.path.dirname(processed_csv)
             input_basename = os.path.splitext(os.path.basename(processed_csv))[0]
-            pdf_filename = f"dataset_analysis_{reward_function}_{input_basename}.pdf"
+            pdf_filename = f"{input_dir}/dataset_analysis.pdf"
             pdf_filename = os.path.join(input_dir, pdf_filename)
         else:
             # Fallback to timestamp if no path provided
