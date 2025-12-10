@@ -20,7 +20,7 @@ experiment_configs=(
     ## test
 
     # # ## SharingRatio71%, total number of requests: 1500
-    # "contextual_bandit|SharingRatio71%|${target_gpu}|7|4"
+    # "contextual_bandit|SharingRatio71%|${target_gpu}|7|8"
     # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
     # "least_request|SharingRatio71%|${target_gpu}|7|4"
@@ -28,15 +28,16 @@ experiment_configs=(
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
     # # ## SharingRatio71%, total number of requests: 1500
-    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|10"
+    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|8"
     # "latency_predictor|SharingRatio71%|${target_gpu}|8|4"
-    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|4"
+    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|2"
     # "least_latency|SharingRatio71%|${target_gpu}|8|4"
     # "least_request|SharingRatio71%|${target_gpu}|8|4"
     # "least_kv_cache|SharingRatio71%|${target_gpu}|8|4"
     # "random|SharingRatio71%|${target_gpu}|8|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
+    # "contextual_bandit|SharingRatio47%|${target_gpu}|6|8"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
@@ -45,6 +46,7 @@ experiment_configs=(
     # "random|SharingRatio47%|${target_gpu}|6|1"
 
     # # # # ## SharingRatio28%, total number of requests: 2000
+    # "contextual_bandit|SharingRatio28%|${target_gpu}|5|8"
     # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
     # "least_latency|SharingRatio28%|${target_gpu}|5|1"
@@ -53,6 +55,7 @@ experiment_configs=(
     # "random|SharingRatio28%|${target_gpu}|5|1"
 
     # # # # ## SharingRatio9%, total number of requests: 2000
+    # "contextual_bandit|SharingRatio9%|${target_gpu}|5|8"
     # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
     # "least_latency|SharingRatio9%|${target_gpu}|5|1"
@@ -61,6 +64,7 @@ experiment_configs=(
     # "random|SharingRatio9%|${target_gpu}|5|1"
 
     # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # "contextual_bandit|MixedSharingRatio10_30_50_70%|${target_gpu}|6|8"
     # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
     # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
@@ -68,6 +72,8 @@ experiment_configs=(
     # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
 )
+
+REWARD_FUNCTION="linear_simple_extended" # linear_simple_extended, latency_optimized, inverse_latency, 
 
 INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
@@ -96,6 +102,8 @@ ship_offline_training_data=0
 ENABLE_FLUSH=1
 FLUSH_PERIOD=10
 MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
+
+architecture="PrefillOnly" # PrefillOnly, Aggregated
 
 
 # Configuration for the client
@@ -309,7 +317,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
         --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
         --env WORKLOAD=${workload_name} \
-        --env ROUTING_STRATEGY=${subAlgorithm}
+        --env ROUTING_STRATEGY=${routing_policy}
     
     echo "Starting to update k8s env for aibrix-gateway-plugins"
     python3 update_k8s_env.py \
@@ -501,15 +509,33 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
 
     
     # Copy final model
-    kubectl_cp_start_time=$(date +%s)
-    echo "Copying final_model from pod..."
-    # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default
-    python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default --skip-files "tensor_dataset.pt"
-    kubectl_cp_end_time=$(date +%s)
-    echo "* copying final_model took: $((end_time - start_time))s"
+    if [ "${routing_policy}" == "contextual_bandit" || "${routing_policy}" == "latency_predictor" ]; then
+        kubectl_cp_start_time=$(date +%s)
+        echo "Copying final_model from pod..."
+        # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default
+        if [ "${routing_policy}" == "contextual_bandit" ]; then
+            model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}/${REWARD_FUNCTION}"
+        else
+            model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}"
+        fi
+        echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
+        echo "* model_dir_in_pod: ${model_dir_in_pod}"
+        python kubectl_cp_from_pod_to_host.py ${model_dir_in_pod} "${experiment_result_output_dir}/final_model/${target_gpu}/${REWARD_FUNCTION}" routing-agent-service default --skip-files "tensor_dataset.pt"
+        kubectl_cp_end_time=$(date +%s)
+        echo "* copying final_model took: $((end_time - start_time))s"
+    else
+        echo "Skipping final model copying for ${routing_policy}. It does not use any learned model."
+    fi
 
     # it needs to be run after the final model is copied to the host
-    python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv --hyperparameters_file_path ${experiment_result_output_dir}/final_model/${target_gpu}/model_config.json
+    # Find the model_config.json in the final_model directory (it may be in a subdirectory based on reward function)
+    hyperparameters_file_path=$(find "${experiment_result_output_dir}/final_model/${target_gpu}" -name "model_config.json" | head -1)
+    if [ -z "$hyperparameters_file_path" ]; then
+        echo "ERROR: Could not find model_config.json in ${experiment_result_output_dir}/final_model/${target_gpu}"
+        exit 1
+    fi
+    echo "* Using hyperparameters file: $hyperparameters_file_path"
+    python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv --hyperparameters_file_path "$hyperparameters_file_path"
 
     # python kubectl_cp_from_pod_to_host.py /tmp/latency_metrics.log "${experiment_result_output_dir}/latency_metrics.log.txt" gateway-plugins aibrix-system
 

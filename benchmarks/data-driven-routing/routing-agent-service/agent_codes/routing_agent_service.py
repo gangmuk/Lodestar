@@ -1306,37 +1306,41 @@ def graceful_shutdown(sig=None, frame=None):
     sys.exit(0)
 
 
-def init():
+def initialize():
     global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path
     
     # Model directory and offline data are GPU-specific
     if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
-        final_model_dir = "/app/final_model/NVIDIA-A30"
-        hyperparameter_file_path = f"${final_model_dir}/model_config.json"
-        offline_csv_path = "/app/NVIDIA-A30/offline_training_data.csv"
-        feature_normalization_stats_file = "/app/final_model/NVIDIA-A30/feature_normalization_statistics.csv"
+        base_dir = "/app/NVIDIA-A30/Aggregated"
+        final_model_dir = f"{base_dir}/final_model/latency_predictor"
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
     elif TARGET_GPU_MODEL == "NVIDIA-A10":
-        # Check if we need contextual_bandit or latency_predictor model
-        # Priority: Check if contextual_bandit model exists, otherwise use latency_predictor
         if ROUTING_STRATEGY == "contextual_bandit":
-            final_model_dir = f"/app/final_model/NVIDIA-A10/PrefillOnly/contextual_bandit/${REWARD_FUNCTION}"
+            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/{REWARD_FUNCTION}"
             logger.info(f"Using CONTEXTUAL BANDIT model from {final_model_dir}")
         elif ROUTING_STRATEGY == "latency_predictor":
-            final_model_dir = "/app/final_model/NVIDIA-A10/PrefillOnly/latency_predictor"
+            final_model_dir = "/app/NVIDIA-A10/PrefillOnly/final_model/latency_predictor"
             logger.info(f"Using LATENCY PREDICTOR model from {final_model_dir}")
+        else:
+            logger.error(f"Unknown routing strategy: {ROUTING_STRATEGY}")
+            assert False
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
     elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
-        hyperparameter_file_path = "/app/final_model/NVIDIA-L20/model_config.json"
-        final_model_dir = "/app/final_model/NVIDIA-L20"
-        offline_csv_path = "/app/NVIDIA-L20/offline_training_data.csv"
-        feature_normalization_stats_file = "/app/final_model/NVIDIA-L20/feature_normalization_statistics.csv"
+        base_dir = "/app/NVIDIA-L20/Aggregated"
+        final_model_dir = f"{base_dir}/final_model/latency_predictor"
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
     elif TARGET_GPU_MODEL == "hetero":
-        hyperparameter_file_path = "/app/final_model/hetero/model_config.json"
-        final_model_dir = "/app/final_model/hetero"
-        offline_csv_path = "/app/hetero/offline_training_data.csv"
-        feature_normalization_stats_file = "/app/final_model/hetero/feature_normalization_statistics.csv"
+        base_dir = "/app/hetero/Aggregated"
+        final_model_dir = f"{base_dir}/final_model/latency_predictor"
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
     else:
         logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
         assert False
@@ -1605,7 +1609,7 @@ def init():
                     logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
         
         # Start training thread
-        logger.info(f"{GREEN_COLOR}Starte scalable rl training worker in init()...{RESET_COLOR}")
+        logger.info(f"{GREEN_COLOR}Start scalable rl training worker in initialize()...{RESET_COLOR}")
         start_scalable_rl_training_worker()
         logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
         logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
@@ -1721,9 +1725,9 @@ if __name__ == "__main__":
         
     logger.info(f"Port {port} is available, starting Flask app properly!")
     
-    init()
+    initialize()
 
-    logger.info(f"{RED_COLOR}init() finished in main()...{RESET_COLOR}")
+    logger.info(f"{RED_COLOR}initialize() finished in main()...{RESET_COLOR}")
 
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model
