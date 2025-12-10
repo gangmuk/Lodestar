@@ -307,7 +307,9 @@ type RouteResponse struct {
 	ExplorationEnabled        int                `json:"exploration_enabled"`
 	OverheadLog               string             `json:"overhead_log"`
 	PredictedLatencies        map[string]float64 `json:"predicted_latencies"`
+	PredictedRewards          map[string]float64 `json:"predicted_rewards"`
 	ChosenPodPredictedLatency float64            `json:"chosen_pod_predicted_latency"`
+	ChosenPodPredictedReward  float64            `json:"chosen_pod_predicted_reward"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -707,11 +709,12 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 							klog.Errorf("prefix_cache_2, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 						}
 					}
-				} else if ctx.SubAlgorithm == "latency_predictor" && ctx.Iteration == 0 {
-					// Use prefix_cache_1 routing for iteration 0
-					klog.Infof("subAlgorithm, latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)
-					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
-				}
+				} 
+				// else if ctx.SubAlgorithm == "latency_predictor" && ctx.Iteration == 0 {
+				// 	// Use prefix_cache_1 routing for iteration 0
+				// 	klog.Infof("subAlgorithm, latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)
+				// 	targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
+				// } 
 				// else { // rl, latency_predictor with iteration > 0, or other algorithms
 				// 	// For latency_predictor with iteration > 0, the targetPod is already set by the RL agent response
 				// 	klog.Infof("Using RL agent selected pod for sub-algorithm: %s, requestID: %s", ctx.SubAlgorithm, ctx.RequestID)
@@ -733,6 +736,15 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
 				utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
+				
+				// Set predicted rewards if present (contextual_bandit provides this)
+				if len(routeResponse.PredictedRewards) > 0 {
+					utils.SetPredictedRewards(routeResponse.PredictedRewards, ctx.RequestID)
+					utils.SetChosenPodPredictedReward(routeResponse.ChosenPodPredictedReward, ctx.RequestID)
+					klog.V(5).Infof("Predicted rewards for requestID %s: %v, chosen pod reward: %f",
+						ctx.RequestID, routeResponse.PredictedRewards, routeResponse.ChosenPodPredictedReward)
+				}
+				
 				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()

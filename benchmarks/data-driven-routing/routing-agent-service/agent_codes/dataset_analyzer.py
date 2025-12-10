@@ -23,6 +23,7 @@ from preprocess import (
     calculate_rewards_simple,
     calculate_rewards_simple_extended, 
     calculate_rewards_piecewise_linear_steeper_gradient,
+    calculate_rewards_inverse_latency,
     calculate_rewards_latency_optimization
 )
 
@@ -110,6 +111,8 @@ class RLDatasetAnalyzer:
             reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         elif reward_function == 'piecewise_linear_steeper_gradient':
             reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
+        elif reward_function == 'inverse_latency':
+            reward_result = calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         elif reward_function == 'latency_optimized':
             reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         else:
@@ -2612,7 +2615,7 @@ def main():
     parser.add_argument('--avg-tpot-slo', type=float, default=50,
                        help='TPOT SLO threshold (default: 50ms)')
     parser.add_argument('--reward-function', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'latency_optimized'],
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized'],
                        default='linear_simple',
                        help='Reward function to use (default: linear_simple)')
     parser.add_argument('--ttft-reward-weight', type=float, default=0.5,
@@ -2642,6 +2645,8 @@ def main():
             reward_result = calculate_rewards_simple_extended(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         elif args.reward_function == 'piecewise_linear_steeper_gradient':
             reward_result = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
+        elif args.reward_function == 'inverse_latency':
+            reward_result = calculate_rewards_inverse_latency(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         elif args.reward_function == 'latency_optimized':
             reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         rewards = reward_result['combined_rewards']

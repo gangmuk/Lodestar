@@ -926,7 +926,9 @@ class DataEncoder:
             'actions': torch.LongTensor(
                 processed_data['actions'][sample_indices] if sample_indices is not None else processed_data['actions']
             ),
-            # 'rewards': torch.FloatTensor(processed_data['rewards']),
+            'rewards': torch.FloatTensor(
+                processed_data['rewards'][sample_indices] if sample_indices is not None else processed_data['rewards']
+            ),
             'ttft': torch.FloatTensor(
                 processed_data['ttft'][sample_indices] if sample_indices is not None else processed_data['ttft']
             ),

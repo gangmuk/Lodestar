@@ -34,7 +34,10 @@ include_gpu_features=0
 # 'GPU': f"{pod_id}-GPU"] 
 
 no_normalize_features="none" # "kv_hit_ratio", "none"
-model_type="latency_predictor" # "contextual_bandit", "latency_predictor", "rl_agent"
+
+# model_type="latency_predictor"
+model_type="contextual_bandit"
+
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 analyze_behavior=false # true, false
 analyze_dataset=false # true, false
@@ -42,7 +45,7 @@ reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
-REWARD_FUNCTION="linear_simple_extended" # "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
+REWARD_FUNCTION="latency_optimized" # "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
 offline_learning_rate=0.001
 time_stamp=$(date +%Y%m%d_%H%M%S)
 lr_scheduler_gamma=0.95
@@ -63,24 +66,24 @@ processed_csv="${data_dir}/${data_name}-processed.csv"
 
 ## final_mode_dir naming
 final_model_dir="${data_dir}/final_model"
-if [ "${model_type}" == "contextual_bandit" ]; then
-    final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
-    if [ "${excluded_pod_features}" != "" ]; then
-        final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
-    fi
-    final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
+# if [ "${model_type}" == "contextual_bandit" ]; then
+#     final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
+#     if [ "${excluded_pod_features}" != "" ]; then
+#         final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
+#     fi
+#     final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
 
-    if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
-        final_model_dir="${final_model_dir}-lrs_grad_adapt"
-    elif [ "${lr_scheduler_type}" == "exponential" ]; then
-        final_model_dir="${final_model_dir}-lrs_exp"
-    elif [ "${lr_scheduler_type}" == "plateau" ]; then
-        final_model_dir="${final_model_dir}-lrs_plateau"
-    else
-        echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
-        exit 1
-    fi
-fi
+#     if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
+#         final_model_dir="${final_model_dir}-lrs_grad_adapt"
+#     elif [ "${lr_scheduler_type}" == "exponential" ]; then
+#         final_model_dir="${final_model_dir}-lrs_exp"
+#     elif [ "${lr_scheduler_type}" == "plateau" ]; then
+#         final_model_dir="${final_model_dir}-lrs_plateau"
+#     else
+#         echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
+#         exit 1
+#     fi
+# fi
 final_model_dir="${final_model_dir}-${model_type}"
 if [ "${model_type}" == "latency_predictor" ]; then
     final_model_dir="${final_model_dir}_${latency_metric}"
@@ -165,7 +168,7 @@ cat ${offline_routing_agent_log} >> ${final_model_dir}/output.txt
 echo "final_model_dir: ${final_model_dir}" > ${final_model_dir}/full_path.txt
 echo "data_file: ${data_file}" >> ${final_model_dir}/full_path.txt
 echo "processed_csv: ${processed_csv}" >> ${final_model_dir}/full_path.txt
-if [ "${model_type}" == "contextual_bandit" ]; then
-    python csv_training_analyzer.py ${final_model_dir}/training_metrics.csv
-fi
+# if [ "${model_type}" == "contextual_bandit" ]; then
+#     python csv_training_analyzer.py ${final_model_dir}/training_metrics.csv
+# fi
 echo "Model saved to: ${final_model_dir}"

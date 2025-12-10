@@ -1965,7 +1965,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     pod_colors = dict(zip(unique_pods, colors))
 
     # Determine number of rows based on whether prediction plots are needed
-    if 'latency_predictor' in routing_policy:
+    if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
         n_rows = 30  # Includes numTrains analysis + iteration analysis + prediction plots (removed reward plot, so 31->30)
         # Rows: 0-2 (request rate), 3-5 (TTFT/TPOT/E2E), 6-15 (pod metrics), 16-17 (analysis/CDF), 19-21 (numTrains), 22-24 (pred by numTrains), 25-27 (iterations), 28-29 (pred by iterations)
         height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Rows 23 & 29 (scatter plots) are 3.0
@@ -1991,16 +1991,19 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors)
 
     # Plot numTrains analysis and prediction analysis only for latency_predictor policies
-    if 'latency_predictor' in routing_policy:
+    if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
         # numTrains analysis: rows 19-21 (shifted up by 1 after removing reward plot)
         numtrains_axes = plot_numtrains_analysis_subplots(fig, gs, df, start_row=19)
         
         # Iteration analysis: rows 25-27
         iteration_axes = plot_iteration_analysis_subplots(fig, gs, df, start_row=25)
         
-        # Prediction analysis: rows 22-24 (numTrains) and rows 28-29 (iterations)
-        prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, ax1, routing_policy)
-        ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
+        if 'latency_predictor' in routing_policy:
+            # Prediction analysis: rows 22-24 (numTrains) and rows 28-29 (iterations)
+            prediction_axes = plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_transitions, iteration_transitions, unique_pods, pod_colors, ax1, routing_policy)
+            ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
+        else:
+            prediction_axes = None
     else:
         # Only iteration analysis for non-predictor policies: rows 20-22
         numtrains_axes = None
@@ -2013,6 +2016,13 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         all_axes += list(numtrains_axes)
     if prediction_axes is not None:
         all_axes += list(prediction_axes)
+    
+    # Create a set of axes to skip for tick formatting (only if prediction_axes exist)
+    skip_axes_set = set()
+    if prediction_axes is not None and 'latency_predictor' in routing_policy:
+        ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter = prediction_axes
+        skip_axes_set = {ax_pred_scatter, ax_iter_pred_scatter}
+    
     for ax in all_axes:
         ax.tick_params(axis='both', which='major', labelsize=11)
         ax.grid(True, linestyle='--', alpha=0.3)
@@ -2020,11 +2030,7 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         # Force y-axis tick generation for axes with data
         ylim = ax.get_ylim()
         # Do not override custom ticks on the Actual vs Predicted scatter plots
-        skip_axis = False
-        if prediction_axes is not None:
-            if ax is ax_pred_scatter or ax is ax_iter_pred_scatter:
-                skip_axis = True
-        if skip_axis:
+        if ax in skip_axes_set:
             continue
         if ylim[1] > ylim[0] + 1:  # Only if there's a meaningful range
             # Force matplotlib to generate proper y-ticks

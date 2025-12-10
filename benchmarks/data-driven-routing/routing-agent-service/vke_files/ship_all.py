@@ -391,6 +391,7 @@ def main():
             "../agent_codes/data_normalizer.py": "/app/data_normalizer.py",
             "../agent_codes/encoding.py": "/app/encoding.py",
             # "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
+            "../agent_codes/neural_contextual_bandit.py": "/app/neural_contextual_bandit.py",
             "../agent_codes/rwlock.py": "/app/rwlock.py",
             "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",

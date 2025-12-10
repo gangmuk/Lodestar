@@ -86,6 +86,9 @@ const (
 
 	HeaderPredictedLatencies        = "x-predicted-latencies"
 	HeaderChosenPodPredictedLatency = "x-chosen-pod-predicted-latency"
+
+	HeaderPredictedRewards        = "x-predicted-rewards"
+	HeaderChosenPodPredictedReward = "x-chosen-pod-predicted-reward"
 )
 
 var (

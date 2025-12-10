@@ -55,8 +55,18 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
                 logger.info("Training with SB3 RL contextual bandit model")
                 import rl_contextual_bandit_sb3
                 saved_plot_path = rl_contextual_bandit_sb3.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
+            elif model_type == 'contextual_bandit':
+                logger.info("Training with Neural Contextual Bandit model")
+                import neural_contextual_bandit
+                saved_plot_path = neural_contextual_bandit.train_batch(
+                    encoded_training_dir=ENCODED_DATA_DIR,
+                    final_model_dir=final_model_dir,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    num_epochs=HYPERPARAMETERS.get('num_epochs', 10)  # More epochs for offline training
+                )
+                logger.info(f"Neural CB offline training complete")
             else:
-                logger.info("Training with contextual bandit model")
+                logger.info("Training with old contextual bandit model")
                 saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
             
             MODEL_UPDATED = True

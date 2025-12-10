@@ -623,6 +623,10 @@ var ExplorationEnabledMutex sync.RWMutex
 
 var PredictedLatenciesMutex sync.RWMutex
 var PredictedLatencies = make(map[string]map[string]float64)
+var PredictedRewardsMutex sync.RWMutex
+var PredictedRewards = make(map[string]map[string]float64)
+var ChosenPodPredictedRewardMutex sync.RWMutex
+var ChosenPodPredictedReward = make(map[string]float64)
 var ChosenPodPredictedLatencyMutex sync.RWMutex
 var ChosenPodPredictedLatency = make(map[string]float64)
 
@@ -810,6 +814,12 @@ func init() {
 
 	SelectedPodGPU = make(map[string]string)
 	SelectedPodGPUMutex = sync.RWMutex{}
+
+	PredictedRewards = make(map[string]map[string]float64)
+	PredictedRewardsMutex = sync.RWMutex{}
+
+	ChosenPodPredictedReward = make(map[string]float64)
+	ChosenPodPredictedRewardMutex = sync.RWMutex{}
 
 	klog.Info("Initialized global variables for AIBRIX RL Router")
 }
@@ -1083,6 +1093,54 @@ func CleanupPredictedLatencies(requestID string) {
 
 func GetPredictedLatenciesMutex() *sync.RWMutex {
 	return &PredictedLatenciesMutex
+}
+
+func SetPredictedRewards(predictedRewards map[string]float64, requestID string) {
+	PredictedRewardsMutex.Lock()
+	defer PredictedRewardsMutex.Unlock()
+	PredictedRewards[requestID] = predictedRewards
+	klog.V(5).Infof("SetPredictedRewards for requestID %s: %v", requestID, predictedRewards)
+}
+
+func GetPredictedRewards(requestID string) map[string]float64 {
+	PredictedRewardsMutex.RLock()
+	defer PredictedRewardsMutex.RUnlock()
+	return PredictedRewards[requestID]
+}
+
+func CleanupPredictedRewards(requestID string) {
+	PredictedRewardsMutex.Lock()
+	defer PredictedRewardsMutex.Unlock()
+	delete(PredictedRewards, requestID)
+	klog.V(5).Infof("CleanupPredictedRewards for requestID %s", requestID)
+}
+
+func GetPredictedRewardsMutex() *sync.RWMutex {
+	return &PredictedRewardsMutex
+}
+
+func SetChosenPodPredictedReward(chosenPodPredictedReward float64, requestID string) {
+	ChosenPodPredictedRewardMutex.Lock()
+	defer ChosenPodPredictedRewardMutex.Unlock()
+	ChosenPodPredictedReward[requestID] = chosenPodPredictedReward
+	klog.V(5).Infof("SetChosenPodPredictedReward for requestID %s: %f", requestID, chosenPodPredictedReward)
+}
+
+func GetChosenPodPredictedReward(requestID string) float64 {
+	ChosenPodPredictedRewardMutex.RLock()
+	defer ChosenPodPredictedRewardMutex.RUnlock()
+	if val, ok := ChosenPodPredictedReward[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetChosenPodPredictedReward for request ID: %s, not found, returning -99.0", requestID)
+	return -99.0  // Sentinel value for missing data (matches routing_agent_service.py)
+}
+
+func CleanupChosenPodPredictedReward(requestID string) {
+	ChosenPodPredictedRewardMutex.Lock()
+	defer ChosenPodPredictedRewardMutex.Unlock()
+	delete(ChosenPodPredictedReward, requestID)
+	klog.V(5).Infof("CleanupChosenPodPredictedReward for requestID %s", requestID)
 }
 
 func SetChosenPodPredictedLatency(chosenPodPredictedLatency float64, requestID string) {

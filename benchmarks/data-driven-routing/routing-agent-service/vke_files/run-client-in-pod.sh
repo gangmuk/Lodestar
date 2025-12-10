@@ -18,18 +18,26 @@ target_gpu="NVIDIA-A10"
 
 experiment_configs=(
     ## test
-    # "latency_predictor|hundred_request|${target_gpu}|1|1"
 
     # # ## SharingRatio71%, total number of requests: 1500
-    "latency_predictor|SharingRatio71%|${target_gpu}|8|7"
-    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|3"
-    # "least_latency|SharingRatio71%|${target_gpu}|8|2"
-    # "least_request|SharingRatio71%|${target_gpu}|8|2"
-    # "least_kv_cache|SharingRatio71%|${target_gpu}|8|2"
+    # "contextual_bandit|SharingRatio71%|${target_gpu}|7|4"
+    # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
+    # "least_latency|SharingRatio71%|${target_gpu}|7|4"
+    # "least_request|SharingRatio71%|${target_gpu}|7|4"
+    # "least_kv_cache|SharingRatio71%|${target_gpu}|7|4"
+    # "random|SharingRatio71%|${target_gpu}|7|2"
+
+    # # ## SharingRatio71%, total number of requests: 1500
+    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|10"
+    # "latency_predictor|SharingRatio71%|${target_gpu}|8|4"
+    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|4"
+    # "least_latency|SharingRatio71%|${target_gpu}|8|4"
+    # "least_request|SharingRatio71%|${target_gpu}|8|4"
+    # "least_kv_cache|SharingRatio71%|${target_gpu}|8|4"
     # "random|SharingRatio71%|${target_gpu}|8|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
-    "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
+    # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
     # "least_request|SharingRatio47%|${target_gpu}|6|1"
@@ -37,7 +45,7 @@ experiment_configs=(
     # "random|SharingRatio47%|${target_gpu}|6|1"
 
     # # # # ## SharingRatio28%, total number of requests: 2000
-    "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
+    # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
     # "least_latency|SharingRatio28%|${target_gpu}|5|1"
     # # "least_request|SharingRatio28%|${target_gpu}|5|1"
@@ -45,7 +53,7 @@ experiment_configs=(
     # "random|SharingRatio28%|${target_gpu}|5|1"
 
     # # # # ## SharingRatio9%, total number of requests: 2000
-    "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
+    # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
     # "least_latency|SharingRatio9%|${target_gpu}|5|1"
     # "least_request|SharingRatio9%|${target_gpu}|5|1"
@@ -53,7 +61,7 @@ experiment_configs=(
     # "random|SharingRatio9%|${target_gpu}|5|1"
 
     # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
+    # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
     # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
@@ -66,8 +74,12 @@ LOAD_PRETRAINED_MODEL=1
 
 ENABLE_ONLINE_LEARNING=1
 MAX_TOTAL_DATA=40000
-MIN_NUM_TRAINING_DATA=2000
-MIN_NUM_UPDATE_DATA=1000
+# MIN_NUM_TRAINING_DATA=2000
+# MIN_NUM_UPDATE_DATA=1000
+
+MIN_NUM_TRAINING_DATA=1000
+MIN_NUM_UPDATE_DATA=500
+
 EXPLORATION_ENABLED=0
 EXPLORATION_RATE=0.1
 
@@ -139,6 +151,23 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     subAlgorithm="${config#*${delimiter}}"
     if [ "${routing_policy}" == "scalable_rl_agent" ]; then
         final_model_dir="../training_data/scalable_rl_agent/final_model"
+    elif [ "${routing_policy}" == "contextual_bandit" ]; then
+        # Use the contextual bandit model from training
+        # When shipping: model is in Docker at /app/final_model/{GPU}/contextual_bandit/
+        # When developing: point to host path for ship_all.py to copy
+        if [ "${target_gpu}" == "NVIDIA-A10" ]; then
+            # Point to the inverse_latency trained model (will be shipped to pod)
+            final_model_dir="../workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-20251208_164438"
+            echo "✓ Using contextual bandit model: ${final_model_dir}"
+        elif [ "${target_gpu}" == "GPU-L3c" ] || [ "${target_gpu}" == "NVIDIA-L40" ] || [ "${target_gpu}" == "NVIDIA-L40S" ]; then
+            echo "Error: No contextual bandit model trained for ${target_gpu} yet"
+            echo "Exiting... 3"
+            exit 1
+        else
+            echo "Error: Unknown target GPU model for contextual_bandit: ${target_gpu}"
+            echo "Exiting... 3"
+            exit 1
+        fi
     else
         if [ "${target_gpu}" == "GPU-L3c" ] || [ "${target_gpu}" == "NVIDIA-L40" ] || [ "${target_gpu}" == "NVIDIA-L40S" ]; then
             # final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
@@ -171,10 +200,19 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             exit 1
         fi
 
-        if [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
-            echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
-            echo "Exiting... 6"
-            exit 1
+        # Check for model weights based on routing policy
+        if [ "${routing_policy}" == "contextual_bandit" ]; then
+            if [ ! -f "${final_model_dir}/reward_net.pth" ]; then
+                echo "Error: reward_net.pth does not exist: ${final_model_dir}/reward_net.pth"
+                echo "Exiting... 6"
+                exit 1
+            fi
+        elif [ "${routing_policy}" == "latency_predictor" ]; then
+            if [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
+                echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
+                echo "Exiting... 6"
+                exit 1
+            fi
         fi
 
         if [ ! -f "${final_model_dir}/feature_normalization_statistics.csv" ]; then
@@ -262,6 +300,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --container routing-agent \
         --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
         --env MIN_NUM_TRAINING_DATA=${MIN_NUM_TRAINING_DATA} \
+        --env MIN_NUM_UPDATE_DATA=${MIN_NUM_UPDATE_DATA} \
         --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
         --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR} \
         --env EXPLORATION_RATE=${EXPLORATION_RATE} \
@@ -269,7 +308,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env MAX_TOTAL_DATA=${MAX_TOTAL_DATA} \
         --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
         --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
-        --env WORKLOAD=${workload_name}
+        --env WORKLOAD=${workload_name} \
+        --env ROUTING_STRATEGY=${subAlgorithm}
     
     echo "Starting to update k8s env for aibrix-gateway-plugins"
     python3 update_k8s_env.py \
@@ -278,8 +318,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --container gateway-plugin \
         --env ENABLE_FLUSH=${ENABLE_FLUSH} \
         --env FLUSH_PERIOD=${FLUSH_PERIOD} \
-        --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH} \
-        --env useRealRequest=1
+        --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
+        # --env useRealRequest=1
         # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
 
     sleep 2
