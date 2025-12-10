@@ -219,6 +219,41 @@ def calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values
 
 
 
+def calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight):
+    """
+    Inverse latency reward function: reward = k / (latency + offset)
+    
+    This is a smooth, monotonic, convex function that:
+    - Heavily rewards low latencies (hyperbolic curve)
+    - Naturally penalizes high latencies (approaches 0)
+    - No discontinuities or thresholds
+    - Exhibits risk-seeking behavior (Jensen's inequality)
+    
+    Scaling:
+    - TTFT: reward = 1000 / (ttft + 100) → range [0.1, 10.0]
+    - TPOT: reward = 100 / (tpot + 10) → range [0.1, 10.0]
+    
+    Combined reward range (with weight=2.0): [0.2, 20.0]
+    Normalized to [-1, +1]: (raw - 10.1) / 9.9
+    """
+    
+    # Avoid division by zero with small offset
+    # Scale factor chosen so typical latencies give rewards in [0, 10] range
+    ttft_raw = 1000.0 / (ttft_values + 100.0)  # Range: [10.0, 0.1] for [0ms, 10000ms]
+    tpot_raw = 100.0 / (tpot_values + 10.0)    # Range: [10.0, 0.1] for [0ms, 1000ms]
+    
+    # Normalize to similar range as other reward functions [-1, +1]
+    # Map [0.1, 10.0] → [-1, +1]
+    ttft_rewards = (ttft_raw - 5.05) / 4.95  # Center around 0, range ≈ [-1, +1]
+    tpot_rewards = (tpot_raw - 5.05) / 4.95
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
 def calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight):
     """
     Latency optimization reward function that continuously rewards lower latency.
@@ -496,6 +531,8 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 reward = calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
             elif reward_function == "latency_optimized":
                 reward = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+            elif reward_function == "inverse_latency":
+                reward = calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
             else:
                 logger.error(f"Unknown reward function: {reward_function}")
                 assert False

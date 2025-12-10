@@ -33,6 +33,7 @@ random_routing="random"
 least_kv_cache_routing="least_kv_cache"
 least_latency_routing="least_latency"
 least_request_routing="least_request"
+contextual_bandit_routing="contextual_bandit"
 
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
@@ -60,6 +61,8 @@ def categorize_strategy(strategy_name):
         return least_latency_routing
     elif least_request_routing in strategy_lower:
         return least_request_routing
+    elif contextual_bandit_routing in strategy_lower:
+        return contextual_bandit_routing
     else:
         return strategy_name  # Return original if no category match
 
@@ -508,6 +511,8 @@ def get_strategy_priority(strategy_name):
         return (9, strategy_name)
     elif least_request_routing in strategy_name.lower():
         return (10, strategy_name)
+    elif contextual_bandit_routing in strategy_name.lower():
+        return (11, strategy_name)
     else:
         return (11, strategy_name)  # Others last
 
@@ -537,6 +542,8 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']  # Slate blue family
     elif least_request_routing in strategy_name.lower():
         base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']  # Cyan/Teal family
+    elif contextual_bandit_routing in strategy_name.lower():
+        base_colors = ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db']  # Slate blue family
     else:
         base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
     # Use modulo to cycle through colors if more strategies than colors
@@ -559,7 +566,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
     # Create color dictionary with grouped coloring
     color_dict = {}
-    category_counts = {rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0, preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0, random_routing: 0, least_kv_cache_routing: 0, least_latency_routing: 0, least_request_routing: 0, 'other': 0}
+    category_counts = {rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0, preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0, random_routing: 0, least_kv_cache_routing: 0, least_latency_routing: 0, least_request_routing: 0, contextual_bandit_routing: 0, 'other': 0}
 
     for strategy in strategy_order:
         if rl_naive_routing in strategy.lower():
@@ -595,17 +602,21 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif least_request_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[least_request_routing])
             category_counts[least_request_routing] += 1
+        elif contextual_bandit_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[contextual_bandit_routing])
+            category_counts[contextual_bandit_routing] += 1
         else:
             color_dict[strategy] = get_strategy_color(strategy, category_counts['other'])
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 18))  # Increased height for 4 rows
+    fig = plt.figure(figsize=(18, 24))  # Increased height for 4 rows with more spacing
 
     # MODIFIED GridSpec: 4 rows (CDFs, bar chart, time series graphs)
+    # Increased height_ratio for row 1 (bar chart) and increased hspace for better spacing
     gs = GridSpec(4, 9, figure=fig,
-                  height_ratios=[1, 1, 1, 1],
-                  hspace=0.5,
+                  height_ratios=[1, 1.5, 1, 1],
+                  hspace=0.9,
                   wspace=0.35)
     
     # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
@@ -793,9 +804,9 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     # Add value labels for TTFT
     for bar, value in zip(bars1, ttft_values):
         if value > 0:
-            ax.text(bar.get_x() + bar.get_width()/2., value + max_ttft * 0.05, 
+            ax.text(bar.get_x() + bar.get_width()/2. - 0.3, value + max_ttft * 0.05, 
                    f'{value:.0f}', rotation=45, ha='left', va='bottom', 
-                   fontsize=18, fontweight='bold', color='#222266')
+                   fontsize=14, color='#222266')
     
     # Create TPOT bars on right y-axis
     ax2 = ax.twinx()
@@ -805,9 +816,9 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     # Add value labels for TPOT
     for bar, value in zip(bars2, tpot_values):
         if value > 0:
-            ax2.text(bar.get_x() + bar.get_width()/2., value + max_tpot * 0.05, 
+            ax2.text(bar.get_x() + bar.get_width()/2. - 0.15, value + max_tpot * 0.05, 
                     f'{value:.0f}', rotation=45, ha='left', va='bottom', 
-                    fontsize=18, fontweight='bold', color='#226622')
+                    fontsize=12, color='#226622')
     
     # Combine all positions and labels for x-axis
     all_positions = ttft_positions + tpot_positions
@@ -819,15 +830,12 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     
     # Set up x-axis with metric names on each bar
     ax.set_xticks(all_positions_sorted)
-    ax.set_xticklabels(all_labels_sorted, fontsize=16, rotation=0)
+    ax.set_xticklabels(all_labels_sorted, fontsize=10, rotation=45)
     
     # Add strategy names as text annotations below the bars
-    strategy_labels = [s.split('-')[0] for s in strategies]  # Shorten strategy names
+    strategy_labels = [s.split('-')[0] + "\n(" + s.split('-')[-1] + ")" for s in strategies]  # Shorten strategy names
     for i, (center, label) in enumerate(zip(group_centers, strategy_labels)):
-        ax.text(center, -0.15, label, 
-               ha='center', va='top',
-               fontsize=24,
-               transform=ax.get_xaxis_transform())
+        ax.text(center-0.6, -0.15, label, ha='center', va='top', fontsize=14, transform=ax.get_xaxis_transform(), rotation=45) # routing strategy xtick
     
     # Styling
     ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize, color='#222266')
@@ -835,14 +843,14 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     ax.set_title('Average TTFT and TPOT Latency Comparison', fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
     ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#226622')
+    ax2.tick_params(axis='x')
     ax.tick_params(axis='x', which='both', length=5)
     ax.grid(axis='y', alpha=0.3)
     ax.set_ylim(0, max_ttft * 1.6)
     ax2.set_ylim(0, max_tpot * 1.6)
     
     # Add legend
-    legend_elements = [Patch(facecolor=color_dict[s], edgecolor='black', label=s.split('-')[0]) 
-                      for s in strategies]
+    legend_elements = [Patch(facecolor=color_dict[s], edgecolor='black', label=s.split('-')[0] + "-" + s.split('-')[-1]) for s in strategies]
     ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=min(3, n_strategies))
 
 

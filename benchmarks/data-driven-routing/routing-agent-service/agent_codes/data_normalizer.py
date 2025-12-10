@@ -693,6 +693,10 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         reward_result = preprocess.calculate_rewards_piecewise_linear_steeper_gradient(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     elif reward_function == 'gradual_within_slo':
         reward_result = preprocess.calculate_rewards_gradual_within_slo(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'inverse_latency':
+        reward_result = preprocess.calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'latency_optimized':
+        reward_result = preprocess.calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     else:
         logger.error(f"Unknown reward function: {reward_function}")
         raise ValueError(f"Unknown reward function: {reward_function}")
@@ -842,7 +846,7 @@ def main():
     parser.add_argument('input_csv', help='Input processed CSV file')
     parser.add_argument('--output', '-o', help='Output normalized CSV file (auto-generated if not specified)')
     parser.add_argument('--reward-function', '-r', default='linear_simple', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient'],
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized'],
                        help='Reward function to use')
     parser.add_argument('--stats-file', '-s', help='Statistics file for saving/loading normalization stats')
     parser.add_argument('--hyperparameters', '-H', help='JSON file containing model hyperparameters')

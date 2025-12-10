@@ -63,6 +63,8 @@ feature_normalization_stats_file = None
 final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
+ROUTING_STRATEGY = os.getenv("ROUTING_STRATEGY", "latency_predictor")
+REWARD_FUNCTION = os.getenv("REWARD_FUNCTION", "linear_simple_extended")
 
 # hyperparameter_file_path = '/app/final_model/model_config.json'
 # final_model_dir = "/app/final_model"
@@ -89,6 +91,7 @@ PRINT_ONCE_AT_THE_FIRST_REQUEST = True
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
 SCALABLE_RL_AGENT = None  # New scalable RL agent (pod-independent) - for 'scalable_rl_agent' subAlgorithm
 LATENCY_PREDICTOR = None  # Latency predictor model - for 'latency_predictor' subAlgorithm
+CONTEXTUAL_BANDIT_AGENT = None  # Neural Contextual Bandit - for 'contextual_bandit' subAlgorithm
 # RWLock enables concurrent predictions (readers) with exclusive updates (writer)
 # - Predictions: use rwlock.read() for high concurrency
 # - Updates: use rwlock.write() for exclusive access
@@ -201,10 +204,6 @@ def handle_infer():
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
         logger.info(f"First request starting time set to {first_request_starting_time}")
-    # if NUM_TRAINS == 0:
-    #     logger.warning("No trained model available, please call /flush to train first")
-    #     return jsonify({"error": "No trained model available, please call /flush to train first"}), 503
-    
     handle_infer_start_time = time.time()
     try:
         # Get the log message as a string from the request body
@@ -326,7 +325,7 @@ def handle_infer():
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
-        if subAlgorithm in {'latency_predictor', 'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1'}:
+        if subAlgorithm == 'latency_predictor' or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2'}:
             global LATENCY_PREDICTOR, LOAD_PRETRAINED_MODEL
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             # Only acquire expensive write lock if truly uninitialized
@@ -394,12 +393,63 @@ def handle_infer():
                     smoothing_threshold=SMOOTHING_THRESHOLD,
                     generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
-                
-        elif subAlgorithm == 'contextual_bandit' or subAlgorithm == 'rl_naive':
-            logger.info(f"subAlgorithm: {subAlgorithm}, Using contextual bandit model for inference (request_id: {request_id})")
-            result, infer_from_tensor_overhead_summary = simpler_contextual_bandit.infer_from_tensor(tensor_data, request_id, MODEL_UPDATED, HYPERPARAMETERS, final_model_dir)
-            result['predicted_latencies'] = {pod_id: -1 for pod_id in sorted_all_pod_ids}
-            result['chosen_pod_predicted_latency'] = -1
+        elif subAlgorithm == 'contextual_bandit':
+            # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
+            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
+            
+            global CONTEXTUAL_BANDIT_AGENT
+            import neural_contextual_bandit
+            
+            # OPTIMIZATION: Check without lock first (fast path for initialized state)
+            if CONTEXTUAL_BANDIT_AGENT is None:
+                contextual_bandit_write_lock_start = time.time()
+                with LATENCY_PREDICTOR_LOCK.write():  # Reuse existing lock infrastructure
+                    handle_infer_overhead_summary['contextual_bandit_write_lock'] = time.time() - contextual_bandit_write_lock_start
+                    
+                    # Double-check after acquiring lock
+                    if CONTEXTUAL_BANDIT_AGENT is None:
+                        contextual_bandit_create_start = time.time()
+                        state_dims = {
+                            'pod_features': tensor_data['pod_features_with_staleness'].shape[2],
+                            'kv_hit_ratios': tensor_data['kv_hit_ratios'].shape[2],
+                            'request_features': tensor_data['request_features'].shape[1],
+                            'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
+                        }
+                        
+                        logger.info(f"🔄 One-time initialization of CONTEXTUAL_BANDIT_AGENT with state_dims={state_dims}")
+                        
+                        # NOTE: We don't create the agent here - neural_contextual_bandit.infer_from_tensor() 
+                        # handles lazy initialization and caching internally
+                        CONTEXTUAL_BANDIT_AGENT = "initialized"  # Marker to prevent re-initialization
+                        
+                        handle_infer_overhead_summary["contextual_bandit_create"] = time.time() - contextual_bandit_create_start
+            
+            # Inference with the neural contextual bandit
+            contextual_bandit_infer_start = time.time()
+            result, infer_from_tensor_overhead_summary = neural_contextual_bandit.infer_from_tensor(
+                tensor_data=tensor_data,
+                request_id=request_id,
+                model_updated=MODEL_UPDATED,
+                HYPERPARAMETERS=HYPERPARAMETERS,
+                final_model_dir=final_model_dir,
+                sorted_all_pod_ids=sorted_all_pod_ids
+            )
+            # Reset MODEL_UPDATED after agent has processed it (to avoid reloading on every request)
+            if MODEL_UPDATED:
+                MODEL_UPDATED = False
+            handle_infer_overhead_summary['contextual_bandit_infer'] = time.time() - contextual_bandit_infer_start
+            
+            # Format result to match expected interface
+            # The neural contextual bandit returns 'selected_pod_index' and 'predicted_rewards'
+            # We need to add the missing fields that routing service expects
+            result['pod_probabilities'] = {
+                sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids) 
+                for i in range(len(sorted_all_pod_ids))
+            }
+            result['explore_mask'] = 1 if result.get('epsilon', 0) > 0 else 0
+            
+            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['confidence']}, epsilon={result.get('epsilon', 0):.3f}")
+            
         elif subAlgorithm == 'rl_agent':
             from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
             # === OLD RL AGENT (entire cluster as input state) ===
@@ -513,8 +563,6 @@ def handle_infer():
                 'pod_probabilities': pod_probabilities,
                 'confidence': confidence,
                 'explore_mask': 1,  # RL always explores
-                'predicted_latencies': {pod_id: -1 for pod_id in sorted_all_pod_ids},
-                'chosen_pod_predicted_latency': -1,
             }
             
             logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
@@ -619,8 +667,10 @@ def handle_infer():
             "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
             "overhead_log": overhead_log,
-            "predicted_latencies": result['predicted_latencies'],
-            "chosen_pod_predicted_latency": result['chosen_pod_predicted_latency'],
+            "predicted_latencies": result.get('predicted_latencies', {pod_id: -99 for pod_id in sorted_all_pod_ids}),
+            "chosen_pod_predicted_latency": result.get('chosen_pod_predicted_latency', -99),
+            "predicted_rewards": result.get('predicted_rewards', {pod_id: -99 for pod_id in sorted_all_pod_ids}),
+            "chosen_pod_predicted_reward": result.get('chosen_pod_predicted_reward', -99),
             "smoothing": result.get('smoothing_mask', 0),  # Include smoothing indicator
         }
         
@@ -710,7 +760,7 @@ def online_train_routine():
             ############################################################################
             # Handle missing values proactively to avoid intermittent failures due to dynamic pod columns
             try:
-                import numpy as np
+                # numpy already imported as np at top of file
                 numeric_columns = training_df_copy.select_dtypes(include=[np.number]).columns
                 total_missing_numeric = int(training_df_copy[numeric_columns].isna().sum().sum()) if len(numeric_columns) > 0 else 0
                 if total_missing_numeric > 0:
@@ -843,10 +893,87 @@ def online_train_routine():
                 swap_time = time.time() - swap_start_time
                 logger.info(f"Swapped model reference (atomic), swap time: {swap_time*1000:.2f}ms")
                 logger.info(f"✅ Model reload complete with ZERO inference blocking during load")
+        
+        elif model_type == 'contextual_bandit':
+            logger.info(f"Training Neural Contextual Bandit on entire dataset (offline + online: {NUM_NEW_DATA} new)")
+            
+            # Get a copy of TRAINING_DF for training (same as latency predictor)
+            with TRAINING_DF_LOCK:
+                if TRAINING_DF is None or len(TRAINING_DF) == 0:
+                    logger.error("TRAINING_DF is empty, cannot train")
+                    TRAINING_RIGHT_NOW = False
+                    return
+                training_df_copy = TRAINING_DF.copy()
+                total_samples = len(training_df_copy)
+                current_offline_size = OFFLINE_DATA_SIZE
+            
+            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {total_samples - current_offline_size})")
+            
+            # Remove overflow if needed (same logic as latency predictor)
+            if total_samples > MAX_TOTAL_DATA and current_offline_size > 0:
+                overflow = total_samples - MAX_TOTAL_DATA
+                to_remove = min(overflow, current_offline_size)
+                training_df_copy = training_df_copy.iloc[to_remove:].reset_index(drop=True)
+                logger.info(f"⚠️  Removed {to_remove} oldest offline samples")
+                
+                with TRAINING_DF_LOCK:
+                    TRAINING_DF = training_df_copy.copy()
+                    OFFLINE_DATA_SIZE = max(0, current_offline_size - to_remove)
+                
+                total_samples = len(training_df_copy)
+            
+            # Drop metadata columns
+            metadata_cols_to_drop = ['source_file', 'reward_function_used']
+            cols_present_to_drop = [c for c in metadata_cols_to_drop if c in training_df_copy.columns]
+            if cols_present_to_drop:
+                training_df_copy = training_df_copy.drop(columns=cols_present_to_drop)
+            
+            # Handle missing values (numpy already imported at top of file)
+            numeric_columns = training_df_copy.select_dtypes(include=[np.number]).columns
+            total_missing_numeric = int(training_df_copy[numeric_columns].isna().sum().sum()) if len(numeric_columns) > 0 else 0
+            if total_missing_numeric > 0:
+                logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0")
+                training_df_copy[numeric_columns] = training_df_copy[numeric_columns].fillna(0)
+            
+            # Normalize the entire dataset (reuse same logic)
+            normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
+                training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
+            
+            # Normalize features
+            for feature in normalizable_features:
+                if feature in pod_feature_types:
+                    matching_columns = [col for col in training_df_copy.columns if data_normalizer._extract_pod_feature_type(col) == feature]
+                    for col in matching_columns:
+                        data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
+                else:
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=False)
+            
+            # Get sorted pod IDs
+            sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
+            logger.info(f"Training with pods: {sorted_all_pod_ids}")
+            
+            # Encode the entire dataset
+            encode_start_time = time.time()
+            os.makedirs(ENCODED_DATA_DIR, exist_ok=True)
+            encoded_training_dir = os.path.join(ENCODED_DATA_DIR, "full_training_data")
+            encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, HYPERPARAMETERS)
+            logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
+            
+            # Train Neural Contextual Bandit
+            train_start_time = time.time()
+            import neural_contextual_bandit
+            neural_contextual_bandit.train_batch(
+                encoded_training_dir=encoded_training_dir,
+                final_model_dir=final_model_dir,
+                HYPERPARAMETERS=HYPERPARAMETERS,
+                num_epochs=HYPERPARAMETERS.get('num_epochs', 3)
+            )
+            logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
+        
         else:
-            logger.info(f"Training with contextual bandit model")
-            simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, ENABLE_ONLINE_LEARNING)
-            logger.info(f"train_contextual_bandit done")
+            logger.error(f"Unknown MODEL_TYPE: {model_type}")
+            TRAINING_RIGHT_NOW = False
+            return
     except Exception as e:
         import traceback
         logger.error(f"Error during training: {e}")
@@ -1186,35 +1313,29 @@ def init():
     if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
         final_model_dir = "/app/final_model/NVIDIA-A30"
         hyperparameter_file_path = f"${final_model_dir}/model_config.json"
-        offline_csv_path = "/app/offline_training_data_NVIDIA-A30.csv"
+        offline_csv_path = "/app/NVIDIA-A30/offline_training_data.csv"
         feature_normalization_stats_file = "/app/final_model/NVIDIA-A30/feature_normalization_statistics.csv"
     elif TARGET_GPU_MODEL == "NVIDIA-A10":
-        # if WORKLOAD not in {"MixedSharingRatio10_30_50_70%", "SharingRatio71%"}:
-        #     WORKLOAD = "MixedSharingRatio10_30_50_70%"
-        # logger.info(f"WORKLOAD: {WORKLOAD}")
-        # os.system(f"mv /app/final_model/NVIDIA-A10/{WORKLOAD}/* /app/final_model/NVIDIA-A10")
-        # os.system(f"rm -r /app/final_model/NVIDIA-A10/MixedSharingRatio10_30_50_70%")
-        # os.system(f"rm -r /app/final_model/NVIDIA-A10/SharingRatio71%")
-        # offline_csv_path = f"/app/offline_training_data_NVIDIA-A10_{WORKLOAD}.csv"
-        # os.system(f"mv /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0/* /app/final_model/NVIDIA-A10")
-        # logger.info(f"mv /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0/* /app/final_model/NVIDIA-A10")
-        # os.system(f"rm -r /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0")
-        # logger.info(f"rm -r /app/final_model/NVIDIA-A10/maxTokens_1-maxTokensStd_0")
-        
-        feature_normalization_stats_file = "/app/final_model/NVIDIA-A10/feature_normalization_statistics.csv"
-        # feature_normalization_stats_file = "/app/final_model/GPU-L3c/feature_normalization_statistics.csv"
-        final_model_dir = f"/app/final_model/NVIDIA-A10"
+        # Check if we need contextual_bandit or latency_predictor model
+        # Priority: Check if contextual_bandit model exists, otherwise use latency_predictor
+        if ROUTING_STRATEGY == "contextual_bandit":
+            final_model_dir = f"/app/final_model/NVIDIA-A10/PrefillOnly/contextual_bandit/${REWARD_FUNCTION}"
+            logger.info(f"Using CONTEXTUAL BANDIT model from {final_model_dir}")
+        elif ROUTING_STRATEGY == "latency_predictor":
+            final_model_dir = "/app/final_model/NVIDIA-A10/PrefillOnly/latency_predictor"
+            logger.info(f"Using LATENCY PREDICTOR model from {final_model_dir}")
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-        offline_csv_path = "/app/offline_training_data_NVIDIA-A10_maxTokens_1-maxTokensStd_0.csv"
-    elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S":
-        hyperparameter_file_path = "/app/final_model/GPU-L3c/model_config.json"
-        final_model_dir = "/app/final_model/GPU-L3c"
-        offline_csv_path = "/app/offline_training_data_GPU-L3c.csv"
-        feature_normalization_stats_file = "/app/final_model/GPU-L3c/feature_normalization_statistics.csv"
+        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+        offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+    elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
+        hyperparameter_file_path = "/app/final_model/NVIDIA-L20/model_config.json"
+        final_model_dir = "/app/final_model/NVIDIA-L20"
+        offline_csv_path = "/app/NVIDIA-L20/offline_training_data.csv"
+        feature_normalization_stats_file = "/app/final_model/NVIDIA-L20/feature_normalization_statistics.csv"
     elif TARGET_GPU_MODEL == "hetero":
         hyperparameter_file_path = "/app/final_model/hetero/model_config.json"
         final_model_dir = "/app/final_model/hetero"
-        offline_csv_path = "/app/offline_training_data_hetero.csv"
+        offline_csv_path = "/app/hetero/offline_training_data.csv"
         feature_normalization_stats_file = "/app/final_model/hetero/feature_normalization_statistics.csv"
     else:
         logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")

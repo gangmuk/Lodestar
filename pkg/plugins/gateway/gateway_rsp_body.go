@@ -454,6 +454,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupExploration(routerCtx.RequestID)
 			utils.CleanupPredictedLatencies(routerCtx.RequestID)
 			utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
+			utils.CleanupPredictedRewards(routerCtx.RequestID)
+			utils.CleanupChosenPodPredictedReward(routerCtx.RequestID)
 			utils.CleanupEndToEndOverheadForRequest(routerCtx.RequestID)
 			utils.CleanupSelectedPodGPU(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
@@ -845,9 +847,11 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	selectedPodGPU, _ := utils.GetSelectedPodGPU(routerCtx.RequestID)
 	// Get predicted latencies
 	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
+	predictedRewards := utils.GetPredictedRewards(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
+	headers, jsonStrings["predictedRewards"] = addMetricToHeaders(headers, HeaderPredictedRewards, predictedRewards, utils.GetPredictedRewardsMutex())
 	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s@selectedPodGPU@%s",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s@selectedPodGPU@%s",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -873,6 +877,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		explorationEnabled,
 		jsonStrings["predictedLatencies"],
 		utils.GetChosenPodPredictedLatency(routerCtx.RequestID),
+		jsonStrings["predictedRewards"],
+		utils.GetChosenPodPredictedReward(routerCtx.RequestID),
 		routerCtx.Iteration,
 		routerCtx.SubAlgorithm,
 		prev_reward,

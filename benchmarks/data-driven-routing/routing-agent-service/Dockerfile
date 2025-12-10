@@ -35,17 +35,17 @@ COPY start.sh .
 
 ################################################################################################################
 #### GPU-L3c, NVIDIA-L20
-COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft-20251101_205621 final_model/GPU-L3c
-COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv offline_training_data_GPU-L3c.csv
+COPY training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft-20251101_205621 final_model/NVIDIA-L20
+COPY training_data/L20-7/merged-data/all-with-mixed/data_replaced-processed.csv NVIDIA-L20/offline_training_data.csv
 
 #### NVIDIA-A30
 # COPY training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743 final_model/NVIDIA-A30
 COPY training_data/A30-8/final_model-latency_predictor_ttft-20251101_205321 final_model/NVIDIA-A30
-COPY training_data/A30-8/data-processed.csv offline_training_data_NVIDIA-A30.csv
+COPY training_data/A30-8/data-processed.csv NVIDIA-A30/offline_training_data.csv
 
-#### hetero
+#### hetero: NVIDIA-L20*7 and NVIDIA-A30*8
 COPY training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60 final_model/hetero
-COPY training_data/hetero/data-processed.csv offline_training_data_hetero.csv
+COPY training_data/hetero/data-processed.csv hetero/offline_training_data.csv
 
 #### NVIDIA-A10
 COPY workload-and-experiment_results/NVIDIA-A10/MixedSharingRatio10_30_50_70%/rps5/final_model-latency_predictor_ttft-20251120_173020 final_model/NVIDIA-A10/MixedSharingRatio10_30_50_70%
@@ -57,10 +57,15 @@ COPY workload-and-experiment_results/NVIDIA-A10/SharingRatio71%/rps6.5/data-proc
 # CRITICAL FIX: Copy model directly to /app/final_model/NVIDIA-A10/ (not a subdirectory)
 # to match the path expected by routing_agent_service.py
 # COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-0 final_model/NVIDIA-A10
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-without-output final_model/NVIDIA-A10/
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/data-processed.csv offline_training_data_NVIDIA-A10_maxTokens_1-maxTokensStd_0.csv
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-without-output final_model/NVIDIA-A10/PrefillOnly/latency_predictor
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A10/PrefillOnly/offline_training_data.csv
 
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-with-output final_model/NVIDIA-A10/with-output_tokens
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-with-output final_model/NVIDIA-A10/latency_predictor/PrefillOnly/with-output_tokens
+
+## contextual bandit (inverse_latency reward function)
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-linear_simple_extended final_model/NVIDIA-A10/PrefillOnly/contextual_bandit/linear_simple_extended
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-inverse_latency final_model/NVIDIA-A10/PrefillOnly/contextual_bandit/inverse_latency
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-latency_optimized final_model/NVIDIA-A10/PrefillOnly/contextual_bandit/latency_optimized
 
 ################################################################################################################
 
