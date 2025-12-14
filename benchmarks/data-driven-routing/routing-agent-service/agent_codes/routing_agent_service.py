@@ -446,7 +446,8 @@ def handle_infer():
                 sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids) 
                 for i in range(len(sorted_all_pod_ids))
             }
-            result['explore_mask'] = 1 if result.get('epsilon', 0) > 0 else 0
+            # Use the actual exploration flag from the agent, not just whether epsilon > 0
+            result['explore_mask'] = 1 if result.get('explored', False) else 0
             
             logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['confidence']}, epsilon={result.get('epsilon', 0):.3f}")
             

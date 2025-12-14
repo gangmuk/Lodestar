@@ -697,6 +697,38 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         reward_result = preprocess.calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     elif reward_function == 'latency_optimized':
         reward_result = preprocess.calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'simple_latency_minimization':
+        reward_result = preprocess.calculate_rewards_simple_latency_minimization(
+            ttft_values, tpot_values, ttft_reward_weight
+        )
+    elif reward_function == 'negative_reciprocal':
+        reward_result = preprocess.calculate_rewards_negative_reciprocal(
+            ttft_values, tpot_values, ttft_reward_weight
+        )
+    elif reward_function == 'negative_linear':
+        reward_result = preprocess.calculate_rewards_negative_linear(
+            ttft_values, tpot_values, ttft_reward_weight
+        )
+    elif reward_function == 'negative_squared':
+        reward_result = preprocess.calculate_rewards_negative_squared(
+            ttft_values, tpot_values, ttft_reward_weight
+        )
+    elif reward_function == 'quantile_based':
+        # Check if input_tokens and output_tokens are available
+        if 'input_tokens' in df.columns and 'output_tokens' in df.columns:
+            input_tokens = df['input_tokens'].values
+            output_tokens = df['output_tokens'].values
+            reward_result = preprocess.calculate_rewards_quantile_based(
+                ttft_values, tpot_values, input_tokens, output_tokens, ttft_reward_weight
+            )
+        else:
+            logger.error("quantile_based reward function requires input_tokens and output_tokens columns")
+            logger.error("Falling back to latency_optimized for post-processing")
+            reward_result = preprocess.calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'context_aware':
+        logger.error("context_aware reward function requires detailed context data (input_tokens, kv_cache_hit_ratios) not available in this tool")
+        logger.error("Falling back to latency_optimized for post-processing")
+        reward_result = preprocess.calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
     else:
         logger.error(f"Unknown reward function: {reward_function}")
         raise ValueError(f"Unknown reward function: {reward_function}")
@@ -845,8 +877,8 @@ def main():
     parser = argparse.ArgumentParser(description='Normalize processed CSV data for LLM routing')
     parser.add_argument('input_csv', help='Input processed CSV file')
     parser.add_argument('--output', '-o', help='Output normalized CSV file (auto-generated if not specified)')
-    parser.add_argument('--reward-function', '-r', default='linear_simple', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized'],
+    parser.add_argument('--reward-function', '-r', default='simple_latency_minimization', 
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized', 'context_aware', 'quantile_based', 'simple_latency_minimization', 'negative_reciprocal', 'negative_linear', 'negative_squared'],
                        help='Reward function to use')
     parser.add_argument('--stats-file', '-s', help='Statistics file for saving/loading normalization stats')
     parser.add_argument('--hyperparameters', '-H', help='JSON file containing model hyperparameters')

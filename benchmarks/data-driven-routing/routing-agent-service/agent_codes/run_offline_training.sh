@@ -44,8 +44,8 @@ analyze_dataset=false # true, false
 reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
-ttft_reward_weight=2.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards
-REWARD_FUNCTION="latency_optimized" # "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
+ttft_reward_weight=0.7 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
+REWARD_FUNCTION="negative_reciprocal" # "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
 offline_learning_rate=0.001
 time_stamp=$(date +%Y%m%d_%H%M%S)
 lr_scheduler_gamma=0.95
@@ -123,8 +123,10 @@ python3 write_hyperparameters.py \
 --include_gpu_features ${include_gpu_features}
 
 echo "📄 STEP 1: start data_processor"
+start_time=$(date +%s)
 python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold 10000 2>&1 | tee ${data_processor_log}
-echo "finished data_processor"
+end_time=$(date +%s)
+echo "finished data_processor in $((end_time - start_time)) seconds"
 
 if [ ! -f "${processed_csv}" ]; then
     echo "❌ Failed to create processed CSV: ${processed_csv}"

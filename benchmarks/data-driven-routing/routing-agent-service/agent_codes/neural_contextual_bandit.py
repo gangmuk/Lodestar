@@ -124,6 +124,7 @@ class NeuralContextualBandit:
             'epsilons': [],
             # Reward function quality tracking
             'reward_latency_pairs': [],  # [(reward, latency), ...] for function analysis
+            'reward_latency_input_tuples': [],  # [(reward, latency, input_tokens), ...] for stratified analysis
             'ttft_values': [],  # Raw TTFT values
             'tpot_values': [],  # Raw TPOT values
             'action_distribution': np.zeros(action_dim),
@@ -136,7 +137,8 @@ class NeuralContextualBandit:
             'all_predicted_rewards': [],  # All action predictions [batch, num_actions]
             'greedy_actions': [],         # What model would choose greedily
             'training_actions': [],       # What was actually chosen in training
-            'counterfactual_gains': []    # Estimated gain from model's choice
+            'counterfactual_gains': [],    # Estimated gain from model's choice
+            'input_tokens_per_sample': []  # Input tokens for each sample (for stratification)
         }
         
         logger.info(f"NeuralContextualBandit initialized: exploration={self.exploration_method}")
@@ -177,21 +179,26 @@ class NeuralContextualBandit:
         Returns:
             action: Selected pod index
             predicted_rewards: Expected rewards for all pods (for logging)
+            explored: Boolean indicating if this action was from exploration (True) or exploitation (False)
         """
         with torch.no_grad():
             context = self._flatten_context(pod_features, kv_hit_ratios, request_features)
             predicted_rewards = self.reward_net(context)  # [1, num_actions]
+            explored = False  # Track if we explored or exploited
             
             if evaluate or self.exploration_method == 'greedy':
                 # Pure exploitation
                 action = torch.argmax(predicted_rewards, dim=1).item()
+                explored = False
             
             elif self.exploration_method == 'epsilon_greedy':
                 # Epsilon-greedy exploration
                 if np.random.random() < self.epsilon:
                     action = np.random.randint(0, self.action_dim)
+                    explored = True
                 else:
                     action = torch.argmax(predicted_rewards, dim=1).item()
+                    explored = False
             
             elif self.exploration_method == 'ucb':
                 # Upper Confidence Bound
@@ -204,12 +211,16 @@ class NeuralContextualBandit:
                 
                 ucb_values = exploitation + exploration_bonus
                 action = int(np.argmax(ucb_values))
+                # UCB inherently balances exploration/exploitation, mark as exploitation for simplicity
+                explored = False
             
             elif self.exploration_method == 'thompson_sampling':
                 # Thompson Sampling: Add Gaussian noise to predictions
                 noise_std = self.epsilon  # Use epsilon as noise level
                 noisy_rewards = predicted_rewards + torch.randn_like(predicted_rewards) * noise_std
                 action = torch.argmax(noisy_rewards, dim=1).item()
+                # Thompson sampling always adds noise, consider it exploration
+                explored = True
             
             else:
                 raise ValueError(f"Unknown exploration method: {self.exploration_method}")
@@ -218,9 +229,9 @@ class NeuralContextualBandit:
             self.action_counts[action] += 1
             self.total_steps += 1
             
-            return action, predicted_rewards[0].cpu().numpy()
+            return action, predicted_rewards[0].cpu().numpy(), explored
     
-    def remember(self, pod_features, kv_hit_ratios, request_features, action, reward):
+    def remember(self, pod_features, kv_hit_ratios, request_features, action, reward, input_tokens=None):
         """
         Store experience in replay buffer
         
@@ -230,13 +241,15 @@ class NeuralContextualBandit:
             request_features: [1, req_feat_dim]
             action: Scalar action
             reward: Scalar reward
+            input_tokens: Optional scalar input token count (for stratified analysis)
         """
         context = self._flatten_context(pod_features, kv_hit_ratios, request_features)
         
         experience = {
             'context': context.cpu(),
             'action': action if isinstance(action, int) else action.item(),
-            'reward': reward.item() if torch.is_tensor(reward) else reward
+            'reward': reward.item() if torch.is_tensor(reward) else reward,
+            'input_tokens': input_tokens.item() if torch.is_tensor(input_tokens) else (input_tokens if input_tokens is not None else -1)
         }
         
         self.replay_buffer.append(experience)
@@ -266,6 +279,7 @@ class NeuralContextualBandit:
         contexts = torch.cat([exp['context'] for exp in batch], dim=0).to(device)
         actions = torch.tensor([exp['action'] for exp in batch], dtype=torch.long).to(device)
         rewards = torch.tensor([exp['reward'] for exp in batch], dtype=torch.float32).to(device)
+        input_tokens_batch = [exp.get('input_tokens', -1) for exp in batch]  # Extract input_tokens if available
         
         # Forward pass
         predicted_rewards = self.reward_net(contexts)  # [batch, num_actions]
@@ -311,6 +325,9 @@ class NeuralContextualBandit:
             greedy_predicted_rewards = predicted_rewards.gather(1, greedy_actions_batch.unsqueeze(1)).squeeze(1)
             counterfactual_gain = greedy_predicted_rewards.detach().cpu() - rewards.cpu()
             self.training_metrics['counterfactual_gains'].extend(counterfactual_gain.numpy().tolist())
+            
+            # Store input_tokens for each sample (for stratified analysis in plots 13-15)
+            self.training_metrics['input_tokens_per_sample'].extend(input_tokens_batch)
         
         logger.info(f"[Update] Loss: {loss.item():.4f}, Avg Reward: {rewards.mean().item():.4f}, "
                    f"Epsilon: {self.epsilon:.4f}, Buffer: {len(self.replay_buffer)}")
@@ -373,7 +390,23 @@ class NeuralContextualBandit:
             self.epsilon = metadata.get('epsilon', self.epsilon)
             self.action_counts = np.array(metadata.get('action_counts', self.action_counts))
             self.total_steps = metadata.get('total_steps', 0)
-            self.training_metrics = metadata.get('training_metrics', self.training_metrics)
+            
+            # Merge loaded training_metrics with current template to ensure new fields exist
+            loaded_metrics = metadata.get('training_metrics', {})
+            for key in self.training_metrics:
+                if key in loaded_metrics:
+                    self.training_metrics[key] = loaded_metrics[key]
+                # else: keep the freshly initialized default value
+            
+            # CRITICAL: Validate off-policy metrics have matching lengths
+            # If loading old model with partial metrics, clear them to avoid dimension mismatches
+            off_policy_keys = ['counterfactual_gains', 'greedy_actions', 'training_actions', 'input_tokens_per_sample']
+            lengths = [len(self.training_metrics.get(k, [])) for k in off_policy_keys]
+            if len(set(lengths)) > 1:  # Different lengths detected
+                logger.warning(f"Detected mismatched off-policy metric lengths {dict(zip(off_policy_keys, lengths))}. "
+                             f"Clearing off-policy metrics to avoid plotting errors.")
+                for key in off_policy_keys:
+                    self.training_metrics[key] = []
             
             logger.info(f"Loaded metadata: epsilon={self.epsilon:.4f}, total_steps={self.total_steps}")
 
@@ -457,13 +490,13 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     
     # Inference
     inference_start = time.time()
-    action, predicted_rewards = _cached_agent.choose_action(
+    action, predicted_rewards, explored = _cached_agent.choose_action(
         pod_features, kv_hit_ratios, request_features, 
         evaluate=not HYPERPARAMETERS.get('explore', True)
     )
     overhead_summary['inference'] = time.time() - inference_start
     
-    logger.info(f"Neural CB request {request_id}: action={action}, total_steps={_cached_agent.total_steps}, buffer_size={len(_cached_agent.replay_buffer)}, epsilon={_cached_agent.epsilon:.3f}")
+    logger.info(f"Neural CB request {request_id}: action={action}, explored={explored}, total_steps={_cached_agent.total_steps}, buffer_size={len(_cached_agent.replay_buffer)}, epsilon={_cached_agent.epsilon:.3f}")
     
     # Format predicted_rewards as dict (same format as predicted_latencies)
     predicted_rewards_formatted = {sorted_all_pod_ids[i]: float(predicted_rewards[i]) for i in range(len(sorted_all_pod_ids))}
@@ -476,7 +509,8 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         'chosen_pod_predicted_reward': chosen_pod_predicted_reward,
         'confidence': chosen_pod_predicted_reward,  # Keep for backward compatibility
         'epsilon': _cached_agent.epsilon,
-        'total_steps': _cached_agent.total_steps
+        'total_steps': _cached_agent.total_steps,
+        'explored': explored  # Add exploration flag
     }
     
     overhead_summary['total_inference'] = time.time() - infer_start_time
@@ -484,7 +518,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     return result, overhead_summary
 
 
-def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
+def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains=0):
     """
     Create comprehensive training metrics visualization for Neural Contextual Bandit.
     
@@ -493,6 +527,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
         final_model_dir: Directory to save plots
         num_epochs: Number of training epochs
         total_samples: Total number of samples processed
+        num_trains: Number of training iterations (for filename)
     
     Returns:
         Path to saved plot file
@@ -511,8 +546,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
         logger.warning("No training metrics to plot")
         return None
     
-    # Create comprehensive plot - expanded grid for CB-specific plots
-    fig = plt.figure(figsize=(30, 18))
+    # Create comprehensive plot - expanded grid for CB-specific plots (4 rows x 6 cols = 24 plots)
+    fig = plt.figure(figsize=(30, 22))  # Increased height slightly
     fig.suptitle(f'Neural Contextual Bandit Training Results\n'
                  f'Epochs: {num_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
                  fontsize=18, fontweight='bold', y=0.995)
@@ -805,107 +840,165 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
     # CONTEXTUAL BANDIT-SPECIFIC PLOTS
     # ==================================================================
     
-    # 13. OFF-POLICY: Counterfactual Gain Distribution
+    # 13. OFF-POLICY: Counterfactual Gain Distribution (STRATIFIED by Input Length)
     plt.subplot(4, 6, 13)
-    if metrics.get('counterfactual_gains'):
+    if metrics.get('counterfactual_gains') and metrics.get('input_tokens_per_sample'):
         gains = np.array(metrics['counterfactual_gains'])
+        inp_tokens_metric = np.array(metrics['input_tokens_per_sample'])
         
-        plt.hist(gains, bins=50, alpha=0.7, color='purple', edgecolor='black')
-        plt.axvline(0, color='r', linestyle='--', linewidth=2, label='Zero Gain')
-        plt.axvline(np.mean(gains), color='g', linestyle='-', linewidth=2, label=f'Mean: {np.mean(gains):.4f}')
+        # Validate lengths match (defensive check)
+        if len(gains) != len(inp_tokens_metric):
+            min_len = min(len(gains), len(inp_tokens_metric))
+            logger.warning(f"Plot 13: Length mismatch - gains={len(gains)}, input_tokens={len(inp_tokens_metric)}. Truncating to {min_len}")
+            gains = gains[:min_len]
+            inp_tokens_metric = inp_tokens_metric[:min_len]
         
-        plt.xlabel('Counterfactual Gain')
-        plt.ylabel('Frequency')
-        plt.title('13. Expected Gain from Model Policy')
-        plt.legend(fontsize=9)
-        plt.grid(True, alpha=0.3)
-        
-        # Calculate statistics
-        pct_better = (gains > 0).sum() / len(gains) * 100
-        mean_gain = np.mean(gains)
-        median_gain = np.median(gains)
-        
-        stats_text = f'Better: {pct_better:.1f}%\n'
-        stats_text += f'Mean: {mean_gain:.4f}\n'
-        stats_text += f'Median: {median_gain:.4f}'
-        
-        # Assessment
-        if mean_gain > 0.05:
-            stats_text += '\n✅ BETTER than data'
-        elif mean_gain > 0.01:
-            stats_text += '\n➡️  Slightly better'
-        elif mean_gain > -0.01:
-            stats_text += '\n⚠️  Similar to data'
+        # Filter out samples without input_tokens
+        valid_mask = inp_tokens_metric > 0
+        if valid_mask.sum() > 10:
+            gains_valid = gains[valid_mask]
+            inp_tokens_valid = inp_tokens_metric[valid_mask]
+            
+            # Define input length buckets
+            inp_quantiles_13 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+            bucket_colors_13 = ['green', 'orange', 'red']
+            bucket_names_13 = [
+                f'Short\n({inp_quantiles_13[0]:.0f}-{inp_quantiles_13[1]:.0f})',
+                f'Med\n({inp_quantiles_13[1]:.0f}-{inp_quantiles_13[2]:.0f})',
+                f'Long\n({inp_quantiles_13[2]:.0f}-{inp_quantiles_13[3]:.0f})'
+            ]
+            
+            # Plot overall distribution first (all requests)
+            plt.hist(gains_valid, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Plot stratified histograms with step style for better visibility
+            for i, (low, high) in enumerate([(inp_quantiles_13[0], inp_quantiles_13[1]), 
+                                              (inp_quantiles_13[1], inp_quantiles_13[2]), 
+                                              (inp_quantiles_13[2], inp_quantiles_13[3])]):
+                mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                if mask.sum() > 0:
+                    # Use histtype='step' for better visibility when overlapping
+                    plt.hist(gains_valid[mask], bins=30, alpha=1.0, color=bucket_colors_13[i], 
+                            histtype='step', linewidth=2.5, label=bucket_names_13[i], zorder=2)
+            
+            plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.8, label='Zero Gain', zorder=3)
+            plt.xlabel('Counterfactual Gain', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('13. Gain by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='upper right')
+            plt.grid(True, alpha=0.3)
+            
+            mean_gain = np.mean(gains_valid)
+            pct_better = (gains_valid > 0).sum() / len(gains_valid) * 100
+            assessment = "✅ BETTER" if mean_gain > 0.05 else ("➡️ Modest" if mean_gain > 0.01 else "⚠️ Similar")
+            
+            plt.text(0.02, 0.98, f'Mean: {mean_gain:.4f}\nBetter: {pct_better:.1f}%\n{assessment}',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
         else:
-            stats_text += '\n❌ WORSE than data'
-        
-        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
-                verticalalignment='top', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+            # Fallback: non-stratified
+            plt.hist(gains, bins=50, alpha=0.7, color='purple', edgecolor='black')
+            plt.axvline(0, color='r', linestyle='--', linewidth=2)
+            plt.axvline(np.mean(gains), color='g', linestyle='-', linewidth=2)
+            plt.xlabel('Counterfactual Gain')
+            plt.ylabel('Frequency')
+            plt.title('13. Expected Gain (Aggregated)')
+            plt.grid(True, alpha=0.3)
+            mean_gain = np.mean(gains)
+            plt.text(0.02, 0.98, f'Mean: {mean_gain:.4f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     else:
         plt.text(0.5, 0.5, 'No counterfactual\ndata', 
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
         plt.axis('off')
     
-    # 14. OFF-POLICY: Action Agreement Analysis
+    # 14. OFF-POLICY: Action Agreement Analysis (STRATIFIED by Input Length)
     plt.subplot(4, 6, 14)
-    if metrics.get('greedy_actions') and metrics.get('training_actions'):
+    if metrics.get('greedy_actions') and metrics.get('training_actions') and metrics.get('input_tokens_per_sample'):
         greedy = np.array(metrics['greedy_actions'])
         training = np.array(metrics['training_actions'])
         gains = np.array(metrics['counterfactual_gains'])
+        inp_tokens_metric = np.array(metrics['input_tokens_per_sample'])
         
-        # Calculate agreement
-        agreement = greedy == training
-        disagreement = ~agreement
+        # Validate lengths match (defensive check)
+        min_len = min(len(greedy), len(training), len(gains), len(inp_tokens_metric))
+        if not (len(greedy) == len(training) == len(gains) == len(inp_tokens_metric)):
+            logger.warning(f"Plot 14: Length mismatch - greedy={len(greedy)}, training={len(training)}, "
+                         f"gains={len(gains)}, input_tokens={len(inp_tokens_metric)}. Truncating to {min_len}")
+            greedy = greedy[:min_len]
+            training = training[:min_len]
+            gains = gains[:min_len]
+            inp_tokens_metric = inp_tokens_metric[:min_len]
         
-        agree_pct = agreement.sum() / len(agreement) * 100
-        disagree_pct = 100 - agree_pct
-        
-        # For disagreements, check if gains are positive
-        if disagreement.sum() > 0:
-            disagree_gains = gains[disagreement]
-            better_disagree_pct = (disagree_gains > 0).sum() / len(disagree_gains) * 100 if len(disagree_gains) > 0 else 0
-        else:
-            better_disagree_pct = 0
-        
-        # Create bar chart
-        categories = ['Agree', 'Disagree\n(Better)', 'Disagree\n(Worse)']
-        if disagreement.sum() > 0:
-            better_count = (disagree_gains > 0).sum()
-            worse_count = (disagree_gains <= 0).sum()
-        else:
-            better_count = 0
-            worse_count = 0
+        # Filter valid samples
+        valid_mask = inp_tokens_metric > 0
+        if valid_mask.sum() > 10:
+            greedy_valid = greedy[valid_mask]
+            training_valid = training[valid_mask]
+            gains_valid = gains[valid_mask]
+            inp_tokens_valid = inp_tokens_metric[valid_mask]
             
-        counts = [agreement.sum(), better_count, worse_count]
-        colors = ['lightblue', 'lightgreen', 'lightcoral']
-        
-        bars = plt.bar(categories, counts, color=colors, alpha=0.8, edgecolor='black')
-        plt.title('14. Model vs Training Policy')
-        plt.ylabel('Count')
-        plt.grid(True, alpha=0.3)
-        
-        # Add percentages
-        total = len(agreement)
-        for bar, count in zip(bars, counts):
-            if count > 0:
-                pct = count / total * 100
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                        f'{int(count)}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=9)
-        
-        # Add summary
-        summary = f'Disagree: {disagree_pct:.1f}%\n'
-        if disagree_pct > 0:
-            summary += f'Of those, {better_disagree_pct:.1f}%\nare better'
-        plt.text(0.98, 0.98, summary, transform=plt.gca().transAxes,
-                verticalalignment='top', horizontalalignment='right', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+            # Define buckets
+            inp_quantiles_14 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+            
+            # Calculate overall disagreement rate first
+            overall_disagree_rate = ((greedy_valid != training_valid).sum() / len(greedy_valid)) * 100
+            
+            # Calculate disagreement rate per bucket
+            disagree_rates = []
+            bucket_labels_14 = []
+            for i, (low, high) in enumerate([(inp_quantiles_14[0], inp_quantiles_14[1]), 
+                                              (inp_quantiles_14[1], inp_quantiles_14[2]), 
+                                              (inp_quantiles_14[2], inp_quantiles_14[3])]):
+                mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                if mask.sum() > 0:
+                    disagreement = greedy_valid[mask] != training_valid[mask]
+                    disagree_rates.append(disagreement.sum() / mask.sum() * 100)
+                    bucket_labels_14.append(f'Len{i+1}\n{int(low)}-{int(high)}')
+            
+            # Add overall bar
+            disagree_rates.append(overall_disagree_rate)
+            bucket_labels_14.append('All\nRequests')
+            
+            # Plot
+            colors_14 = ['green', 'orange', 'red', 'blue'][:len(disagree_rates)]
+            x_pos = np.arange(len(disagree_rates))
+            bars = plt.bar(x_pos, disagree_rates, color=colors_14, 
+                          alpha=0.7, edgecolor='black')
+            plt.ylabel('Disagreement %', fontsize=10)
+            plt.title('14. Policy Divergence by Input Length', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, bucket_labels_14, fontsize=8)
+            plt.grid(True, alpha=0.3, axis='y')
+            plt.ylim(0, 100)
+            
+            # Add values on bars
+            for bar, rate in zip(bars, disagree_rates):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2,
+                        f'{rate:.1f}%', ha='center', va='bottom', fontsize=8)
+            
+            avg_disagree = np.mean(disagree_rates)
+            plt.text(0.02, 0.98, f'Avg: {avg_disagree:.1f}%',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback
+            agreement = greedy == training
+            agree_pct = agreement.sum() / len(agreement) * 100
+            disagree_pct = 100 - agree_pct
+            
+            plt.bar(['Agree', 'Disagree'], [agree_pct, disagree_pct], color=['lightblue', 'lightcoral'], alpha=0.8)
+            plt.ylabel('Percentage')
+            plt.title('14. Policy Agreement (Aggregated)')
+            plt.grid(True, alpha=0.3)
     else:
         plt.text(0.5, 0.5, 'No policy\ncomparison data', 
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
         plt.axis('off')
     
-    # 15. CRITICAL: Per-Context Action Differentiation
+    # 15. CRITICAL: Per-Context Action Differentiation (SHOW SNR BY INPUT LENGTH)
     plt.subplot(4, 6, 15)
     if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0:
         # Stack all predictions [num_samples, num_actions]
@@ -914,48 +1007,90 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
         # CRITICAL METRIC: For each sample, what's the spread between best and worst pod?
         action_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
         
-        plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
-        plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2, 
-                   label=f'Mean: {np.mean(action_spreads):.3f}')
-        plt.axvline(np.median(action_spreads), color='g', linestyle='--', linewidth=2, 
-                   label=f'Median: {np.median(action_spreads):.3f}')
-        
-        plt.title('15. Per-Context Action Spread (CRITICAL!)')
-        plt.xlabel('Reward Spread: max(pred) - min(pred) for same context')
-        plt.ylabel('Frequency')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Assessment: Compare spread to prediction uncertainty
-        mean_spread = np.mean(action_spreads)
-        median_spread = np.median(action_spreads)
-        
         # Get prediction uncertainty (RMSE)
         avg_loss = np.mean(metrics['losses'][-100:]) if len(metrics['losses']) >= 100 else np.mean(metrics['losses'])
         rmse = np.sqrt(avg_loss)
         
-        # Signal-to-noise ratio
-        snr = mean_spread / rmse if rmse > 0 else 0
-        
-        # Assessment
-        if mean_spread > 0.5 and snr > 1.0:
-            assessment = "✅ STRONG\nContext-dependent\nlearning!"
-            color = 'lightgreen'
-        elif mean_spread > 0.3 and snr > 0.5:
-            assessment = "⚠️  MODERATE\nSome differentiation"
-            color = 'lightyellow'
+        # Try to stratify by input length (if available and matching length)
+        if metrics.get('input_tokens_per_sample') and len(metrics['input_tokens_per_sample']) >= len(action_spreads):
+            # Match samples (first N samples from input_tokens_per_sample that correspond to all_predicted_rewards)
+            inp_tokens_for_spreads = np.array(metrics['input_tokens_per_sample'][:len(action_spreads)])
+            valid_mask = inp_tokens_for_spreads > 0
+            
+            if valid_mask.sum() > 10:
+                spreads_valid = action_spreads[valid_mask]
+                inp_tokens_valid = inp_tokens_for_spreads[valid_mask]
+                
+                # Calculate overall SNR first
+                overall_mean_spread = np.mean(spreads_valid)
+                overall_snr = overall_mean_spread / rmse if rmse > 0 else 0
+                
+                # Define buckets and calculate SNR per bucket
+                inp_quantiles_15 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+                snr_per_bucket = []
+                bucket_labels_15 = []
+                
+                for i, (low, high) in enumerate([(inp_quantiles_15[0], inp_quantiles_15[1]), 
+                                                  (inp_quantiles_15[1], inp_quantiles_15[2]), 
+                                                  (inp_quantiles_15[2], inp_quantiles_15[3])]):
+                    mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                    if mask.sum() > 0:
+                        mean_spread_bucket = np.mean(spreads_valid[mask])
+                        snr_bucket = mean_spread_bucket / rmse if rmse > 0 else 0
+                        snr_per_bucket.append(snr_bucket)
+                        bucket_labels_15.append(f'Len{i+1}\n{int(low)}-{int(high)}')
+                
+                # Add overall bar
+                snr_per_bucket.append(overall_snr)
+                bucket_labels_15.append('All\nRequests')
+                
+                # Plot SNR per bucket
+                colors_15 = ['green', 'orange', 'red', 'blue'][:len(snr_per_bucket)]
+                x_pos = np.arange(len(snr_per_bucket))
+                bars = plt.bar(x_pos, snr_per_bucket, color=colors_15, 
+                              alpha=0.7, edgecolor='black')
+                plt.axhline(y=1.0, color='blue', linestyle='--', linewidth=1.5, alpha=0.5, label='SNR=1.0')
+                plt.ylabel('SNR (Spread/RMSE)', fontsize=10)
+                plt.title('15. SNR by Input Length', fontsize=11, fontweight='bold')
+                plt.xticks(x_pos, bucket_labels_15, fontsize=8)
+                plt.legend(fontsize=7)
+                plt.grid(True, alpha=0.3, axis='y')
+                
+                # Add values on bars
+                for bar, snr_val in zip(bars, snr_per_bucket):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                            f'{snr_val:.2f}', ha='center', va='bottom', fontsize=8)
+                
+                avg_snr = np.mean(snr_per_bucket)
+                assessment = "✅ STRONG" if avg_snr > 1.0 else ("⚠️ MODERATE" if avg_snr > 0.5 else "❌ WEAK")
+                plt.text(0.02, 0.98, f'Avg SNR: {avg_snr:.2f}\n{assessment}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+            else:
+                # Fallback: aggregated histogram
+                plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
+                plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
+                plt.title('15. Action Spread (Aggregated)')
+                plt.xlabel('Reward Spread')
+                plt.ylabel('Frequency')
+                plt.grid(True, alpha=0.3)
+                snr = np.mean(action_spreads) / rmse if rmse > 0 else 0
+                plt.text(0.98, 0.98, f'SNR: {snr:.2f}',
+                        transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                        fontsize=9, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
         else:
-            assessment = "❌ WEAK\nTreats pods similarly\nacross contexts"
-            color = 'lightcoral'
-        
-        info_text = f'Mean Spread: {mean_spread:.3f}\n'
-        info_text += f'Prediction RMSE: {rmse:.3f}\n'
-        info_text += f'SNR: {snr:.2f}\n\n'
-        info_text += f'{assessment}'
-        
-        plt.text(0.98, 0.98, info_text,
-                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor=color, alpha=0.9), fontsize=9)
+            # Fallback: aggregated histogram
+            plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
+            plt.title('15. Per-Context Action Spread')
+            plt.xlabel('Reward Spread')
+            plt.ylabel('Frequency')
+            plt.grid(True, alpha=0.3)
+            mean_spread = np.mean(action_spreads)
+            snr = mean_spread / rmse if rmse > 0 else 0
+            plt.text(0.98, 0.98, f'Mean: {mean_spread:.3f}\nSNR: {snr:.2f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                    fontsize=9, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     else:
         plt.text(0.5, 0.5, 'No all_predicted_rewards\ndata available', 
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
@@ -1125,9 +1260,48 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
             bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
     
     # ===== REWARD FUNCTION DIAGNOSTICS (Plots 17-22) =====
-    if metrics.get('reward_latency_pairs') and len(metrics['reward_latency_pairs']) > 10:
+    # Use reward_latency_input_tuples if available for stratified analysis, otherwise fallback to reward_latency_pairs
+    if metrics.get('reward_latency_input_tuples') and len(metrics['reward_latency_input_tuples']) > 10:
+        # STRATIFIED ANALYSIS BY INPUT LENGTH
+        rewards_array = np.array([r for r, l, inp in metrics['reward_latency_input_tuples']])
+        latencies_array = np.array([l for r, l, inp in metrics['reward_latency_input_tuples']])
+        input_tokens_array = np.array([inp for r, l, inp in metrics['reward_latency_input_tuples']])
+        
+        # Define input length buckets
+        input_quantiles = np.percentile(input_tokens_array, [0, 33, 67, 100])
+        bucket_names = [
+            f'Short\n({input_quantiles[0]:.0f}-{input_quantiles[1]:.0f} tokens)',
+            f'Medium\n({input_quantiles[1]:.0f}-{input_quantiles[2]:.0f} tokens)',
+            f'Long\n({input_quantiles[2]:.0f}-{input_quantiles[3]:.0f} tokens)'
+        ]
+        bucket_colors = ['green', 'orange', 'red']
+        
+        # 17. Reward vs Latency Scatter Plot (STRATIFIED BY INPUT LENGTH)
+        plt.subplot(4, 6, 17)
+        for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                          (input_quantiles[1], input_quantiles[2]), 
+                                          (input_quantiles[2], input_quantiles[3])]):
+            mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+            if mask.sum() > 0:
+                plt.scatter(latencies_array[mask], rewards_array[mask], 
+                           alpha=0.4, s=15, c=bucket_colors[i], label=bucket_names[i].replace('\n', ' '))
+        
+        plt.xlabel('TTFT (ms)', fontsize=10)
+        plt.ylabel('Reward', fontsize=10)
+        plt.title('17. Reward Function by Input Length', fontsize=11, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc='best', fontsize=7)
+        
+        corr = np.corrcoef(latencies_array, rewards_array)[0,1]
+        plt.text(0.02, 0.98, f'Overall Corr: {corr:.3f}\nN: {len(latencies_array):,}',
+                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+    elif metrics.get('reward_latency_pairs') and len(metrics['reward_latency_pairs']) > 10:
+        # FALLBACK: Aggregated analysis (no input length stratification)
         rewards_array = np.array([r for r, l in metrics['reward_latency_pairs']])
         latencies_array = np.array([l for r, l in metrics['reward_latency_pairs']])
+        input_tokens_array = None
         
         # 17. Reward vs Latency Scatter Plot
         plt.subplot(4, 6, 17)
@@ -1150,33 +1324,71 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
         plt.text(0.02, 0.98, f'Corr: {corr:.3f}\nN: {len(latencies_array):,}',
                 transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    else:
+        rewards_array = None
+        latencies_array = None
+        input_tokens_array = None
+    
+    if rewards_array is not None and latencies_array is not None:
         
-        # 18. Reward Resolution (Spread per latency quantile)
+        # 18. Per-Request Reward Spread by Input Length (using all_predicted_rewards)
         plt.subplot(4, 6, 18)
-        n_quantiles = 10
-        quantiles = np.percentile(latencies_array, np.linspace(0, 100, n_quantiles + 1))
-        reward_spreads = []
-        quantile_labels = []
-        
-        for i in range(n_quantiles):
-            mask = (latencies_array >= quantiles[i]) & (latencies_array < quantiles[i+1])
-            if mask.sum() > 0:
-                reward_spread = rewards_array[mask].max() - rewards_array[mask].min()
-                reward_spreads.append(reward_spread)
-                quantile_labels.append(f'{quantiles[i]:.0f}-{quantiles[i+1]:.0f}')
-        
-        plt.bar(range(len(reward_spreads)), reward_spreads, color='steelblue', edgecolor='black')
-        plt.xlabel('Latency Quantile', fontsize=10)
-        plt.ylabel('Reward Spread', fontsize=10)
-        plt.title('18. Reward Resolution', fontsize=11, fontweight='bold')
-        plt.xticks(range(len(quantile_labels)), quantile_labels, rotation=45, ha='right', fontsize=7)
-        plt.grid(True, alpha=0.3, axis='y')
-        
-        avg_spread = np.mean(reward_spreads) if reward_spreads else 0
-        status = "✅ GOOD" if avg_spread > 0.1 else "⚠️ POOR"
-        plt.text(0.02, 0.98, f'Avg: {avg_spread:.4f}\n{status}',
-                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightgreen' if avg_spread > 0.1 else 'lightcoral', alpha=0.8))
+        if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0 and metrics.get('input_tokens_per_sample'):
+            # Stack all predictions [num_samples, num_actions]
+            all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
+            
+            # Per-request reward spread (max - min across pods for SAME request)
+            per_request_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
+            
+            # Match with input tokens
+            inp_tokens_for_spreads = np.array(metrics['input_tokens_per_sample'][:len(per_request_spreads)])
+            valid_mask = inp_tokens_for_spreads > 10
+            
+            if valid_mask.sum() > 10:
+                spreads_valid = per_request_spreads[valid_mask]
+                inp_tokens_valid = inp_tokens_for_spreads[valid_mask]
+                
+                # Calculate average per-request spread for each input bucket
+                inp_quantiles_18 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+                bucket_spreads = []
+                bucket_labels_18 = []
+                
+                for i, (low, high) in enumerate([(inp_quantiles_18[0], inp_quantiles_18[1]), 
+                                                  (inp_quantiles_18[1], inp_quantiles_18[2]), 
+                                                  (inp_quantiles_18[2], inp_quantiles_18[3])]):
+                    mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                    if mask.sum() > 0:
+                        avg_spread = np.mean(spreads_valid[mask])
+                        bucket_spreads.append(avg_spread)
+                        bucket_labels_18.append(f'{int(low)}-{int(high)}\ntok')
+                
+                # Plot
+                x_pos = np.arange(len(bucket_spreads))
+                bars = plt.bar(x_pos, bucket_spreads, color=['green', 'orange', 'red'][:len(bucket_spreads)], 
+                              edgecolor='black', alpha=0.7)
+                plt.ylabel('Avg Per-Request\nReward Spread', fontsize=10)
+                plt.title('18. Per-Request Reward Spread', fontsize=11, fontweight='bold')
+                plt.xticks(x_pos, bucket_labels_18, fontsize=8)
+                plt.grid(True, alpha=0.3, axis='y')
+                
+                # Add values on bars
+                for bar, spread in zip(bars, bucket_spreads):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                            f'{spread:.3f}', ha='center', va='bottom', fontsize=8)
+                
+                overall_avg = np.mean(bucket_spreads)
+                status = "✅ GOOD" if overall_avg > 0.3 else ("⚠️ MODERATE" if overall_avg > 0.1 else "❌ POOR")
+                plt.text(0.02, 0.98, f'Overall: {overall_avg:.3f}\n{status}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                        bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_avg > 0.3 else 'lightyellow', alpha=0.8))
+            else:
+                plt.text(0.5, 0.5, 'Insufficient\nvalid data', 
+                        ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
+                plt.axis('off')
+        else:
+            plt.text(0.5, 0.5, 'No all_predicted_rewards\ndata available', 
+                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
+            plt.axis('off')
         
         # 19. Reward Sensitivity (gradient)
         plt.subplot(4, 6, 19)
@@ -1209,102 +1421,384 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples):
                         transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
                         bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
         
-        # 20. Latency Distribution
+        # 20. Latency Distribution STRATIFIED by Input Length
         plt.subplot(4, 6, 20)
-        plt.hist(latencies_array, bins=50, alpha=0.7, color='orange', edgecolor='black')
-        plt.axvline(np.median(latencies_array), color='r', linestyle='--', linewidth=2)
-        plt.axvline(np.percentile(latencies_array, 95), color='purple', linestyle='--', linewidth=2)
-        plt.xlabel('TTFT (ms)', fontsize=10)
-        plt.ylabel('Frequency', fontsize=10)
-        plt.title('20. Latency Distribution', fontsize=11, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        
-        plt.text(0.98, 0.98, f'Min: {latencies_array.min():.0f}\nMax: {latencies_array.max():.0f}\n'
-                f'P50: {np.median(latencies_array):.0f}\nP95: {np.percentile(latencies_array, 95):.0f}',
-                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
-        
-        # 21. Reward Distribution
-        plt.subplot(4, 6, 21)
-        plt.hist(rewards_array, bins=50, alpha=0.7, color='green', edgecolor='black')
-        plt.axvline(np.median(rewards_array), color='r', linestyle='--', linewidth=2)
-        plt.xlabel('Reward', fontsize=10)
-        plt.ylabel('Frequency', fontsize=10)
-        plt.title('21. Reward Distribution', fontsize=11, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        
-        reward_range = rewards_array.max() - rewards_array.min()
-        plt.text(0.98, 0.98, f'Range: {reward_range:.3f}\nMean: {rewards_array.mean():.3f}\nStd: {rewards_array.std():.3f}',
-                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
-        
-        # 22. 🚨 CRITICAL: Reward Discrimination by Latency Category
-        plt.subplot(4, 6, 22)
-        p50_lat = np.percentile(latencies_array, 50)
-        p90_lat = np.percentile(latencies_array, 90)
-        p99_lat = np.percentile(latencies_array, 99)
-        
-        good_mask = latencies_array < p50_lat
-        medium_mask = (latencies_array >= p50_lat) & (latencies_array < p90_lat)
-        bad_mask = (latencies_array >= p90_lat) & (latencies_array < p99_lat)
-        catastrophic_mask = latencies_array >= p99_lat
-        
-        categories = []
-        avg_rewards = []
-        reward_stds = []
-        
-        if good_mask.sum() > 0:
-            categories.append(f'Good\n<{p50_lat:.0f}')
-            avg_rewards.append(rewards_array[good_mask].mean())
-            reward_stds.append(rewards_array[good_mask].std())
-        
-        if medium_mask.sum() > 0:
-            categories.append(f'Med\n{p50_lat:.0f}-{p90_lat:.0f}')
-            avg_rewards.append(rewards_array[medium_mask].mean())
-            reward_stds.append(rewards_array[medium_mask].std())
-        
-        if bad_mask.sum() > 0:
-            categories.append(f'Bad\n{p90_lat:.0f}-{p99_lat:.0f}')
-            avg_rewards.append(rewards_array[bad_mask].mean())
-            reward_stds.append(rewards_array[bad_mask].std())
-        
-        if catastrophic_mask.sum() > 0:
-            categories.append(f'Cata\n>{p99_lat:.0f}')
-            avg_rewards.append(rewards_array[catastrophic_mask].mean())
-            reward_stds.append(rewards_array[catastrophic_mask].std())
-        
-        x_pos = np.arange(len(categories))
-        bars = plt.bar(x_pos, avg_rewards, yerr=reward_stds, capsize=5, 
-                      color=['green', 'yellow', 'orange', 'red'][:len(categories)], 
-                      edgecolor='black', alpha=0.7)
-        plt.xlabel('Latency Category (ms)', fontsize=10)
-        plt.ylabel('Avg Reward', fontsize=10)
-        plt.title('22. 🚨 Reward Discrimination', fontsize=11, fontweight='bold')
-        plt.xticks(x_pos, categories, fontsize=9)
-        plt.grid(True, alpha=0.3, axis='y')
-        
-        if len(avg_rewards) >= 2:
-            discrimination = avg_rewards[0] - avg_rewards[-1]
-            discrimination_pct = (discrimination / abs(avg_rewards[-1])) * 100 if avg_rewards[-1] != 0 else 0
+        if input_tokens_array is not None:
+            # Plot overall distribution first (all requests)
+            plt.hist(latencies_array, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
             
-            if abs(discrimination) < 0.05:
-                assessment = "❌ POOR\nCannot distinguish!"
+            # Stratified latency histograms on top
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                if mask.sum() > 0:
+                    plt.hist(latencies_array[mask], bins=30, alpha=0.5, color=bucket_colors[i], 
+                            edgecolor='black', label=bucket_names[i].replace('\n', ' '), zorder=2)
+            
+            plt.xlabel('TTFT (ms)', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('20. Latency Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='best')
+            plt.grid(True, alpha=0.3)
+            
+            plt.text(0.98, 0.98, f'All: P50={np.median(latencies_array):.0f}, P95={np.percentile(latencies_array, 95):.0f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback: aggregated histogram
+            plt.hist(latencies_array, bins=50, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(np.median(latencies_array), color='r', linestyle='--', linewidth=2)
+            plt.axvline(np.percentile(latencies_array, 95), color='purple', linestyle='--', linewidth=2)
+            plt.xlabel('TTFT (ms)', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('20. Latency Distribution', fontsize=11, fontweight='bold')
+            plt.grid(True, alpha=0.3)
+            
+            plt.text(0.98, 0.98, f'Min: {latencies_array.min():.0f}\nMax: {latencies_array.max():.0f}\n'
+                    f'P50: {np.median(latencies_array):.0f}\nP95: {np.percentile(latencies_array, 95):.0f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        
+        # 21. Reward Distribution STRATIFIED by Input Length
+        plt.subplot(4, 6, 21)
+        if input_tokens_array is not None:
+            # Plot overall distribution first (all requests)
+            plt.hist(rewards_array, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Stratified reward histograms on top
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                if mask.sum() > 0:
+                    plt.hist(rewards_array[mask], bins=30, alpha=0.5, color=bucket_colors[i], 
+                            edgecolor='black', label=bucket_names[i].replace('\n', ' '), zorder=2)
+            
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('21. Reward Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='best')
+            plt.grid(True, alpha=0.3)
+            
+            reward_range = rewards_array.max() - rewards_array.min()
+            plt.text(0.98, 0.98, f'All: Range={reward_range:.3f}\nMean={rewards_array.mean():.3f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        else:
+            # Fallback: aggregated histogram
+            plt.hist(rewards_array, bins=50, alpha=0.7, color='green', edgecolor='black')
+            plt.axvline(np.median(rewards_array), color='r', linestyle='--', linewidth=2)
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('21. Reward Distribution', fontsize=11, fontweight='bold')
+            plt.grid(True, alpha=0.3)
+            
+            reward_range = rewards_array.max() - rewards_array.min()
+            plt.text(0.98, 0.98, f'Range: {reward_range:.3f}\nMean: {rewards_array.mean():.3f}\nStd: {rewards_array.std():.3f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        
+        # 22. 🚨 CRITICAL: Reward Discrimination by Input Length AND Latency Category
+        plt.subplot(4, 6, 22)
+        if input_tokens_array is not None:
+            # Calculate overall discrimination first (all requests)
+            p50_overall = np.percentile(latencies_array, 50)
+            p90_overall = np.percentile(latencies_array, 90)
+            good_mask_overall = latencies_array < p50_overall
+            bad_mask_overall = latencies_array >= p90_overall
+            
+            if good_mask_overall.sum() > 0 and bad_mask_overall.sum() > 0:
+                avg_good_overall = rewards_array[good_mask_overall].mean()
+                avg_bad_overall = rewards_array[bad_mask_overall].mean()
+                overall_discrimination = avg_good_overall - avg_bad_overall
+            else:
+                overall_discrimination = 0
+            
+            # STRATIFIED: Show reward discrimination for each input length bucket
+            discrimination_results = []
+            
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                bucket_mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                
+                if bucket_mask.sum() > 0:
+                    bucket_lats = latencies_array[bucket_mask]
+                    bucket_rews = rewards_array[bucket_mask]
+                    
+                    # Calculate P50 and P90 within this bucket
+                    p50_bucket = np.percentile(bucket_lats, 50)
+                    p90_bucket = np.percentile(bucket_lats, 90)
+                    
+                    good_mask_bucket = bucket_lats < p50_bucket
+                    bad_mask_bucket = bucket_lats >= p90_bucket
+                    
+                    if good_mask_bucket.sum() > 0 and bad_mask_bucket.sum() > 0:
+                        avg_good = bucket_rews[good_mask_bucket].mean()
+                        avg_bad = bucket_rews[bad_mask_bucket].mean()
+                        discrimination_results.append(avg_good - avg_bad)
+                    else:
+                        discrimination_results.append(0)
+            
+            # Add overall bar
+            discrimination_results.append(overall_discrimination)
+            
+            # Plot discrimination for each bucket
+            colors_22 = bucket_colors[:3] + ['blue']
+            bucket_labels_22 = bucket_names + ['All\nRequests']
+            x_pos = np.arange(len(discrimination_results))
+            bars = plt.bar(x_pos, discrimination_results, color=colors_22[:len(discrimination_results)], 
+                          edgecolor='black', alpha=0.7)
+            plt.axhline(y=0, color='r', linestyle='--', linewidth=1.5, alpha=0.5)
+            plt.xlabel('Input Length Bucket', fontsize=10)
+            plt.ylabel('Reward Spread\n(Good - Bad Latency)', fontsize=10)
+            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, [bn.replace('\n', ' ') for bn in bucket_labels_22], 
+                      rotation=15, ha='right', fontsize=7)
+            plt.grid(True, alpha=0.3, axis='y')
+            
+            avg_discrimination = np.mean(discrimination_results) if discrimination_results else 0
+            
+            if abs(avg_discrimination) < 0.05:
+                assessment = "❌ POOR\nNo discrimination!"
                 box_color = 'lightcoral'
-            elif abs(discrimination) < 0.2:
+            elif abs(avg_discrimination) < 0.2:
                 assessment = "⚠️ WEAK"
                 box_color = 'lightyellow'
             else:
-                assessment = "✅ GOOD"
+                assessment = "✅ GOOD\nContext-aware!"
                 box_color = 'lightgreen'
             
-            plt.text(0.02, 0.98, f'Spread: {discrimination:.4f}\n({discrimination_pct:.0f}%)\n{assessment}',
+            plt.text(0.02, 0.98, f'Avg Spread: {avg_discrimination:.4f}\n{assessment}',
                     transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
                     bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
+        else:
+            # FALLBACK: Aggregated discrimination
+            p50_lat = np.percentile(latencies_array, 50)
+            p90_lat = np.percentile(latencies_array, 90)
+            p99_lat = np.percentile(latencies_array, 99)
+            
+            good_mask = latencies_array < p50_lat
+            medium_mask = (latencies_array >= p50_lat) & (latencies_array < p90_lat)
+            bad_mask = (latencies_array >= p90_lat) & (latencies_array < p99_lat)
+            catastrophic_mask = latencies_array >= p99_lat
+            
+            categories = []
+            avg_rewards = []
+            reward_stds = []
+            
+            if good_mask.sum() > 0:
+                categories.append(f'Good\n<{p50_lat:.0f}')
+                avg_rewards.append(rewards_array[good_mask].mean())
+                reward_stds.append(rewards_array[good_mask].std())
+            
+            if medium_mask.sum() > 0:
+                categories.append(f'Med\n{p50_lat:.0f}-{p90_lat:.0f}')
+                avg_rewards.append(rewards_array[medium_mask].mean())
+                reward_stds.append(rewards_array[medium_mask].std())
+            
+            if bad_mask.sum() > 0:
+                categories.append(f'Bad\n{p90_lat:.0f}-{p99_lat:.0f}')
+                avg_rewards.append(rewards_array[bad_mask].mean())
+                reward_stds.append(rewards_array[bad_mask].std())
+            
+            if catastrophic_mask.sum() > 0:
+                categories.append(f'Cata\n>{p99_lat:.0f}')
+                avg_rewards.append(rewards_array[catastrophic_mask].mean())
+                reward_stds.append(rewards_array[catastrophic_mask].std())
+            
+            x_pos = np.arange(len(categories))
+            bars = plt.bar(x_pos, avg_rewards, yerr=reward_stds, capsize=5, 
+                          color=['green', 'yellow', 'orange', 'red'][:len(categories)], 
+                          edgecolor='black', alpha=0.7)
+            plt.xlabel('Latency Category (ms)', fontsize=10)
+            plt.ylabel('Avg Reward', fontsize=10)
+            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, categories, fontsize=9)
+            plt.grid(True, alpha=0.3, axis='y')
+            
+            if len(avg_rewards) >= 2:
+                discrimination = avg_rewards[0] - avg_rewards[-1]
+                discrimination_pct = (discrimination / abs(avg_rewards[-1])) * 100 if avg_rewards[-1] != 0 else 0
+                
+                if abs(discrimination) < 0.05:
+                    assessment = "❌ POOR\nCannot distinguish!"
+                    box_color = 'lightcoral'
+                elif abs(discrimination) < 0.2:
+                    assessment = "⚠️ WEAK"
+                    box_color = 'lightyellow'
+                else:
+                    assessment = "✅ GOOD"
+                    box_color = 'lightgreen'
+                
+                plt.text(0.02, 0.98, f'Spread: {discrimination:.4f}\n({discrimination_pct:.0f}%)\n{assessment}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
+    
+    # ===== REWARD FUNCTION VALIDATION (Plots 23-24) =====
+    if metrics.get('reward_latency_input_tuples') and len(metrics['reward_latency_input_tuples']) > 10:
+        rewards_array = np.array([r for r, l, inp in metrics['reward_latency_input_tuples']])
+        latencies_array = np.array([l for r, l, inp in metrics['reward_latency_input_tuples']])
+        input_tokens_array = np.array([inp for r, l, inp in metrics['reward_latency_input_tuples']])
+        
+        # Filter valid samples
+        valid_mask = input_tokens_array > 10
+        if valid_mask.sum() > 50:  # Need sufficient data for validation
+            rewards_valid = rewards_array[valid_mask]
+            latencies_valid = latencies_array[valid_mask]
+            input_tokens_valid = input_tokens_array[valid_mask]
+            
+            # Define buckets
+            inp_quantiles_val = np.percentile(input_tokens_valid, [0, 33, 67, 100])
+            
+            # 23. Reward Function Validation: Correlation & Spread
+            plt.subplot(4, 6, 23)
+            
+            correlations = []
+            spreads = []
+            bucket_names_val = []
+            
+            for i, (low, high) in enumerate([(inp_quantiles_val[0], inp_quantiles_val[1]), 
+                                              (inp_quantiles_val[1], inp_quantiles_val[2]), 
+                                              (inp_quantiles_val[2], inp_quantiles_val[3])]):
+                mask = (input_tokens_valid >= low) & (input_tokens_valid < high) if i < 2 else (input_tokens_valid >= low)
+                
+                if mask.sum() > 10:
+                    bucket_rewards = rewards_valid[mask]
+                    bucket_latencies = latencies_valid[mask]
+                    
+                    # Correlation (should be strongly negative)
+                    corr = np.corrcoef(bucket_rewards, bucket_latencies)[0, 1]
+                    correlations.append(corr)
+                    
+                    # Spread (should be > 0.5 for good discrimination)
+                    spread = bucket_rewards.max() - bucket_rewards.min()
+                    spreads.append(spread)
+                    
+                    bucket_names_val.append(f'{int(low)}-{int(high)}')
+            
+            # Plot correlation and spread side by side
+            x = np.arange(len(bucket_names_val))
+            width = 0.35
+            
+            ax1 = plt.gca()
+            color = 'tab:blue'
+            ax1.set_xlabel('Input Length (tokens)', fontsize=10)
+            ax1.set_ylabel('Correlation (Reward vs Latency)', fontsize=10, color=color)
+            bars1 = ax1.bar(x - width/2, correlations, width, label='Correlation', color=color, alpha=0.7)
+            ax1.tick_params(axis='y', labelcolor=color)
+            ax1.axhline(y=-0.5, color='blue', linestyle='--', linewidth=1, alpha=0.5, label='Target < -0.5')
+            ax1.set_ylim(-1.0, 0.2)
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(bucket_names_val, fontsize=8)
+            
+            ax2 = ax1.twinx()
+            color = 'tab:orange'
+            ax2.set_ylabel('Reward Spread (max-min)', fontsize=10, color=color)
+            bars2 = ax2.bar(x + width/2, spreads, width, label='Spread', color=color, alpha=0.7)
+            ax2.tick_params(axis='y', labelcolor=color)
+            ax2.axhline(y=0.5, color='orange', linestyle='--', linewidth=1, alpha=0.5, label='Target > 0.5')
+            ax2.set_ylim(0, max(spreads) * 1.2)
+            
+            plt.title('23. Reward Function Validation\n(Correlation & Spread)', fontsize=11, fontweight='bold')
+            
+            # Add values on bars
+            for i, (bar, val) in enumerate(zip(bars1, correlations)):
+                ax1.text(bar.get_x() + bar.get_width()/2, val - 0.05, f'{val:.2f}',
+                        ha='center', va='top', fontsize=7, color='blue')
+            
+            for i, (bar, val) in enumerate(zip(bars2, spreads)):
+                ax2.text(bar.get_x() + bar.get_width()/2, val + 0.05, f'{val:.2f}',
+                        ha='center', va='bottom', fontsize=7, color='orange')
+            
+            # Overall assessment
+            avg_corr = np.mean(correlations)
+            avg_spread = np.mean(spreads)
+            
+            if avg_corr < -0.5 and avg_spread > 0.5:
+                status = "✅ EXCELLENT"
+                status_color = 'lightgreen'
+            elif avg_corr < -0.3 and avg_spread > 0.3:
+                status = "⚠️ GOOD"
+                status_color = 'lightyellow'
+            else:
+                status = "❌ POOR"
+                status_color = 'lightcoral'
+            
+            ax1.text(0.02, 0.98, f'Avg Corr: {avg_corr:.3f}\nAvg Spread: {avg_spread:.3f}\n{status}',
+                    transform=ax1.transAxes, verticalalignment='top', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.8))
+            
+            # 24. Reward Distribution Quality Check
+            plt.subplot(4, 6, 24)
+            
+            # Plot overall reward distribution first (all requests)
+            plt.hist(rewards_valid, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Plot reward distribution per bucket with step style on top
+            for i, (low, high) in enumerate([(inp_quantiles_val[0], inp_quantiles_val[1]), 
+                                              (inp_quantiles_val[1], inp_quantiles_val[2]), 
+                                              (inp_quantiles_val[2], inp_quantiles_val[3])]):
+                mask = (input_tokens_valid >= low) & (input_tokens_valid < high) if i < 2 else (input_tokens_valid >= low)
+                
+                if mask.sum() > 10:
+                    bucket_rewards = rewards_valid[mask]
+                    
+                    # Plot histogram with step style
+                    plt.hist(bucket_rewards, bins=30, alpha=1.0, 
+                            color=['green', 'orange', 'red'][i],
+                            histtype='step', linewidth=2,
+                            label=f'{int(low)}-{int(high)} tok', zorder=2)
+            
+            plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.5, label='Zero', zorder=3)
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('24. Reward Distribution Quality', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='upper left')
+            plt.grid(True, alpha=0.3)
+            
+            # Calculate percentiles
+            p10 = np.percentile(rewards_valid, 10)
+            p50 = np.percentile(rewards_valid, 50)
+            p90 = np.percentile(rewards_valid, 90)
+            reward_range = rewards_valid.max() - rewards_valid.min()
+            
+            # Assessment
+            centered = abs(p50) < 0.5  # Median near zero
+            good_range = reward_range > 2.0  # Sufficient spread
+            no_extremes = (p10 > -4) and (p90 < 4)  # Not clipped
+            
+            if centered and good_range and no_extremes:
+                assessment = "✅ HEALTHY\nWell-balanced"
+                color_box = 'lightgreen'
+            elif good_range:
+                assessment = "⚠️ ACCEPTABLE\nSome imbalance"
+                color_box = 'lightyellow'
+            else:
+                assessment = "❌ PROBLEMATIC\nPoor distribution"
+                color_box = 'lightcoral'
+            
+            info_text = f'Range: {reward_range:.2f}\n'
+            info_text += f'P50: {p50:.2f}\n'
+            info_text += f'P10/P90: {p10:.2f}/{p90:.2f}\n'
+            info_text += f'\n{assessment}'
+            
+            plt.text(0.98, 0.98, info_text,
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                    fontsize=8, bbox=dict(boxstyle='round', facecolor=color_box, alpha=0.9))
     
     plt.tight_layout()
     
-    # Save plot
-    plot_path = os.path.join(final_model_dir, 'comprehensive_neural_cb_metrics.pdf')
+    # Save plot with num_trains in filename
+    plot_filename = f'comprehensive_neural_cb_metrics-{num_trains}.pdf'
+    plot_path = os.path.join(final_model_dir, plot_filename)
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
     
@@ -1420,23 +1914,27 @@ def train_batch(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_epoc
             actions = batch_data['actions']
             rewards = batch_data['rewards']
             
-            # Extract latency values for reward function analysis
+            # Extract latency and context values for reward function analysis
             ttft = batch_data.get('ttft', None)
             avg_tpot = batch_data.get('avg_tpot', None)
+            input_tokens = batch_data.get('input_tokens', None)
             
             batch_size = len(actions)
             
             # Add experiences to replay buffer
             for i in range(batch_size):
+                # Pass input_tokens if available for stratified analysis
+                inp_tok = input_tokens[i] if input_tokens is not None else None
                 _cached_agent.remember(
                     pod_features[i:i+1],
                     kv_hit_ratios[i:i+1],
                     request_features[i:i+1],
                     actions[i].item(),
-                    rewards[i].item()
+                    rewards[i].item(),
+                    input_tokens=inp_tok
                 )
                 
-                # Collect reward-latency pairs for function analysis (sample 10% to save memory)
+                # Collect reward-latency-context tuples for stratified function analysis (sample 10% to save memory)
                 if np.random.random() < 0.1 and ttft is not None:
                     _cached_agent.training_metrics['reward_latency_pairs'].append(
                         (rewards[i].item(), ttft[i].item())
@@ -1444,6 +1942,12 @@ def train_batch(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_epoc
                     _cached_agent.training_metrics['ttft_values'].append(ttft[i].item())
                     if avg_tpot is not None:
                         _cached_agent.training_metrics['tpot_values'].append(avg_tpot[i].item())
+                    
+                    # NEW: Store (reward, latency, input_tokens) for stratified analysis
+                    if input_tokens is not None:
+                        _cached_agent.training_metrics['reward_latency_input_tuples'].append(
+                            (rewards[i].item(), ttft[i].item(), input_tokens[i].item())
+                        )
                 
                 total_samples += 1
                 
@@ -1465,8 +1969,9 @@ def train_batch(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_epoc
     _cached_agent.save(final_model_dir)
     logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
     
-    # Generate comprehensive training plots
-    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, num_epochs, total_samples)
+    # Generate comprehensive training plots (use total_steps as num_trains)
+    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, num_epochs, total_samples, 
+                                       num_trains=_cached_agent.total_steps)
     return plot_path
 
 
