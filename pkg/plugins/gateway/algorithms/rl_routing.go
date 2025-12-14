@@ -709,7 +709,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 							klog.Errorf("prefix_cache_2, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 						}
 					}
-				} 
+				}
 				// else if ctx.SubAlgorithm == "latency_predictor" && ctx.Iteration == 0 {
 				// 	// Use prefix_cache_1 routing for iteration 0
 				// 	klog.Infof("subAlgorithm, latency_predictor with iteration 0, using prefix_cache_1 routing, request_id: %s", ctx.RequestID)

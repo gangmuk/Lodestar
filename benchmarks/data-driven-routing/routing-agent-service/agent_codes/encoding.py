@@ -706,6 +706,12 @@ class DataEncoder:
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
         
+        # CRITICAL: Extract RAW input_tokens BEFORE any normalization for plotting
+        raw_input_tokens = None
+        if 'input_tokens' in processed_df.columns:
+            raw_input_tokens = processed_df['input_tokens'].fillna(0).values.astype(np.float32)
+            logger.debug(f"Extracted raw input_tokens: min={raw_input_tokens.min():.0f}, max={raw_input_tokens.max():.0f}, mean={raw_input_tokens.mean():.0f}")
+        
         # Initialize GPU one-hot dimension based on INCLUDE_GPU_FEATURES flag
         # Default to True for backward compatibility if not specified
         include_gpu_features = HYPERPARAMETERS['INCLUDE_GPU_FEATURES']
@@ -744,8 +750,15 @@ class DataEncoder:
 
         # STEP 8: actions/rewards (continues as normal)
         extract_actions_start = time.time()
-        actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency = self.extract_actions_rewards(processed_df, n_samples)
+        actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency, input_tokens_normalized = self.extract_actions_rewards(processed_df, n_samples)
         overhead_summary['extract_actions'] = time.time() - extract_actions_start
+        
+        # Use raw_input_tokens if available (extracted before normalization), otherwise use normalized version
+        if raw_input_tokens is not None:
+            input_tokens_for_plotting = raw_input_tokens
+        else:
+            input_tokens_for_plotting = input_tokens_normalized
+            logger.warning("raw_input_tokens not available, using potentially normalized values for plotting")
 
         # STEP 10: MINIMAL positional encoding
         positional_encoding_start = time.time()
@@ -793,6 +806,7 @@ class DataEncoder:
             'ttft': ttft,
             'avg_tpot': avg_tpot,
             'e2e_latency': e2e_latency,
+            'input_tokens': input_tokens_for_plotting,  # RAW values for stratified reward analysis
             'feature_stats': getattr(self, 'feature_stats', {}),
             'pod_features_list': self.pod_features,
             'feature_indices_map': per_pod_feature_indices[self.sorted_all_pod_ids[0]] if per_pod_feature_indices and self.sorted_all_pod_ids else {},
@@ -857,6 +871,7 @@ class DataEncoder:
         ttft = np.zeros(n_samples, dtype=np.float32)
         avg_tpot = np.zeros(n_samples, dtype=np.float32)
         e2e_latency = np.zeros(n_samples, dtype=np.float32)
+        input_tokens = np.zeros(n_samples, dtype=np.float32)  # NEW: Add input_tokens
         
         # Direct extraction without validation
         if 'selected_pod' in df.columns:
@@ -868,8 +883,10 @@ class DataEncoder:
                     if idx is not None:
                         actions[i] = idx
         
-        # Direct column extraction
-        for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards), ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency)]:
+        # Direct column extraction (added input_tokens)
+        for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards), 
+                           ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency), 
+                           ('input_tokens', input_tokens)]:
             if col in df.columns:
                 try:
                     target[:] = df[col].fillna(0).values.astype(np.float32)
@@ -881,7 +898,7 @@ class DataEncoder:
                     logger.error(f"Error processing column {col}: {e}")
                     exit(1)
 
-        return actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency
+        return actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency, input_tokens
 
     def save_processed_data(self, processed_data, max_samples_for_reference=10000000):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -937,6 +954,9 @@ class DataEncoder:
             ),
             'e2e_latency': torch.FloatTensor(
                 processed_data['e2e_latency'][sample_indices] if sample_indices is not None else processed_data['e2e_latency']
+            ),
+            'input_tokens': torch.FloatTensor(
+                processed_data['input_tokens'][sample_indices] if sample_indices is not None else processed_data['input_tokens']
             ),
             
             'pod_features_with_staleness': torch.FloatTensor(

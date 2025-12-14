@@ -67,6 +67,11 @@ COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final
 COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-linear_simple_extended NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/linear_simple_extended
 COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-inverse_latency NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/inverse_latency
 COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-latency_optimized NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/latency_optimized
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-simple_latency_minimization NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/simple_latency_minimization
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-quantile_based NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/quantile_based
+
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-negative_linear NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/negative_linear
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-negative_squared NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/negative_squared
 
 ################################################################################################################
 

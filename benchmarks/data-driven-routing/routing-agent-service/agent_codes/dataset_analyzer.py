@@ -24,7 +24,11 @@ from preprocess import (
     calculate_rewards_simple_extended, 
     calculate_rewards_piecewise_linear_steeper_gradient,
     calculate_rewards_inverse_latency,
-    calculate_rewards_latency_optimization
+    calculate_rewards_latency_optimization,
+    calculate_rewards_simple_latency_minimization,
+    calculate_rewards_negative_reciprocal,
+    calculate_rewards_negative_linear,
+    calculate_rewards_negative_squared
 )
 
 class RLDatasetAnalyzer:
@@ -114,6 +118,22 @@ class RLDatasetAnalyzer:
         elif reward_function == 'inverse_latency':
             reward_result = calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         elif reward_function == 'latency_optimized':
+            reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
+        elif reward_function == 'simple_latency_minimization':
+            reward_result = calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight)
+        elif reward_function == 'negative_reciprocal':
+            reward_result = calculate_rewards_negative_reciprocal(ttft_values, tpot_values, ttft_reward_weight)
+        elif reward_function == 'negative_linear':
+            reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight)
+        elif reward_function == 'negative_squared':
+            reward_result = calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_weight)
+        elif reward_function == 'context_aware':
+            print("WARNING: context_aware reward function requires detailed context data not available in analyzer")
+            print("Falling back to latency_optimized for analysis")
+            reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
+        elif reward_function == 'quantile_based':
+            print("WARNING: quantile_based reward function requires detailed context data not available in analyzer")
+            print("Falling back to latency_optimized for analysis")
             reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
         else:
             print(f"Unknown reward function: {reward_function}, defaulting to linear_simple")
@@ -2615,9 +2635,9 @@ def main():
     parser.add_argument('--avg-tpot-slo', type=float, default=50,
                        help='TPOT SLO threshold (default: 50ms)')
     parser.add_argument('--reward-function', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized'],
-                       default='linear_simple',
-                       help='Reward function to use (default: linear_simple)')
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized', 'context_aware', 'quantile_based', 'simple_latency_minimization', 'negative_reciprocal', 'negative_linear', 'negative_squared'],
+                       default='simple_latency_minimization',
+                       help='Reward function to use (default: simple_latency_minimization)')
     parser.add_argument('--ttft-reward-weight', type=float, default=0.5,
                        help='TTFT reward weight (default: 0.5)')
     parser.add_argument('--sampling-bins', type=int, default=10,
@@ -2649,6 +2669,14 @@ def main():
             reward_result = calculate_rewards_inverse_latency(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
         elif args.reward_function == 'latency_optimized':
             reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, args.ttft_slo, args.avg_tpot_slo, args.ttft_reward_weight)
+        elif args.reward_function == 'simple_latency_minimization':
+            reward_result = calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, args.ttft_reward_weight)
+        elif args.reward_function == 'negative_reciprocal':
+            reward_result = calculate_rewards_negative_reciprocal(ttft_values, tpot_values, args.ttft_reward_weight)
+        elif args.reward_function == 'negative_linear':
+            reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, args.ttft_reward_weight)
+        elif args.reward_function == 'negative_squared':
+            reward_result = calculate_rewards_negative_squared(ttft_values, tpot_values, args.ttft_reward_weight)
         rewards = reward_result['combined_rewards']
 
         # Create uniform sample

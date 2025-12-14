@@ -28,16 +28,16 @@ experiment_configs=(
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
     # # ## SharingRatio71%, total number of requests: 1500
-    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|8"
+    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|2"
     # "latency_predictor|SharingRatio71%|${target_gpu}|8|4"
-    "prefix_cache_1|SharingRatio71%|${target_gpu}|8|2"
+    # "prefix_cache_1|SharingRatio71%|${target_gpu}|8|2"
     # "least_latency|SharingRatio71%|${target_gpu}|8|4"
     # "least_request|SharingRatio71%|${target_gpu}|8|4"
     # "least_kv_cache|SharingRatio71%|${target_gpu}|8|4"
     # "random|SharingRatio71%|${target_gpu}|8|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
-    # "contextual_bandit|SharingRatio47%|${target_gpu}|6|8"
+    "contextual_bandit|SharingRatio47%|${target_gpu}|6|4"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
@@ -46,7 +46,7 @@ experiment_configs=(
     # "random|SharingRatio47%|${target_gpu}|6|1"
 
     # # # # ## SharingRatio28%, total number of requests: 2000
-    # "contextual_bandit|SharingRatio28%|${target_gpu}|5|8"
+    "contextual_bandit|SharingRatio28%|${target_gpu}|5|4"
     # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
     # "least_latency|SharingRatio28%|${target_gpu}|5|1"
@@ -55,7 +55,7 @@ experiment_configs=(
     # "random|SharingRatio28%|${target_gpu}|5|1"
 
     # # # # ## SharingRatio9%, total number of requests: 2000
-    # "contextual_bandit|SharingRatio9%|${target_gpu}|5|8"
+    # "contextual_bandit|SharingRatio9%|${target_gpu}|5|4"
     # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
     # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
     # "least_latency|SharingRatio9%|${target_gpu}|5|1"
@@ -73,7 +73,7 @@ experiment_configs=(
     # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
 )
 
-REWARD_FUNCTION="linear_simple_extended" # linear_simple_extended, latency_optimized, inverse_latency, 
+REWARD_FUNCTION="quantile_based" # simple_latency_minimization, quantile_based, negative_reciprocal, negative_linear, negative_squared, linear_simple_extended, latency_optimized, inverse_latency, 
 
 INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
@@ -509,7 +509,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
 
     
     # Copy final model
-    if [ "${routing_policy}" == "contextual_bandit" || "${routing_policy}" == "latency_predictor" ]; then
+    if [ "${routing_policy}" == "contextual_bandit" ] || [ "${routing_policy}" == "latency_predictor" ]; then
         kubectl_cp_start_time=$(date +%s)
         echo "Copying final_model from pod..."
         # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default

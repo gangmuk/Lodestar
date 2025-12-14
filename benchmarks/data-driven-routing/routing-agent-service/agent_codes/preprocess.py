@@ -310,6 +310,428 @@ def calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, a
     }
 
 
+def calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight=0.7):
+    """
+    Simple global latency minimization - NO normalization tricks!
+    
+    Philosophy: The reward function should directly reflect the optimization objective.
+    
+    Goal: Minimize latency globally
+    → Reward: Higher for lower latency (context-blind, absolute performance)
+    
+    Formula: reward = -log(latency_ms + 1)
+    
+    Why log transform?
+    1. Compresses extreme values (numerical stability for skewed distributions)
+    2. Diminishing returns: 100ms→50ms improvement > 5000ms→4950ms improvement
+    3. Always monotonic: lower latency = higher reward
+    4. Bounded gradients: prevents extreme outliers from dominating training
+    
+    Context-awareness comes from FEATURES, not reward normalization:
+    - Model sees input_tokens, output_tokens, kv_hit_ratio, inflight_requests
+    - Learns: E[latency | input=long, instance=A] vs E[latency | input=long, instance=B]
+    - Routes to whichever instance has lower EXPECTED latency for THIS specific request
+    
+    Properties:
+    - Reward distribution will mirror (inverse of) latency distribution
+    - Skewed latency → skewed rewards (this is CORRECT, not a bug!)
+    - No artificial centering at 0
+    - Absolute performance metric: -log(100) is ALWAYS better than -log(5000)
+    
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        ttft_reward_weight: Weight for TTFT vs TPOT (0-1 range)
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards
+    """
+    
+    # Negative log-latency: lower latency → higher (less negative) reward
+    # Add 1 to avoid log(0)
+    ttft_rewards = -np.log(ttft_values + 1.0)
+    tpot_rewards = -np.log(tpot_values + 1.0)
+    
+    # Examples:
+    # TTFT = 100ms → reward = -log(101) = -4.615
+    # TTFT = 500ms → reward = -log(501) = -6.216
+    # TTFT = 5000ms → reward = -log(5001) = -8.517
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_negative_reciprocal(ttft_values, tpot_values, ttft_reward_weight=0.7):
+    """
+    Negative reciprocal reward: reward = -K / latency
+    
+    Philosophy: More sensitive to improvements at low latencies.
+    
+    Why better than log?
+    - Larger reward differences across the typical latency range
+    - 500ms → 1000ms gives bigger penalty than 5000ms → 5500ms (desirable!)
+    - More intuitive: reward is inversely proportional to latency
+    
+    Examples:
+    - TTFT = 100ms  → reward = -1000/100  = -10.0
+    - TTFT = 500ms  → reward = -1000/500  = -2.0  (8.0 difference)
+    - TTFT = 1000ms → reward = -1000/1000 = -1.0  (1.0 difference)
+    - TTFT = 5000ms → reward = -1000/5000 = -0.2  (0.8 difference)
+    
+    Range for typical latencies (100-10000ms): -10.0 to -0.1
+    
+    Pros:
+    - Good differentiation in low-latency range (where it matters most)
+    - Natural diminishing returns for high latency
+    - Simple, interpretable
+    
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        ttft_reward_weight: Weight for TTFT vs TPOT
+    """
+    
+    # Negative reciprocal with scaling factor
+    # Use 1000 as numerator to get reasonable reward magnitudes
+    ttft_rewards = -1000.0 / np.maximum(ttft_values, 1.0)  # Avoid division by zero
+    tpot_rewards = -1000.0 / np.maximum(tpot_values, 1.0)
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight=0.7):
+    """
+    Negative linear reward: reward = -latency / K
+    
+    Philosophy: Simplest possible - directly penalize latency linearly.
+    
+    Why this might work:
+    - Most direct representation of "minimize latency"
+    - Equal reward difference for equal latency difference
+    - No compression or amplification
+    - Lets the model learn the true latency landscape
+    
+    Examples:
+    - TTFT = 100ms  → reward = -100/1000  = -0.1
+    - TTFT = 500ms  → reward = -500/1000  = -0.5  (0.4 difference)
+    - TTFT = 1000ms → reward = -1000/1000 = -1.0  (0.5 difference)
+    - TTFT = 5000ms → reward = -5000/1000 = -5.0  (4.0 difference)
+    
+    Range for typical latencies (100-10000ms): -0.1 to -10.0
+    
+    Pros:
+    - Extremely simple and interpretable
+    - Linear relationship preserved
+    - Large reward spread across full range
+    
+    Cons:
+    - May be sensitive to outliers (very high latency gets very negative reward)
+    - But that's arguably correct! We REALLY want to avoid 10s latencies
+    
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        ttft_reward_weight: Weight for TTFT vs TPOT
+    """
+    
+    # Simple linear scaling
+    ttft_rewards = -ttft_values / 1000.0
+    tpot_rewards = -tpot_values / 1000.0
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_weight=0.7):
+    """
+    Negative squared reward: reward = -(latency / K)^2
+    
+    Philosophy: Heavily penalize high latencies (tail latencies are REALLY bad).
+    
+    Why this might work:
+    - Quadratic penalty → much worse reward for tail latencies
+    - Aligns with user experience: 5s latency feels >2x worse than 2.5s
+    - Incentivizes avoiding worst-case scenarios
+    
+    Examples:
+    - TTFT = 100ms  → reward = -(100/1000)^2  = -0.01
+    - TTFT = 500ms  → reward = -(500/1000)^2  = -0.25  (0.24 difference)
+    - TTFT = 1000ms → reward = -(1000/1000)^2 = -1.0   (0.75 difference)
+    - TTFT = 5000ms → reward = -(5000/1000)^2 = -25.0  (24.0 difference!)
+    
+    Range for typical latencies (100-10000ms): -0.01 to -100
+    
+    Pros:
+    - Very strong signal to avoid tail latencies
+    - Good differentiation across entire range
+    - Reflects non-linear user dissatisfaction
+    
+    Cons:
+    - Large reward spread might destabilize training if outliers exist
+    - May need reward clipping
+    
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        ttft_reward_weight: Weight for TTFT vs TPOT
+    """
+    
+    # Squared penalty with scaling
+    ttft_rewards = -np.square(ttft_values / 1000.0)
+    tpot_rewards = -np.square(tpot_values / 1000.0)
+    
+    # Optional: Clip extreme values to prevent training instability
+    # Uncomment if needed
+    # ttft_rewards = np.clip(ttft_rewards, -50.0, 0.0)
+    # tpot_rewards = np.clip(tpot_rewards, -50.0, 0.0)
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_quantile_based(ttft_values, tpot_values, input_tokens, output_tokens,
+                                      ttft_reward_weight=0.7):
+    """
+    Data-driven Z-score normalized reward function - NO hard-coded SLOs!
+    
+    Key Idea: Reward = NEGATIVE Z-SCORE within same input length bucket.
+    - Compares apples-to-apples (requests with similar complexity)
+    - PRESERVES natural latency distribution shape (skewed → skewed rewards)
+    - Automatically adapts to actual system performance
+    - No hyperparameter tuning needed
+    
+    Methodology:
+    1. Group requests by input length (3 buckets: short, medium, long)
+    2. Within each bucket, calculate mean and std of latencies
+    3. Z-score normalize: z = -(latency - mean) / std
+       - Negative sign: lower latency → higher reward
+    4. Clip extreme outliers to [-3, +3] range
+    
+    Properties:
+    - Fast requests (below mean) → positive rewards
+    - Slow requests (above mean) → negative rewards
+    - Distribution shape matches latency distribution (natural!)
+    - Standard deviations from mean = intuitive interpretation
+    
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        input_tokens: Number of input tokens (for context grouping)
+        output_tokens: Number of output tokens
+        ttft_reward_weight: Weight for TTFT vs TPOT (default 0.7)
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards
+    """
+    
+    # Bucket by input length (context-aware grouping)
+    input_quantiles = np.percentile(input_tokens, [0, 33, 67, 100])
+    
+    ttft_rewards = np.zeros_like(ttft_values, dtype=np.float64)
+    tpot_rewards = np.zeros_like(tpot_values, dtype=np.float64)
+    
+    # Process each input length bucket separately
+    for i in range(3):
+        low = input_quantiles[i]
+        high = input_quantiles[i+1]
+        mask = (input_tokens >= low) & (input_tokens < high) if i < 2 else (input_tokens >= low)
+        
+        if mask.sum() == 0:
+            continue
+        
+        # === TTFT Rewards: Z-score normalization ===
+        bucket_ttft = ttft_values[mask]
+        
+        # Calculate mean and std within this bucket
+        mean_ttft = np.mean(bucket_ttft)
+        std_ttft = np.std(bucket_ttft)
+        
+        # Z-score: negative sign so lower latency → higher reward
+        # Add small epsilon to prevent division by zero
+        if std_ttft > 1e-6:
+            bucket_ttft_rewards = -(bucket_ttft - mean_ttft) / std_ttft
+        else:
+            # If all latencies are identical, give neutral reward
+            bucket_ttft_rewards = np.zeros_like(bucket_ttft)
+        
+        # Clip extreme outliers to [-3, +3] range (3 standard deviations)
+        bucket_ttft_rewards = np.clip(bucket_ttft_rewards, -3.0, 3.0)
+        
+        ttft_rewards[mask] = bucket_ttft_rewards
+        
+        # === TPOT Rewards: Same Z-score normalization ===
+        bucket_tpot = tpot_values[mask]
+        
+        mean_tpot = np.mean(bucket_tpot)
+        std_tpot = np.std(bucket_tpot)
+        
+        if std_tpot > 1e-6:
+            bucket_tpot_rewards = -(bucket_tpot - mean_tpot) / std_tpot
+        else:
+            bucket_tpot_rewards = np.zeros_like(bucket_tpot)
+        
+        bucket_tpot_rewards = np.clip(bucket_tpot_rewards, -3.0, 3.0)
+        
+        tpot_rewards[mask] = bucket_tpot_rewards
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_context_aware(ttft_values, tpot_values, input_tokens, output_tokens, 
+                                      kv_cache_hit_ratios, base_ttft_slo, avg_tpot_slo, 
+                                      ttft_reward_weight):
+    """
+    LLM-inference-aware reward function that adjusts expectations based on request context.
+    
+    Domain Knowledge Applied:
+    1. TTFT (Prefill Phase):
+       - Base overhead: ~50-100ms (scheduling, model loading)
+       - Per-token cost: ~0.3-0.5ms/token for typical GPUs (A10, A100)
+       - KV cache hits dramatically reduce computation (cached tokens are "free")
+       - Formula: Expected_TTFT = base + (effective_tokens * per_token_latency)
+       - effective_tokens = input_tokens * (1 - kv_cache_hit_ratio)
+    
+    2. TPOT (Decode Phase):
+       - Should be roughly constant (~10-50ms per generated token)
+       - Can degrade slightly with very long contexts (>8K tokens) due to KV cache memory pressure
+       - Less sensitive to input length, more to total context length
+    
+    3. Efficiency Metrics:
+       - Throughput: tokens/second during prefill
+       - Cache efficiency: reduction in effective work due to KV cache
+    
+    Args:
+        ttft_values: Actual TTFT in ms (time to first token - prefill latency)
+        tpot_values: Actual TPOT in ms (time per output token - decode latency)
+        input_tokens: Number of input/prefill tokens
+        output_tokens: Number of generated/output tokens
+        kv_cache_hit_ratios: KV cache hit ratio for selected pod (0.0-1.0)
+        base_ttft_slo: Base TTFT SLO in ms (for minimal-length requests)
+        avg_tpot_slo: Expected TPOT in ms (target per-token decode latency)
+        ttft_reward_weight: Weight for TTFT vs TPOT rewards
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards, and diagnostic info
+    
+    Example:
+        Request A: 50 tokens, 0% cache hit, 200ms TTFT
+        - Expected: 100 + 50*0.5 = 125ms
+        - Actual: 200ms (60% slower than expected) → Lower reward
+        
+        Request B: 5000 tokens, 80% cache hit, 800ms TTFT  
+        - Effective tokens: 5000 * (1-0.8) = 1000 tokens
+        - Expected: 100 + 1000*0.5 = 600ms
+        - Actual: 800ms (33% slower) → Better than naive comparison
+        
+        Request C: 5000 tokens, 0% cache hit, 800ms TTFT
+        - Expected: 100 + 5000*0.5 = 2600ms
+        - Actual: 800ms (3.25x faster!) → Very high reward
+    """
+    
+    # === TTFT (Prefill) Reward Calculation ===
+    # Constants based on LLM inference characteristics
+    BASE_OVERHEAD_MS = 50  # Base latency (scheduling, kernel launch, etc.)
+    PER_TOKEN_LATENCY_MS = 0.4  # ms per token for typical GPU (A10: ~0.3-0.5ms/token)
+    
+    # Calculate effective tokens after KV cache benefit
+    # KV cache hit means those tokens don't need recomputation
+    effective_input_tokens = input_tokens * (1.0 - kv_cache_hit_ratios)
+    
+    # Calculate context-aware expected TTFT
+    # This is what we SHOULD expect given the request characteristics
+    expected_ttft = BASE_OVERHEAD_MS + (effective_input_tokens * PER_TOKEN_LATENCY_MS)
+    
+    # Calculate adaptive SLO based on context
+    # Allow more time for longer contexts, but still maintain standards
+    adaptive_ttft_slo = np.maximum(
+        base_ttft_slo,  # Never go below base SLO
+        BASE_OVERHEAD_MS + (input_tokens * PER_TOKEN_LATENCY_MS * 1.5)  # 1.5x for safety margin
+    )
+    
+    # Calculate efficiency: how well did we perform vs. expectations?
+    # efficiency > 1.0 means faster than expected (good!)
+    # efficiency < 1.0 means slower than expected (bad)
+    ttft_efficiency = np.where(
+        ttft_values > 0,
+        expected_ttft / np.maximum(ttft_values, 1.0),  # Avoid division by zero
+        1.0  # Perfect efficiency if instant
+    )
+    
+    # Reward based on both absolute performance AND efficiency
+    ttft_rewards = np.where(
+        ttft_values <= 0,
+        2.0,  # Perfect performance
+        np.where(
+            ttft_values <= adaptive_ttft_slo,
+            # Within SLO: Reward based on efficiency (how much better than expected?)
+            # efficiency 1.0 → reward 0.5
+            # efficiency 2.0 → reward 2.0 (twice as fast!)
+            # efficiency 0.5 → reward -0.5 (twice as slow)
+            0.5 + (1.5 * (ttft_efficiency - 1.0)),
+            # SLO violation: Harsh penalty scaled by how much we exceeded
+            -0.5 - (1.0 * np.minimum(3.0, (ttft_values - adaptive_ttft_slo) / adaptive_ttft_slo))
+        )
+    )
+    
+    # === TPOT (Decode) Reward Calculation ===
+    # TPOT should be fairly constant, but can degrade with long contexts
+    # Long KV cache (input + output tokens) can cause memory bandwidth issues
+    total_context_length = input_tokens + output_tokens
+    
+    # Adjust TPOT expectations for very long contexts
+    # Context < 4K: no adjustment
+    # Context > 8K: allow 20% more time
+    context_length_factor = np.where(
+        total_context_length < 4000,
+        1.0,
+        np.minimum(1.2, 1.0 + (total_context_length - 4000) / 20000)  # Linear increase
+    )
+    
+    adaptive_tpot_slo = avg_tpot_slo * context_length_factor
+    
+    # TPOT rewards with context-aware expectations
+    tpot_rewards = np.where(
+        tpot_values <= 0,
+        -0.5,  # Penalize invalid values
+        np.where(
+            tpot_values <= adaptive_tpot_slo,
+            # Within SLO: Linear scaling with bonus for excellence
+            1.5 - (1.5 * tpot_values / adaptive_tpot_slo),
+            # SLO violation: Penalty
+            -0.5 - (0.5 * np.minimum(2.5, (tpot_values - adaptive_tpot_slo) / adaptive_tpot_slo))
+        )
+    )
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+        # Diagnostic info (useful for analysis)
+        'effective_input_tokens': effective_input_tokens,
+        'expected_ttft': expected_ttft,
+        'adaptive_ttft_slo': adaptive_ttft_slo,
+        'ttft_efficiency': ttft_efficiency,
+        'adaptive_tpot_slo': adaptive_tpot_slo,
+    }
+
+
 ## new - unified preprocessing function
 def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training):
     num_rows = len(parsed_df)
@@ -533,6 +955,45 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 reward = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
             elif reward_function == "inverse_latency":
                 reward = calculate_rewards_inverse_latency(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+            elif reward_function == "simple_latency_minimization":
+                reward = calculate_rewards_simple_latency_minimization(
+                    ttft_values, tpot_values, ttft_reward_weight
+                )
+            elif reward_function == "negative_reciprocal":
+                reward = calculate_rewards_negative_reciprocal(
+                    ttft_values, tpot_values, ttft_reward_weight
+                )
+            elif reward_function == "negative_linear":
+                reward = calculate_rewards_negative_linear(
+                    ttft_values, tpot_values, ttft_reward_weight
+                )
+            elif reward_function == "negative_squared":
+                reward = calculate_rewards_negative_squared(
+                    ttft_values, tpot_values, ttft_reward_weight
+                )
+            elif reward_function == "quantile_based":
+                reward = calculate_rewards_quantile_based(
+                    ttft_values, tpot_values,
+                    base_data['input_tokens'],
+                    base_data['output_tokens'],
+                    ttft_reward_weight
+                )
+            elif reward_function == "context_aware":
+                # Extract KV cache hit ratios for selected pods
+                # For each row, get the KV cache hit ratio of the selected pod
+                selected_pods = base_data['selected_pod']
+                kv_cache_hit_ratios = np.array([
+                    base_data.get(f"{pod}-kv_hit_ratio", [0] * len(selected_pods))[i] / 100.0  # Convert percentage to ratio
+                    for i, pod in enumerate(selected_pods)
+                ])
+                
+                input_tokens = np.array(base_data['input_tokens'], dtype=np.float64)
+                output_tokens = np.array(base_data['output_tokens'], dtype=np.float64)
+                
+                reward = calculate_rewards_context_aware(
+                    ttft_values, tpot_values, input_tokens, output_tokens,
+                    kv_cache_hit_ratios, ttft_slo, avg_tpot_slo, ttft_reward_weight
+                )
             else:
                 logger.error(f"Unknown reward function: {reward_function}")
                 assert False
