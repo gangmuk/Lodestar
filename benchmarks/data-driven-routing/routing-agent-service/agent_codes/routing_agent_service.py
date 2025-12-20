@@ -38,6 +38,9 @@ from logger import logger
 import queue
 from collections import deque
 from rwlock import RWLock
+import neural_contextual_bandit_perpodmodel_advanced
+import neural_contextual_bandit_perpodmodel_checkpoint
+
 
 # GPU features are now always included as one-hot encoded features
 INIT_DONE=False
@@ -64,7 +67,6 @@ final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
 ROUTING_STRATEGY = os.getenv("ROUTING_STRATEGY", "latency_predictor")
-REWARD_FUNCTION = os.getenv("REWARD_FUNCTION", "linear_simple_extended")
 
 # hyperparameter_file_path = '/app/final_model/model_config.json'
 # final_model_dir = "/app/final_model"
@@ -393,12 +395,11 @@ def handle_infer():
                     smoothing_threshold=SMOOTHING_THRESHOLD,
                     generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
-        elif subAlgorithm == 'contextual_bandit':
+        elif 'contextual_bandit' in subAlgorithm:
             # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
             logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
             
             global CONTEXTUAL_BANDIT_AGENT
-            import neural_contextual_bandit
             
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             if CONTEXTUAL_BANDIT_AGENT is None:
@@ -426,14 +427,24 @@ def handle_infer():
             
             # Inference with the neural contextual bandit
             contextual_bandit_infer_start = time.time()
-            result, infer_from_tensor_overhead_summary = neural_contextual_bandit.infer_from_tensor(
-                tensor_data=tensor_data,
-                request_id=request_id,
-                model_updated=MODEL_UPDATED,
-                HYPERPARAMETERS=HYPERPARAMETERS,
-                final_model_dir=final_model_dir,
-                sorted_all_pod_ids=sorted_all_pod_ids
-            )
+            if 'advanced' in subAlgorithm:
+                result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_advanced.infer_from_tensor(
+                    tensor_data=tensor_data,
+                    request_id=request_id,
+                    model_updated=MODEL_UPDATED,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    final_model_dir=final_model_dir,
+                    sorted_all_pod_ids=sorted_all_pod_ids
+                )
+            else:
+                result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_checkpoint.infer_from_tensor(
+                    tensor_data=tensor_data,
+                    request_id=request_id,
+                    model_updated=MODEL_UPDATED,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    final_model_dir=final_model_dir,
+                    sorted_all_pod_ids=sorted_all_pod_ids
+                )
             # Reset MODEL_UPDATED after agent has processed it (to avoid reloading on every request)
             if MODEL_UPDATED:
                 MODEL_UPDATED = False
@@ -962,13 +973,20 @@ def online_train_routine():
             
             # Train Neural Contextual Bandit
             train_start_time = time.time()
-            import neural_contextual_bandit
-            neural_contextual_bandit.train_batch(
-                encoded_training_dir=encoded_training_dir,
-                final_model_dir=final_model_dir,
-                HYPERPARAMETERS=HYPERPARAMETERS,
-                num_epochs=HYPERPARAMETERS.get('num_epochs', 3)
-            )
+            if 'advanced' in subAlgorithm:
+                    neural_contextual_bandit_perpodmodel_advanced.train(
+                    encoded_training_dir=encoded_training_dir,
+                    final_model_dir=final_model_dir,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    num_trains=NUM_TRAINS
+                )
+            else:
+                neural_contextual_bandit_perpodmodel_checkpoint.train(
+                    encoded_training_dir=encoded_training_dir,
+                    final_model_dir=final_model_dir,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    num_trains=NUM_TRAINS
+                )
             logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
         
         else:
@@ -1308,43 +1326,42 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, TOTAL_NUM_NEW_DATA
     
     # Model directory and offline data are GPU-specific
-    if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
-        base_dir = "/app/NVIDIA-A30/Aggregated"
-        final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-        offline_csv_path = f"{base_dir}/offline_training_data.csv"
-        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    elif TARGET_GPU_MODEL == "NVIDIA-A10":
-        if ROUTING_STRATEGY == "contextual_bandit":
-            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/{REWARD_FUNCTION}"
-            logger.info(f"Using CONTEXTUAL BANDIT model from {final_model_dir}")
-        elif ROUTING_STRATEGY == "latency_predictor":
-            final_model_dir = "/app/NVIDIA-A10/PrefillOnly/final_model/latency_predictor"
-            logger.info(f"Using LATENCY PREDICTOR model from {final_model_dir}")
+    if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
+        if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
+            base_dir = "/app/NVIDIA-A30/Aggregated"
+            final_model_dir = f"{base_dir}/final_model/latency_predictor"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            offline_csv_path = f"{base_dir}/offline_training_data.csv"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+        elif TARGET_GPU_MODEL == "NVIDIA-A10":
+            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/{ROUTING_STRATEGY}"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+            offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+        elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
+            base_dir = "/app/NVIDIA-L20/Aggregated"
+            final_model_dir = f"{base_dir}/final_model/latency_predictor"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            offline_csv_path = f"{base_dir}/offline_training_data.csv"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+        elif TARGET_GPU_MODEL == "hetero":
+            base_dir = "/app/hetero/Aggregated"
+            final_model_dir = f"{base_dir}/final_model/latency_predictor"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            offline_csv_path = f"{base_dir}/offline_training_data.csv"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         else:
-            logger.error(f"Unknown routing strategy: {ROUTING_STRATEGY}")
+            logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
+    else:
+        ## some default model for non learning based routing startegies
+        final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/latency_predictor"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
-    elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
-        base_dir = "/app/NVIDIA-L20/Aggregated"
-        final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-        offline_csv_path = f"{base_dir}/offline_training_data.csv"
-        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    elif TARGET_GPU_MODEL == "hetero":
-        base_dir = "/app/hetero/Aggregated"
-        final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-        offline_csv_path = f"{base_dir}/offline_training_data.csv"
-        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-    else:
-        logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
-        assert False
 
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
     logger.info(f"WORKLOAD: {WORKLOAD}")
@@ -1532,11 +1549,11 @@ def initialize():
             logger.warning("Online learning will start from scratch with only new data")
             TRAINING_DF = pd.DataFrame()
             OFFLINE_DATA_SIZE = 0
+        # Initialize scalable RL agent if configured
+        TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
     else:
         logger.info("Online learning disabled, skipping offline data load")
     
-    # Initialize scalable RL agent if configured
-    TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
     logger.info(f"{BLUE_COLOR}model_type: {HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
 
     # if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':

@@ -20,60 +20,54 @@ experiment_configs=(
     ## test
 
     # # ## SharingRatio71%, total number of requests: 1500
-    # "contextual_bandit|SharingRatio71%|${target_gpu}|7|8"
+    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
+    "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
+    # "contextual_bandit_negative_linear_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
     # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
     # "least_request|SharingRatio71%|${target_gpu}|7|4"
-    # "least_kv_cache|SharingRatio71%|${target_gpu}|7|4"
+    # "least_kv_cache|SharingRatio71%|${target_gpu}|7|2"
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
-    # # ## SharingRatio71%, total number of requests: 1500
-    # "contextual_bandit|SharingRatio71%|${target_gpu}|8|2"
-    # "latency_predictor|SharingRatio71%|${target_gpu}|8|4"
-    # "prefix_cache_1|SharingRatio71%|${target_gpu}|8|2"
-    # "least_latency|SharingRatio71%|${target_gpu}|8|4"
-    # "least_request|SharingRatio71%|${target_gpu}|8|4"
-    # "least_kv_cache|SharingRatio71%|${target_gpu}|8|4"
-    # "random|SharingRatio71%|${target_gpu}|8|2"
-
     # # # # # ## SharingRatio47%, total number of requests: 2000
-    "contextual_bandit|SharingRatio47%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio47%|${target_gpu}|6|4"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
-    # "least_request|SharingRatio47%|${target_gpu}|6|1"
+    # "least_request|SharingRatio47%|${target_gpu}|6|4"
     # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
     # "random|SharingRatio47%|${target_gpu}|6|1"
 
-    # # # # ## SharingRatio28%, total number of requests: 2000
-    "contextual_bandit|SharingRatio28%|${target_gpu}|5|4"
-    # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
-    # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
-    # "least_latency|SharingRatio28%|${target_gpu}|5|1"
-    # # "least_request|SharingRatio28%|${target_gpu}|5|1"
-    # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
-    # "random|SharingRatio28%|${target_gpu}|5|1"
 
-    # # # # ## SharingRatio9%, total number of requests: 2000
-    # "contextual_bandit|SharingRatio9%|${target_gpu}|5|4"
-    # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
-    # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
-    # "least_latency|SharingRatio9%|${target_gpu}|5|1"
-    # "least_request|SharingRatio9%|${target_gpu}|5|1"
-    # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
-    # "random|SharingRatio9%|${target_gpu}|5|1"
+    # # # # # ## SharingRatio28%, total number of requests: 2000
+    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio28%|${target_gpu}|5|4"
+    # # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
+    # # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
+    # # "least_latency|SharingRatio28%|${target_gpu}|5|1"
+    # "least_request|SharingRatio28%|${target_gpu}|5|4"
+    # # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
+    # # "random|SharingRatio28%|${target_gpu}|5|1"
 
-    # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    # "contextual_bandit|MixedSharingRatio10_30_50_70%|${target_gpu}|6|8"
-    # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
-    # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+
+    # # # # # ## SharingRatio9%, total number of requests: 2000
+    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio9%|${target_gpu}|5|4"
+    # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
+    # # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
+    # # "least_latency|SharingRatio9%|${target_gpu}|5|1"
+    # "least_request|SharingRatio9%|${target_gpu}|5|4"
+    # # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
+    # # "random|SharingRatio9%|${target_gpu}|5|1"
+
+    # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # "contextual_bandit_quantile_based_perpodmodel|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
+    # # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+
 )
-
-REWARD_FUNCTION="quantile_based" # simple_latency_minimization, quantile_based, negative_reciprocal, negative_linear, negative_squared, linear_simple_extended, latency_optimized, inverse_latency, 
 
 INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
@@ -84,7 +78,7 @@ MAX_TOTAL_DATA=40000
 # MIN_NUM_UPDATE_DATA=1000
 
 MIN_NUM_TRAINING_DATA=1000
-MIN_NUM_UPDATE_DATA=500
+MIN_NUM_UPDATE_DATA=1000
 
 EXPLORATION_ENABLED=0
 EXPLORATION_RATE=0.1
@@ -255,8 +249,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         # experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}"
         experiment_result_output_dir="${experiment_result_output_dir}_ttft"
     fi
-    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${postfix}-${timestamp}"
-
+    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${timestamp}"
     echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
     if [ ! -d "${experiment_result_output_dir}" ]; then
         mkdir -p "${experiment_result_output_dir}"
@@ -327,10 +320,20 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env ENABLE_FLUSH=${ENABLE_FLUSH} \
         --env FLUSH_PERIOD=${FLUSH_PERIOD} \
         --env MIN_NUM_LOG_MESSAGES_TO_FLUSH=${MIN_NUM_LOG_MESSAGES_TO_FLUSH}
-        # --env useRealRequest=1
-        # --env LATENCY_METRICS_LOG_PATH=/path/to/your/metrics.log
+    sleep 2
+
+    kubectl rollout restart deployment client-service --namespace default
 
     sleep 2
+    python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
+    python3 check_ready.py --deployment aibrix-gateway-plugins --namespace aibrix-system
+    python3 check_ready.py --deployment routing-agent-service --namespace default
+    python3 check_ready.py --deployment client-service --namespace default
+    sleep 2
+
+    ###############
+    ## code ship ##
+    ###############
 
     ship_start_time=$(date +%s)
     python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
@@ -339,19 +342,12 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
         python kubectl_cp_from_host_to_pod.py ${scalable_rl_agent_init_model_dir} /app/final_model routing-agent-service default
     fi
-    
+
     python kubectl_cp_from_host_to_pod.py async-client.py /app client-service default
 
     ship_end_time=$(date +%s)
     ship_took=$((ship_end_time - ship_start_time))
     echo "* ship_all took: ${ship_took}s"
-
-    sleep 2
-    python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
-    python3 check_ready.py --deployment aibrix-gateway-plugins --namespace aibrix-system
-    python3 check_ready.py --deployment routing-agent-service --namespace default
-    python3 check_ready.py --deployment client-service --namespace default
-    sleep 2
 
     echo "========================================="
     echo "Running Client in K8s Pod"
@@ -513,29 +509,27 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         kubectl_cp_start_time=$(date +%s)
         echo "Copying final_model from pod..."
         # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default
-        if [ "${routing_policy}" == "contextual_bandit" ]; then
-            model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}/${REWARD_FUNCTION}"
-        else
-            model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}"
-        fi
+        model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}"
         echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
         echo "* model_dir_in_pod: ${model_dir_in_pod}"
-        python kubectl_cp_from_pod_to_host.py ${model_dir_in_pod} "${experiment_result_output_dir}/final_model/${target_gpu}/${REWARD_FUNCTION}" routing-agent-service default --skip-files "tensor_dataset.pt"
+        python kubectl_cp_from_pod_to_host.py ${model_dir_in_pod} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default --skip-files "tensor_dataset.pt"
         kubectl_cp_end_time=$(date +%s)
-        echo "* copying final_model took: $((end_time - start_time))s"
+        echo "* copying final_model took: $((kubectl_cp_end_time - kubectl_cp_start_time))s"
+        hyperparameters_file_path=$(find "${experiment_result_output_dir}/final_model/${target_gpu}" -name "model_config.json" | head -1)
+        if [ -z "$hyperparameters_file_path" ]; then
+            echo "ERROR: Could not find model_config.json in ${experiment_result_output_dir}/final_model/${target_gpu}"
+            exit 1
+        fi
     else
         echo "Skipping final model copying for ${routing_policy}. It does not use any learned model."
     fi
-
-    # it needs to be run after the final model is copied to the host
-    # Find the model_config.json in the final_model directory (it may be in a subdirectory based on reward function)
-    hyperparameters_file_path=$(find "${experiment_result_output_dir}/final_model/${target_gpu}" -name "model_config.json" | head -1)
     if [ -z "$hyperparameters_file_path" ]; then
-        echo "ERROR: Could not find model_config.json in ${experiment_result_output_dir}/final_model/${target_gpu}"
-        exit 1
+        echo "* Using hyperparameters file: $hyperparameters_file_path"
+        python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv --hyperparameters_file_path "$hyperparameters_file_path"
+    else
+        python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv
     fi
-    echo "* Using hyperparameters file: $hyperparameters_file_path"
-    python ../agent_codes/data_processor.py --input_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv --output_file ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins-processed.log.csv --hyperparameters_file_path "$hyperparameters_file_path"
+
 
     # python kubectl_cp_from_pod_to_host.py /tmp/latency_metrics.log "${experiment_result_output_dir}/latency_metrics.log.txt" gateway-plugins aibrix-system
 

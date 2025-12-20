@@ -243,22 +243,32 @@ def validate_processed_csv(csv_file):
 
 def load_hyperparameter_file(hyperparameters_file_path):
     import json
-    # 1) Load JSON hyperparameters_file_path (required)
+    # Make hyperparameters optional - if not provided, return None
+    if hyperparameters_file_path is None or hyperparameters_file_path == "":
+        logger.info("No hyperparameters file provided. Will skip feature exclusion and reward calculation.")
+        return None
+    
+    # Check if file exists
     if not os.path.exists(hyperparameters_file_path):
-        logger.error(f"Hyperparameters JSON not found: {hyperparameters_file_path}")
-        return
-    # file does not exist or is empty
-    if hyperparameters_file_path is None or hyperparameters_file_path == "" or os.path.getsize(hyperparameters_file_path) == 0:
-        logger.error(f"Hyperparameters JSON is empty: {hyperparameters_file_path}")
-        assert False
+        logger.warning(f"Hyperparameters JSON not found: {hyperparameters_file_path}. Will skip feature exclusion and reward calculation.")
+        return None
+    
+    # Check if file is empty
+    if os.path.getsize(hyperparameters_file_path) == 0:
+        logger.warning(f"Hyperparameters JSON is empty: {hyperparameters_file_path}. Will skip feature exclusion and reward calculation.")
+        return None
+    
+    # Load hyperparameters file
     with open(hyperparameters_file_path, 'r') as f:
         logger.info(f"Loading hyperparameters from {hyperparameters_file_path}")
         hp = json.load(f)
         logger.info(f"args.hyperparameters_file_path: {hyperparameters_file_path}")
         logger.info(f"Loaded hyperparameters_file_path: {hp}")
+    
     if not isinstance(hp, dict):
         logger.error(f"Hyperparameters file is not a JSON object: {hyperparameters_file_path}")
         assert False
+    
     hyperparameters = {}
     hyperparameters.update(hp)
     return hyperparameters
@@ -271,7 +281,7 @@ def main():
     parser.add_argument('--input_file', help='Raw text log file or directory to process')
     parser.add_argument('--output_file', help='Output file to save processed CSV')
     parser.add_argument('--batch', action='store_true', help='Process all data files in directory')
-    parser.add_argument('--hyperparameters_file_path', help='Hyperparameters file path')
+    parser.add_argument('--hyperparameters_file_path', default=None, help='Hyperparameters file path (optional). If not provided, feature exclusion and reward calculation will be skipped.')
     parser.add_argument('--validate', action='store_true', help='Validate existing processed CSV')
     parser.add_argument('--ttft_threshold', type=float, default=None, 
                         help='Filter samples with TTFT exceeding this threshold (in ms). If not specified, no TTFT filtering is applied.')
@@ -281,7 +291,10 @@ def main():
 
     hyperparameters = load_hyperparameter_file(args.hyperparameters_file_path)
     logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
-    logger.info(f"Loaded hyperparameters: {hyperparameters}")
+    if hyperparameters is not None:
+        logger.info(f"Loaded hyperparameters: {hyperparameters}")
+    else:
+        logger.info("No hyperparameters loaded. Feature exclusion and reward calculation will be skipped.")
     
     # Log filtering settings
     if args.ttft_threshold is not None:

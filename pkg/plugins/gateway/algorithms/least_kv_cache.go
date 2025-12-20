@@ -84,6 +84,7 @@ func selectTargetPodWithLeastKVCache(cache cache.Cache, readyPods []*v1.Pod, mod
 	minKvCache := math.MaxFloat64
 
 	if len(readyPods) == 0 {
+		klog.Warning("selectTargetPodWithLeastKVCache, No pods to select from; returning nil")
 		return nil
 	}
 
@@ -97,15 +98,17 @@ func selectTargetPodWithLeastKVCache(cache cache.Cache, readyPods []*v1.Pod, mod
 		// This works but doesn't look very promising, we can revisit this part later.
 		gpuCache, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.GPUCacheUsagePerc)
 		if err != nil {
-			klog.V(5).Infof("Could not get GPUCacheUsagePerc for pod %s: %v", pod.Name, err)
+			klog.Warningf("Could not get GPUCacheUsagePerc for pod %s: %v", pod.Name, err)
 			continue
 		}
-		cpuCache, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.CPUCacheUsagePerc)
-		if err != nil {
-			klog.V(5).Infof("Could not get CPUCacheUsagePerc for pod %s: %v", pod.Name, err)
-			continue
-		}
-		totalCache := gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
+		// cpuCache, err := cache.GetMetricValueByPodModel(pod.Name, model, metrics.CPUCacheUsagePerc)
+		// if err != nil {
+		// 	klog.Warningf("Could not get CPUCacheUsagePerc for pod %s: %v", pod.Name, err)
+		// 	continue
+		// }
+		// totalCache := gpuCache.GetSimpleValue() + cpuCache.GetSimpleValue()
+		
+		totalCache := gpuCache.GetSimpleValue()
 
 		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, cpuCache: %v, kvCache: %v",
 			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), cpuCache.GetSimpleValue(), totalCache)

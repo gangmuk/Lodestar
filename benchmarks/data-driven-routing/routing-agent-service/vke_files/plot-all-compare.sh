@@ -2,20 +2,14 @@
 
 set -e
 
-# target_dir_list=(
-#     "../workload-and-experiment_results/SharingRatio71%/hand-picked"
-#     "../workload-and-experiment_results/SharingRatio47%/hand-picked"
-#     "../workload-and-experiment_results/SharingRatio28%/hand-picked"
-#     "../workload-and-experiment_results/SharingRatio9%/hand-picked"
-# )
-
+base_dir="/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0"
 
 target_dir_list=(
-    "../workload-and-experiment_results/for_paper/SharingRatio71%"
-    "../workload-and-experiment_results/for_paper/SharingRatio47%"
-    "../workload-and-experiment_results/for_paper/SharingRatio28%"
-    "../workload-and-experiment_results/for_paper/SharingRatio9%"
-    "../workload-and-experiment_results/for_paper/MixedSharingRatio"
+    "${base_dir}/SharingRatio71%/rps7"
+    "${base_dir}/SharingRatio47%/rps6"
+    "${base_dir}/SharingRatio28%/rps5"
+    "${base_dir}/SharingRatio9%/rps5"
+    "${base_dir}/MixedSharingRatio10_30_50_70%/rps6"
 )
 
 for target_dir in "${target_dir_list[@]}"; do
@@ -26,6 +20,10 @@ for target_dir in "${target_dir_list[@]}"; do
 done
 
 for target_dir in "${target_dir_list[@]}"; do
-    echo "Processing ${target_dir}..."
-    python compare_routing_strategies.py "${target_dir}"
+    echo "Processing ${target_dir}"
+    python compare_routing_strategies.py "${target_dir}" | grep "Saved" &
 done
+wait
+
+echo ""
+echo "All plots generated successfully!"

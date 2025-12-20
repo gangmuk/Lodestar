@@ -64,14 +64,35 @@ COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final
 COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-latency_predictor_ttft-1-with-output NVIDIA-A10/PrefillOnly/final_model/latency_predictor/with-output_tokens
 
 ## contextual bandit
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-linear_simple_extended NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/linear_simple_extended
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-inverse_latency NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/inverse_latency
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-latency_optimized NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/latency_optimized
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-simple_latency_minimization NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/simple_latency_minimization
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-quantile_based NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/quantile_based
 
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-negative_linear NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/negative_linear
-COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-negative_squared NVIDIA-A10/PrefillOnly/final_model/contextual_bandit/negative_squared
+## source dir
+# final_model-contextual_bandit_context_aware_clustermodel
+# final_model-contextual_bandit_inverse_latency_clustermodel
+# final_model-contextual_bandit_latency_optimized_clustermodel
+# final_model-contextual_bandit_linear_simple_extended_clustermodel
+# final_model-contextual_bandit_negative_linear_clustermodel
+# final_model-contextual_bandit_negative_reciprocal_clustermodel
+# final_model-contextual_bandit_negative_squared_clustermodel
+# final_model-contextual_bandit_quantile_based_clustermodel
+# final_model-contextual_bandit_simple_latency_minimization_clustermodel
+
+# final_model-contextual_bandit_negative_linear_perpodmodel
+# final_model-contextual_bandit_negative_squared_perpodmodel
+# final_model-contextual_bandit_quantile_based_perpodmodel
+
+
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_linear_simple_extended_clustermodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_linear_simple_extended_clustermodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_latency_optimized_clustermodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_latency_optimized_clustermodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_simple_latency_minimization_clustermodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_simple_latency_minimization_clustermodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_quantile_based_clustermodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_quantile_based_clustermodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_negative_linear_clustermodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_negative_linear_clustermodel
+
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_negative_linear_perpodmodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_negative_linear_perpodmodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_negative_squared_perpodmodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_negative_squared_perpodmodel
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_quantile_based_perpodmodel NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_quantile_based_perpodmodel
+
+
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_quantile_based_perpodmodel_advanced NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_quantile_based_perpodmodel_advanced
 
 ################################################################################################################
 

@@ -58,11 +58,11 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
             elif model_type == 'contextual_bandit':
                 logger.info("Training with Neural Contextual Bandit model")
                 import neural_contextual_bandit
-                saved_plot_path = neural_contextual_bandit.train_batch(
+                saved_plot_path = neural_contextual_bandit.train(
                     encoded_training_dir=ENCODED_DATA_DIR,
                     final_model_dir=final_model_dir,
                     HYPERPARAMETERS=HYPERPARAMETERS,
-                    num_epochs=HYPERPARAMETERS.get('num_epochs', 10)  # More epochs for offline training
+                    num_trains=NUM_TRAINS  # Pass NUM_TRAINS for plot naming
                 )
                 logger.info(f"Neural CB offline training complete")
             else:
