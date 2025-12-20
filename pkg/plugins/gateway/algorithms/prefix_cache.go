@@ -194,6 +194,21 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 }
 
 // func getTargetPodFromMatchedPodsByPodIP(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod
+// 1. Sort the pods by prefix matching ratio and request count
+// 2. Select the pod with the highest prefix matching ratio as long as the pod is not overloaded
+// definition of overloaded: request count > mean request count + standard deviation factor * standard deviation of request count
+// overload calculation example:
+// pods: [pod_1, pod_2, pod_3, pod_4]
+// number of requests: [7, 4, 25, 15]
+// prefix matching ratio: [0.2, 0.4, 0.8, 0.6]
+// sorted pods: [pod_3, pod_4, pod_2, pod_1]
+// Mean = (7 + 4 + 25 + 15) / 4 = 12.75
+// Std Dev = 6.1
+// Threshold = 12.75 + 6.1 = 18.85
+// pod_3 request count: 25 > 18.85
+// skip pod_3 even if it has the highest prefix matching ratio
+// pod_2 request count: 4 <= 18.85
+// select pod_2 as target pod
 func routePrefixRatioAndLoad(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
 	var targetPodIP string
 	requestCount := []float64{}
@@ -220,18 +235,6 @@ func routePrefixRatioAndLoad(cache cache.Cache, readyPods []*v1.Pod, matchedPods
 		}
 		return matchedPods[podIPs[i]] > matchedPods[podIPs[j]]
 	})
-
-	// pods: [pod_1, pod_2, pod_3, pod_4]
-	// number of requests: [7, 4, 25, 15]
-	// prefix matching ratio: [0.2, 0.4, 0.8, 0.6]
-	// sorted pods: [pod_3, pod_4, pod_2, pod_1]
-	// Mean = (7 + 4 + 25 + 15) / 4 = 12.75
-	// Std Dev = 6.1
-	// Threshold = 12.75 + 6.1 = 18.85
-	// pod_3 request count: 25 > 18.85
-	// skip pod_3 even if it has the highest prefix matching ratio
-	// pod_2 request count: 4 <= 18.85
-	// select pod_2 as target pod
 	var idx int
 	idx = 0
 	for _, podIP := range podIPs {
@@ -288,8 +291,10 @@ func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[st
 	return targetPod
 }
 
-// getTargetPodOnLoadImbalance evaluates if the load is imbalanced based on the abs difference between
-// pods with min and max outstanding request counts
+// logic:
+// If imbalanced (min request count - max request count > podRunningRequestImbalanceAbsCount)
+// Return min request count pod
+// If Not imbalanced, return nil!!
 func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Pod, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
@@ -312,8 +317,8 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 			targetPods = append(targetPods, podname)
 		}
 	}
-
-	if maxValue-minValue > podRunningRequestImbalanceAbsCount {
+	if maxValue - minValue > podRunningRequestImbalanceAbsCount {
+		// Imbalanced
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 		imbalance = true
 	}

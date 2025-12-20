@@ -152,16 +152,40 @@ def analyze_llm_inference_logs(df):
 def calculate_performance_metrics(df):
     """Calculate the performance metrics for a dataframe."""
     metrics = {}
-    
+
     # Calculate TTFT metrics if available
     if 'ttft' in df.columns:
+        # Debug: Print sample values and statistics
+        print(f"  TTFT column statistics:")
+        print(f"    - Sample values (first 5): {df['ttft'].head().tolist()}")
+        print(f"    - Min: {df['ttft'].min():.2f}, Max: {df['ttft'].max():.2f}")
+        print(f"    - Mean (before any conversion): {df['ttft'].mean():.2f}")
+        print(f"    - Median: {df['ttft'].median():.2f}")
+        
         metrics['avg_ttft'] = df['ttft'].mean()
         metrics['p99_ttft'] = df['ttft'].quantile(0.99)
-    
+        metrics['p999_ttft'] = df['ttft'].quantile(0.999)
+        
+        print(f"    - Calculated avg_ttft: {metrics['avg_ttft']:.2f} ms")
+        print(f"    - Calculated p99_ttft: {metrics['p99_ttft']:.2f} ms")
+        print(f"    - Calculated p999_ttft: {metrics['p999_ttft']:.2f} ms")
+
     # Calculate TPOT metrics if available
     if 'avg_tpot' in df.columns:
+        # Debug: Print sample values and statistics
+        print(f"  TPOT column statistics:")
+        print(f"    - Sample values (first 5): {df['avg_tpot'].head().tolist()}")
+        print(f"    - Min: {df['avg_tpot'].min():.2f}, Max: {df['avg_tpot'].max():.2f}")
+        print(f"    - Mean (before any conversion): {df['avg_tpot'].mean():.2f}")
+        print(f"    - Median: {df['avg_tpot'].median():.2f}")
+        
         metrics['avg_tpot'] = df['avg_tpot'].mean()
         metrics['p99_tpot'] = df['avg_tpot'].quantile(0.99)
+        metrics['p999_tpot'] = df['avg_tpot'].quantile(0.999)
+        
+        print(f"    - Calculated avg_tpot: {metrics['avg_tpot']:.2f} ms")
+        print(f"    - Calculated p99_tpot: {metrics['p99_tpot']:.2f} ms")
+        print(f"    - Calculated p999_tpot: {metrics['p999_tpot']:.2f} ms")
 
     # Calculate end-to-end latency metrics if available
     if 'request_start_time' in df.columns and 'request_end_time' in df.columns:
@@ -259,8 +283,8 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
             avg_metrics = {'strategy': category, 'experiment_count': len(metrics_list)}
             
             # Get all numeric metrics to average
-            numeric_metrics = ['avg_ttft', 'p99_ttft', 'avg_tpot', 'p99_tpot', 
-                             'avg_end_to_end', 'p99_end_to_end', 'num_requests', 
+            numeric_metrics = ['avg_ttft', 'p99_ttft', 'p999_ttft', 'avg_tpot', 'p99_tpot', 'p999_tpot',
+                             'avg_end_to_end', 'p99_end_to_end', 'num_requests',
                              'throughput_rps', 'throughput_tps']
             
             for metric in numeric_metrics:
@@ -305,7 +329,7 @@ def export_metrics_to_csv(all_metrics, base_dir, output_dir="../workload-and-exp
 
     # Define the metrics we want to export
     metric_columns = [
-        'avg_ttft', 'p99_ttft', 'avg_tpot', 'p99_tpot',
+        'avg_ttft', 'p99_ttft', 'p999_ttft', 'avg_tpot', 'p99_tpot', 'p999_tpot',
         'avg_end_to_end', 'p99_end_to_end', 'num_requests',
         'throughput_rps', 'throughput_tps'
     ]
@@ -610,18 +634,18 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 24))  # Increased height for 4 rows with more spacing
+    fig = plt.figure(figsize=(18, 28))  # Increased height for 5 rows with more spacing
 
-    # MODIFIED GridSpec: 4 rows (CDFs, bar chart, time series graphs)
-    # Increased height_ratio for row 1 (bar chart) and increased hspace for better spacing
-    gs = GridSpec(4, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1, 1],
+    # MODIFIED GridSpec: 5 rows (CDFs, TTFT bar chart, TPOT bar chart, time series graphs)
+    # Increased height_ratio for row 1 and 2 (bar charts) and increased hspace for better spacing
+    gs = GridSpec(5, 9, figure=fig,
+                  height_ratios=[1, 1.5, 1.5, 1, 1],
                   hspace=0.9,
                   wspace=0.35)
     
     # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
     
-    # NEW: CDF plots, bar chart, and time series graphs
+    # NEW: CDF plots, bar charts, and time series graphs
     if csv_data_dict:
         # Plot 1: TTFT Latency CDF (left half of row 0)
         ax = fig.add_subplot(gs[0, :4])
@@ -631,20 +655,24 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         ax = fig.add_subplot(gs[0, 5:])
         plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Latency CDF', 'Avg TPOT (ms)')
 
-        # Plot 3: Average TTFT and TPOT Comparison (full width, row 1)
+        # Plot 3: TTFT Bar Chart (full width, row 1)
         ax = fig.add_subplot(gs[1, :])
-        plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict)
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99, P999)')
         
-        # Plot 4: TTFT Time Series (full width, row 2)
+        # Plot 4: TPOT Bar Chart (full width, row 2)
         ax = fig.add_subplot(gs[2, :])
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99, P999)')
+        
+        # Plot 5: TTFT Time Series (full width, row 3)
+        ax = fig.add_subplot(gs[3, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1s averages)', 'TTFT (ms)')
         
-        # Plot 5: Avg TPOT Time Series (full width, row 3)
-        ax = fig.add_subplot(gs[3, :])
+        # Plot 6: Avg TPOT Time Series (full width, row 4)
+        ax = fig.add_subplot(gs[4, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1s averages)', 'Avg TPOT (ms)')
     else:
         # If no CSV data provided, show placeholder text for all plots
-        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]), (3, [slice(None)])]:
+        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]), (3, [slice(None)]), (4, [slice(None)])]:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -750,97 +778,194 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             ax.axhline(y=0.5, color='green', linestyle=':', alpha=0.7, linewidth=1.5)
 
 
-# New function to plot dual-axis comparison (TTFT, TPOT)
-def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
-    """Plot bar chart with TTFT and TPOT grouped by strategy - dual y-axes (left: TTFT, right: TPOT)."""
+# New function to plot single metric comparison (TTFT or TPOT) with avg, p99, p999
+def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, metric_type, title):
+    """Plot bar chart with single metric (TTFT or TPOT) showing avg, p99, p999 grouped by strategy."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     n_strategies = len(strategies)
-    
+
     # Extract metrics for each strategy
-    avg_ttft = [metrics_df.set_index('strategy').loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
-    avg_tpot = [metrics_df.set_index('strategy').loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
-    
-    # Get max values for each y-axis
-    max_ttft = max(avg_ttft or [0])
-    max_tpot = max(avg_tpot or [0])
-    
-    # Create bar positions - 2 bars per strategy with spacing between groups
-    bar_width = 0.35
-    group_width = 2 * bar_width + 0.4  # Space between groups
+    metrics_indexed = metrics_df.set_index('strategy')
+
+    # Get the appropriate metrics based on metric_type
+    if metric_type == 'ttft':
+        avg_values = [metrics_indexed.loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
+        p99_values = [metrics_indexed.loc[s, 'p99_ttft'] if 'p99_ttft' in metrics_df.columns else 0 for s in strategies]
+        p999_values = [metrics_indexed.loc[s, 'p999_ttft'] if 'p999_ttft' in metrics_df.columns else 0 for s in strategies]
+        ylabel_text = 'TTFT (ms)'
+    else:  # tpot
+        avg_values = [metrics_indexed.loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
+        p99_values = [metrics_indexed.loc[s, 'p99_tpot'] if 'p99_tpot' in metrics_df.columns else 0 for s in strategies]
+        p999_values = [metrics_indexed.loc[s, 'p999_tpot'] if 'p999_tpot' in metrics_df.columns else 0 for s in strategies]
+        ylabel_text = 'Avg TPOT (ms)'
+
+    # Get max value for y-axis scaling
+    max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
+
+    # Create bar positions - 3 bars per strategy with spacing between groups
+    bar_width = 0.25
+    group_width = 3 * bar_width + 0.3  # Space between groups
     group_centers = np.arange(n_strategies) * group_width
-    
-    # Create x positions for each metric within each group
-    ttft_positions = []
-    tpot_positions = []
-    ttft_values = []
-    tpot_values = []
-    ttft_colors = []
-    tpot_colors = []
-    ttft_labels = []
-    tpot_labels = []
-    
+
+    # Plot bars for each metric (avg, p99, p999)
     for i, strategy in enumerate(strategies):
         strategy_color = color_dict[strategy]
         group_center = group_centers[i]
-        
-        # Position for TTFT bar (left side of group)
-        ttft_pos = group_center - bar_width/2
-        ttft_positions.append(ttft_pos)
-        ttft_values.append(avg_ttft[i])
-        ttft_colors.append(strategy_color)
-        ttft_labels.append('TTFT')
-        
-        # Position for TPOT bar (right side of group)
-        tpot_pos = group_center + bar_width/2
-        tpot_positions.append(tpot_pos)
-        tpot_values.append(avg_tpot[i])
-        tpot_colors.append(strategy_color)
-        tpot_labels.append('TPOT')
+
+        # Calculate positions for the 3 bars in each group
+        offset_start = -bar_width
+
+        # Create bars with slight color variations
+        for j, (value, label, alpha) in enumerate([
+            (avg_values[i], 'Avg', 0.9),
+            (p99_values[i], 'P99', 0.7),
+            (p999_values[i], 'P999', 0.5)
+        ]):
+            pos = group_center + offset_start + j * bar_width
+            ax.bar(pos, value, bar_width, color=strategy_color,
+                   edgecolor='black', linewidth=0.8, alpha=alpha)
+
+            # Add value labels on top of bars
+            ax.text(pos, value + max_value * 0.02,
+                   f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                   fontsize=10, fontweight='bold')
+
+    # Set up x-axis with strategy names
+    ax.set_xticks(group_centers)
     
+    # Create shorter, multi-line labels for better readability
+    strategy_labels = []
+    for s in strategies:
+        parts = s.split('-')
+        if len(parts) >= 2:
+            # First line: routing strategy name
+            # Second line: timestamp
+            label = f"{parts[0]}\n({parts[-1]})"
+        else:
+            label = s
+        strategy_labels.append(label)
+    
+    ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
+
+    # Add legend for Avg/P99/P999
+    legend_elements = [
+        Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
+        Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99'),
+        Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999')
+    ]
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
+
+    # Styling
+    ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
+    ax.set_title(title, fontsize=subtitle_fontsize)
+    ax.tick_params(axis='y', labelsize=tick_fontsize)
+    ax.tick_params(axis='x', labelsize=10)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, max_value * 1.4)
+
+
+# New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99, p999
+def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
+    """Plot bar chart with TTFT and TPOT (avg, p99, p999) grouped by strategy - dual y-axes (left: TTFT, right: TPOT)."""
+    strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
+    n_strategies = len(strategies)
+
+    # Extract metrics for each strategy
+    metrics_indexed = metrics_df.set_index('strategy')
+
+    # TTFT metrics
+    avg_ttft = [metrics_indexed.loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
+    p99_ttft = [metrics_indexed.loc[s, 'p99_ttft'] if 'p99_ttft' in metrics_df.columns else 0 for s in strategies]
+    p999_ttft = [metrics_indexed.loc[s, 'p999_ttft'] if 'p999_ttft' in metrics_df.columns else 0 for s in strategies]
+
+    # TPOT metrics
+    avg_tpot = [metrics_indexed.loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
+    p99_tpot = [metrics_indexed.loc[s, 'p99_tpot'] if 'p99_tpot' in metrics_df.columns else 0 for s in strategies]
+    p999_tpot = [metrics_indexed.loc[s, 'p999_tpot'] if 'p999_tpot' in metrics_df.columns else 0 for s in strategies]
+
+    # Get max values for each y-axis (across all percentiles)
+    max_ttft = max(max(avg_ttft or [0]), max(p99_ttft or [0]), max(p999_ttft or [0]))
+    max_tpot = max(max(avg_tpot or [0]), max(p99_tpot or [0]), max(p999_tpot or [0]))
+
+    # Create bar positions - 6 bars per strategy (3 TTFT + 3 TPOT) with spacing between groups
+    bar_width = 0.12  # Narrower bars to fit 6 bars per strategy
+    group_width = 6 * bar_width + 0.5  # Space between groups
+    group_centers = np.arange(n_strategies) * group_width
+
+    # Create x positions for each metric within each group
+    all_positions = []
+    all_values_ttft = []
+    all_values_tpot = []
+    all_colors = []
+    all_labels = []
+
+    for i, strategy in enumerate(strategies):
+        strategy_color = color_dict[strategy]
+        group_center = group_centers[i]
+
+        # Calculate positions for the 6 bars in each group
+        # Left side: 3 TTFT bars, Right side: 3 TPOT bars
+        offset_start = -2.5 * bar_width
+
+        # TTFT bars (avg, p99, p999)
+        for j, (value, label) in enumerate([(avg_ttft[i], 'Avg'), (p99_ttft[i], 'P99'), (p999_ttft[i], 'P999')]):
+            pos = group_center + offset_start + j * bar_width
+            all_positions.append(pos)
+            all_values_ttft.append(value)
+            all_values_tpot.append(0)  # Placeholder for secondary axis
+            all_colors.append(strategy_color)
+            all_labels.append(f'TTFT\n{label}')
+
+        # TPOT bars (avg, p99, p999)
+        for j, (value, label) in enumerate([(avg_tpot[i], 'Avg'), (p99_tpot[i], 'P99'), (p999_tpot[i], 'P999')]):
+            pos = group_center + offset_start + (3 + j) * bar_width
+            all_positions.append(pos)
+            all_values_ttft.append(0)  # Placeholder for primary axis
+            all_values_tpot.append(value)
+            all_colors.append(strategy_color)
+            all_labels.append(f'TPOT\n{label}')
+
     # Create TTFT bars on left y-axis
-    bars1 = ax.bar(ttft_positions, ttft_values, bar_width, color=ttft_colors, 
-                   edgecolor='black', linewidth=1, alpha=0.9, label='TTFT')
-    
-    # Add value labels for TTFT
-    for bar, value in zip(bars1, ttft_values):
+    ttft_bars = []
+    for pos, value, color in zip(all_positions, all_values_ttft, all_colors):
         if value > 0:
-            ax.text(bar.get_x() + bar.get_width()/2. - 0.3, value + max_ttft * 0.05, 
-                   f'{value:.0f}', rotation=45, ha='left', va='bottom', 
-                   fontsize=14, color='#222266')
-    
+            bar = ax.bar(pos, value, bar_width, color=color,
+                        edgecolor='black', linewidth=0.8, alpha=0.9)
+            ttft_bars.append(bar)
+
+            # Add value labels for TTFT
+            ax.text(pos, value + max_ttft * 0.03,
+                   f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                   fontsize=10, color='#222266')
+
     # Create TPOT bars on right y-axis
     ax2 = ax.twinx()
-    bars2 = ax2.bar(tpot_positions, tpot_values, bar_width, color=tpot_colors, 
-                    edgecolor='black', linewidth=1, alpha=0.6, label='TPOT')
-    
-    # Add value labels for TPOT
-    for bar, value in zip(bars2, tpot_values):
+    tpot_bars = []
+    for pos, value, color in zip(all_positions, all_values_tpot, all_colors):
         if value > 0:
-            ax2.text(bar.get_x() + bar.get_width()/2. - 0.15, value + max_tpot * 0.05, 
-                    f'{value:.0f}', rotation=45, ha='left', va='bottom', 
-                    fontsize=12, color='#226622')
-    
-    # Combine all positions and labels for x-axis
-    all_positions = ttft_positions + tpot_positions
-    all_labels = ttft_labels + tpot_labels
-    # Sort by position
-    sorted_indices = sorted(range(len(all_positions)), key=lambda i: all_positions[i])
-    all_positions_sorted = [all_positions[i] for i in sorted_indices]
-    all_labels_sorted = [all_labels[i] for i in sorted_indices]
-    
+            bar = ax2.bar(pos, value, bar_width, color=color,
+                         edgecolor='black', linewidth=0.8, alpha=0.6)
+            tpot_bars.append(bar)
+
+            # Add value labels for TPOT
+            ax2.text(pos, value + max_tpot * 0.03,
+                    f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                    fontsize=10, color='#226622')
+
     # Set up x-axis with metric names on each bar
-    ax.set_xticks(all_positions_sorted)
-    ax.set_xticklabels(all_labels_sorted, fontsize=10, rotation=45)
-    
+    ax.set_xticks(all_positions)
+    ax.set_xticklabels(all_labels, fontsize=8, rotation=45, ha='right')
+
     # Add strategy names as text annotations below the bars
-    strategy_labels = [s.split('-')[0] + "\n(" + s.split('-')[-1] + ")" for s in strategies]  # Shorten strategy names
+    strategy_labels = [s.split('-')[0] + "\n(" + s.split('-')[-1] + ")" for s in strategies]
     for i, (center, label) in enumerate(zip(group_centers, strategy_labels)):
-        ax.text(center-0.6, -0.15, label, ha='center', va='top', fontsize=14, transform=ax.get_xaxis_transform(), rotation=45) # routing strategy xtick
-    
+        ax.text(center, -0.18, label, ha='center', va='top', fontsize=12,
+                transform=ax.get_xaxis_transform(), rotation=45)
+
     # Styling
     ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize, color='#222266')
     ax2.set_ylabel('Avg TPOT (ms)', fontsize=ylabel_fontsize, color='#226622')
-    ax.set_title('Average TTFT and TPOT Latency Comparison', fontsize=subtitle_fontsize)
+    ax.set_title('Average TTFT and TPOT Latency Comparison (Avg, P99, P999)', fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
     ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#226622')
     ax2.tick_params(axis='x')
@@ -848,10 +973,11 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     ax.grid(axis='y', alpha=0.3)
     ax.set_ylim(0, max_ttft * 1.6)
     ax2.set_ylim(0, max_tpot * 1.6)
-    
+
     # Add legend
-    legend_elements = [Patch(facecolor=color_dict[s], edgecolor='black', label=s.split('-')[0] + "-" + s.split('-')[-1]) for s in strategies]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=min(3, n_strategies))
+    legend_elements = [Patch(facecolor=color_dict[s], edgecolor='black',
+                             label=s.split('-')[0] + "-" + s.split('-')[-1]) for s in strategies]
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=12, ncol=min(3, n_strategies))
 
 
 def plot_metric_bar(ax, metrics_df, metric, title, strategy_order, color_dict):

@@ -887,9 +887,14 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     # Process pod features for all rows at once
     logger.debug(f"** hyperparameters: {hyperparameters}")
-    excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
-    if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
+    # If hyperparameters is None or doesn't have EXCLUDED_POD_FEATURES, don't exclude any features
+    if hyperparameters is None or 'EXCLUDED_POD_FEATURES' not in hyperparameters:
+        logger.info("No feature exclusion applied (hyperparameters not provided or EXCLUDED_POD_FEATURES not specified)")
         excluded_pod_features = set()
+    else:
+        excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
+        if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
+            excluded_pod_features = set()
     for pod_id in sorted_all_pod_ids:
         # Vectorized extraction for each pod across all rows
         if 'kv_hit_ratio' not in excluded_pod_features:
@@ -938,7 +943,8 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         })
 
         reward_keys = {'TTFT_SLO', 'AVG_TPOT_SLO', 'TTFT_REWARD_WEIGHT', 'REWARD_FUNCTION'}
-        if reward_keys.issubset(hyperparameters.keys()):
+        # Skip reward calculation if hyperparameters is None or doesn't have required keys
+        if hyperparameters is not None and reward_keys.issubset(hyperparameters.keys()):
             reward_calc_start_time = time.time()
             ttft_slo = hyperparameters['TTFT_SLO']
             avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
@@ -1006,6 +1012,13 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 'reward': reward['combined_rewards'],
             })
             reward_calc_overhead = time.time() - reward_calc_start_time
+        else:
+            # Reward calculation skipped because hyperparameters is None or missing required keys
+            if hyperparameters is None:
+                logger.info("Reward calculation skipped: hyperparameters not provided")
+            else:
+                missing_keys = reward_keys - set(hyperparameters.keys())
+                logger.info(f"Reward calculation skipped: missing hyperparameter keys: {missing_keys}")
     create_df_start_time = time.time()
     processed_df = pd.DataFrame(base_data)
     create_df_overhead = time.time() - create_df_start_time
