@@ -1,0 +1,1297 @@
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import numpy as np
+from logger import logger
+
+
+def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains):
+    """
+    Create comprehensive training metrics visualization for Neural Contextual Bandit.
+    
+    Args:
+        agent: Trained NeuralContextualBandit instance
+        final_model_dir: Directory to save plots
+        num_epochs: Number of training epochs
+        total_samples: Total number of samples processed
+        num_trains: Number of training iterations (for filename)
+    
+    Returns:
+        Path to saved plot file
+    """
+    
+    # Set matplotlib style
+    plt.style.use('default')
+    sns.set_palette("husl")
+    
+    metrics = agent.training_metrics
+    
+    if len(metrics['losses']) == 0:
+        logger.warning("No training metrics to plot")
+        return None
+    
+    # Create comprehensive plot - expanded grid for CB-specific plots (4 rows x 6 cols = 24 plots)
+    fig = plt.figure(figsize=(30, 22))  # Increased height slightly
+    fig.suptitle(f'Neural Contextual Bandit Training Results\n'
+                 f'Epochs: {num_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
+                 fontsize=18, fontweight='bold', y=0.995)
+    
+    # 1. Training Loss
+    plt.subplot(4, 6, 1)
+    if metrics['losses']:
+        plt.plot(metrics['losses'], 'b-', linewidth=1.5, alpha=0.7)
+        # Add moving average
+        if len(metrics['losses']) > 10:
+            window = min(50, len(metrics['losses']) // 10)
+            moving_avg = pd.Series(metrics['losses']).rolling(window=window).mean()
+            plt.plot(moving_avg, 'r-', linewidth=2, label=f'{window}-step MA')
+            plt.legend()
+        plt.title('1. Training Loss')
+        plt.xlabel('Update Step')
+        plt.ylabel('Loss')
+        plt.grid(True, alpha=0.3)
+        
+        # Add final loss annotation
+        final_loss = metrics['losses'][-1]
+        avg_loss = np.mean(metrics['losses'][-100:]) if len(metrics['losses']) >= 100 else np.mean(metrics['losses'])
+        plt.text(0.02, 0.98, f'Final: {final_loss:.4f}\nAvg (last 100): {avg_loss:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    # 2. Average Reward
+    plt.subplot(4, 6, 2)
+    if metrics['rewards']:
+        plt.plot(metrics['rewards'], 'g-', linewidth=1.5, alpha=0.7)
+        # Add moving average
+        if len(metrics['rewards']) > 10:
+            window = min(50, len(metrics['rewards']) // 10)
+            moving_avg = pd.Series(metrics['rewards']).rolling(window=window).mean()
+            plt.plot(moving_avg, 'darkgreen', linewidth=2, label=f'{window}-step MA')
+            plt.legend()
+        plt.title('2. Average Reward per Update')
+        plt.xlabel('Update Step')
+        plt.ylabel('Reward')
+        plt.grid(True, alpha=0.3)
+        
+        # Add reward statistics
+        final_reward = metrics['rewards'][-1]
+        avg_reward = np.mean(metrics['rewards'][-100:]) if len(metrics['rewards']) >= 100 else np.mean(metrics['rewards'])
+        plt.text(0.02, 0.98, f'Final: {final_reward:.4f}\nAvg (last 100): {avg_reward:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    
+    # 3. Exploration Rate (Epsilon)
+    plt.subplot(4, 6, 3)
+    if metrics['epsilons']:
+        plt.plot(metrics['epsilons'], 'orange', linewidth=2)
+        plt.title('3. Exploration Rate (Epsilon)')
+        plt.xlabel('Update Step')
+        plt.ylabel('Epsilon')
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, max(metrics['epsilons']) * 1.1)
+        
+        initial_eps = metrics['epsilons'][0]
+        final_eps = metrics['epsilons'][-1]
+        plt.text(0.02, 0.98, f'Initial: {initial_eps:.4f}\nFinal: {final_eps:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    # 4. Replay Buffer Size
+    plt.subplot(4, 6, 4)
+    buffer_sizes = [min(agent.buffer_size, i+1) for i in range(total_samples)]
+    plt.plot(buffer_sizes, 'purple', linewidth=2)
+    plt.axhline(y=agent.buffer_size, color='r', linestyle='--', label=f'Max Size: {agent.buffer_size}')
+    plt.title('4. Replay Buffer Size')
+    plt.xlabel('Sample')
+    plt.ylabel('Buffer Size')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # 5. Loss Distribution
+    plt.subplot(4, 6, 5)
+    if metrics['losses']:
+        plt.hist(metrics['losses'], bins=50, alpha=0.7, color='steelblue', edgecolor='black')
+        plt.axvline(np.mean(metrics['losses']), color='r', linestyle='--', linewidth=2, label='Mean')
+        plt.axvline(np.median(metrics['losses']), color='g', linestyle='--', linewidth=2, label='Median')
+        plt.title('5. Loss Distribution')
+        plt.xlabel('Loss')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Add statistics
+        mean_loss = np.mean(metrics['losses'])
+        std_loss = np.std(metrics['losses'])
+        plt.text(0.98, 0.98, f'Mean: {mean_loss:.4f}\nStd: {std_loss:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    # 6. Reward Distribution
+    plt.subplot(4, 6, 6)
+    if metrics['rewards']:
+        plt.hist(metrics['rewards'], bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
+        plt.axvline(np.mean(metrics['rewards']), color='r', linestyle='--', linewidth=2, label='Mean')
+        plt.axvline(np.median(metrics['rewards']), color='g', linestyle='--', linewidth=2, label='Median')
+        plt.title('6. Reward Distribution')
+        plt.xlabel('Reward')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Add statistics
+        mean_reward = np.mean(metrics['rewards'])
+        std_reward = np.std(metrics['rewards'])
+        plt.text(0.98, 0.98, f'Mean: {mean_reward:.4f}\nStd: {std_reward:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    
+    # 7. Learning Progress (Loss & Reward together, normalized)
+    plt.subplot(4, 6, 7)
+    if metrics['losses'] and metrics['rewards']:
+        # Normalize to 0-1 range for comparison
+        losses_norm = np.array(metrics['losses'])
+        losses_norm = (losses_norm - losses_norm.min()) / (losses_norm.max() - losses_norm.min() + 1e-8)
+        
+        rewards_norm = np.array(metrics['rewards'])
+        # Invert rewards (lower is better after normalization for visualization)
+        rewards_norm = (rewards_norm - rewards_norm.min()) / (rewards_norm.max() - rewards_norm.min() + 1e-8)
+        
+        plt.plot(losses_norm, 'b-', alpha=0.6, linewidth=1.5, label='Loss (norm)')
+        plt.plot(1 - rewards_norm, 'g-', alpha=0.6, linewidth=1.5, label='Inv. Reward (norm)')
+        plt.title('7. Learning Progress (Normalized)')
+        plt.xlabel('Update Step')
+        plt.ylabel('Normalized Value')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+    
+    # 8. Loss Improvement Over Time
+    plt.subplot(4, 6, 8)
+    if metrics['losses'] and len(metrics['losses']) > 10:
+        # Calculate improvement: difference from initial loss
+        initial_loss = np.mean(metrics['losses'][:10])
+        improvement = [(initial_loss - loss) / initial_loss * 100 for loss in metrics['losses']]
+        plt.plot(improvement, 'darkblue', linewidth=2)
+        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        plt.title('8. Loss Improvement from Initial')
+        plt.xlabel('Update Step')
+        plt.ylabel('Improvement (%)')
+        plt.grid(True, alpha=0.3)
+        
+        final_improvement = improvement[-1]
+        plt.text(0.02, 0.98, f'Final: {final_improvement:.1f}%',
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
+    
+    # 9. Reward Improvement Over Time
+    plt.subplot(4, 6, 9)
+    if metrics['rewards'] and len(metrics['rewards']) > 10:
+        # Calculate improvement: difference from initial reward
+        initial_reward = np.mean(metrics['rewards'][:10])
+        improvement = [(reward - initial_reward) / abs(initial_reward) * 100 if initial_reward != 0 else 0 
+                      for reward in metrics['rewards']]
+        plt.plot(improvement, 'darkgreen', linewidth=2)
+        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        plt.title('9. Reward Improvement from Initial')
+        plt.xlabel('Update Step')
+        plt.ylabel('Improvement (%)')
+        plt.grid(True, alpha=0.3)
+        
+        final_improvement = improvement[-1]
+        plt.text(0.02, 0.98, f'Final: {final_improvement:.1f}%',
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    
+    # 10. Model Architecture Info
+    plt.subplot(4, 6, 10)
+    plt.axis('off')
+    plt.title('10. Model Architecture Info', pad=10)
+    
+    arch_text = "NEURAL CONTEXTUAL BANDIT\n" + "="*25 + "\n"
+    arch_text += f"Exploration: {getattr(agent, 'exploration_method', 'N/A')}\n"
+    
+    # Get initial epsilon from first metric or current epsilon
+    initial_eps = agent.training_metrics['epsilons'][0] if agent.training_metrics['epsilons'] else getattr(agent, 'epsilon', 0.3)
+    arch_text += f"Initial ε: {initial_eps:.3f}\n"
+    arch_text += f"Final ε: {getattr(agent, 'epsilon', 0.0):.3f}\n"
+    arch_text += f"Decay: {getattr(agent, 'epsilon_decay', 0.0):.4f}\n"
+    arch_text += f"Min ε: {getattr(agent, 'epsilon_min', 0.0):.3f}\n\n"
+    arch_text += f"Buffer Size: {getattr(agent, 'buffer_size', 0)}\n"
+    arch_text += f"Batch Size: {getattr(agent, 'batch_size', 0)}\n"
+    
+    # Extract from hyperparameters since they're not stored as attributes
+    learning_rate = agent.hyperparameters.get('learning_rate', 3e-4) if hasattr(agent, 'hyperparameters') else 0.0
+    hidden_dim = agent.hyperparameters.get('hidden_dim', 128) if hasattr(agent, 'hyperparameters') else 0
+    gamma = agent.hyperparameters.get('gamma', 0.99) if hasattr(agent, 'hyperparameters') else 0.0
+    
+    arch_text += f"Learning Rate: {learning_rate:.6f}\n"
+    arch_text += f"Gamma (discount): {gamma:.3f}\n\n"
+    arch_text += f"Context Dim: {getattr(agent, 'context_dim', 0)}\n"
+    arch_text += f"Action Dim: {getattr(agent, 'action_dim', 0)}\n"
+    arch_text += f"Hidden Dim: {hidden_dim}\n"
+    
+    total_params = sum(p.numel() for p in agent.reward_net.parameters())
+    arch_text += f"Parameters: {total_params:,}\n"
+    
+    plt.text(0.1, 0.9, arch_text, transform=plt.gca().transAxes,
+            fontsize=10, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    
+    # 11. Training Statistics
+    plt.subplot(4, 6, 11)
+    plt.axis('off')
+    plt.title('11. Training Statistics', pad=10)
+    
+    stats_text = "TRAINING SUMMARY\n" + "="*20 + "\n"
+    stats_text += f"Total Epochs: {num_epochs}\n"
+    stats_text += f"Total Samples: {total_samples:,}\n"
+    stats_text += f"Total Updates: {len(metrics['losses']):,}\n"
+    stats_text += f"Updates/Epoch: {len(metrics['losses'])//num_epochs if num_epochs > 0 else 0}\n\n"
+    
+    if metrics['losses']:
+        stats_text += f"LOSS:\n"
+        stats_text += f"  Initial: {metrics['losses'][0]:.4f}\n"
+        stats_text += f"  Final: {metrics['losses'][-1]:.4f}\n"
+        stats_text += f"  Mean: {np.mean(metrics['losses']):.4f}\n"
+        stats_text += f"  Min: {np.min(metrics['losses']):.4f}\n"
+        stats_text += f"  Max: {np.max(metrics['losses']):.4f}\n\n"
+    
+    if metrics['rewards']:
+        stats_text += f"REWARD:\n"
+        stats_text += f"  Initial: {metrics['rewards'][0]:.4f}\n"
+        stats_text += f"  Final: {metrics['rewards'][-1]:.4f}\n"
+        stats_text += f"  Mean: {np.mean(metrics['rewards']):.4f}\n"
+        stats_text += f"  Min: {np.min(metrics['rewards']):.4f}\n"
+        stats_text += f"  Max: {np.max(metrics['rewards']):.4f}\n"
+    
+    plt.text(0.1, 0.9, stats_text, transform=plt.gca().transAxes,
+            fontsize=10, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
+    
+    # 12. Performance Assessment
+    plt.subplot(4, 6, 12)
+    plt.axis('off')
+    plt.title('12. Performance Assessment', pad=10)
+    
+    assessment_text = "PERFORMANCE ASSESSMENT\n" + "="*22 + "\n"
+    
+    if metrics['losses'] and len(metrics['losses']) > 10:
+        initial_loss = np.mean(metrics['losses'][:10])
+        final_loss = np.mean(metrics['losses'][-10:])
+        loss_reduction = (initial_loss - final_loss) / initial_loss * 100
+        
+        assessment_text += f"Loss Reduction: {loss_reduction:.1f}%\n"
+        
+        if loss_reduction > 50:
+            assessment_text += "✅ EXCELLENT Learning\n"
+        elif loss_reduction > 30:
+            assessment_text += "✅ GOOD Learning\n"
+        elif loss_reduction > 10:
+            assessment_text += "✅ MODERATE Learning\n"
+        elif loss_reduction > 0:
+            assessment_text += "⚠️  MODEST Learning\n"
+    else:
+            assessment_text += "❌ LIMITED Learning\n"
+            assessment_text += "\n"
+    
+    if metrics['rewards'] and len(metrics['rewards']) > 10:
+        initial_reward = np.mean(metrics['rewards'][:10])
+        final_reward = np.mean(metrics['rewards'][-10:])
+        reward_improvement = (final_reward - initial_reward) / abs(initial_reward) * 100 if initial_reward != 0 else 0
+        
+        assessment_text += f"Reward Improvement:\n  {reward_improvement:.1f}%\n\n"
+    
+    # Stability assessment
+    if metrics['losses'] and len(metrics['losses']) > 100:
+        recent_std = np.std(metrics['losses'][-100:])
+        early_std = np.std(metrics['losses'][:100])
+        
+        assessment_text += f"Loss Stability:\n"
+        assessment_text += f"  Early Std: {early_std:.4f}\n"
+        assessment_text += f"  Recent Std: {recent_std:.4f}\n"
+        
+        if recent_std < early_std * 0.8:
+            assessment_text += "✅ Converging\n"
+        elif recent_std < early_std * 1.2:
+            assessment_text += "➡️  Stable\n"
+        else:
+            assessment_text += "⚠️  Unstable\n"
+    
+    plt.text(0.1, 0.9, assessment_text, transform=plt.gca().transAxes,
+            fontsize=10, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    # ==================================================================
+    # CONTEXTUAL BANDIT-SPECIFIC PLOTS
+    # ==================================================================
+    
+    # 13. OFF-POLICY: Counterfactual Gain Distribution (STRATIFIED by Input Length)
+    plt.subplot(4, 6, 13)
+    if metrics.get('counterfactual_gains') and metrics.get('input_tokens_per_sample'):
+        gains = np.array(metrics['counterfactual_gains'])
+        inp_tokens_metric = np.array(metrics['input_tokens_per_sample'])
+        
+        # Validate lengths match (defensive check)
+        if len(gains) != len(inp_tokens_metric):
+            min_len = min(len(gains), len(inp_tokens_metric))
+            logger.warning(f"Plot 13: Length mismatch - gains={len(gains)}, input_tokens={len(inp_tokens_metric)}. Truncating to {min_len}")
+            gains = gains[:min_len]
+            inp_tokens_metric = inp_tokens_metric[:min_len]
+        
+        # Filter out samples without input_tokens
+        valid_mask = inp_tokens_metric > 0
+        if valid_mask.sum() > 10:
+            gains_valid = gains[valid_mask]
+            inp_tokens_valid = inp_tokens_metric[valid_mask]
+            
+            # Define input length buckets
+            inp_quantiles_13 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+            bucket_colors_13 = ['green', 'orange', 'red']
+            bucket_names_13 = [
+                f'Short\n({inp_quantiles_13[0]:.0f}-{inp_quantiles_13[1]:.0f})',
+                f'Med\n({inp_quantiles_13[1]:.0f}-{inp_quantiles_13[2]:.0f})',
+                f'Long\n({inp_quantiles_13[2]:.0f}-{inp_quantiles_13[3]:.0f})'
+            ]
+            
+            # Plot overall distribution first (all requests)
+            plt.hist(gains_valid, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Plot stratified histograms with step style for better visibility
+            for i, (low, high) in enumerate([(inp_quantiles_13[0], inp_quantiles_13[1]), 
+                                              (inp_quantiles_13[1], inp_quantiles_13[2]), 
+                                              (inp_quantiles_13[2], inp_quantiles_13[3])]):
+                mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                if mask.sum() > 0:
+                    # Use histtype='step' for better visibility when overlapping
+                    plt.hist(gains_valid[mask], bins=30, alpha=1.0, color=bucket_colors_13[i], 
+                            histtype='step', linewidth=2.5, label=bucket_names_13[i], zorder=2)
+            
+            plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.8, label='Zero Gain', zorder=3)
+            plt.xlabel('Counterfactual Gain', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('13. Gain by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='upper right')
+            plt.grid(True, alpha=0.3)
+            
+            mean_gain = np.mean(gains_valid)
+            pct_better = (gains_valid > 0).sum() / len(gains_valid) * 100
+            assessment = "✅ BETTER" if mean_gain > 0.05 else ("➡️ Modest" if mean_gain > 0.01 else "⚠️ Similar")
+            
+            plt.text(0.02, 0.98, f'Mean: {mean_gain:.4f}\nBetter: {pct_better:.1f}%\n{assessment}',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback: non-stratified
+            plt.hist(gains, bins=50, alpha=0.7, color='purple', edgecolor='black')
+            plt.axvline(0, color='r', linestyle='--', linewidth=2)
+            plt.axvline(np.mean(gains), color='g', linestyle='-', linewidth=2)
+            plt.xlabel('Counterfactual Gain')
+            plt.ylabel('Frequency')
+            plt.title('13. Expected Gain (Aggregated)')
+            plt.grid(True, alpha=0.3)
+            mean_gain = np.mean(gains)
+            plt.text(0.02, 0.98, f'Mean: {mean_gain:.4f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    else:
+        plt.text(0.5, 0.5, 'No counterfactual\ndata', 
+                ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
+        plt.axis('off')
+    
+    # 14. OFF-POLICY: Action Agreement Analysis (STRATIFIED by Input Length)
+    plt.subplot(4, 6, 14)
+    if metrics.get('greedy_actions') and metrics.get('training_actions') and metrics.get('input_tokens_per_sample'):
+        greedy = np.array(metrics['greedy_actions'])
+        training = np.array(metrics['training_actions'])
+        gains = np.array(metrics['counterfactual_gains'])
+        inp_tokens_metric = np.array(metrics['input_tokens_per_sample'])
+        
+        # Validate lengths match (defensive check)
+        min_len = min(len(greedy), len(training), len(gains), len(inp_tokens_metric))
+        if not (len(greedy) == len(training) == len(gains) == len(inp_tokens_metric)):
+            logger.warning(f"Plot 14: Length mismatch - greedy={len(greedy)}, training={len(training)}, "
+                         f"gains={len(gains)}, input_tokens={len(inp_tokens_metric)}. Truncating to {min_len}")
+            greedy = greedy[:min_len]
+            training = training[:min_len]
+            gains = gains[:min_len]
+            inp_tokens_metric = inp_tokens_metric[:min_len]
+        
+        # Filter valid samples
+        valid_mask = inp_tokens_metric > 0
+        if valid_mask.sum() > 10:
+            greedy_valid = greedy[valid_mask]
+            training_valid = training[valid_mask]
+            gains_valid = gains[valid_mask]
+            inp_tokens_valid = inp_tokens_metric[valid_mask]
+            
+            # Define buckets
+            inp_quantiles_14 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+            
+            # Calculate overall disagreement rate first
+            overall_disagree_rate = ((greedy_valid != training_valid).sum() / len(greedy_valid)) * 100
+            
+            # Calculate disagreement rate per bucket
+            disagree_rates = []
+            bucket_labels_14 = []
+            for i, (low, high) in enumerate([(inp_quantiles_14[0], inp_quantiles_14[1]), 
+                                              (inp_quantiles_14[1], inp_quantiles_14[2]), 
+                                              (inp_quantiles_14[2], inp_quantiles_14[3])]):
+                mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                if mask.sum() > 0:
+                    disagreement = greedy_valid[mask] != training_valid[mask]
+                    disagree_rates.append(disagreement.sum() / mask.sum() * 100)
+                    bucket_labels_14.append(f'Len{i+1}\n{int(low)}-{int(high)}')
+            
+            # Add overall bar
+            disagree_rates.append(overall_disagree_rate)
+            bucket_labels_14.append('All\nRequests')
+            
+            # Plot
+            colors_14 = ['green', 'orange', 'red', 'blue'][:len(disagree_rates)]
+            x_pos = np.arange(len(disagree_rates))
+            bars = plt.bar(x_pos, disagree_rates, color=colors_14, 
+                          alpha=0.7, edgecolor='black')
+            plt.ylabel('Disagreement %', fontsize=10)
+            plt.title('14. Policy Divergence by Input Length', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, bucket_labels_14, fontsize=8)
+            plt.grid(True, alpha=0.3, axis='y')
+            plt.ylim(0, 100)
+            
+            # Add values on bars
+            for bar, rate in zip(bars, disagree_rates):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2,
+                        f'{rate:.1f}%', ha='center', va='bottom', fontsize=8)
+            
+            avg_disagree = np.mean(disagree_rates)
+            plt.text(0.02, 0.98, f'Avg: {avg_disagree:.1f}%',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback
+            agreement = greedy == training
+            agree_pct = agreement.sum() / len(agreement) * 100
+            disagree_pct = 100 - agree_pct
+            
+            plt.bar(['Agree', 'Disagree'], [agree_pct, disagree_pct], color=['lightblue', 'lightcoral'], alpha=0.8)
+            plt.ylabel('Percentage')
+            plt.title('14. Policy Agreement (Aggregated)')
+            plt.grid(True, alpha=0.3)
+    else:
+        plt.text(0.5, 0.5, 'No policy\ncomparison data', 
+                ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
+        plt.axis('off')
+    
+    # 15. CRITICAL: Per-Context Action Differentiation (Score Spread by Input Length)
+    plt.subplot(4, 6, 15)
+    if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0:
+        # Stack all predictions [num_samples, num_actions]
+        all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
+
+        # CRITICAL METRIC: For each sample, what's the spread between best and worst pod?
+        action_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
+
+        # Try to stratify by input length (if available and matching length)
+        if metrics.get('input_tokens_per_sample') and len(metrics['input_tokens_per_sample']) >= len(action_spreads):
+            # Match samples (first N samples from input_tokens_per_sample that correspond to all_predicted_rewards)
+            inp_tokens_for_spreads = np.array(metrics['input_tokens_per_sample'][:len(action_spreads)])
+            valid_mask = inp_tokens_for_spreads > 0
+
+            if valid_mask.sum() > 10:
+                spreads_valid = action_spreads[valid_mask]
+                inp_tokens_valid = inp_tokens_for_spreads[valid_mask]
+
+                # Calculate overall spread statistics
+                overall_mean_spread = np.mean(spreads_valid)
+                overall_std_spread = np.std(spreads_valid)
+
+                # Log spread calculation details
+                logger.info(f"Spread Stats - Mean: {overall_mean_spread:.4f}, Std: {overall_std_spread:.4f}")
+                logger.info(f"Spread Stats - Min: {spreads_valid.min():.4f}, Max: {spreads_valid.max():.4f}, Median: {np.median(spreads_valid):.4f}")
+
+                # Define buckets and calculate spread per bucket
+                inp_quantiles_15 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+                spread_per_bucket = []
+                bucket_labels_15 = []
+
+                for i, (low, high) in enumerate([(inp_quantiles_15[0], inp_quantiles_15[1]),
+                                                  (inp_quantiles_15[1], inp_quantiles_15[2]),
+                                                  (inp_quantiles_15[2], inp_quantiles_15[3])]):
+                    mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                    if mask.sum() > 0:
+                        mean_spread_bucket = np.mean(spreads_valid[mask])
+                        spread_per_bucket.append(mean_spread_bucket)
+                        bucket_labels_15.append(f'Len{i+1}\n{int(low)}-{int(high)}')
+
+                # Add overall bar
+                spread_per_bucket.append(overall_mean_spread)
+                bucket_labels_15.append('All\nRequests')
+
+                # Plot spread per bucket
+                colors_15 = ['green', 'orange', 'red', 'blue'][:len(spread_per_bucket)]
+                x_pos = np.arange(len(spread_per_bucket))
+                bars = plt.bar(x_pos, spread_per_bucket, color=colors_15,
+                              alpha=0.7, edgecolor='black')
+                plt.axhline(y=5.0, color='blue', linestyle='--', linewidth=1.5, alpha=0.5, label='Spread=5.0')
+                plt.ylabel('Score Spread (max-min)', fontsize=10)
+                plt.title('15. Score Spread by Input Length', fontsize=11, fontweight='bold')
+                plt.xticks(x_pos, bucket_labels_15, fontsize=8)
+                plt.legend(fontsize=7)
+                plt.grid(True, alpha=0.3, axis='y')
+
+                # Add values on bars
+                for bar, spread_val in zip(bars, spread_per_bucket):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                            f'{spread_val:.2f}', ha='center', va='bottom', fontsize=8)
+
+                avg_spread = np.mean(spread_per_bucket)
+                assessment = "✅ STRONG" if avg_spread > 5.0 else ("⚠️ MODERATE" if avg_spread > 2.0 else "❌ WEAK")
+                plt.text(0.02, 0.98, f'Avg Spread: {avg_spread:.2f}\n{assessment}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+            else:
+                # Fallback: aggregated histogram
+                plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
+                plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
+                plt.title('15. Action Spread (Aggregated)')
+                plt.xlabel('Score Spread')
+                plt.ylabel('Frequency')
+                plt.grid(True, alpha=0.3)
+                mean_spread = np.mean(action_spreads)
+                plt.text(0.98, 0.98, f'Mean: {mean_spread:.3f}',
+                        transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                        fontsize=9, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback: aggregated histogram
+            plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
+            plt.title('15. Per-Context Action Spread')
+            plt.xlabel('Score Spread')
+            plt.ylabel('Frequency')
+            plt.grid(True, alpha=0.3)
+            mean_spread = np.mean(action_spreads)
+            plt.text(0.98, 0.98, f'Mean: {mean_spread:.3f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                    fontsize=9, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    else:
+        plt.text(0.5, 0.5, 'No all_predicted_rewards\ndata available', 
+                ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
+        plt.axis('off')
+    
+    # 16. COMPREHENSIVE OFF-POLICY EVALUATION
+    plt.subplot(4, 6, 16)
+    plt.axis('off')
+    plt.title('16. Off-Policy Evaluation Summary', pad=10)
+    
+    eval_text = "OFF-POLICY EVALUATION\n" + "="*25 + "\n"
+    
+    # Initialize scores for final assessment
+    spread_score = 0
+    gain_score = 0
+    disagree_score = 0
+    coverage_score = 0
+
+    # 1. Score Spread Analysis (Pod Differentiation)
+    if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0:
+        all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
+        action_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
+        mean_spread = np.mean(action_spreads)
+        std_spread = np.std(action_spreads)
+
+        eval_text += f"1. Score Spread:\n"
+        eval_text += f"   Mean: {mean_spread:.3f}\n"
+        eval_text += f"   Std: {std_spread:.3f}\n"
+
+        if mean_spread > 5.0:
+            eval_text += "   ✅ STRONG differentiation\n"
+            spread_score = 2
+        elif mean_spread > 2.0:
+            eval_text += "   ⚠️  MODERATE differentiation\n"
+            spread_score = 1
+        else:
+            eval_text += "   ❌ WEAK differentiation\n"
+            spread_score = 0
+        eval_text += "\n"
+    
+    # 2. Counterfactual Gain
+    if metrics.get('counterfactual_gains'):
+        gains = np.array(metrics['counterfactual_gains'])
+        mean_gain = np.mean(gains)
+        median_gain = np.median(gains)
+        pct_better = (gains > 0).sum() / len(gains) * 100
+        
+        eval_text += f"2. Counterfactual Gain:\n"
+        eval_text += f"   Mean: {mean_gain:.4f}\n"
+        eval_text += f"   Median: {median_gain:.4f}\n"
+        eval_text += f"   Better: {pct_better:.1f}%\n"
+        
+        if mean_gain > 0.05:
+            eval_text += "   ✅ SIGNIFICANT improvement\n"
+            gain_score = 2
+        elif mean_gain > 0.01:
+            eval_text += "   ➡️  MODEST improvement\n"
+            gain_score = 1
+        elif mean_gain > -0.01:
+            eval_text += "   ⚠️  MARGINAL (data was good)\n"
+            gain_score = 1  # Not bad, just saturated
+        else:
+            eval_text += "   ❌ NEGATIVE (review model)\n"
+            gain_score = 0
+        eval_text += "\n"
+    
+    # 3. Policy Disagreement
+    if metrics.get('policy_agreements'):
+        agreements = np.array(metrics['policy_agreements'])
+        agree_pct = np.mean(agreements) * 100
+        disagree_pct = 100 - agree_pct
+        
+        # Among disagreements, how many are better?
+        if metrics.get('counterfactual_gains'):
+            disagree_mask = ~agreements.astype(bool)
+            if disagree_mask.sum() > 0:
+                gains_when_disagree = np.array(metrics['counterfactual_gains'])[disagree_mask]
+                better_disagree_pct = (gains_when_disagree > 0).sum() / len(gains_when_disagree) * 100
+            else:
+                better_disagree_pct = 0
+        else:
+            better_disagree_pct = 0
+        
+        eval_text += f"3. Policy Disagreement:\n"
+        eval_text += f"   Disagree: {disagree_pct:.1f}%\n"
+        eval_text += f"   Better when disagree: {better_disagree_pct:.1f}%\n"
+        
+        # High disagreement with small gain → model confident but saturated
+        # High disagreement with large gain → model found improvements
+        # Low disagreement → model imitating
+        if disagree_pct > 50 and better_disagree_pct > 60:
+            eval_text += "   ✅ CONFIDENT policy\n"
+            disagree_score = 2
+        elif disagree_pct > 30:
+            eval_text += "   ➡️  MODERATE divergence\n"
+            disagree_score = 1
+        else:
+            eval_text += "   ⚠️  LOW (may be imitating)\n"
+            disagree_score = 0
+        eval_text += "\n"
+    
+    # 4. Coverage (Action Diversity)
+    if metrics.get('selected_actions'):
+        action_counts = np.bincount(metrics['selected_actions'], minlength=agent.action_dim)
+        total = action_counts.sum()
+        non_zero = np.count_nonzero(action_counts)
+        
+        # Entropy as coverage proxy
+        probs = action_counts / total if total > 0 else action_counts
+        probs = probs[probs > 0]
+        entropy = -np.sum(probs * np.log(probs)) if len(probs) > 0 else 0
+        max_entropy = np.log(agent.action_dim)
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+        
+        eval_text += f"4. Coverage (Training):\n"
+        eval_text += f"   Actions used: {non_zero}/{agent.action_dim}\n"
+        eval_text += f"   Entropy: {normalized_entropy:.3f}\n"
+        
+        if normalized_entropy > 0.7:
+            eval_text += "   ✅ GOOD coverage\n"
+            coverage_score = 2
+        elif normalized_entropy > 0.4:
+            eval_text += "   ⚠️  MODERATE coverage\n"
+            coverage_score = 1
+        else:
+            eval_text += "   ❌ POOR coverage\n"
+            coverage_score = 0
+        eval_text += "\n"
+    
+    # Final Combined Assessment
+    total_score = spread_score + gain_score + disagree_score + coverage_score
+    max_score = 8
+
+    eval_text += "="*25 + "\n"
+    eval_text += "DEPLOYMENT READINESS:\n"
+    eval_text += f"Score: {total_score}/{max_score}\n"
+
+    # Interpretation of score combination
+    if total_score >= 7:
+        eval_text += "✅ READY for deployment\n"
+        eval_text += "Policy learned well"
+        box_color = 'lightgreen'
+    elif total_score >= 5:
+        if gain_score >= 1 and spread_score >= 1:
+            eval_text += "⚠️  READY but modest gains\n"
+            eval_text += "Training data was good"
+            box_color = 'lightyellow'
+        else:
+            eval_text += "⚠️  CAUTIOUS deployment\n"
+            eval_text += "Monitor closely"
+            box_color = 'lightyellow'
+    else:
+        eval_text += "❌ REVIEW NEEDED\n"
+        eval_text += "Check data/features"
+        box_color = 'lightcoral'
+
+    # Special case: High Spread + Low Gain = Training data was optimal
+    if spread_score == 2 and gain_score == 1 and total_score >= 5:
+        eval_text += "\n💡 Training policy\nalready near-optimal"
+    
+    plt.text(0.05, 0.95, eval_text, transform=plt.gca().transAxes,
+            fontsize=9, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
+    
+    # ===== REWARD FUNCTION DIAGNOSTICS (Plots 17-22) =====
+    # Use reward_latency_input_tuples if available for stratified analysis, otherwise fallback to reward_latency_pairs
+    if metrics.get('reward_latency_input_tuples') and len(metrics['reward_latency_input_tuples']) > 10:
+        # STRATIFIED ANALYSIS BY INPUT LENGTH
+        rewards_array = np.array([r for r, l, inp in metrics['reward_latency_input_tuples']])
+        latencies_array = np.array([l for r, l, inp in metrics['reward_latency_input_tuples']])
+        input_tokens_array = np.array([inp for r, l, inp in metrics['reward_latency_input_tuples']])
+        
+        # Define input length buckets
+        input_quantiles = np.percentile(input_tokens_array, [0, 33, 67, 100])
+        bucket_names = [
+            f'Short\n({input_quantiles[0]:.0f}-{input_quantiles[1]:.0f} tokens)',
+            f'Medium\n({input_quantiles[1]:.0f}-{input_quantiles[2]:.0f} tokens)',
+            f'Long\n({input_quantiles[2]:.0f}-{input_quantiles[3]:.0f} tokens)'
+        ]
+        bucket_colors = ['green', 'orange', 'red']
+        
+        # 17. Reward vs Latency Scatter Plot (STRATIFIED BY INPUT LENGTH)
+        plt.subplot(4, 6, 17)
+        for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                          (input_quantiles[1], input_quantiles[2]), 
+                                          (input_quantiles[2], input_quantiles[3])]):
+            mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+            if mask.sum() > 0:
+                plt.scatter(latencies_array[mask], rewards_array[mask], 
+                           alpha=0.4, s=15, c=bucket_colors[i], label=bucket_names[i].replace('\n', ' '))
+        
+        plt.xlabel('TTFT (ms)', fontsize=10)
+        plt.ylabel('Reward', fontsize=10)
+        plt.title('17. Reward Function by Input Length', fontsize=11, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc='best', fontsize=7)
+        
+        corr = np.corrcoef(latencies_array, rewards_array)[0,1]
+        plt.text(0.02, 0.98, f'Overall Corr: {corr:.3f}\nN: {len(latencies_array):,}',
+                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+    elif metrics.get('reward_latency_pairs') and len(metrics['reward_latency_pairs']) > 10:
+        # FALLBACK: Aggregated analysis (no input length stratification)
+        rewards_array = np.array([r for r, l in metrics['reward_latency_pairs']])
+        latencies_array = np.array([l for r, l in metrics['reward_latency_pairs']])
+        input_tokens_array = None
+        
+        # 17. Reward vs Latency Scatter Plot
+        plt.subplot(4, 6, 17)
+        plt.scatter(latencies_array, rewards_array, alpha=0.3, s=10, c='blue', label='Training data')
+        plt.xlabel('TTFT (ms)', fontsize=10)
+        plt.ylabel('Reward', fontsize=10)
+        plt.title('17. Reward Function Shape', fontsize=11, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        
+        # Fit and plot trend line
+        if len(latencies_array) > 2:
+            z = np.polyfit(latencies_array, rewards_array, 2)
+            p = np.poly1d(z)
+            x_trend = np.linspace(latencies_array.min(), latencies_array.max(), 100)
+            plt.plot(x_trend, p(x_trend), "r--", linewidth=2, alpha=0.7, label='Quadratic fit')
+        
+        plt.legend(loc='best', fontsize=8)
+        
+        corr = np.corrcoef(latencies_array, rewards_array)[0,1]
+        plt.text(0.02, 0.98, f'Corr: {corr:.3f}\nN: {len(latencies_array):,}',
+                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    else:
+        rewards_array = None
+        latencies_array = None
+        input_tokens_array = None
+    
+    if rewards_array is not None and latencies_array is not None:
+        
+        # 18. Per-Request Reward Spread by Input Length (using all_predicted_rewards)
+        plt.subplot(4, 6, 18)
+        if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0 and metrics.get('input_tokens_per_sample'):
+            # Stack all predictions [num_samples, num_actions]
+            all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
+            
+            # Per-request reward spread (max - min across pods for SAME request)
+            per_request_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
+            
+            # Match with input tokens
+            inp_tokens_for_spreads = np.array(metrics['input_tokens_per_sample'][:len(per_request_spreads)])
+            valid_mask = inp_tokens_for_spreads > 10
+            
+            if valid_mask.sum() > 10:
+                spreads_valid = per_request_spreads[valid_mask]
+                inp_tokens_valid = inp_tokens_for_spreads[valid_mask]
+                
+                # Calculate average per-request spread for each input bucket
+                inp_quantiles_18 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
+                bucket_spreads = []
+                bucket_labels_18 = []
+                
+                for i, (low, high) in enumerate([(inp_quantiles_18[0], inp_quantiles_18[1]), 
+                                                  (inp_quantiles_18[1], inp_quantiles_18[2]), 
+                                                  (inp_quantiles_18[2], inp_quantiles_18[3])]):
+                    mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
+                    if mask.sum() > 0:
+                        avg_spread = np.mean(spreads_valid[mask])
+                        bucket_spreads.append(avg_spread)
+                        bucket_labels_18.append(f'{int(low)}-{int(high)}\ntok')
+                
+                # Plot
+                x_pos = np.arange(len(bucket_spreads))
+                bars = plt.bar(x_pos, bucket_spreads, color=['green', 'orange', 'red'][:len(bucket_spreads)], 
+                              edgecolor='black', alpha=0.7)
+                plt.ylabel('Avg Per-Request\nReward Spread', fontsize=10)
+                plt.title('18. Per-Request Reward Spread', fontsize=11, fontweight='bold')
+                plt.xticks(x_pos, bucket_labels_18, fontsize=8)
+                plt.grid(True, alpha=0.3, axis='y')
+                
+                # Add values on bars
+                for bar, spread in zip(bars, bucket_spreads):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                            f'{spread:.3f}', ha='center', va='bottom', fontsize=8)
+                
+                overall_avg = np.mean(bucket_spreads)
+                status = "✅ GOOD" if overall_avg > 0.3 else ("⚠️ MODERATE" if overall_avg > 0.1 else "❌ POOR")
+                plt.text(0.02, 0.98, f'Overall: {overall_avg:.3f}\n{status}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                        bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_avg > 0.3 else 'lightyellow', alpha=0.8))
+            else:
+                plt.text(0.5, 0.5, 'Insufficient\nvalid data', 
+                        ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
+                plt.axis('off')
+        else:
+            plt.text(0.5, 0.5, 'No all_predicted_rewards\ndata available', 
+                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
+            plt.axis('off')
+        
+        # 19. Reward Sensitivity (gradient)
+        plt.subplot(4, 6, 19)
+        sorted_idx = np.argsort(latencies_array)
+        lat_sorted = latencies_array[sorted_idx]
+        rew_sorted = rewards_array[sorted_idx]
+        
+        window = max(10, len(lat_sorted) // 50)
+        if len(lat_sorted) > window * 2:
+            sensitivities = []
+            sensitivity_lats = []
+            for i in range(window, len(lat_sorted) - window):
+                d_reward = rew_sorted[i+window] - rew_sorted[i-window]
+                d_latency = lat_sorted[i+window] - lat_sorted[i-window]
+                if abs(d_latency) > 1e-6:
+                    sensitivities.append(d_reward / d_latency)
+                    sensitivity_lats.append(lat_sorted[i])
+            
+            if sensitivities:
+                plt.plot(sensitivity_lats, sensitivities, 'g-', linewidth=1.5, alpha=0.7)
+                plt.axhline(y=0, color='r', linestyle='--', linewidth=1.5)
+                plt.xlabel('Latency (ms)', fontsize=10)
+                plt.ylabel('d(Reward)/d(Latency)', fontsize=10)
+                plt.title('19. Reward Sensitivity', fontsize=11, fontweight='bold')
+                plt.grid(True, alpha=0.3)
+                
+                avg_sensitivity = np.mean(np.abs(sensitivities))
+                neg_slope = "✅" if np.mean(sensitivities) < 0 else "⚠️"
+                plt.text(0.02, 0.98, f'Avg |Sens|: {avg_sensitivity:.6f}\nNeg: {neg_slope}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        
+        # 20. Latency Distribution STRATIFIED by Input Length
+        plt.subplot(4, 6, 20)
+        if input_tokens_array is not None:
+            # Plot overall distribution first (all requests)
+            plt.hist(latencies_array, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Stratified latency histograms on top
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                if mask.sum() > 0:
+                    plt.hist(latencies_array[mask], bins=30, alpha=0.5, color=bucket_colors[i], 
+                            edgecolor='black', label=bucket_names[i].replace('\n', ' '), zorder=2)
+            
+            plt.xlabel('TTFT (ms)', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('20. Latency Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='best')
+            plt.grid(True, alpha=0.3)
+            
+            plt.text(0.98, 0.98, f'All: P50={np.median(latencies_array):.0f}, P95={np.percentile(latencies_array, 95):.0f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        else:
+            # Fallback: aggregated histogram
+            plt.hist(latencies_array, bins=50, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(np.median(latencies_array), color='r', linestyle='--', linewidth=2)
+            plt.axvline(np.percentile(latencies_array, 95), color='purple', linestyle='--', linewidth=2)
+            plt.xlabel('TTFT (ms)', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('20. Latency Distribution', fontsize=11, fontweight='bold')
+            plt.grid(True, alpha=0.3)
+            
+            plt.text(0.98, 0.98, f'Min: {latencies_array.min():.0f}\nMax: {latencies_array.max():.0f}\n'
+                    f'P50: {np.median(latencies_array):.0f}\nP95: {np.percentile(latencies_array, 95):.0f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        
+        # 21. Reward Distribution STRATIFIED by Input Length
+        plt.subplot(4, 6, 21)
+        if input_tokens_array is not None:
+            # Plot overall distribution first (all requests)
+            plt.hist(rewards_array, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Stratified reward histograms on top
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                if mask.sum() > 0:
+                    plt.hist(rewards_array[mask], bins=30, alpha=0.5, color=bucket_colors[i], 
+                            edgecolor='black', label=bucket_names[i].replace('\n', ' '), zorder=2)
+            
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('21. Reward Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='best')
+            plt.grid(True, alpha=0.3)
+            
+            reward_range = rewards_array.max() - rewards_array.min()
+            plt.text(0.98, 0.98, f'All: Range={reward_range:.3f}\nMean={rewards_array.mean():.3f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        else:
+            # Fallback: aggregated histogram
+            plt.hist(rewards_array, bins=50, alpha=0.7, color='green', edgecolor='black')
+            plt.axvline(np.median(rewards_array), color='r', linestyle='--', linewidth=2)
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('21. Reward Distribution', fontsize=11, fontweight='bold')
+            plt.grid(True, alpha=0.3)
+            
+            reward_range = rewards_array.max() - rewards_array.min()
+            plt.text(0.98, 0.98, f'Range: {reward_range:.3f}\nMean: {rewards_array.mean():.3f}\nStd: {rewards_array.std():.3f}',
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        
+        # 22. 🚨 CRITICAL: Reward Discrimination by Input Length AND Latency Category
+        plt.subplot(4, 6, 22)
+        if input_tokens_array is not None:
+            # Calculate overall discrimination first (all requests)
+            p50_overall = np.percentile(latencies_array, 50)
+            p90_overall = np.percentile(latencies_array, 90)
+            good_mask_overall = latencies_array < p50_overall
+            bad_mask_overall = latencies_array >= p90_overall
+            
+            if good_mask_overall.sum() > 0 and bad_mask_overall.sum() > 0:
+                avg_good_overall = rewards_array[good_mask_overall].mean()
+                avg_bad_overall = rewards_array[bad_mask_overall].mean()
+                overall_discrimination = avg_good_overall - avg_bad_overall
+            else:
+                overall_discrimination = 0
+            
+            # STRATIFIED: Show reward discrimination for each input length bucket
+            discrimination_results = []
+            
+            for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
+                                              (input_quantiles[1], input_quantiles[2]), 
+                                              (input_quantiles[2], input_quantiles[3])]):
+                bucket_mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
+                
+                if bucket_mask.sum() > 0:
+                    bucket_lats = latencies_array[bucket_mask]
+                    bucket_rews = rewards_array[bucket_mask]
+                    
+                    # Calculate P50 and P90 within this bucket
+                    p50_bucket = np.percentile(bucket_lats, 50)
+                    p90_bucket = np.percentile(bucket_lats, 90)
+                    
+                    good_mask_bucket = bucket_lats < p50_bucket
+                    bad_mask_bucket = bucket_lats >= p90_bucket
+                    
+                    if good_mask_bucket.sum() > 0 and bad_mask_bucket.sum() > 0:
+                        avg_good = bucket_rews[good_mask_bucket].mean()
+                        avg_bad = bucket_rews[bad_mask_bucket].mean()
+                        discrimination_results.append(avg_good - avg_bad)
+                    else:
+                        discrimination_results.append(0)
+            
+            # Add overall bar
+            discrimination_results.append(overall_discrimination)
+            
+            # Plot discrimination for each bucket
+            colors_22 = bucket_colors[:3] + ['blue']
+            bucket_labels_22 = bucket_names + ['All\nRequests']
+            x_pos = np.arange(len(discrimination_results))
+            bars = plt.bar(x_pos, discrimination_results, color=colors_22[:len(discrimination_results)], 
+                          edgecolor='black', alpha=0.7)
+            plt.axhline(y=0, color='r', linestyle='--', linewidth=1.5, alpha=0.5)
+            plt.xlabel('Input Length Bucket', fontsize=10)
+            plt.ylabel('Reward Spread\n(Good - Bad Latency)', fontsize=10)
+            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, [bn.replace('\n', ' ') for bn in bucket_labels_22], 
+                      rotation=15, ha='right', fontsize=7)
+            plt.grid(True, alpha=0.3, axis='y')
+            
+            avg_discrimination = np.mean(discrimination_results) if discrimination_results else 0
+            
+            if abs(avg_discrimination) < 0.05:
+                assessment = "❌ POOR\nNo discrimination!"
+                box_color = 'lightcoral'
+            elif abs(avg_discrimination) < 0.2:
+                assessment = "⚠️ WEAK"
+                box_color = 'lightyellow'
+            else:
+                assessment = "✅ GOOD\nContext-aware!"
+                box_color = 'lightgreen'
+            
+            plt.text(0.02, 0.98, f'Avg Spread: {avg_discrimination:.4f}\n{assessment}',
+                    transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
+        else:
+            # FALLBACK: Aggregated discrimination
+            p50_lat = np.percentile(latencies_array, 50)
+            p90_lat = np.percentile(latencies_array, 90)
+            p99_lat = np.percentile(latencies_array, 99)
+            
+            good_mask = latencies_array < p50_lat
+            medium_mask = (latencies_array >= p50_lat) & (latencies_array < p90_lat)
+            bad_mask = (latencies_array >= p90_lat) & (latencies_array < p99_lat)
+            catastrophic_mask = latencies_array >= p99_lat
+            
+            categories = []
+            avg_rewards = []
+            reward_stds = []
+            
+            if good_mask.sum() > 0:
+                categories.append(f'Good\n<{p50_lat:.0f}')
+                avg_rewards.append(rewards_array[good_mask].mean())
+                reward_stds.append(rewards_array[good_mask].std())
+            
+            if medium_mask.sum() > 0:
+                categories.append(f'Med\n{p50_lat:.0f}-{p90_lat:.0f}')
+                avg_rewards.append(rewards_array[medium_mask].mean())
+                reward_stds.append(rewards_array[medium_mask].std())
+            
+            if bad_mask.sum() > 0:
+                categories.append(f'Bad\n{p90_lat:.0f}-{p99_lat:.0f}')
+                avg_rewards.append(rewards_array[bad_mask].mean())
+                reward_stds.append(rewards_array[bad_mask].std())
+            
+            if catastrophic_mask.sum() > 0:
+                categories.append(f'Cata\n>{p99_lat:.0f}')
+                avg_rewards.append(rewards_array[catastrophic_mask].mean())
+                reward_stds.append(rewards_array[catastrophic_mask].std())
+            
+            x_pos = np.arange(len(categories))
+            bars = plt.bar(x_pos, avg_rewards, yerr=reward_stds, capsize=5, 
+                          color=['green', 'yellow', 'orange', 'red'][:len(categories)], 
+                          edgecolor='black', alpha=0.7)
+            plt.xlabel('Latency Category (ms)', fontsize=10)
+            plt.ylabel('Avg Reward', fontsize=10)
+            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.xticks(x_pos, categories, fontsize=9)
+            plt.grid(True, alpha=0.3, axis='y')
+            
+            if len(avg_rewards) >= 2:
+                discrimination = avg_rewards[0] - avg_rewards[-1]
+                discrimination_pct = (discrimination / abs(avg_rewards[-1])) * 100 if avg_rewards[-1] != 0 else 0
+                
+                if abs(discrimination) < 0.05:
+                    assessment = "❌ POOR\nCannot distinguish!"
+                    box_color = 'lightcoral'
+                elif abs(discrimination) < 0.2:
+                    assessment = "⚠️ WEAK"
+                    box_color = 'lightyellow'
+                else:
+                    assessment = "✅ GOOD"
+                    box_color = 'lightgreen'
+                
+                plt.text(0.02, 0.98, f'Spread: {discrimination:.4f}\n({discrimination_pct:.0f}%)\n{assessment}',
+                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.9))
+    
+    # ===== REWARD FUNCTION VALIDATION (Plots 23-24) =====
+    if metrics.get('reward_latency_input_tuples') and len(metrics['reward_latency_input_tuples']) > 10:
+        rewards_array = np.array([r for r, l, inp in metrics['reward_latency_input_tuples']])
+        latencies_array = np.array([l for r, l, inp in metrics['reward_latency_input_tuples']])
+        input_tokens_array = np.array([inp for r, l, inp in metrics['reward_latency_input_tuples']])
+        
+        # Filter valid samples
+        valid_mask = input_tokens_array > 10
+        if valid_mask.sum() > 50:  # Need sufficient data for validation
+            rewards_valid = rewards_array[valid_mask]
+            latencies_valid = latencies_array[valid_mask]
+            input_tokens_valid = input_tokens_array[valid_mask]
+            
+            # Define buckets
+            inp_quantiles_val = np.percentile(input_tokens_valid, [0, 33, 67, 100])
+            
+            # 23. Reward Function Validation: Correlation & Spread
+            plt.subplot(4, 6, 23)
+            
+            correlations = []
+            spreads = []
+            bucket_names_val = []
+            
+            for i, (low, high) in enumerate([(inp_quantiles_val[0], inp_quantiles_val[1]), 
+                                              (inp_quantiles_val[1], inp_quantiles_val[2]), 
+                                              (inp_quantiles_val[2], inp_quantiles_val[3])]):
+                mask = (input_tokens_valid >= low) & (input_tokens_valid < high) if i < 2 else (input_tokens_valid >= low)
+                
+                if mask.sum() > 10:
+                    bucket_rewards = rewards_valid[mask]
+                    bucket_latencies = latencies_valid[mask]
+                    
+                    # Correlation (should be strongly negative)
+                    corr = np.corrcoef(bucket_rewards, bucket_latencies)[0, 1]
+                    correlations.append(corr)
+                    
+                    # Spread (should be > 0.5 for good discrimination)
+                    spread = bucket_rewards.max() - bucket_rewards.min()
+                    spreads.append(spread)
+                    
+                    bucket_names_val.append(f'{int(low)}-{int(high)}')
+            
+            # Plot correlation and spread side by side
+            x = np.arange(len(bucket_names_val))
+            width = 0.35
+            
+            ax1 = plt.gca()
+            color = 'tab:blue'
+            ax1.set_xlabel('Input Length (tokens)', fontsize=10)
+            ax1.set_ylabel('Correlation (Reward vs Latency)', fontsize=10, color=color)
+            bars1 = ax1.bar(x - width/2, correlations, width, label='Correlation', color=color, alpha=0.7)
+            ax1.tick_params(axis='y', labelcolor=color)
+            ax1.axhline(y=-0.5, color='blue', linestyle='--', linewidth=1, alpha=0.5, label='Target < -0.5')
+            ax1.set_ylim(-1.0, 0.2)
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(bucket_names_val, fontsize=8)
+            
+            ax2 = ax1.twinx()
+            color = 'tab:orange'
+            ax2.set_ylabel('Reward Spread (max-min)', fontsize=10, color=color)
+            bars2 = ax2.bar(x + width/2, spreads, width, label='Spread', color=color, alpha=0.7)
+            ax2.tick_params(axis='y', labelcolor=color)
+            ax2.axhline(y=0.5, color='orange', linestyle='--', linewidth=1, alpha=0.5, label='Target > 0.5')
+            ax2.set_ylim(0, max(spreads) * 1.2)
+            
+            plt.title('23. Reward Function Validation\n(Correlation & Spread)', fontsize=11, fontweight='bold')
+            
+            # Add values on bars
+            for i, (bar, val) in enumerate(zip(bars1, correlations)):
+                ax1.text(bar.get_x() + bar.get_width()/2, val - 0.05, f'{val:.2f}',
+                        ha='center', va='top', fontsize=7, color='blue')
+            
+            for i, (bar, val) in enumerate(zip(bars2, spreads)):
+                ax2.text(bar.get_x() + bar.get_width()/2, val + 0.05, f'{val:.2f}',
+                        ha='center', va='bottom', fontsize=7, color='orange')
+            
+            # Overall assessment
+            avg_corr = np.mean(correlations)
+            avg_spread = np.mean(spreads)
+            
+            if avg_corr < -0.5 and avg_spread > 0.5:
+                status = "✅ EXCELLENT"
+                status_color = 'lightgreen'
+            elif avg_corr < -0.3 and avg_spread > 0.3:
+                status = "⚠️ GOOD"
+                status_color = 'lightyellow'
+            else:
+                status = "❌ POOR"
+                status_color = 'lightcoral'
+            
+            ax1.text(0.02, 0.98, f'Avg Corr: {avg_corr:.3f}\nAvg Spread: {avg_spread:.3f}\n{status}',
+                    transform=ax1.transAxes, verticalalignment='top', fontsize=8,
+                    bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.8))
+            
+            # 24. Reward Distribution Quality Check
+            plt.subplot(4, 6, 24)
+            
+            # Plot overall reward distribution first (all requests)
+            plt.hist(rewards_valid, bins=30, alpha=0.3, 
+                    color='blue', histtype='stepfilled',
+                    label='All requests', zorder=1)
+            
+            # Plot reward distribution per bucket with step style on top
+            for i, (low, high) in enumerate([(inp_quantiles_val[0], inp_quantiles_val[1]), 
+                                              (inp_quantiles_val[1], inp_quantiles_val[2]), 
+                                              (inp_quantiles_val[2], inp_quantiles_val[3])]):
+                mask = (input_tokens_valid >= low) & (input_tokens_valid < high) if i < 2 else (input_tokens_valid >= low)
+                
+                if mask.sum() > 10:
+                    bucket_rewards = rewards_valid[mask]
+                    
+                    # Plot histogram with step style
+                    plt.hist(bucket_rewards, bins=30, alpha=1.0, 
+                            color=['green', 'orange', 'red'][i],
+                            histtype='step', linewidth=2,
+                            label=f'{int(low)}-{int(high)} tok', zorder=2)
+            
+            plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.5, label='Zero', zorder=3)
+            plt.xlabel('Reward', fontsize=10)
+            plt.ylabel('Frequency', fontsize=10)
+            plt.title('24. Reward Distribution Quality', fontsize=11, fontweight='bold')
+            plt.legend(fontsize=7, loc='upper left')
+            plt.grid(True, alpha=0.3)
+            
+            # Calculate percentiles
+            p10 = np.percentile(rewards_valid, 10)
+            p50 = np.percentile(rewards_valid, 50)
+            p90 = np.percentile(rewards_valid, 90)
+            reward_range = rewards_valid.max() - rewards_valid.min()
+            
+            # Assessment
+            centered = abs(p50) < 0.5  # Median near zero
+            good_range = reward_range > 2.0  # Sufficient spread
+            no_extremes = (p10 > -4) and (p90 < 4)  # Not clipped
+            
+            if centered and good_range and no_extremes:
+                assessment = "✅ HEALTHY\nWell-balanced"
+                color_box = 'lightgreen'
+            elif good_range:
+                assessment = "⚠️ ACCEPTABLE\nSome imbalance"
+                color_box = 'lightyellow'
+            else:
+                assessment = "❌ PROBLEMATIC\nPoor distribution"
+                color_box = 'lightcoral'
+            
+            info_text = f'Range: {reward_range:.2f}\n'
+            info_text += f'P50: {p50:.2f}\n'
+            info_text += f'P10/P90: {p10:.2f}/{p90:.2f}\n'
+            info_text += f'\n{assessment}'
+            
+            plt.text(0.98, 0.98, info_text,
+                    transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                    fontsize=8, bbox=dict(boxstyle='round', facecolor=color_box, alpha=0.9))
+    
+    plt.tight_layout()
+    
+    # Save plot with num_trains in filename
+    plot_filename = f'comprehensive_neural_cb_metrics-{num_trains}.pdf'
+    plot_path = os.path.join(final_model_dir, plot_filename)
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved comprehensive training plot: {plot_path}")
+    
+    # Also save CSV files for future analysis
+    if metrics['losses']:
+        metrics_df = pd.DataFrame({
+            'update_step': list(range(len(metrics['losses']))),
+            'loss': metrics['losses'],
+            'reward': metrics['rewards'] if len(metrics['rewards']) == len(metrics['losses']) else [None] * len(metrics['losses']),
+            'epsilon': metrics['epsilons'] if len(metrics['epsilons']) == len(metrics['losses']) else [None] * len(metrics['losses'])
+        })
+        csv_path = os.path.join(final_model_dir, 'training_metrics.csv')
+        metrics_df.to_csv(csv_path, index=False)
+        logger.info(f"Saved training metrics CSV: {csv_path}")
+    
+    return plot_path
