@@ -725,6 +725,38 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
             logger.error("quantile_based reward function requires input_tokens and output_tokens columns")
             logger.error("Falling back to latency_optimized for post-processing")
             reward_result = preprocess.calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
+    elif reward_function == 'absolute_latency':
+        logger.info(f"Calculating absolute latency rewards (transferable across distributions)")
+        reward_result = preprocess.calculate_rewards_absolute_latency(
+            ttft_values, tpot_values,
+            ttft_slo=hyperparameters.get('TTFT_SLO', 15000),
+            tpot_slo=hyperparameters.get('AVG_TPOT_SLO', 100),
+            ttft_reward_weight=ttft_reward_weight
+        )
+    elif reward_function == 'throughput_based':
+        logger.info(f"Calculating throughput-based rewards (context-aware, input-length agnostic)")
+        if 'input_tokens' in df.columns:
+            input_tokens = df['input_tokens'].values
+            reward_result = preprocess.calculate_rewards_throughput_based(
+                ttft_values, tpot_values, input_tokens, ttft_reward_weight
+            )
+        else:
+            logger.error("throughput_based reward function requires input_tokens column")
+            logger.error("Falling back to simple_latency_minimization for post-processing")
+            reward_result = preprocess.calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight)
+    elif reward_function == 'log_normalized':
+        logger.info(f"Calculating variance-normalized log rewards")
+        if 'TTFT_P99' in hyperparameters and 'TPOT_P99' in hyperparameters:
+            reward_result = preprocess.calculate_rewards_log_normalized(
+                ttft_values, tpot_values,
+                ttft_p99=hyperparameters['TTFT_P99'],
+                tpot_p99=hyperparameters['TPOT_P99'],
+                ttft_reward_weight=ttft_reward_weight
+            )
+        else:
+            logger.error("log_normalized reward function requires TTFT_P99 and TPOT_P99 in hyperparameters")
+            logger.error("Falling back to simple_latency_minimization for post-processing")
+            reward_result = preprocess.calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight)
     elif reward_function == 'context_aware':
         logger.error("context_aware reward function requires detailed context data (input_tokens, kv_cache_hit_ratios) not available in this tool")
         logger.error("Falling back to latency_optimized for post-processing")

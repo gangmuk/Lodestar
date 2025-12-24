@@ -60,7 +60,7 @@ def main():
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
     parser.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension')
     parser.add_argument('--reward_decay_factor', type=float, default=0.9, help='reward_decay_factor (lambda)')
-    parser.add_argument('--model_type', type=str, default=None, choices=['contextual_bandit', 'latency_predictor', 'rl_agent'], help='Model type to use')
+    parser.add_argument('--model_type', type=str, default=None, help='Model type to use')
     parser.add_argument('--test_size_ratio', type=float, default=0.2, help='Test size ratio')
     # RL (SB3 PPO) specific hyperparameters (optional)
     parser.add_argument('--learning_rate', type=float, default=0.001, help='PPO learning rate')

@@ -594,6 +594,149 @@ def calculate_rewards_quantile_based(ttft_values, tpot_values, input_tokens, out
     }
 
 
+def calculate_rewards_absolute_latency(ttft_values, tpot_values, 
+                                       ttft_slo=15000, tpot_slo=100,
+                                       ttft_reward_weight=0.7):
+    """
+    Absolute latency-based reward that TRANSFERS across distributions.
+    
+    Unlike quantile-based (relative rankings), this uses absolute thresholds.
+    
+    Formula:
+    - Below SLO: reward = 1.0 - (latency / SLO)     → [0, 1]
+    - Above SLO: reward = -((latency / SLO) - 1.0)  → [-5, 0]
+    
+    Args:
+        ttft_values: TTFT in ms
+        tpot_values: TPOT in ms
+        ttft_slo: TTFT SLO in ms (default: 15000)
+        tpot_slo: TPOT SLO in ms (default: 100)
+        ttft_reward_weight: Weight for TTFT vs TPOT
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards
+    """
+    import numpy as np
+    
+    ttft_rewards = np.where(
+        ttft_values <= ttft_slo,
+        1.0 - (ttft_values / ttft_slo),
+        -np.clip((ttft_values / ttft_slo) - 1.0, 0, 5)
+    )
+    
+    tpot_rewards = np.where(
+        tpot_values <= tpot_slo,
+        1.0 - (tpot_values / tpot_slo),
+        -np.clip((tpot_values / tpot_slo) - 1.0, 0, 5)
+    )
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, ttft_reward_weight=0.7):
+    """
+    OPTION A: Throughput-based reward for LLM inference (context-aware, transferable).
+    
+    Theory: Reward = log(throughput) where throughput = tokens/second.
+    This AUTOMATICALLY accounts for input length differences!
+    
+    Key advantages:
+    1. Input-length agnostic: 500ms for 100 tokens vs 2500ms for 5000 tokens compared fairly
+    2. Hardware-specific: Different GPUs have different throughput (transferable metric)
+    3. Absolute performance: 2000 tok/s is ALWAYS better than 200 tok/s
+    4. No hyperparameters: No SLO, no normalization constants needed
+    5. Theoretically sound: Bounded variance for policy gradient
+    
+    Examples:
+        Short prompt: 100 tokens @ 500ms = 200 tok/s → reward = log(201) ≈ 5.3
+        Long prompt:  5000 tokens @ 2500ms = 2000 tok/s → reward = log(2001) ≈ 7.6
+        Model learns: "Long prompt is 10x more efficient! Route to that pod!"
+    
+    Reward ranges (for typical LLM inference):
+        Prefill throughput: 100-5000 tokens/sec → log reward: [4.6, 8.5]
+        Decode throughput: 10-100 tokens/sec → log reward: [2.4, 4.6]
+        Combined: [4.0, 7.5] (compressed, bounded variance)
+    
+    Args:
+        ttft_values: TTFT in ms (time to first token - prefill latency)
+        tpot_values: TPOT in ms (time per output token - decode latency)
+        input_tokens: Number of input tokens (for throughput calculation)
+        ttft_reward_weight: Weight for TTFT vs TPOT (default 0.7)
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards
+    """
+    # Convert ms to seconds for throughput calculation
+    ttft_seconds = np.maximum(ttft_values / 1000.0, 0.001)  # Avoid division by zero
+    tpot_seconds = np.maximum(tpot_values / 1000.0, 0.001)
+    
+    # Prefill throughput: tokens/second during prefill phase
+    prefill_throughput = input_tokens / ttft_seconds
+    
+    # Decode throughput: tokens/second during decode phase
+    # TPOT is already per-token, so inverse gives throughput
+    decode_throughput = 1.0 / tpot_seconds
+    
+    # Log-transform for variance reduction (REINFORCE requirement)
+    # Add 1 to avoid log(0) edge case
+    ttft_rewards = np.log(prefill_throughput + 1)
+    tpot_rewards = np.log(decode_throughput + 1)
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
+    }
+
+
+def calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p99, ttft_reward_weight=0.7):
+    """
+    OPTION B: Variance-normalized log reward for policy gradient.
+    
+    Theory: REINFORCE variance ∝ range(R)². By normalizing both metrics to [0,1] scale,
+    we minimize gradient variance while preserving interpretability of weights.
+    
+    This approach:
+    1. Uses training data statistics (p99) for normalization
+    2. Gives proper meaning to weights: ttft_weight=0.7 means "70% of reward from TTFT"
+    3. Ensures equal gradient contribution from TTFT and TPOT
+    4. Context-awareness comes from model features (input_tokens), not reward function
+    
+    Normalization constants (ttft_p99, tpot_p99) are computed from training data
+    and saved in model config for consistent inference.
+    
+    Reward range: [-1, 0] (bounded, normalized)
+    
+    Args:
+        ttft_values: TTFT in ms
+        tpot_values: TPOT in ms
+        ttft_p99: 99th percentile of TTFT from training data (normalization constant)
+        tpot_p99: 99th percentile of TPOT from training data (normalization constant)
+        ttft_reward_weight: Weight for TTFT vs TPOT (default 0.7)
+    
+    Returns:
+        Dict with ttft_rewards, tpot_rewards, combined_rewards
+    """
+    # Normalize to [0, 1] range using training data p99
+    # log(value + 1) / log(p99 + 1) maps [0, p99] → [0, 1]
+    ttft_normalized = np.log(ttft_values + 1) / np.log(ttft_p99 + 1)
+    tpot_normalized = np.log(tpot_values + 1) / np.log(tpot_p99 + 1)
+    
+    # Negative sign: lower latency → higher (less negative) reward
+    ttft_rewards = -ttft_normalized
+    tpot_rewards = -tpot_normalized
+    
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': -(ttft_reward_weight * ttft_normalized + (1 - ttft_reward_weight) * tpot_normalized),
+    }
+
+
 def calculate_rewards_context_aware(ttft_values, tpot_values, input_tokens, output_tokens, 
                                       kv_cache_hit_ratios, base_ttft_slo, avg_tpot_slo, 
                                       ttft_reward_weight):
@@ -983,6 +1126,31 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                     base_data['input_tokens'],
                     base_data['output_tokens'],
                     ttft_reward_weight
+                )
+            elif reward_function == "absolute_latency":
+                reward = calculate_rewards_absolute_latency(
+                    ttft_values, tpot_values,
+                    ttft_slo=ttft_slo,
+                    tpot_slo=avg_tpot_slo,
+                    ttft_reward_weight=ttft_reward_weight
+                )
+            elif reward_function == "throughput_based":
+                # OPTION A: Context-aware throughput-based reward
+                input_tokens = np.array(base_data['input_tokens'], dtype=np.float64)
+                reward = calculate_rewards_throughput_based(
+                    ttft_values, tpot_values, input_tokens, ttft_reward_weight
+                )
+            elif reward_function == "log_normalized":
+                # OPTION B: Variance-normalized log reward
+                # Normalization constants must be in hyperparameters
+                if 'TTFT_P99' not in hyperparameters or 'TPOT_P99' not in hyperparameters:
+                    logger.error("log_normalized reward requires TTFT_P99 and TPOT_P99 in hyperparameters")
+                    assert False
+                reward = calculate_rewards_log_normalized(
+                    ttft_values, tpot_values,
+                    ttft_p99=hyperparameters['TTFT_P99'],
+                    tpot_p99=hyperparameters['TPOT_P99'],
+                    ttft_reward_weight=ttft_reward_weight
                 )
             elif reward_function == "context_aware":
                 # Extract KV cache hit ratios for selected pods
