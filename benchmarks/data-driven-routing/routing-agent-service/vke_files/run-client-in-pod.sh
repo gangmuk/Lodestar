@@ -17,11 +17,10 @@ k8s_cluster="vke"
 target_gpu="NVIDIA-A10"
 
 experiment_configs=(
-    ## test
-
     # # ## SharingRatio71%, total number of requests: 1500
+    # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio71%|${target_gpu}|7|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
-    "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_negative_linear_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
     # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
@@ -30,9 +29,11 @@ experiment_configs=(
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
+    # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio47%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio47%|${target_gpu}|6|4"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
-    # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|1"
+    # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|4"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
     # "least_request|SharingRatio47%|${target_gpu}|6|4"
     # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
@@ -40,6 +41,8 @@ experiment_configs=(
 
 
     # # # # # ## SharingRatio28%, total number of requests: 2000
+    # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio28%|${target_gpu}|5|4"
     # # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
     # # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
@@ -51,6 +54,7 @@ experiment_configs=(
 
     # # # # # ## SharingRatio9%, total number of requests: 2000
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio9%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
     # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
     # # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
     # # "least_latency|SharingRatio9%|${target_gpu}|5|1"
@@ -60,6 +64,7 @@ experiment_configs=(
 
     # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
     # "contextual_bandit_quantile_based_perpodmodel|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
     # # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"

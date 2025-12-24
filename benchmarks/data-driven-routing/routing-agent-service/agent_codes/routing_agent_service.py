@@ -40,6 +40,7 @@ from collections import deque
 from rwlock import RWLock
 import neural_contextual_bandit_perpodmodel_advanced
 import neural_contextual_bandit_perpodmodel_checkpoint
+import neural_contextual_bandit_perpodmodel_policygradient
 
 
 # GPU features are now always included as one-hot encoded features
@@ -427,7 +428,7 @@ def handle_infer():
             
             # Inference with the neural contextual bandit
             contextual_bandit_infer_start = time.time()
-            if 'advanced' in subAlgorithm:
+            if 'perpodmodel_advanced' in subAlgorithm:
                 result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_advanced.infer_from_tensor(
                     tensor_data=tensor_data,
                     request_id=request_id,
@@ -436,7 +437,16 @@ def handle_infer():
                     final_model_dir=final_model_dir,
                     sorted_all_pod_ids=sorted_all_pod_ids
                 )
-            else:
+            elif 'policygradient' in subAlgorithm:
+                result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_policygradient.infer_from_tensor(
+                    tensor_data=tensor_data,
+                    request_id=request_id,
+                    model_updated=MODEL_UPDATED,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    final_model_dir=final_model_dir,
+                    sorted_all_pod_ids=sorted_all_pod_ids
+                )
+            elif 'perpodmodel_checkpoint' in subAlgorithm:
                 result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_checkpoint.infer_from_tensor(
                     tensor_data=tensor_data,
                     request_id=request_id,
@@ -445,6 +455,9 @@ def handle_infer():
                     final_model_dir=final_model_dir,
                     sorted_all_pod_ids=sorted_all_pod_ids
                 )
+            else:
+                logger.error(f"Unknown contextual bandit subAlgorithm: {subAlgorithm}")
+                assert False
             # Reset MODEL_UPDATED after agent has processed it (to avoid reloading on every request)
             if MODEL_UPDATED:
                 MODEL_UPDATED = False
@@ -453,10 +466,13 @@ def handle_infer():
             # Format result to match expected interface
             # The neural contextual bandit returns 'selected_pod_index' and 'predicted_rewards'
             # We need to add the missing fields that routing service expects
-            result['pod_probabilities'] = {
-                sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids) 
-                for i in range(len(sorted_all_pod_ids))
-            }
+            # IMPORTANT: Don't override pod_probabilities if already provided by the model
+            # Policy gradient returns learned softmax probabilities - don't replace with uniform!
+            if 'pod_probabilities' not in result or result['pod_probabilities'] is None:
+                result['pod_probabilities'] = {
+                    sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids)
+                    for i in range(len(sorted_all_pod_ids))
+                }
             # Use the actual exploration flag from the agent, not just whether epsilon > 0
             result['explore_mask'] = 1 if result.get('explored', False) else 0
             
@@ -906,7 +922,7 @@ def online_train_routine():
                 logger.info(f"Swapped model reference (atomic), swap time: {swap_time*1000:.2f}ms")
                 logger.info(f"✅ Model reload complete with ZERO inference blocking during load")
         
-        elif model_type == 'contextual_bandit':
+        elif 'contextual_bandit' in model_type:
             logger.info(f"Training Neural Contextual Bandit on entire dataset (offline + online: {NUM_NEW_DATA} new)")
             
             # Get a copy of TRAINING_DF for training (same as latency predictor)
@@ -973,20 +989,30 @@ def online_train_routine():
             
             # Train Neural Contextual Bandit
             train_start_time = time.time()
-            if 'advanced' in subAlgorithm:
+            if 'perpodmodel_advanced' in ROUTING_STRATEGY:
                     neural_contextual_bandit_perpodmodel_advanced.train(
                     encoded_training_dir=encoded_training_dir,
                     final_model_dir=final_model_dir,
                     HYPERPARAMETERS=HYPERPARAMETERS,
                     num_trains=NUM_TRAINS
                 )
-            else:
+            elif 'policygradient' in ROUTING_STRATEGY:
+                neural_contextual_bandit_perpodmodel_policygradient.train(
+                    encoded_training_dir=encoded_training_dir,
+                    final_model_dir=final_model_dir,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    num_trains=NUM_TRAINS
+                )
+            elif 'perpodmodel_checkpoint' in ROUTING_STRATEGY:
                 neural_contextual_bandit_perpodmodel_checkpoint.train(
                     encoded_training_dir=encoded_training_dir,
                     final_model_dir=final_model_dir,
                     HYPERPARAMETERS=HYPERPARAMETERS,
                     num_trains=NUM_TRAINS
                 )
+            else:
+                logger.error(f"Unknown contextual bandit ROUTING_STRATEGY: {ROUTING_STRATEGY}")
+                assert False
             logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
         
         else:

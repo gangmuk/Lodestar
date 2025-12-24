@@ -3,7 +3,7 @@
 import os
 import time
 import encoding
-import simpler_contextual_bandit
+# import simpler_contextual_bandit
 import latency_predictor
 import preprocess
 import threading
@@ -16,9 +16,12 @@ import shutil
 import re
 import utils as utils
 import random
-from logger import logger
+from logger import logger, setup_logging
 import pandas as pd
 import data_normalizer
+import neural_contextual_bandit_perpodmodel_advanced
+import neural_contextual_bandit_perpodmodel_checkpoint
+import neural_contextual_bandit_perpodmodel_policygradient
 
 utils.set_all_seeds(42)
 
@@ -55,20 +58,22 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
                 logger.info("Training with SB3 RL contextual bandit model")
                 import rl_contextual_bandit_sb3
                 saved_plot_path = rl_contextual_bandit_sb3.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
-            elif model_type == 'contextual_bandit':
-                logger.info("Training with Neural Contextual Bandit model")
-                import neural_contextual_bandit
-                saved_plot_path = neural_contextual_bandit.train(
-                    encoded_training_dir=ENCODED_DATA_DIR,
-                    final_model_dir=final_model_dir,
-                    HYPERPARAMETERS=HYPERPARAMETERS,
-                    num_trains=NUM_TRAINS  # Pass NUM_TRAINS for plot naming
-                )
-                logger.info(f"Neural CB offline training complete")
+            elif 'contextual_bandit' in model_type:
+                if model_type == 'contextual_bandit_perpodmodel_advanced':
+                    logger.info("Training with Neural Contextual Bandit Per-Pod Model Advanced model")
+                    saved_plot_path = neural_contextual_bandit_perpodmodel_advanced.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
+                elif model_type == 'contextual_bandit_perpodmodel':
+                    logger.info("Training with Neural Contextual Bandit Per-Pod Model model")
+                    saved_plot_path = neural_contextual_bandit_perpodmodel_checkpoint.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
+                elif model_type == 'contextual_bandit_perpodmodel_policygradient':
+                    logger.info("Training with Neural Contextual Bandit Per-Pod Model Policy Gradient model")
+                    saved_plot_path = neural_contextual_bandit_perpodmodel_policygradient.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
+                else:
+                    logger.error(f"Invalid model type: {model_type}")
+                    assert False
             else:
-                logger.info("Training with old contextual bandit model")
-                saved_plot_path = simpler_contextual_bandit.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
-            
+                logger.error(f"Invalid model type: {model_type}")
+                assert False
             MODEL_UPDATED = True
             TRAINING_DATA_UPDATED = False
             NUM_TRAINS += 1
@@ -512,6 +517,17 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
         pod_gpu_id_mapping = {pod_id: 0 for pod_id in sorted_all_pod_ids}
         HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
     
+    # Compute normalization constants for log_normalized reward function
+    # These are computed from training data and saved in hyperparameters
+    if 'ttft' in processed_df.columns and 'avg_tpot' in processed_df.columns:
+        ttft_p99 = processed_df['ttft'].quantile(0.99)
+        tpot_p99 = processed_df['avg_tpot'].quantile(0.99)
+        HYPERPARAMETERS['TTFT_P99'] = float(ttft_p99)
+        HYPERPARAMETERS['TPOT_P99'] = float(tpot_p99)
+        logger.info(f"Computed normalization constants: TTFT_P99={ttft_p99:.2f}ms, TPOT_P99={tpot_p99:.2f}ms")
+    else:
+        logger.warning("ttft or avg_tpot columns not found - cannot compute normalization constants")
+    
     # Apply normalization using the new data_normalizer module
     normalized_df, updated_stats_instance, summary = data_normalizer.normalize_processed_data(
         processed_csv_file,
@@ -553,69 +569,69 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
 # Data splitting is now handled by working directly with processed CSV
 
 
-# Fixed verification function - remove unused variables
-def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
-    """Verify that training produces identical results across runs"""
-    logger.info("🔍 VERIFYING TRAINING DETERMINISM")
+# # Fixed verification function - remove unused variables
+# def verify_training_determinism(encoded_data_dir, model_output_dir, HYPERPARAMETERS):
+#     """Verify that training produces identical results across runs"""
+#     logger.info("🔍 VERIFYING TRAINING DETERMINISM")
     
-    # Train model twice with same settings
-    model_type = HYPERPARAMETERS['MODEL_TYPE']
+#     # Train model twice with same settings
+#     model_type = HYPERPARAMETERS['MODEL_TYPE']
     
-    logger.info("Training model #1...")
-    utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    if model_type == 'rl_contextual_bandit_sb3':
-        import rl_contextual_bandit_sb3
-        saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
-    else:
-        saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
+#     logger.info("Training model #1...")
+#     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
+#     if model_type == 'rl_contextual_bandit_sb3':
+#         import rl_contextual_bandit_sb3
+#         saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
+#     else:
+#         saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test1", HYPERPARAMETERS)
     
-    logger.info("Training model #2...")
-    utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
-    if model_type == 'rl_contextual_bandit_sb3':
-        import rl_contextual_bandit_sb3
-        saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
-    else:
-        saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
+#     logger.info("Training model #2...")
+#     utils.set_all_seeds(HYPERPARAMETERS['training_seed'])
+#     if model_type == 'rl_contextual_bandit_sb3':
+#         import rl_contextual_bandit_sb3
+#         saved_plot_path = rl_contextual_bandit_sb3.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
+#     else:
+#         saved_plot_path = simpler_contextual_bandit.train(encoded_data_dir, f"{model_output_dir}_test2", HYPERPARAMETERS)
     
-    # Compare final model weights
-    model1_path = f"{model_output_dir}_test1/policy.pth"
-    model2_path = f"{model_output_dir}_test2/policy.pth"
+#     # Compare final model weights
+#     model1_path = f"{model_output_dir}_test1/policy.pth"
+#     model2_path = f"{model_output_dir}_test2/policy.pth"
     
-    if os.path.exists(model1_path) and os.path.exists(model2_path):
-        weights1 = torch.load(model1_path, map_location='cpu')
-        weights2 = torch.load(model2_path, map_location='cpu')
+#     if os.path.exists(model1_path) and os.path.exists(model2_path):
+#         weights1 = torch.load(model1_path, map_location='cpu')
+#         weights2 = torch.load(model2_path, map_location='cpu')
         
-        weights_identical = True
-        total_diff = 0.0
+#         weights_identical = True
+#         total_diff = 0.0
         
-        for key in weights1.keys():
-            if not torch.equal(weights1[key], weights2[key]):
-                diff = (weights1[key] - weights2[key]).abs().max().item()
-                total_diff += diff
-                logger.error(f"❌ Weight mismatch in layer: {key}, max_diff: {diff:.8f}")
-                weights_identical = False
-            else:
-                logger.debug(f"✅ Weights identical in layer: {key}")
-                logger.info(f"Layer {key} weights are identical. weights1[{key}]: {weights1[key]}, weights2[{key}]: {weights2[key]}")
+#         for key in weights1.keys():
+#             if not torch.equal(weights1[key], weights2[key]):
+#                 diff = (weights1[key] - weights2[key]).abs().max().item()
+#                 total_diff += diff
+#                 logger.error(f"❌ Weight mismatch in layer: {key}, max_diff: {diff:.8f}")
+#                 weights_identical = False
+#             else:
+#                 logger.debug(f"✅ Weights identical in layer: {key}")
+#                 logger.info(f"Layer {key} weights are identical. weights1[{key}]: {weights1[key]}, weights2[{key}]: {weights2[key]}")
         
-        if weights_identical:
-            logger.info("✅ TRAINING DETERMINISM VERIFIED - Identical weights across runs")
-        else:
-            logger.error(f"❌ TRAINING DETERMINISM FAILED - Total weight difference: {total_diff:.8f}")
+#         if weights_identical:
+#             logger.info("✅ TRAINING DETERMINISM VERIFIED - Identical weights across runs")
+#         else:
+#             logger.error(f"❌ TRAINING DETERMINISM FAILED - Total weight difference: {total_diff:.8f}")
         
-        # Clean up test models
-        import shutil
-        try:
-            shutil.rmtree(f"{model_output_dir}_test1")
-            shutil.rmtree(f"{model_output_dir}_test2")
-            logger.info("🧹 Cleaned up test model directories")
-        except:
-            pass
+#         # Clean up test models
+#         import shutil
+#         try:
+#             shutil.rmtree(f"{model_output_dir}_test1")
+#             shutil.rmtree(f"{model_output_dir}_test2")
+#             logger.info("🧹 Cleaned up test model directories")
+#         except:
+#             pass
         
-        return weights_identical
-    else:
-        logger.error("❌ Could not find model files for comparison")
-        return False
+#         return weights_identical
+#     else:
+#         logger.error("❌ Could not find model files for comparison")
+#         return False
 
 
 def main():
@@ -628,7 +644,14 @@ def main():
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
     args = parser.parse_args()
-    
+
+    # Setup logging to file in the final_model_dir
+    if args.final_model_dir:
+        os.makedirs(args.final_model_dir, exist_ok=True)
+        log_file = f"{args.final_model_dir}/offline_routing_agent.log.txt"
+        setup_logging(log_file)
+        logger.info(f"Logging to file: {log_file}")
+
     def load_hyperparameter_file(hyperparameter_file_path):
         # 1) Load JSON hyperparameter_file_path (required)
         if not os.path.exists(hyperparameter_file_path):

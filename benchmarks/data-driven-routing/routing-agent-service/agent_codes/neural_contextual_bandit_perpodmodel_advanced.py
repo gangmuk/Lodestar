@@ -215,9 +215,13 @@ class NeuralContextualBandit:
             normalized_counts = recent_counts
 
         # Average tokens per recent request
+        # Add small epsilon to prevent division by zero warning
+        # eps = 1e-8
         avg_tokens = np.where(
             recent_counts > 0,
             recent_tokens / recent_counts,
+            # recent_counts > eps,
+            # recent_tokens / (recent_counts + eps),
             0
         )
         # Normalize assuming max 5000 tokens
@@ -318,19 +322,29 @@ class NeuralContextualBandit:
                       Each row is [pod_features + kv + cluster_features + temporal_features + request_features]
         """
         batch_size, num_pods, pod_feat_dim = pod_features.shape
+        
+        # Get device from input tensors to ensure all tensors are on the same device
+        input_device = pod_features.device
 
         # NEW: Get cluster-wide aggregate features [batch, num_pods, 8]
         cluster_features = self._create_cluster_features(pod_features, kv_hit_ratios)
 
         # NEW: Get temporal routing history features [num_pods, 2]
         temporal_features = self._create_temporal_features()
-        temporal_features_torch = torch.from_numpy(temporal_features).float().to(device)
+        temporal_features_torch = torch.from_numpy(temporal_features).float().to(input_device)
         # Expand for batch: [1, num_pods, 2] → [batch, num_pods, 2]
         temporal_features_torch = temporal_features_torch.unsqueeze(0).expand(batch_size, -1, -1)
 
         # Expand request features for each pod
         # [batch, req_feat] → [batch, num_pods, req_feat]
         request_repeated = request_features.unsqueeze(1).expand(-1, num_pods, -1)
+        
+        # Ensure all tensors are on the same device before concatenation
+        pod_features = pod_features.to(input_device)
+        kv_hit_ratios = kv_hit_ratios.to(input_device)
+        cluster_features = cluster_features.to(input_device)
+        temporal_features_torch = temporal_features_torch.to(input_device)
+        request_repeated = request_repeated.to(input_device)
 
         # Concatenate all features for each pod:
         # [pod_features, kv_ratio, cluster_features, temporal_features, request_features]

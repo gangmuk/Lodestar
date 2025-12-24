@@ -393,6 +393,7 @@ def main():
             # "../agent_codes/rl_routing_agent_sb3.py": "/app/rl_routing_agent_sb3.py",
             "../agent_codes/neural_contextual_bandit_perpodmodel_advanced.py": "/app/neural_contextual_bandit_perpodmodel_advanced.py",
             "../agent_codes/neural_contextual_bandit_perpodmodel_checkpoint.py": "/app/neural_contextual_bandit_perpodmodel_checkpoint.py",
+            "../agent_codes/neural_contextual_bandit_perpodmodel_policygradient.py": "/app/neural_contextual_bandit_perpodmodel_policygradient.py",
             "../agent_codes/rwlock.py": "/app/rwlock.py",
             "../agent_codes/scalable_rl_routing_agent.py": "/app/scalable_rl_routing_agent.py",
             "../agent_codes/simpler_contextual_bandit.py": "/app/simpler_contextual_bandit.py",

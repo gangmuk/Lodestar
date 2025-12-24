@@ -36,7 +36,9 @@ include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 
 # model_type="latency_predictor"
-model_type="contextual_bandit"
+# model_type="contextual_bandit_perpodmodel_advanced"
+# model_type="contextual_bandit_perpodmodel"
+model_type="contextual_bandit_perpodmodel_policygradient"
 
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 analyze_behavior=false # true, false
@@ -44,8 +46,8 @@ analyze_dataset=false # true, false
 reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
-ttft_reward_weight=0.7 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
-REWARD_FUNCTION="quantile_based" # "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
+ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
+REWARD_FUNCTION="throughput_based" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
 offline_learning_rate=0.001
 time_stamp=$(date +%Y%m%d_%H%M%S)
 lr_scheduler_gamma=0.95
@@ -87,7 +89,7 @@ final_model_dir="${data_dir}/final_model"
 final_model_dir="${final_model_dir}-${model_type}"
 if [ "${model_type}" == "latency_predictor" ]; then
     final_model_dir="${final_model_dir}_${latency_metric}"
-elif [ "${model_type}" == "contextual_bandit" ]; then
+elif [[ "${model_type}" == *"contextual_bandit"* ]]; then
     final_model_dir="${final_model_dir}_${REWARD_FUNCTION}"
 fi
 final_model_dir=${final_model_dir}-${time_stamp}
