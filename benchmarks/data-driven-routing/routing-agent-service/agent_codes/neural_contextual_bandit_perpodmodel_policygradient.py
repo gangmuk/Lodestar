@@ -29,7 +29,7 @@ from logger import logger
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
-import plot_utils.plot_neural_cb_metrics as plot_neural_cb_metrics
+from plot_utils import plot_neural_cb_metrics
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -303,13 +303,19 @@ class NeuralContextualBandit:
             kv_hits = kv_ratios_np[b, :, 0]
 
             # Cluster statistics (mean and std)
-            eps = 1e-6
+            # FIX BUG #2: Use meaningful minimum std to prevent divide-by-zero when pods are balanced
+            # When std=0 (all pods identical), z-scores should be 0 (no differentiation)
+            min_std = 0.1  # Minimum std to prevent numerical issues
 
             # Feature 1-4: Z-score normalized (mean-centered, std-scaled)
-            running_mean, running_std = running_reqs.mean(), running_reqs.std() + eps
-            waiting_mean, waiting_std = waiting_reqs.mean(), waiting_reqs.std() + eps
-            gpu_mean, gpu_std = gpu_cache.mean(), gpu_cache.std() + eps
-            prefill_mean, prefill_std = prefill_tokens.mean(), prefill_tokens.std() + eps
+            running_mean = running_reqs.mean()
+            running_std = max(running_reqs.std(), min_std)
+            waiting_mean = waiting_reqs.mean()
+            waiting_std = max(waiting_reqs.std(), min_std)
+            gpu_mean = gpu_cache.mean()
+            gpu_std = max(gpu_cache.std(), min_std)
+            prefill_mean = prefill_tokens.mean()
+            prefill_std = max(prefill_tokens.std(), min_std)
 
             z_running = (running_reqs - running_mean) / running_std
             z_waiting = (waiting_reqs - waiting_mean) / waiting_std
@@ -341,7 +347,7 @@ class NeuralContextualBandit:
             cluster_utilization = np.full(num_pods, running_mean / theoretical_max)
 
             # Feature 8: Load variance (measures imbalance)
-            load_cv = running_std / (running_mean + eps)  # Coefficient of variation
+            load_cv = running_std / (running_mean + 1e-6)  # Coefficient of variation
             cluster_load_variance = np.full(num_pods, load_cv)
 
             # Stack features: [num_pods, 8]
@@ -388,10 +394,12 @@ class NeuralContextualBandit:
         temporal_features_torch = torch.from_numpy(temporal_features).float().to(device)
         # Expand for batch: [1, num_pods, 2] → [batch, num_pods, 2]
         temporal_features_torch = temporal_features_torch.unsqueeze(0).expand(batch_size, -1, -1)
-        
-        # FIX: Add small noise to temporal features if all zeros (cold start issue)
+
+        # FIX: Add small deterministic noise to temporal features if all zeros (cold start issue)
         if torch.all(temporal_features_torch == 0):
             # Add tiny uniform noise [0, 0.01] to break symmetry at deployment start
+            # Use deterministic seed for reproducibility (compatible with older PyTorch)
+            torch.manual_seed(42)
             temporal_features_torch = temporal_features_torch + torch.rand_like(temporal_features_torch) * 0.01
 
         # Expand request features for each pod
@@ -462,8 +470,8 @@ class NeuralContextualBandit:
         else:
             # POLICY GRADIENT: Sample from softmax policy
             # Apply temperature for exploration control (epsilon acts as temperature)
-            # FIXED: Use minimum temperature 0.05 (not 0.1) to match training
-            temperature = max(self.epsilon, 0.05)  # Minimum temperature 0.05
+            # FIXED: Use minimum temperature 0.1 to match training
+            temperature = max(self.epsilon, 0.1)  # Minimum temperature 0.1
             logits = scores / temperature
 
             # Compute softmax probabilities (LEARNED POLICY)
@@ -479,6 +487,18 @@ class NeuralContextualBandit:
         # Update counters
         self.action_counts[action] += 1
         self.total_steps += 1
+
+        # FIX BUG #1: Update routing_history during inference (not just training)
+        # Extract input_tokens from request_features (typically first feature)
+        input_tokens = 0
+        if request_features.shape[1] > 0:
+            input_tokens = float(request_features[0, 0].item())  # Assuming input_tokens is first feature
+
+        self.routing_history.append({
+            'timestamp': time.time(),
+            'pod': action,
+            'input_tokens': input_tokens
+        })
 
         # Adaptive epsilon (temperature) adjustment
         if self.total_steps % 100 == 0:
@@ -587,9 +607,9 @@ class NeuralContextualBandit:
         baseline = rewards.mean()
         advantages = rewards - baseline  # [batch_size]
 
-        # # Normalize advantages to further reduce variance
-        # if len(advantages) > 1:
-        #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages to further reduce variance
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # REINFORCE loss: -log π(a|s) × (R - baseline)
         # Negative because we want gradient ASCENT on expected reward
@@ -648,10 +668,13 @@ class NeuralContextualBandit:
                 logger.info(f"Update {num_updates}: Score spread: mean={score_spreads.mean():.4f}, min={score_spreads.min():.4f}, max={score_spreads.max():.4f}")
                 logger.info(f"Update {num_updates}: Scores sample: {scores[0].detach().cpu().numpy()}")
 
-            # Calculate counterfactual gain: score[greedy] - actual_reward[selected]
+            # Calculate policy quality metric: difference between greedy and selected action scores
+            # NOTE: This compares PREDICTED scores, not actual rewards (which are unknown for non-selected actions)
+            # Positive values suggest the model would have chosen higher-scoring actions
             greedy_scores = scores.gather(1, greedy_actions_batch.unsqueeze(1)).squeeze(1)
-            counterfactual_gain = greedy_scores.detach().cpu() - rewards.cpu()
-            self.training_metrics['counterfactual_gains'].extend(counterfactual_gain.numpy().tolist())
+            selected_scores = scores.gather(1, actions.unsqueeze(1)).squeeze(1)
+            policy_quality = greedy_scores.detach().cpu() - selected_scores.detach().cpu()
+            self.training_metrics['counterfactual_gains'].extend(policy_quality.numpy().tolist())
 
             # Store input_tokens for each sample (for stratified analysis in plots 13-15)
             self.training_metrics['input_tokens_per_sample'].extend(input_tokens_batch)
