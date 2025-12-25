@@ -907,7 +907,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     """
     global _cached_agent
     
-    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('num_epochs', 10)}, dir={encoded_training_dir}")
+    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('training_epochs', 10)}, dir={encoded_training_dir}")
     
     # Load encoded tensor files
     if not os.path.exists(encoded_training_dir):
@@ -973,7 +973,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     
     # Training loop
     total_samples = 0
-    for epoch in range(HYPERPARAMETERS.get('num_epochs', 10)):
+    for epoch in range(HYPERPARAMETERS.get('training_epochs', 10)):
         epoch_start = time.time()
         epoch_losses = []
         epoch_rewards = []
@@ -1038,7 +1038,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
         epoch_time = time.time() - epoch_start
         
-        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('num_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
+        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('training_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
                    f"time={epoch_time:.2f}s, buffer_size={len(_cached_agent.replay_buffer)}")
     
     # Save trained model
@@ -1046,7 +1046,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
     
     # Generate comprehensive training plots (use total_steps as num_trains)
-    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('num_epochs', 10), total_samples, num_trains=num_trains)
+    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('training_epochs', 10), total_samples, num_trains=num_trains)
     return plot_path
 
 

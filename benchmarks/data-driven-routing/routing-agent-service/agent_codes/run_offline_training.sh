@@ -5,7 +5,8 @@ set -e
 lr_scheduler_type="constant" # "exponential", "constant", "gradient_adaptive"
 hidden_dim=128 # 64, 128, 256, 128 was very very slightly better than 64
 batch_size=256
-training_epochs=50
+training_epochs=10
+# training_epochs=1
 sampling_ratio=0.3
 
 # excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
