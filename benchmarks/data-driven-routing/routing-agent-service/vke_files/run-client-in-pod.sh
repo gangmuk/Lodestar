@@ -18,6 +18,7 @@ target_gpu="NVIDIA-A10"
 
 experiment_configs=(
     # # ## SharingRatio71%, total number of requests: 1500
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
@@ -29,6 +30,7 @@ experiment_configs=(
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
+    "contextual_bandit_perpodmodel_policygradient_throughput_based-2|SharingRatio47%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio47%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio47%|${target_gpu}|6|4"
@@ -41,6 +43,7 @@ experiment_configs=(
 
 
     # # # # # ## SharingRatio28%, total number of requests: 2000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio28%|${target_gpu}|5|4"
@@ -53,6 +56,7 @@ experiment_configs=(
 
 
     # # # # # ## SharingRatio9%, total number of requests: 2000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio9%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
     # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
@@ -63,6 +67,7 @@ experiment_configs=(
     # # "random|SharingRatio9%|${target_gpu}|5|1"
 
     # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"

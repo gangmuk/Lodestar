@@ -3,6 +3,7 @@ import seaborn as sns
 import pandas as pd
 import numpy as np
 from logger import logger
+import os
 
 
 def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains):

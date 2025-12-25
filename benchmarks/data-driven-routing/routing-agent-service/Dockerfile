@@ -98,6 +98,9 @@ COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final
 
 COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_policygradient_throughput_based NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based
 
+COPY workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_policygradient_throughput_based-2 NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based-2
+
+
 
 
 ################################################################################################################
