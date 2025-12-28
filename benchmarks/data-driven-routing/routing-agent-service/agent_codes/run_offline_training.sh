@@ -7,8 +7,9 @@ hidden_dim=128 # 64, 128, 256, 128 was very very slightly better than 64
 batch_size=256
 training_epochs=10
 # training_epochs=1
+# sampling_ratio=1.0
 sampling_ratio=0.3
-
+ttft_threshold=30000
 # excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
 # excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # kinda bad
 # excluded_pod_features="gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # this is also kinda bad
@@ -48,8 +49,8 @@ reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
-REWARD_FUNCTION="throughput_based" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
-offline_learning_rate=0.001
+REWARD_FUNCTION="quantile_based" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
+offline_learning_rate=0.0001
 time_stamp=$(date +%Y%m%d_%H%M%S)
 lr_scheduler_gamma=0.95
 
@@ -129,7 +130,7 @@ python3 write_hyperparameters.py \
 
 echo "📄 STEP 1: start data_processor"
 start_time=$(date +%s)
-python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold 10000 2>&1 | tee ${data_processor_log}
+python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold} 2>&1 | tee ${data_processor_log}
 end_time=$(date +%s)
 echo "finished data_processor in $((end_time - start_time)) seconds"
 

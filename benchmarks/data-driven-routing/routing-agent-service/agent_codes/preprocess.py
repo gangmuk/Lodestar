@@ -1142,14 +1142,35 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 )
             elif reward_function == "log_normalized":
                 # OPTION B: Variance-normalized log reward
-                # Normalization constants must be in hyperparameters
-                if 'TTFT_P99' not in hyperparameters or 'TPOT_P99' not in hyperparameters:
-                    logger.error("log_normalized reward requires TTFT_P99 and TPOT_P99 in hyperparameters")
-                    assert False
+                # Compute normalization constants from data if not in hyperparameters
+                if 'TTFT_P99' in hyperparameters and 'TPOT_P99' in hyperparameters:
+                    ttft_p99 = hyperparameters['TTFT_P99']
+                    tpot_p99 = hyperparameters['TPOT_P99']
+                    logger.info(f"Using TTFT_P99={ttft_p99:.2f}ms and TPOT_P99={tpot_p99:.2f}ms from hyperparameters")
+                else:
+                    # Compute P99 values from the data itself if not in hyperparameters
+                    ttft_p99 = float(np.percentile(ttft_values, 99))
+                    tpot_p99 = float(np.percentile(tpot_values, 99))
+                    logger.info(f"TTFT_P99 and TPOT_P99 not in hyperparameters, computing from data: TTFT_P99={ttft_p99:.2f}ms, TPOT_P99={tpot_p99:.2f}ms")
+                    # Store in hyperparameters for later use
+                    hyperparameters['TTFT_P99'] = ttft_p99
+                    hyperparameters['TPOT_P99'] = tpot_p99
+                
+                # Validate and fix P99 values
+                # If TPOT_P99 is 0 (all TPOT values are 0), use a minimum value to avoid division by zero
+                if tpot_p99 <= 0:
+                    logger.warning(f"TPOT_P99 is {tpot_p99} (all TPOT values are 0). Using minimum value of 1.0 for log calculation.")
+                    tpot_p99 = 1.0
+                    hyperparameters['TPOT_P99'] = tpot_p99
+                
+                if ttft_p99 <= 0:
+                    logger.error(f"Invalid TTFT_P99 value: {ttft_p99}. Cannot compute log_normalized rewards.")
+                    raise ValueError(f"TTFT_P99 must be positive for log_normalized reward function. Got TTFT_P99={ttft_p99}")
+                
                 reward = calculate_rewards_log_normalized(
                     ttft_values, tpot_values,
-                    ttft_p99=hyperparameters['TTFT_P99'],
-                    tpot_p99=hyperparameters['TPOT_P99'],
+                    ttft_p99=ttft_p99,
+                    tpot_p99=tpot_p99,
                     ttft_reward_weight=ttft_reward_weight
                 )
             elif reward_function == "context_aware":

@@ -1285,12 +1285,53 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     
     # Also save CSV files for future analysis
     if metrics['losses']:
-        metrics_df = pd.DataFrame({
-            'update_step': list(range(len(metrics['losses']))),
+        num_updates = len(metrics['losses'])
+        
+        # Helper function to safely get metric list with same length
+        def get_metric(key, default=None):
+            if key in metrics and len(metrics[key]) == num_updates:
+                return metrics[key]
+            return [default] * num_updates
+        
+        # Build base metrics dataframe
+        metrics_dict = {
+            'update_step': list(range(num_updates)),
             'loss': metrics['losses'],
-            'reward': metrics['rewards'] if len(metrics['rewards']) == len(metrics['losses']) else [None] * len(metrics['losses']),
-            'epsilon': metrics['epsilons'] if len(metrics['epsilons']) == len(metrics['losses']) else [None] * len(metrics['losses'])
-        })
+            'reward': get_metric('rewards'),
+            'epsilon': get_metric('epsilons'),
+            'policy_loss': get_metric('policy_loss'),
+            'entropy': get_metric('entropy'),
+            'baseline': get_metric('baseline'),
+            'advantages': get_metric('advantages'),
+            'log_probs': get_metric('log_probs'),  # Chosen action's log prob
+            'probs': get_metric('probs')  # Chosen action's prob
+        }
+        
+        # Add all actions' probabilities if available
+        if 'all_probs' in metrics and metrics['all_probs'] and len(metrics['all_probs']) > 0:
+            # Determine number of actions from first entry
+            num_actions = len(metrics['all_probs'][0])
+            
+            # Add columns for each action's probability
+            for action_idx in range(num_actions):
+                metrics_dict[f'probs_action_{action_idx}'] = [
+                    metrics['all_probs'][i][action_idx] if i < len(metrics['all_probs']) and len(metrics['all_probs'][i]) > action_idx else None
+                    for i in range(num_updates)
+                ]
+        
+        # Add all actions' log probabilities if available
+        if 'all_log_probs' in metrics and metrics['all_log_probs'] and len(metrics['all_log_probs']) > 0:
+            # Determine number of actions from first entry
+            num_actions = len(metrics['all_log_probs'][0])
+            
+            # Add columns for each action's log probability
+            for action_idx in range(num_actions):
+                metrics_dict[f'log_probs_action_{action_idx}'] = [
+                    metrics['all_log_probs'][i][action_idx] if i < len(metrics['all_log_probs']) and len(metrics['all_log_probs'][i]) > action_idx else None
+                    for i in range(num_updates)
+                ]
+        
+        metrics_df = pd.DataFrame(metrics_dict)
         csv_path = os.path.join(final_model_dir, 'training_metrics.csv')
         metrics_df.to_csv(csv_path, index=False)
         logger.info(f"Saved training metrics CSV: {csv_path}")

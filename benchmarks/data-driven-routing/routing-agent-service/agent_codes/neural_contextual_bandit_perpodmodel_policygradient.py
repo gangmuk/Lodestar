@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from collections import deque
 import pickle
 import time
+import pandas as pd
 from logger import logger
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -79,9 +80,10 @@ class RewardNetwork(nn.Module):
         features = self.feature_extractor(context)  # [batch, hidden_dim]
         scores = self.output_layer(features)  # [batch, 1]
 
-        # CRITICAL: Apply Tanh to bound output to [-1, 1], then scale to [-5, 5]
-        # This prevents unbounded score growth while allowing differentiation
-        scores = 5.0 * torch.tanh(scores)  # [batch, 1] in range [-5, 5]
+        # BOUNDING STRATEGY: Use smaller scale (2.0) to prevent saturation while
+        # keeping scores bounded. The original 10*tanh saturated too quickly.
+        # With scale=2.0 and temperature=0.3, max logits = ±6.7, which is stable.
+        scores = 2.0 * torch.tanh(scores)  # [batch, 1] in range [-2, 2]
 
         return scores
 
@@ -102,7 +104,7 @@ class NeuralContextualBandit:
         
         # DIAGNOSTIC: Track inference count for periodic logging
         self.inference_count = 0
-        self.log_features_every = 100  # Log feature stats every N inferences
+        self.log_features_every = 10000  # Log feature stats every N inferences
 
         # Calculate per-pod context dimension with NEW features
         # Each pod is evaluated with: [pod_features + pod_kv + cluster_features + temporal_features + request_features]
@@ -130,10 +132,12 @@ class NeuralContextualBandit:
             hidden_dim=hyperparameters.get('hidden_dim', 128)
         ).to(device)
         
-        # Optimizer
+        # Optimizer - cap learning rate at 1e-4 for policy gradient stability
+        lr = min(hyperparameters.get('learning_rate', 3e-4), 1e-4)
+        logger.info(f"NeuralContextualBandit: Using learning rate {lr} (capped from {hyperparameters.get('learning_rate', 3e-4)})")
         self.optimizer = torch.optim.Adam(
             self.reward_net.parameters(),
-            lr=hyperparameters.get('learning_rate', 3e-4),
+            lr=lr,
             weight_decay=hyperparameters.get('weight_decay', 1e-5)
         )
         
@@ -141,12 +145,14 @@ class NeuralContextualBandit:
         self.buffer_size = hyperparameters.get('buffer_size', 10000)
         self.replay_buffer = deque(maxlen=self.buffer_size)
         
-        # Exploration parameters
+        # Exploration parameters (epsilon also serves as temperature for softmax)
         self.exploration_method = hyperparameters.get('exploration_method', 'epsilon_greedy')
         self.epsilon = hyperparameters.get('initial_epsilon', 0.3)
         self.initial_epsilon = self.epsilon  # NEW: Store for adaptive exploration
         self.epsilon_decay = hyperparameters.get('epsilon_decay', 0.995)
-        self.epsilon_min = hyperparameters.get('epsilon_min', 0.05)
+        # INCREASED epsilon_min from 0.05 to 0.1 to prevent temperature collapse
+        # With unbounded scores, low temperature causes numerical instability
+        self.epsilon_min = hyperparameters.get('epsilon_min', 0.1)
         
         # UCB parameters (if using UCB)
         self.ucb_confidence = hyperparameters.get('ucb_confidence', 2.0)
@@ -180,7 +186,18 @@ class NeuralContextualBandit:
             'greedy_actions': [],         # What model would choose greedily
             'training_actions': [],       # What was actually chosen in training
             'counterfactual_gains': [],    # Estimated gain from model's choice
-            'input_tokens_per_sample': []  # Input tokens for each sample (for stratification)
+            'input_tokens_per_sample': [],  # Input tokens for each sample (for stratification)
+            # Policy gradient specific metrics
+            'scores': [],              # Raw scores from network (before temperature)
+            'logits': [],              # Scores after temperature scaling (before softmax)
+            'log_probs': [],           # Log probabilities of chosen actions
+            'probs': [],               # Probabilities of chosen actions
+            'all_log_probs': [],       # Mean log probabilities for all actions [num_pods] per update
+            'all_probs': [],           # Mean probabilities for all actions [num_pods] per update
+            'baseline': [],            # Baseline value (mean reward)
+            'advantages': [],          # Advantage values (reward - baseline)
+            'policy_loss': [],         # Policy gradient loss component
+            'entropy': []              # Policy entropy
         }
         
         logger.info(f"NeuralContextualBandit initialized: exploration={self.exploration_method}")
@@ -212,19 +229,26 @@ class NeuralContextualBandit:
         else:  # Normal decay
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
 
-    def _create_temporal_features(self):
+    def _create_temporal_features(self, num_pods=None):
         """
         NEW: Create temporal features based on recent routing history.
         Returns features showing how recently each pod was selected.
+
+        Args:
+            num_pods: Optional number of pods. If None, uses self.action_dim.
+                     This allows matching the number of pods in training data.
 
         Returns:
             temporal_features: [num_pods, 2] array with:
                 - Column 0: recent_count (normalized, exponentially weighted)
                 - Column 1: avg_recent_tokens (normalized)
         """
+        if num_pods is None:
+            num_pods = self.action_dim
+        
         current_time = time.time()
-        recent_counts = np.zeros(self.action_dim, dtype=np.float32)
-        recent_tokens = np.zeros(self.action_dim, dtype=np.float32)
+        recent_counts = np.zeros(num_pods, dtype=np.float32)
+        recent_tokens = np.zeros(num_pods, dtype=np.float32)
 
         # Iterate through recent routing decisions (newest first)
         for entry in reversed(self.routing_history):
@@ -233,6 +257,10 @@ class NeuralContextualBandit:
                 break  # Stop if outside window
 
             pod_idx = entry['pod']
+            # Skip if pod_idx is out of bounds (can happen when training on historical data with different pod counts)
+            if pod_idx >= num_pods:
+                continue
+                
             tokens = entry.get('input_tokens', 0)
 
             # Exponential decay: recent decisions weighted more
@@ -250,10 +278,12 @@ class NeuralContextualBandit:
             normalized_counts = recent_counts
 
         # Average tokens per recent request
-        avg_tokens = np.where(
-            recent_counts > 0,
-            recent_tokens / recent_counts,
-            0
+        # Use np.divide with where to avoid divide-by-zero warnings
+        avg_tokens = np.divide(
+            recent_tokens,
+            recent_counts,
+            out=np.zeros_like(recent_tokens, dtype=np.float32),
+            where=(recent_counts > 0)
         )
         # Normalize assuming max 5000 tokens
         normalized_tokens = np.clip(avg_tokens / 5000.0, 0, 1)
@@ -263,11 +293,11 @@ class NeuralContextualBandit:
         
         if self.inference_count % self.log_features_every == 0:
             all_zero = np.all(temporal_features == 0)
-            logger.info(f"🔍 TEMPORAL FEATURES (inference #{self.inference_count}):")
-            logger.info(f"   routing_history size: {len(self.routing_history)}")
-            logger.info(f"   all_zero: {all_zero}")
-            logger.info(f"   normalized_counts: min={normalized_counts.min():.4f}, max={normalized_counts.max():.4f}, mean={normalized_counts.mean():.4f}")
-            logger.info(f"   normalized_tokens: min={normalized_tokens.min():.4f}, max={normalized_tokens.max():.4f}, mean={normalized_tokens.mean():.4f}")
+            logger.debug(f"🔍 TEMPORAL FEATURES (inference #{self.inference_count}):")
+            logger.debug(f"   routing_history size: {len(self.routing_history)}")
+            logger.debug(f"   all_zero: {all_zero}")
+            logger.debug(f"   normalized_counts: min={normalized_counts.min():.4f}, max={normalized_counts.max():.4f}, mean={normalized_counts.mean():.4f}")
+            logger.debug(f"   normalized_tokens: min={normalized_tokens.min():.4f}, max={normalized_tokens.max():.4f}, mean={normalized_tokens.mean():.4f}")
             if all_zero:
                 logger.warning(f"   ⚠️  Temporal features are ALL ZERO (cold start issue!)")
 
@@ -295,69 +325,54 @@ class NeuralContextualBandit:
 
         for b in range(batch_size):
             # Extract key metrics (assuming standard pod feature ordering)
-            # Typical order: [inflight_req, gpu_cache, cpu_cache, running_req, waiting_req, prefill_tok, decode_tok, kv_hit]
+            # Order from encoding.py: [inflight_req, gpu_cache, cpu_cache, running_req, waiting_req, prefill_tok, decode_tok]
+            inflight_reqs = pod_feats_np[b, :, 0] if pod_feat_dim > 0 else np.zeros(num_pods)
+            gpu_cache = pod_feats_np[b, :, 1] if pod_feat_dim > 1 else np.zeros(num_pods)
             running_reqs = pod_feats_np[b, :, 3] if pod_feat_dim > 3 else np.zeros(num_pods)
             waiting_reqs = pod_feats_np[b, :, 4] if pod_feat_dim > 4 else np.zeros(num_pods)
-            gpu_cache = pod_feats_np[b, :, 1] if pod_feat_dim > 1 else np.zeros(num_pods)
             prefill_tokens = pod_feats_np[b, :, 5] if pod_feat_dim > 5 else np.zeros(num_pods)
             kv_hits = kv_ratios_np[b, :, 0]
 
             # Cluster statistics (mean and std)
-            # FIX BUG #2: Use meaningful minimum std to prevent divide-by-zero when pods are balanced
-            # When std=0 (all pods identical), z-scores should be 0 (no differentiation)
-            min_std = 0.1  # Minimum std to prevent numerical issues
+            # Use meaningful minimum std to prevent divide-by-zero when pods are balanced
+            min_std = 0.1
 
-            # Feature 1-4: Z-score normalized (mean-centered, std-scaled)
+            # Z-score normalized features (mean-centered, std-scaled)
+            # inflight_requests has strongest correlation with reward (r=-0.80)
+            inflight_mean = inflight_reqs.mean()
+            inflight_std = max(inflight_reqs.std(), min_std)
+            z_inflight = (inflight_reqs - inflight_mean) / inflight_std
+
             running_mean = running_reqs.mean()
             running_std = max(running_reqs.std(), min_std)
+            z_running = (running_reqs - running_mean) / running_std
+
             waiting_mean = waiting_reqs.mean()
             waiting_std = max(waiting_reqs.std(), min_std)
-            gpu_mean = gpu_cache.mean()
-            gpu_std = max(gpu_cache.std(), min_std)
+            z_waiting = (waiting_reqs - waiting_mean) / waiting_std
+
             prefill_mean = prefill_tokens.mean()
             prefill_std = max(prefill_tokens.std(), min_std)
-
-            z_running = (running_reqs - running_mean) / running_std
-            z_waiting = (waiting_reqs - waiting_mean) / waiting_std
-            z_gpu = (gpu_cache - gpu_mean) / gpu_std
             z_prefill = (prefill_tokens - prefill_mean) / prefill_std
-            
-            # DIAGNOSTIC: Log cluster feature statistics periodically (only for first batch)
-            if b == 0 and self.inference_count % self.log_features_every == 0:
-                logger.info(f"🔍 CLUSTER FEATURES (inference #{self.inference_count}, batch {b}):")
-                logger.info(f"   running_reqs: values={running_reqs}, mean={running_mean:.4f}, std={running_reqs.std():.6f} (with eps: {running_std:.6f})")
-                logger.info(f"   waiting_reqs: values={waiting_reqs}, mean={waiting_mean:.4f}, std={waiting_reqs.std():.6f} (with eps: {waiting_std:.6f})")
-                logger.info(f"   z_running: min={z_running.min():.4f}, max={z_running.max():.4f}, mean={z_running.mean():.4f}")
-                logger.info(f"   z_waiting: min={z_waiting.min():.4f}, max={z_waiting.max():.4f}, mean={z_waiting.mean():.4f}")
-                
-                if running_reqs.std() < 0.01:
-                    logger.warning(f"   ⚠️  running_reqs std is very small ({running_reqs.std():.6f}) - z-scores may be unreliable!")
-                if waiting_reqs.std() < 0.01:
-                    logger.warning(f"   ⚠️  waiting_reqs std is very small ({waiting_reqs.std():.6f}) - z-scores may be unreliable!")
 
-            # Feature 5-6: Rank-based (scale-invariant)
-            # Load = running + waiting requests
-            total_load = running_reqs + waiting_reqs
-            rank_by_load = np.argsort(np.argsort(total_load)) / max(num_pods - 1, 1)  # [0, 1]
-            rank_by_kv = np.argsort(np.argsort(kv_hits)) / max(num_pods - 1, 1)  # [0, 1]
+            # Rank-based features (scale-invariant)
+            # Use inflight for ranking as it's the strongest predictor
+            rank_by_inflight = np.argsort(np.argsort(inflight_reqs)) / max(num_pods - 1, 1)  # [0, 1]
+            rank_by_kv = np.argsort(np.argsort(-kv_hits)) / max(num_pods - 1, 1)  # [0, 1], higher kv = lower rank (better)
 
-            # Feature 7: Cluster utilization (global context)
-            # Normalize by theoretical max (e.g., 10 requests per pod)
-            theoretical_max = 10.0
-            cluster_utilization = np.full(num_pods, running_mean / theoretical_max)
-
-            # Feature 8: Load variance (measures imbalance)
-            load_cv = running_std / (running_mean + 1e-6)  # Coefficient of variation
+            # Cluster-wide context features
+            cluster_utilization = np.full(num_pods, inflight_mean / 10.0)  # Normalized by theoretical max
+            load_cv = inflight_std / (inflight_mean + 1e-6)  # Coefficient of variation
             cluster_load_variance = np.full(num_pods, load_cv)
 
             # Stack features: [num_pods, 8]
             cluster_feats = np.stack([
-                z_running,              # 0: Z-score running requests
-                z_waiting,              # 1: Z-score waiting requests
-                z_gpu,                  # 2: Z-score GPU cache
+                z_inflight,             # 0: Z-score inflight requests (strongest predictor)
+                z_running,              # 1: Z-score running requests
+                z_waiting,              # 2: Z-score waiting requests
                 z_prefill,              # 3: Z-score prefill tokens
-                rank_by_load,           # 4: Rank by total load [0,1]
-                rank_by_kv,             # 5: Rank by KV cache [0,1]
+                rank_by_inflight,       # 4: Rank by inflight [0,1], lower=better
+                rank_by_kv,             # 5: Rank by KV cache [0,1], lower=better (higher kv)
                 cluster_utilization,    # 6: Cluster-wide utilization
                 cluster_load_variance   # 7: Cluster load imbalance
             ], axis=1)  # [num_pods, 8]
@@ -390,8 +405,9 @@ class NeuralContextualBandit:
         cluster_features = self._create_cluster_features(pod_features, kv_hit_ratios)
 
         # NEW: Get temporal routing history features [num_pods, 2]
-        temporal_features = self._create_temporal_features()
-        temporal_features_torch = torch.from_numpy(temporal_features).float().to(device)
+        # Pass num_pods to match the input data (important for training on historical data with different pod counts)
+        temporal_features = self._create_temporal_features(num_pods=num_pods)
+        temporal_features_torch = torch.from_numpy(temporal_features).float().to(pod_features.device)
         # Expand for batch: [1, num_pods, 2] → [batch, num_pods, 2]
         temporal_features_torch = temporal_features_torch.unsqueeze(0).expand(batch_size, -1, -1)
 
@@ -423,15 +439,15 @@ class NeuralContextualBandit:
         # DIAGNOSTIC: Log final concatenated feature statistics periodically
         if self.inference_count % self.log_features_every == 0:
             contexts_np = per_pod_contexts.cpu().numpy()
-            logger.info(f"🔍 FINAL PER-POD CONTEXTS (inference #{self.inference_count}):")
-            logger.info(f"   shape: {per_pod_contexts.shape}")
-            logger.info(f"   min: {contexts_np.min():.4f}, max: {contexts_np.max():.4f}, mean: {contexts_np.mean():.4f}, std: {contexts_np.std():.4f}")
-            logger.info(f"   Feature breakdown (first pod):")
-            logger.info(f"     pod_features[0:8]:      {contexts_np[0, 0:8]}")
-            logger.info(f"     kv_hit_ratio[8]:        {contexts_np[0, 8]:.4f}")
-            logger.info(f"     cluster_features[9:17]: min={contexts_np[0, 9:17].min():.4f}, max={contexts_np[0, 9:17].max():.4f}, mean={contexts_np[0, 9:17].mean():.4f}")
-            logger.info(f"     temporal_features[17:19]: {contexts_np[0, 17:19]}")
-            logger.info(f"     request_features[19:21]:  {contexts_np[0, 19:21]}")
+            logger.debug(f"🔍 FINAL PER-POD CONTEXTS (inference #{self.inference_count}):")
+            logger.debug(f"   shape: {per_pod_contexts.shape}")
+            logger.debug(f"   min: {contexts_np.min():.4f}, max: {contexts_np.max():.4f}, mean: {contexts_np.mean():.4f}, std: {contexts_np.std():.4f}")
+            logger.debug(f"   Feature breakdown (first pod):")
+            logger.debug(f"     pod_features[0:8]:      {contexts_np[0, 0:8]}")
+            logger.debug(f"     kv_hit_ratio[8]:        {contexts_np[0, 8]:.4f}")
+            logger.debug(f"     cluster_features[9:17]: min={contexts_np[0, 9:17].min():.4f}, max={contexts_np[0, 9:17].max():.4f}, mean={contexts_np[0, 9:17].mean():.4f}")
+            logger.debug(f"     temporal_features[17:19]: {contexts_np[0, 17:19]}")
+            logger.debug(f"     request_features[19:21]:  {contexts_np[0, 19:21]}")
 
         return per_pod_contexts
     
@@ -562,7 +578,7 @@ class NeuralContextualBandit:
         #     self.learn()
         #     self.steps_since_update = 0
     
-    def learn(self, epoch, batch_index):
+    def learn(self, epoch, batch_index, batch_size, update_in_epoch):
         """
         POLICY GRADIENT VERSION: Update policy using REINFORCE algorithm.
         Loss = -log π(a|s) × (R - baseline)
@@ -591,9 +607,22 @@ class NeuralContextualBandit:
         scores_flat = self.reward_net(contexts_flat)  # [batch_size * num_pods, 1]
         scores = scores_flat.reshape(batch_size_actual, num_pods)  # [batch_size, num_pods]
 
+        # DIAGNOSTIC: Check score differentiation across pods
+        num_updates = len(self.training_metrics.get('losses', [])) + 1
+        if num_updates % 50 == 1:
+            score_spread = scores.max(dim=1).values - scores.min(dim=1).values  # [batch_size]
+            logger.info(f"[DIAG] Update {num_updates}: score_spread (max-min per sample) mean={score_spread.mean().item():.4f}, min={score_spread.min().item():.4f}, max={score_spread.max().item():.4f}")
+            logger.info(f"[DIAG] Update {num_updates}: scores[0] (first sample across pods) = {scores[0].detach().cpu().numpy()}")
+
+            # Check if scores are all nearly identical (network not differentiating)
+            if score_spread.mean().item() < 0.1:
+                logger.warning(f"[DIAG] Update {num_updates}: ⚠️ VERY LOW SCORE SPREAD - network may not be differentiating between pods!")
+
         # Compute log probabilities using current policy
         # FIXED: Increased min temperature from 0.01 to 0.1 to prevent policy collapse
-        temperature = max(self.epsilon, 0.1)
+        # temperature = max(self.epsilon, 0.1)
+        temperature = max(self.epsilon, 0.3)
+        # temperature = 1 # testing with tanh removed in forward function
         logits = scores / temperature  # Normalized scores (max ~[-50, 50] at T=0.1)
 
         # Compute both probabilities and log probabilities
@@ -605,11 +634,27 @@ class NeuralContextualBandit:
 
         # BASELINE: Subtract mean reward to reduce variance
         baseline = rewards.mean()
-        advantages = rewards - baseline  # [batch_size]
+        advantages_raw = rewards - baseline  # [batch_size]
 
         # Normalize advantages to further reduce variance
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages_std_before_norm = advantages_raw.std().item()
+        if len(advantages_raw) > 1 and advantages_std_before_norm > 1e-6:
+            advantages = (advantages_raw - advantages_raw.mean()) / (advantages_raw.std() + 1e-8)
+        else:
+            # If std is too small, don't normalize - use raw advantages
+            advantages = advantages_raw
+
+        # DIAGNOSTIC: Log advantage statistics every 50 updates
+        num_updates = len(self.training_metrics.get('losses', [])) + 1
+        if num_updates % 50 == 1:
+            logger.info(f"[DIAG] Update {num_updates}: rewards min={rewards.min().item():.4f}, max={rewards.max().item():.4f}, std={rewards.std().item():.4f}")
+            logger.info(f"[DIAG] Update {num_updates}: advantages_raw std={advantages_std_before_norm:.6f}")
+            logger.info(f"[DIAG] Update {num_updates}: advantages (normalized) min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, std={advantages.std().item():.4f}")
+            logger.info(f"[DIAG] Update {num_updates}: chosen_log_probs min={chosen_log_probs.min().item():.4f}, max={chosen_log_probs.max().item():.4f}")
+
+            # Check per-sample policy gradient: log_prob * advantage
+            per_sample_grad = chosen_log_probs * advantages
+            logger.info(f"[DIAG] Update {num_updates}: per_sample_grad (log_prob*adv) min={per_sample_grad.min().item():.4f}, max={per_sample_grad.max().item():.4f}, mean={per_sample_grad.mean().item():.4f}")
 
         # REINFORCE loss: -log π(a|s) × (R - baseline)
         # Negative because we want gradient ASCENT on expected reward
@@ -627,6 +672,20 @@ class NeuralContextualBandit:
         # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
+
+        # DIAGNOSTIC: Check gradient magnitudes before clipping
+        if num_updates % 50 == 1:
+            total_grad_norm = 0.0
+            for p in self.reward_net.parameters():
+                if p.grad is not None:
+                    total_grad_norm += p.grad.data.norm(2).item() ** 2
+            total_grad_norm = total_grad_norm ** 0.5
+            logger.info(f"[DIAG] Update {num_updates}: gradient norm (before clip) = {total_grad_norm:.6f}")
+
+            # Check if gradients are vanishing
+            if total_grad_norm < 1e-6:
+                logger.warning(f"[DIAG] Update {num_updates}: ⚠️ VANISHING GRADIENTS! norm={total_grad_norm:.6f}")
+
         torch.nn.utils.clip_grad_norm_(self.reward_net.parameters(), max_norm=1.0)
         self.optimizer.step()
 
@@ -641,7 +700,31 @@ class NeuralContextualBandit:
         self.training_metrics['update_steps'].append(len(self.training_metrics['losses']))
 
         # Track policy gradient specific metrics
-        # Sample every 10th update to avoid memory issues
+        self.training_metrics['baseline'].append(baseline.item())
+        self.training_metrics['policy_loss'].append(policy_loss.item())
+        self.training_metrics['entropy'].append(entropy.item())
+
+        # Track advantages - both mean (should be ~0) and std (the actual signal)
+        self.training_metrics['advantages'].append(advantages.mean().item())
+
+        # NEW: Track the raw advantage std BEFORE normalization - this is the key learning signal
+        if 'advantages_std_raw' not in self.training_metrics:
+            self.training_metrics['advantages_std_raw'] = []
+        self.training_metrics['advantages_std_raw'].append(advantages_std_before_norm)
+        
+        # Track log_probs and probs for chosen actions (mean per batch)
+        chosen_probs = probs.gather(1, actions.unsqueeze(1)).squeeze(1)
+        self.training_metrics['log_probs'].append(chosen_log_probs.mean().item())
+        self.training_metrics['probs'].append(chosen_probs.mean().item())
+        
+        # Track mean probabilities for ALL actions (mean across batch for each action)
+        # probs is [batch_size, num_pods], so mean(dim=0) gives [num_pods]
+        all_probs_mean = probs.mean(dim=0).detach().cpu().numpy()  # [num_pods]
+        all_log_probs_mean = log_probs.mean(dim=0).detach().cpu().numpy()  # [num_pods]
+        self.training_metrics['all_probs'].append(all_probs_mean.tolist())
+        self.training_metrics['all_log_probs'].append(all_log_probs_mean.tolist())
+
+        # Sample detailed metrics every 10th update to avoid memory issues
         if len(self.training_metrics['losses']) % 10 == 0:
             # For policy gradient, "predicted reward" is the score (before softmax)
             # Get scores for chosen actions
@@ -659,6 +742,12 @@ class NeuralContextualBandit:
             # Only store a small sample to avoid memory issues
             if len(self.training_metrics['all_predicted_rewards']) < 500:  # Limit to 500 samples
                 self.training_metrics['all_predicted_rewards'].append(scores.detach().cpu().numpy())
+            
+            # Track scores and logits arrays (sample to avoid memory issues)
+            if len(self.training_metrics['scores']) < 500:  # Limit to 500 samples
+                self.training_metrics['scores'].append(scores.detach().cpu().numpy())
+            if len(self.training_metrics['logits']) < 500:  # Limit to 500 samples
+                self.training_metrics['logits'].append(logits.detach().cpu().numpy())
 
             # Log score statistics every 100 updates for debugging
             # Use len(losses) as the update number since it tracks actual learning updates
@@ -679,7 +768,8 @@ class NeuralContextualBandit:
             # Store input_tokens for each sample (for stratified analysis in plots 13-15)
             self.training_metrics['input_tokens_per_sample'].extend(input_tokens_batch)
 
-        logger.info(f"[PG Update] Epoch: {epoch}, Batch Index: {batch_index}, Loss: {loss.item():.4f}, Policy: {policy_loss.item():.4f}, "
+        progress_str = f"Update: {update_in_epoch}"
+        logger.info(f"[PG Update] Epoch: {epoch}, {progress_str}, Loss: {loss.item():.4f}, Policy: {policy_loss.item():.4f}, "
                    f"Entropy: {entropy.item():.4f}, Reward: {rewards.mean().item():.4f}, "
                    f"Temp: {self.epsilon:.4f}, Buffer: {len(self.replay_buffer)}, learn_time: {time.time() - learn_start_time:.2f}s")
         
@@ -895,6 +985,67 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     return result, overhead_summary
 
 
+def save_training_metrics_csv(agent, final_model_dir):
+    """
+    Save training metrics to CSV file incrementally.
+    This can be called after each epoch to have incremental saves.
+    """
+    metrics = agent.training_metrics
+    if not metrics['losses']:
+        return
+    
+    num_updates = len(metrics['losses'])
+    
+    # Helper function to safely get metric list with same length
+    def get_metric(key, default=None):
+        if key in metrics and len(metrics[key]) == num_updates:
+            return metrics[key]
+        return [default] * num_updates
+    
+    # Build base metrics dataframe
+    metrics_dict = {
+        'update_step': list(range(num_updates)),
+        'loss': metrics['losses'],
+        'reward': get_metric('rewards'),
+        'epsilon': get_metric('epsilons'),
+        'policy_loss': get_metric('policy_loss'),
+        'entropy': get_metric('entropy'),
+        'baseline': get_metric('baseline'),
+        'advantages': get_metric('advantages'),
+        'log_probs': get_metric('log_probs'),  # Chosen action's log prob
+        'probs': get_metric('probs')  # Chosen action's prob
+    }
+    
+    # Add all actions' probabilities if available
+    if 'all_probs' in metrics and metrics['all_probs'] and len(metrics['all_probs']) > 0:
+        # Determine number of actions from first entry
+        num_actions = len(metrics['all_probs'][0])
+        
+        # Add columns for each action's probability
+        for action_idx in range(num_actions):
+            metrics_dict[f'probs_action_{action_idx}'] = [
+                metrics['all_probs'][i][action_idx] if i < len(metrics['all_probs']) and len(metrics['all_probs'][i]) > action_idx else None
+                for i in range(num_updates)
+            ]
+    
+    # Add all actions' log probabilities if available
+    if 'all_log_probs' in metrics and metrics['all_log_probs'] and len(metrics['all_log_probs']) > 0:
+        # Determine number of actions from first entry
+        num_actions = len(metrics['all_log_probs'][0])
+        
+        # Add columns for each action's log probability
+        for action_idx in range(num_actions):
+            metrics_dict[f'log_probs_action_{action_idx}'] = [
+                metrics['all_log_probs'][i][action_idx] if i < len(metrics['all_log_probs']) and len(metrics['all_log_probs'][i]) > action_idx else None
+                for i in range(num_updates)
+            ]
+    
+    metrics_df = pd.DataFrame(metrics_dict)
+    csv_path = os.path.join(final_model_dir, 'training_metrics.csv')
+    metrics_df.to_csv(csv_path, index=False)
+    logger.debug(f"Saved training metrics CSV: {csv_path} ({num_updates} updates)")
+
+
 def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     """
     Train neural contextual bandit on batch of encoded experiences.
@@ -982,10 +1133,10 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             # tensor_file is already the full path
             batch_data = torch.load(tensor_file)
             
-            # Extract tensors
-            pod_features = batch_data['pod_features_with_staleness']
-            kv_hit_ratios = batch_data['kv_hit_ratios']
-            request_features = batch_data['request_features']
+            # Extract tensors and move to device
+            pod_features = batch_data['pod_features_with_staleness'].to(device)
+            kv_hit_ratios = batch_data['kv_hit_ratios'].to(device)
+            request_features = batch_data['request_features'].to(device)
             actions = batch_data['actions']
             rewards = batch_data['rewards']
             
@@ -1029,7 +1180,8 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                 # Trigger learning periodically (use update_frequency hyperparameter)
                 update_freq = HYPERPARAMETERS.get('update_frequency', 500)
                 if total_samples % update_freq == 0 and len(_cached_agent.replay_buffer) >= _cached_agent.batch_size:
-                    metrics = _cached_agent.learn(epoch, batch_index)
+                    update_in_epoch = len(epoch_losses) + 1
+                    metrics = _cached_agent.learn(epoch, batch_index, batch_size, update_in_epoch)
                     epoch_losses.append(metrics['loss'])
                     epoch_rewards.append(metrics['reward'])
         
@@ -1040,6 +1192,9 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         
         logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('training_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
                    f"time={epoch_time:.2f}s, buffer_size={len(_cached_agent.replay_buffer)}")
+        
+        # Save training metrics CSV incrementally after each epoch
+        save_training_metrics_csv(_cached_agent, final_model_dir)
     
     # Save trained model
     _cached_agent.save(final_model_dir)

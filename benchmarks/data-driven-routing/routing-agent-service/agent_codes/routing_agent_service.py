@@ -41,6 +41,7 @@ from rwlock import RWLock
 import neural_contextual_bandit_perpodmodel_advanced
 import neural_contextual_bandit_perpodmodel_checkpoint
 import neural_contextual_bandit_perpodmodel_policygradient
+import distribution_shift_detector
 
 
 # GPU features are now always included as one-hot encoded features
@@ -64,6 +65,8 @@ WORKLOAD = os.getenv("WORKLOAD", "Unknown")
 # Feature normalization statistics are ALWAYS based on GPU-L3c (reference baseline)
 # This ensures consistent feature space across all GPU types and experiments
 feature_normalization_stats_file = None
+offline_training_data_distribution = None
+distribution_shift_monitor = None
 final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
@@ -247,6 +250,53 @@ def handle_infer():
             logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
             PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time # quite slow 65ms
+
+        # Distribution shift monitoring: Capture RAW features BEFORE normalization
+        distribution_monitor_start = time.time()
+        if distribution_shift_monitor is not None:
+            try:
+                # Extract request features (unnormalized)
+                request_dict = {}
+                for feat in request_features_train:
+                    if feat in processed_df.columns:
+                        request_dict[feat] = processed_df[feat].iloc[0]
+
+                # Extract pod features for the FIRST pod only (to avoid overwhelming the monitor)
+                # We track one representative pod per request
+                if sorted_all_pod_ids:
+                    representative_pod = sorted_all_pod_ids[0]
+                    pod_features = [
+                        'cpu_kv_cache', 'decode_tokens', 'gpu_kv_cache', 'inflight_requests',
+                        'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests'
+                    ]
+                    pod_dict = {}
+                    for feat in pod_features:
+                        col_name = f"{representative_pod}-{feat}"
+                        if col_name in processed_df.columns:
+                            pod_dict[feat] = processed_df[col_name].iloc[0]
+
+                    # Add sample to distribution monitor
+                    distribution_shift_monitor.add_sample(
+                        pod_features_dict=pod_dict,
+                        request_features_dict=request_dict
+                    )
+
+                    # Periodically check for distribution shifts
+                    if distribution_shift_monitor.should_check():
+                        warnings = distribution_shift_monitor.check_distribution_shift()
+                        distribution_shift_monitor.log_warnings()
+
+                        # Take action on high severity shifts
+                        summary = distribution_shift_monitor.get_summary_stats()
+                        if summary['high_severity_count'] > 0:
+                            logger.error("⛔ CRITICAL: High severity distribution shift detected!")
+                            logger.error(f"   Shifted features: {summary['shifted_features']}")
+                            logger.error("   RECOMMENDED ACTION: Retrain model with current workload data")
+                            logger.error("   Model predictions may be unreliable with out-of-distribution inputs")
+
+            except Exception as e:
+                logger.warning(f"⚠️  Distribution monitoring failed: {e}")
+        handle_infer_overhead_summary["distribution_monitor"] = time.time() - distribution_monitor_start
 
         normalize_start = time.time()
         if stats_instance is None:
@@ -1352,36 +1402,30 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, TOTAL_NUM_NEW_DATA
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA
     
     # Model directory and offline data are GPU-specific
     if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
+        base_dir = None
         if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
             base_dir = "/app/NVIDIA-A30/Aggregated"
             final_model_dir = f"{base_dir}/final_model/latency_predictor"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            offline_csv_path = f"{base_dir}/offline_training_data.csv"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         elif TARGET_GPU_MODEL == "NVIDIA-A10":
-            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/{ROUTING_STRATEGY}"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-            offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+            base_dir = "/app/NVIDIA-A10/PrefillOnly"
+            final_model_dir = f"{base_dir}/final_model/{ROUTING_STRATEGY}"
         elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
             base_dir = "/app/NVIDIA-L20/Aggregated"
             final_model_dir = f"{base_dir}/final_model/latency_predictor"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            offline_csv_path = f"{base_dir}/offline_training_data.csv"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         elif TARGET_GPU_MODEL == "hetero":
             base_dir = "/app/hetero/Aggregated"
             final_model_dir = f"{base_dir}/final_model/latency_predictor"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            offline_csv_path = f"{base_dir}/offline_training_data.csv"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         else:
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+        offline_training_data_distribution = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based-2/feature_distribution_statistics.csv"
     else:
         ## some default model for non learning based routing startegies
         final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/latency_predictor"
@@ -1394,7 +1438,8 @@ def initialize():
     logger.info(f"final_model_dir: {final_model_dir}")
     logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
     logger.info(f"offline_csv_path: {offline_csv_path}")
-    logger.info(f"Feature normalization stats: {feature_normalization_stats_file}")
+    logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
+    logger.info(f"offline_training_data_distribution: {offline_training_data_distribution}")
     
     assert final_model_dir is not None, f"final_model_dir is None for {TARGET_GPU_MODEL}"
     assert hyperparameter_file_path is not None, f"hyperparameter_file_path is None for {TARGET_GPU_MODEL}"
@@ -1404,6 +1449,7 @@ def initialize():
     assert os.path.exists(hyperparameter_file_path), f"hyperparameter_file_path does not exist: {hyperparameter_file_path}"
     assert os.path.exists(offline_csv_path), f"offline_csv_path does not exist: {offline_csv_path}"
     assert os.path.exists(feature_normalization_stats_file), f"feature_normalization_stats_file does not exist: {feature_normalization_stats_file}"
+    assert os.path.exists(offline_training_data_distribution), f"offline_training_data_distribution does not exist: {offline_training_data_distribution}"
     
     if HYPERPARAMETERS is None:
         logger.info(f"{GREEN_COLOR}HYPERPARAMETERS is None{RESET_COLOR}")
@@ -1492,7 +1538,7 @@ def initialize():
             logger.error(f"Normalization statistics file not found: {feature_normalization_stats_file}")
             logger.error(f"Expected GPU-L3c baseline stats at: /app/final_model/GPU-L3c/feature_normalization_statistics.csv")
             assert False
-    
+
     running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
     sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
     pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
@@ -1535,7 +1581,27 @@ def initialize():
     else:
         logger.warning("No normalization statistics available - inference will fail")
         assert False
-    
+
+    # Initialize distribution shift monitor
+    global distribution_shift_monitor
+    if offline_training_data_distribution and os.path.exists(offline_training_data_distribution):
+        logger.info(f"Initializing distribution shift monitor: {offline_training_data_distribution}")
+        try:
+            distribution_shift_monitor = distribution_shift_detector.DistributionShiftMonitor(
+                training_distribution_csv=offline_training_data_distribution,
+                window_size=1000,           # Track last 1000 samples
+                check_interval=100,          # Check every 100 requests
+                alert_threshold_zscore=2.0   # Alert if >2σ shift
+            )
+            logger.info(f"✅ Distribution shift monitoring enabled")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize distribution shift monitor: {e}")
+            logger.warning(f"⚠️  Exception details: {repr(e)}")
+            distribution_shift_monitor = None
+    else:
+        logger.warning(f"⚠️  Distribution shift monitoring disabled (stats file not found): {offline_training_data_distribution}")
+        distribution_shift_monitor = None
+
     # Add checkpointing configuration to hyperparameters
     HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
     HYPERPARAMETERS['CHECKPOINT_DIR'] = os.path.join(final_model_dir, 'checkpoints')

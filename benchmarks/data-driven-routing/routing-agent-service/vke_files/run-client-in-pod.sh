@@ -30,9 +30,9 @@ experiment_configs=(
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
     # # # # # ## SharingRatio47%, total number of requests: 2000
-    "contextual_bandit_perpodmodel_policygradient_throughput_based-2|SharingRatio47%|${target_gpu}|6|4"
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based-2|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio47%|${target_gpu}|6|4"
-    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|4"
+    "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_quantile_based_perpodmodel|SharingRatio47%|${target_gpu}|6|4"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|4"
