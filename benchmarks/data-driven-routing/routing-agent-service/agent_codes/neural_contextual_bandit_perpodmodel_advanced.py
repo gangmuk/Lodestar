@@ -177,19 +177,26 @@ class NeuralContextualBandit:
         else:  # Normal decay
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
 
-    def _create_temporal_features(self):
+    def _create_temporal_features(self, num_pods=None):
         """
         NEW: Create temporal features based on recent routing history.
         Returns features showing how recently each pod was selected.
+
+        Args:
+            num_pods: Optional number of pods. If None, uses self.action_dim.
+                     This allows matching the number of pods in training data.
 
         Returns:
             temporal_features: [num_pods, 2] array with:
                 - Column 0: recent_count (normalized, exponentially weighted)
                 - Column 1: avg_recent_tokens (normalized)
         """
+        if num_pods is None:
+            num_pods = self.action_dim
+        
         current_time = time.time()
-        recent_counts = np.zeros(self.action_dim, dtype=np.float32)
-        recent_tokens = np.zeros(self.action_dim, dtype=np.float32)
+        recent_counts = np.zeros(num_pods, dtype=np.float32)
+        recent_tokens = np.zeros(num_pods, dtype=np.float32)
 
         # Iterate through recent routing decisions (newest first)
         for entry in reversed(self.routing_history):
@@ -198,6 +205,10 @@ class NeuralContextualBandit:
                 break  # Stop if outside window
 
             pod_idx = entry['pod']
+            # Skip if pod_idx is out of bounds (can happen when training on historical data with different pod counts)
+            if pod_idx >= num_pods:
+                continue
+                
             tokens = entry.get('input_tokens', 0)
 
             # Exponential decay: recent decisions weighted more
@@ -215,14 +226,12 @@ class NeuralContextualBandit:
             normalized_counts = recent_counts
 
         # Average tokens per recent request
-        # Add small epsilon to prevent division by zero warning
-        # eps = 1e-8
-        avg_tokens = np.where(
-            recent_counts > 0,
-            recent_tokens / recent_counts,
-            # recent_counts > eps,
-            # recent_tokens / (recent_counts + eps),
-            0
+        # Use np.divide with where to avoid divide-by-zero warnings
+        avg_tokens = np.divide(
+            recent_tokens,
+            recent_counts,
+            out=np.zeros_like(recent_tokens, dtype=np.float32),
+            where=(recent_counts > 0)
         )
         # Normalize assuming max 5000 tokens
         normalized_tokens = np.clip(avg_tokens / 5000.0, 0, 1)
@@ -259,13 +268,20 @@ class NeuralContextualBandit:
             kv_hits = kv_ratios_np[b, :, 0]
 
             # Cluster statistics (mean and std)
-            eps = 1e-6
+            # FIX: Use meaningful minimum std to prevent divide-by-zero when pods are balanced
+            # When std=0 (all pods identical), z-scores should be 0 (no differentiation)
+            min_std = 0.1  # Minimum std to prevent numerical issues
+            eps = 1e-6  # For coefficient of variation calculation
 
             # Feature 1-4: Z-score normalized (mean-centered, std-scaled)
-            running_mean, running_std = running_reqs.mean(), running_reqs.std() + eps
-            waiting_mean, waiting_std = waiting_reqs.mean(), waiting_reqs.std() + eps
-            gpu_mean, gpu_std = gpu_cache.mean(), gpu_cache.std() + eps
-            prefill_mean, prefill_std = prefill_tokens.mean(), prefill_tokens.std() + eps
+            running_mean = running_reqs.mean()
+            running_std = max(running_reqs.std(), min_std)
+            waiting_mean = waiting_reqs.mean()
+            waiting_std = max(waiting_reqs.std(), min_std)
+            gpu_mean = gpu_cache.mean()
+            gpu_std = max(gpu_cache.std(), min_std)
+            prefill_mean = prefill_tokens.mean()
+            prefill_std = max(prefill_tokens.std(), min_std)
 
             z_running = (running_reqs - running_mean) / running_std
             z_waiting = (waiting_reqs - waiting_mean) / waiting_std
@@ -330,7 +346,8 @@ class NeuralContextualBandit:
         cluster_features = self._create_cluster_features(pod_features, kv_hit_ratios)
 
         # NEW: Get temporal routing history features [num_pods, 2]
-        temporal_features = self._create_temporal_features()
+        # Pass num_pods to match the input data (important for training on historical data with different pod counts)
+        temporal_features = self._create_temporal_features(num_pods=num_pods)
         temporal_features_torch = torch.from_numpy(temporal_features).float().to(input_device)
         # Expand for batch: [1, num_pods, 2] → [batch, num_pods, 2]
         temporal_features_torch = temporal_features_torch.unsqueeze(0).expand(batch_size, -1, -1)
@@ -2135,10 +2152,10 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             # tensor_file is already the full path
             batch_data = torch.load(tensor_file)
             
-            # Extract tensors
-            pod_features = batch_data['pod_features_with_staleness']
-            kv_hit_ratios = batch_data['kv_hit_ratios']
-            request_features = batch_data['request_features']
+            # Extract tensors and move to device
+            pod_features = batch_data['pod_features_with_staleness'].to(device)
+            kv_hit_ratios = batch_data['kv_hit_ratios'].to(device)
+            request_features = batch_data['request_features'].to(device)
             actions = batch_data['actions']
             rewards = batch_data['rewards']
             

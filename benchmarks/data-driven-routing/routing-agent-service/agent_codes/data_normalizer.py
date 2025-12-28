@@ -747,16 +747,57 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
     elif reward_function == 'log_normalized':
         logger.info(f"Calculating variance-normalized log rewards")
         if 'TTFT_P99' in hyperparameters and 'TPOT_P99' in hyperparameters:
-            reward_result = preprocess.calculate_rewards_log_normalized(
-                ttft_values, tpot_values,
-                ttft_p99=hyperparameters['TTFT_P99'],
-                tpot_p99=hyperparameters['TPOT_P99'],
-                ttft_reward_weight=ttft_reward_weight
-            )
+            ttft_p99 = hyperparameters['TTFT_P99']
+            tpot_p99 = hyperparameters['TPOT_P99']
+            logger.info(f"Using TTFT_P99={ttft_p99:.2f}ms and TPOT_P99={tpot_p99:.2f}ms from hyperparameters")
         else:
-            logger.error("log_normalized reward function requires TTFT_P99 and TPOT_P99 in hyperparameters")
-            logger.error("Falling back to simple_latency_minimization for post-processing")
-            reward_result = preprocess.calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight)
+            # Compute P99 values from the data itself if not in hyperparameters
+            ttft_p99 = float(df['ttft'].quantile(0.99))
+            tpot_p99 = float(df['avg_tpot'].quantile(0.99))
+            logger.info(f"TTFT_P99 and TPOT_P99 not in hyperparameters, computing from data: TTFT_P99={ttft_p99:.2f}ms, TPOT_P99={tpot_p99:.2f}ms")
+            # Store in hyperparameters for later use
+            hyperparameters['TTFT_P99'] = ttft_p99
+            hyperparameters['TPOT_P99'] = tpot_p99
+        
+        # Validate and fix P99 values
+        # If TPOT_P99 is 0 (all TPOT values are 0), use a minimum value to avoid division by zero
+        if tpot_p99 <= 0:
+            logger.warning(f"TPOT_P99 is {tpot_p99} (all TPOT values are 0). Using minimum value of 1.0 for log calculation.")
+            tpot_p99 = 1.0
+            hyperparameters['TPOT_P99'] = tpot_p99
+        
+        if ttft_p99 <= 0:
+            logger.error(f"Invalid TTFT_P99 value: {ttft_p99}. Cannot compute log_normalized rewards.")
+            raise ValueError(f"TTFT_P99 must be positive for log_normalized reward function. Got TTFT_P99={ttft_p99}")
+        
+        reward_result = preprocess.calculate_rewards_log_normalized(
+            ttft_values, tpot_values,
+            ttft_p99=ttft_p99,
+            tpot_p99=tpot_p99,
+            ttft_reward_weight=ttft_reward_weight
+        )
+        
+        # Validate reward result
+        if reward_result is None:
+            raise ValueError("Reward calculation returned None")
+        if 'ttft_rewards' not in reward_result or 'tpot_rewards' not in reward_result or 'combined_rewards' not in reward_result:
+            raise ValueError(f"Reward calculation returned invalid structure: {reward_result.keys()}")
+        
+        # Check for NaN values
+        ttft_rewards = reward_result['ttft_rewards']
+        tpot_rewards = reward_result['tpot_rewards']
+        combined_rewards = reward_result['combined_rewards']
+        
+        if np.isnan(ttft_rewards).any() or np.isnan(tpot_rewards).any() or np.isnan(combined_rewards).any():
+            nan_count_ttft = np.isnan(ttft_rewards).sum()
+            nan_count_tpot = np.isnan(tpot_rewards).sum()
+            nan_count_combined = np.isnan(combined_rewards).sum()
+            logger.error(f"Reward calculation produced NaN values: ttft_rewards={nan_count_ttft}/{len(ttft_rewards)}, tpot_rewards={nan_count_tpot}/{len(tpot_rewards)}, combined_rewards={nan_count_combined}/{len(combined_rewards)}")
+            logger.error(f"TTFT stats: min={np.nanmin(ttft_values):.2f}, max={np.nanmax(ttft_values):.2f}, p99={ttft_p99:.2f}")
+            logger.error(f"TPOT stats: min={np.nanmin(tpot_values):.2f}, max={np.nanmax(tpot_values):.2f}, p99={tpot_p99:.2f}")
+            raise ValueError("Reward calculation produced NaN values. Check input data and P99 values.")
+        
+        logger.info(f"Reward calculation successful: ttft_rewards range=[{np.min(ttft_rewards):.4f}, {np.max(ttft_rewards):.4f}], tpot_rewards range=[{np.min(tpot_rewards):.4f}, {np.max(tpot_rewards):.4f}], combined_rewards range=[{np.min(combined_rewards):.4f}, {np.max(combined_rewards):.4f}]")
     elif reward_function == 'context_aware':
         logger.error("context_aware reward function requires detailed context data (input_tokens, kv_cache_hit_ratios) not available in this tool")
         logger.error("Falling back to latency_optimized for post-processing")
@@ -766,9 +807,39 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         raise ValueError(f"Unknown reward function: {reward_function}")
     
     # Add reward columns to dataframe
-    df['ttft_reward'] = reward_result['ttft_rewards']
-    df['tpot_reward'] = reward_result['tpot_rewards']
-    df['reward'] = reward_result['combined_rewards']
+    # Validate array lengths match dataframe length
+    expected_length = len(df)
+    ttft_rewards = reward_result['ttft_rewards']
+    tpot_rewards = reward_result['tpot_rewards']
+    combined_rewards = reward_result['combined_rewards']
+    
+    if len(ttft_rewards) != expected_length:
+        raise ValueError(f"ttft_rewards length mismatch: expected {expected_length}, got {len(ttft_rewards)}")
+    if len(tpot_rewards) != expected_length:
+        raise ValueError(f"tpot_rewards length mismatch: expected {expected_length}, got {len(tpot_rewards)}")
+    if len(combined_rewards) != expected_length:
+        raise ValueError(f"combined_rewards length mismatch: expected {expected_length}, got {len(combined_rewards)}")
+    
+    df['ttft_reward'] = ttft_rewards
+    df['tpot_reward'] = tpot_rewards
+    df['reward'] = combined_rewards
+    
+    # Final validation - check that columns were added correctly
+    if 'ttft_reward' not in df.columns or 'tpot_reward' not in df.columns or 'reward' not in df.columns:
+        raise ValueError(f"Failed to add reward columns. DataFrame columns: {df.columns.tolist()}")
+    
+    # Check for NaN values after assignment
+    nan_ttft = df['ttft_reward'].isna().sum()
+    nan_tpot = df['tpot_reward'].isna().sum()
+    nan_combined = df['reward'].isna().sum()
+    
+    if nan_ttft > 0 or nan_tpot > 0 or nan_combined > 0:
+        logger.warning(f"Reward columns contain NaN values: ttft_reward={nan_ttft}/{len(df)}, tpot_reward={nan_tpot}/{len(df)}, reward={nan_combined}/{len(df)}")
+        # Fill NaN with 0 as fallback (though this shouldn't happen)
+        df['ttft_reward'] = df['ttft_reward'].fillna(0)
+        df['tpot_reward'] = df['tpot_reward'].fillna(0)
+        df['reward'] = df['reward'].fillna(0)
+        logger.warning("Filled NaN values in reward columns with 0")
     
     # Add SLO satisfaction columns
     df['avg_tpot_slo_satisfied'] = tpot_values <= avg_tpot_slo

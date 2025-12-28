@@ -723,7 +723,7 @@ def main():
         shutil.rmtree(ENCODED_DATA_DIR)
         os.makedirs(ENCODED_DATA_DIR)
         logger.info(f"Cleaned and recreated {ENCODED_DATA_DIR} for fresh offline training")
-    
+
     # Process training data using the new simplified approach
     normalize_and_encode_training_data(args, args.processed_csv, stats_instance, ENCODED_DATA_DIR, request_features_train)
 
