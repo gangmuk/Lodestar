@@ -26,46 +26,82 @@ def parse_json_columns(df, json_columns):
             df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
     return df
 
-def parse_log_file(file_path):
-    data = []
+def parse_log_file(file_path, pod_ip_mapping=None):
+    """
+    Parse log file and optionally replace pod IPs with general pod IDs on the fly.
+
+    Args:
+        file_path: Path to the log file
+        pod_ip_mapping: Optional dict mapping pod IPs to general pod IDs.
+                       If provided, replacements happen during parsing (faster than pre-processing).
+    """
+    import re
+
+    # OPTIMIZED: Read entire file at once for faster I/O
     with open(file_path, 'r') as file:
-        for line in file:
-            # Check if this is a metrics line
-            if "latency_metrics" not in line:
-                logger.error(f"Invalid line. {line}")
-                assert False
-            if "**@" in line:
-                line = line.split("**@latency_metrics@")[1]
-            parts = line.split('@')
-            row = {}
-            json_columns = list()
-            column_names = list()
+        content = file.read()
+
+    # OPTIMIZED: Single-pass pod IP replacement on entire content
+    if pod_ip_mapping:
+        sorted_ips = sorted(pod_ip_mapping.keys(), key=len, reverse=True)
+        ip_pattern = re.compile('|'.join(re.escape(ip) for ip in sorted_ips))
+        content = ip_pattern.sub(lambda m: pod_ip_mapping[m.group(0)], content)
+
+    lines = content.split('\n')
+    del content  # Free memory
+
+    data = []
+    column_names = None
+    json_columns = []
+
+    for line in lines:
+        if not line:  # Skip empty lines
+            continue
+
+        # Check if this is a metrics line
+        if "latency_metrics" not in line:
+            logger.error(f"Invalid line. {line}")
+            assert False
+        if "**@" in line:
+            line = line.split("**@latency_metrics@")[1]
+        parts = line.split('@')
+        row = {}
+
+        # Get column names from first row only
+        if column_names is None:
+            column_names = []
             for i in range(0, len(parts), 2):
                 if i + 1 >= len(parts):
                     break
-                column_name = parts[i]
-                column_names.append(column_name)
-                value = parts[i+1]
-                if value.startswith('{') and value.endswith('}'):
-                    try:
-                        # NEW: Fix escaped quotes issue - replace \" with " before parsing
-                        fixed_value = value.replace('\\"', '"')
+                column_names.append(parts[i])
+
+        for i in range(0, len(parts), 2):
+            if i + 1 >= len(parts):
+                break
+            column_name = parts[i]
+            value = parts[i+1]
+            if value.startswith('{') and value.endswith('}'):
+                try:
+                    # NEW: Fix escaped quotes issue - replace \" with " before parsing
+                    fixed_value = value.replace('\\"', '"')
+                    if column_name not in json_columns:
                         json_columns.append(column_name)
-                        row[column_name] = json.loads(fixed_value)
-                    except Exception as e:
-                        logger.error(f"Error decoding JSON, column: {column_name}, value: {value}")
-                        logger.error(f"Error: {e}")
-                        # Since we can't parse it, store as string to avoid losing data
-                        row[column_name] = value
-                else:
+                    row[column_name] = json.loads(fixed_value)
+                except Exception as e:
+                    logger.error(f"Error decoding JSON, column: {column_name}, value: {value}")
+                    logger.error(f"Error: {e}")
+                    # Since we can't parse it, store as string to avoid losing data
+                    row[column_name] = value
+            else:
+                try:
+                    row[column_name] = int(value)
+                except ValueError:
                     try:
-                        row[column_name] = int(value)
+                        row[column_name] = float(value)
                     except ValueError:
-                        try:
-                            row[column_name] = float(value)
-                        except ValueError:
-                            row[column_name] = value
-            data.append(row)
+                        row[column_name] = value
+        data.append(row)
+
     parsed_df = pd.DataFrame(data, columns=column_names)
     if len(parsed_df) == 0:
         logger.error("No data found in the log file.")
@@ -1017,7 +1053,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values
-    all_inflight = parsed_df['numInflightRequestsAllPods'].values  
+    all_inflight = parsed_df['numInflightRequestsAllPods'].values
     all_gpu_cache = parsed_df['vllmGPUKVCacheUsage'].values
     all_cpu_cache = parsed_df['vllmCPUKVCacheUsage'].values
     all_running = parsed_df['vllmNumRequestsRunning'].values
@@ -1027,7 +1063,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     all_gpu_models = parsed_df['GPU'].values  # Extract GPU model mapping
     # NOTE: podMetricsLastSecond features are not used in training anymore
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
-    
+
     # Process pod features for all rows at once
     logger.debug(f"** hyperparameters: {hyperparameters}")
     # If hyperparameters is None or doesn't have EXCLUDED_POD_FEATURES, don't exclude any features
@@ -1038,27 +1074,70 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
         if 'none' in excluded_pod_features or 'None' in excluded_pod_features:
             excluded_pod_features = set()
-    for pod_id in sorted_all_pod_ids:
-        # Vectorized extraction for each pod across all rows
-        if 'kv_hit_ratio' not in excluded_pod_features:
-            base_data[f"{pod_id}-kv_hit_ratio"] = [data.get(pod_id, 0) for data in all_kv_cache]
-        if 'inflight_requests' not in excluded_pod_features:
-            base_data[f"{pod_id}-inflight_requests"] = [data.get(pod_id, 0) for data in all_inflight]
-        if 'gpu_kv_cache' not in excluded_pod_features:
-            base_data[f"{pod_id}-gpu_kv_cache"] = [data.get(pod_id, 0) for data in all_gpu_cache]
-        if 'cpu_kv_cache' not in excluded_pod_features:
-            base_data[f"{pod_id}-cpu_kv_cache"] = [data.get(pod_id, 0) for data in all_cpu_cache]
-        if 'running_requests' not in excluded_pod_features:
-            base_data[f"{pod_id}-running_requests"] = [data.get(pod_id, 0) for data in all_running]
-        if 'waiting_requests' not in excluded_pod_features:
-            base_data[f"{pod_id}-waiting_requests"] = [data.get(pod_id, 0) for data in all_waiting]
-        if 'prefill_tokens' not in excluded_pod_features:
-            base_data[f"{pod_id}-prefill_tokens"] = [data.get(pod_id, 0) for data in all_prefill]
-        if 'decode_tokens' not in excluded_pod_features:
-            base_data[f"{pod_id}-decode_tokens"] = [data.get(pod_id, 0) for data in all_decode]
-        # Add GPU model for each pod (default to GPU-L3c if not found)
-        if 'GPU' not in excluded_pod_features:
-            base_data[f"{pod_id}-GPU"] = [data.get(pod_id, 'GPU-L3c') for data in all_gpu_models]
+
+    # OPTIMIZED: Extract all pod features in a single pass per feature type using pandas
+    # Convert list of dicts to DataFrame for vectorized extraction
+    num_rows = len(parsed_df)
+
+    # Helper function to extract pod values from list of dicts efficiently
+    def extract_pod_features_fast(data_array, pod_ids, default_val=0):
+        """Extract features for all pods from array of dicts in one pass."""
+        # Convert to DataFrame - this is O(n) but done once per feature type
+        df = pd.DataFrame(list(data_array))
+        result = {}
+        for pod_id in pod_ids:
+            if pod_id in df.columns:
+                result[pod_id] = df[pod_id].fillna(default_val).values
+            else:
+                result[pod_id] = np.full(num_rows, default_val)
+        return result
+
+    # Extract all features at once per feature type (much faster than per-pod list comprehensions)
+    if 'kv_hit_ratio' not in excluded_pod_features:
+        kv_cache_features = extract_pod_features_fast(all_kv_cache, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-kv_hit_ratio"] = kv_cache_features[pod_id]
+
+    if 'inflight_requests' not in excluded_pod_features:
+        inflight_features = extract_pod_features_fast(all_inflight, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-inflight_requests"] = inflight_features[pod_id]
+
+    if 'gpu_kv_cache' not in excluded_pod_features:
+        gpu_cache_features = extract_pod_features_fast(all_gpu_cache, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-gpu_kv_cache"] = gpu_cache_features[pod_id]
+
+    if 'cpu_kv_cache' not in excluded_pod_features:
+        cpu_cache_features = extract_pod_features_fast(all_cpu_cache, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-cpu_kv_cache"] = cpu_cache_features[pod_id]
+
+    if 'running_requests' not in excluded_pod_features:
+        running_features = extract_pod_features_fast(all_running, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-running_requests"] = running_features[pod_id]
+
+    if 'waiting_requests' not in excluded_pod_features:
+        waiting_features = extract_pod_features_fast(all_waiting, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-waiting_requests"] = waiting_features[pod_id]
+
+    if 'prefill_tokens' not in excluded_pod_features:
+        prefill_features = extract_pod_features_fast(all_prefill, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-prefill_tokens"] = prefill_features[pod_id]
+
+    if 'decode_tokens' not in excluded_pod_features:
+        decode_features = extract_pod_features_fast(all_decode, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-decode_tokens"] = decode_features[pod_id]
+
+    # GPU model is a string, use different default
+    if 'GPU' not in excluded_pod_features:
+        gpu_model_features = extract_pod_features_fast(all_gpu_models, sorted_all_pod_ids, 'GPU-L3c')
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-GPU"] = gpu_model_features[pod_id]
     get_value_overhead = time.time() - get_value_start_time # 0ms
     num_rows = len(base_data['request_id'])
     pod_index_start_time = time.time()
@@ -1292,7 +1371,17 @@ def parse_log_message(log_message):
         return pd.DataFrame(), []
 
 
-def main(input_file, log_message, hyperparameters):
+def main(input_file, log_message, hyperparameters, pod_ip_mapping=None):
+    """
+    Main preprocessing function.
+
+    Args:
+        input_file: Path to input file (training mode)
+        log_message: Log message string (inference mode)
+        hyperparameters: Dict of hyperparameters
+        pod_ip_mapping: Optional dict mapping pod IPs to general pod IDs.
+                       If provided, replacements happen during parsing (faster than pre-processing).
+    """
     preprocess_dataset_overhead_summary = {}
     if input_file == None and (log_message == "" or log_message is None):
         logger.error("Error: Both input_file and log_message are empty or None.")
@@ -1301,7 +1390,7 @@ def main(input_file, log_message, hyperparameters):
         logger.error("Error: Both input_file and log_message are provided. Please provide only one.")
         assert False
     if input_file is not None:  # Training path
-        parsed_df, json_columns = parse_log_file(input_file)
+        parsed_df, json_columns = parse_log_file(input_file, pod_ip_mapping=pod_ip_mapping)
     else:  # Inference path
         parse_start_time = time.time()
         parsed_df, _ = parse_log_message(log_message)

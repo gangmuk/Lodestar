@@ -308,6 +308,8 @@ class NeuralContextualBandit:
         NEW: Create cluster-wide aggregate features (scale-invariant).
         For each pod, compute its relationship to cluster statistics.
 
+        OPTIMIZED: Uses pure PyTorch operations to avoid CPU<->GPU transfers.
+
         Args:
             pod_features: [batch, num_pods, pod_feat_dim]
             kv_hit_ratios: [batch, num_pods, kv_dim]
@@ -316,74 +318,58 @@ class NeuralContextualBandit:
             cluster_features: [batch, num_pods, 8] with scale-invariant features
         """
         batch_size, num_pods, pod_feat_dim = pod_features.shape
+        device = pod_features.device
+        min_std = 0.1
 
-        # Convert to numpy for easier computation
-        pod_feats_np = pod_features.cpu().numpy()  # [batch, num_pods, 8]
-        kv_ratios_np = kv_hit_ratios.cpu().numpy()  # [batch, num_pods, 1]
+        # Extract key metrics (assuming standard pod feature ordering)
+        # Order from encoding.py: [inflight_req, gpu_cache, cpu_cache, running_req, waiting_req, prefill_tok, decode_tok]
+        inflight_reqs = pod_features[:, :, 0] if pod_feat_dim > 0 else torch.zeros(batch_size, num_pods, device=device)
+        running_reqs = pod_features[:, :, 3] if pod_feat_dim > 3 else torch.zeros(batch_size, num_pods, device=device)
+        waiting_reqs = pod_features[:, :, 4] if pod_feat_dim > 4 else torch.zeros(batch_size, num_pods, device=device)
+        prefill_tokens = pod_features[:, :, 5] if pod_feat_dim > 5 else torch.zeros(batch_size, num_pods, device=device)
+        kv_hits = kv_hit_ratios[:, :, 0]  # [batch, num_pods]
 
-        cluster_features_list = []
+        # Z-score normalized features (vectorized across batch)
+        # inflight_requests has strongest correlation with reward (r=-0.80)
+        inflight_mean = inflight_reqs.mean(dim=1, keepdim=True)  # [batch, 1]
+        inflight_std = torch.clamp(inflight_reqs.std(dim=1, keepdim=True), min=min_std)
+        z_inflight = (inflight_reqs - inflight_mean) / inflight_std  # [batch, num_pods]
 
-        for b in range(batch_size):
-            # Extract key metrics (assuming standard pod feature ordering)
-            # Order from encoding.py: [inflight_req, gpu_cache, cpu_cache, running_req, waiting_req, prefill_tok, decode_tok]
-            inflight_reqs = pod_feats_np[b, :, 0] if pod_feat_dim > 0 else np.zeros(num_pods)
-            gpu_cache = pod_feats_np[b, :, 1] if pod_feat_dim > 1 else np.zeros(num_pods)
-            running_reqs = pod_feats_np[b, :, 3] if pod_feat_dim > 3 else np.zeros(num_pods)
-            waiting_reqs = pod_feats_np[b, :, 4] if pod_feat_dim > 4 else np.zeros(num_pods)
-            prefill_tokens = pod_feats_np[b, :, 5] if pod_feat_dim > 5 else np.zeros(num_pods)
-            kv_hits = kv_ratios_np[b, :, 0]
+        running_mean = running_reqs.mean(dim=1, keepdim=True)
+        running_std = torch.clamp(running_reqs.std(dim=1, keepdim=True), min=min_std)
+        z_running = (running_reqs - running_mean) / running_std
 
-            # Cluster statistics (mean and std)
-            # Use meaningful minimum std to prevent divide-by-zero when pods are balanced
-            min_std = 0.1
+        waiting_mean = waiting_reqs.mean(dim=1, keepdim=True)
+        waiting_std = torch.clamp(waiting_reqs.std(dim=1, keepdim=True), min=min_std)
+        z_waiting = (waiting_reqs - waiting_mean) / waiting_std
 
-            # Z-score normalized features (mean-centered, std-scaled)
-            # inflight_requests has strongest correlation with reward (r=-0.80)
-            inflight_mean = inflight_reqs.mean()
-            inflight_std = max(inflight_reqs.std(), min_std)
-            z_inflight = (inflight_reqs - inflight_mean) / inflight_std
+        prefill_mean = prefill_tokens.mean(dim=1, keepdim=True)
+        prefill_std = torch.clamp(prefill_tokens.std(dim=1, keepdim=True), min=min_std)
+        z_prefill = (prefill_tokens - prefill_mean) / prefill_std
 
-            running_mean = running_reqs.mean()
-            running_std = max(running_reqs.std(), min_std)
-            z_running = (running_reqs - running_mean) / running_std
+        # Rank-based features (scale-invariant) - vectorized using argsort
+        # Use inflight for ranking as it's the strongest predictor
+        rank_by_inflight = torch.argsort(torch.argsort(inflight_reqs, dim=1), dim=1).float() / max(num_pods - 1, 1)
+        rank_by_kv = torch.argsort(torch.argsort(-kv_hits, dim=1), dim=1).float() / max(num_pods - 1, 1)
 
-            waiting_mean = waiting_reqs.mean()
-            waiting_std = max(waiting_reqs.std(), min_std)
-            z_waiting = (waiting_reqs - waiting_mean) / waiting_std
+        # Cluster-wide context features
+        cluster_utilization = (inflight_mean / 10.0).expand(-1, num_pods)  # [batch, num_pods]
+        load_cv = inflight_std / (inflight_mean + 1e-6)  # Coefficient of variation
+        cluster_load_variance = load_cv.expand(-1, num_pods)  # [batch, num_pods]
 
-            prefill_mean = prefill_tokens.mean()
-            prefill_std = max(prefill_tokens.std(), min_std)
-            z_prefill = (prefill_tokens - prefill_mean) / prefill_std
+        # Stack features: [batch, num_pods, 8]
+        cluster_features = torch.stack([
+            z_inflight,             # 0: Z-score inflight requests (strongest predictor)
+            z_running,              # 1: Z-score running requests
+            z_waiting,              # 2: Z-score waiting requests
+            z_prefill,              # 3: Z-score prefill tokens
+            rank_by_inflight,       # 4: Rank by inflight [0,1], lower=better
+            rank_by_kv,             # 5: Rank by KV cache [0,1], lower=better (higher kv)
+            cluster_utilization,    # 6: Cluster-wide utilization
+            cluster_load_variance   # 7: Cluster load imbalance
+        ], dim=2)
 
-            # Rank-based features (scale-invariant)
-            # Use inflight for ranking as it's the strongest predictor
-            rank_by_inflight = np.argsort(np.argsort(inflight_reqs)) / max(num_pods - 1, 1)  # [0, 1]
-            rank_by_kv = np.argsort(np.argsort(-kv_hits)) / max(num_pods - 1, 1)  # [0, 1], higher kv = lower rank (better)
-
-            # Cluster-wide context features
-            cluster_utilization = np.full(num_pods, inflight_mean / 10.0)  # Normalized by theoretical max
-            load_cv = inflight_std / (inflight_mean + 1e-6)  # Coefficient of variation
-            cluster_load_variance = np.full(num_pods, load_cv)
-
-            # Stack features: [num_pods, 8]
-            cluster_feats = np.stack([
-                z_inflight,             # 0: Z-score inflight requests (strongest predictor)
-                z_running,              # 1: Z-score running requests
-                z_waiting,              # 2: Z-score waiting requests
-                z_prefill,              # 3: Z-score prefill tokens
-                rank_by_inflight,       # 4: Rank by inflight [0,1], lower=better
-                rank_by_kv,             # 5: Rank by KV cache [0,1], lower=better (higher kv)
-                cluster_utilization,    # 6: Cluster-wide utilization
-                cluster_load_variance   # 7: Cluster load imbalance
-            ], axis=1)  # [num_pods, 8]
-
-            cluster_features_list.append(cluster_feats)
-
-        # Stack batches and convert back to tensor
-        cluster_features_np = np.stack(cluster_features_list, axis=0)  # [batch, num_pods, 8]
-        cluster_features_torch = torch.from_numpy(cluster_features_np).float().to(pod_features.device)
-
-        return cluster_features_torch
+        return cluster_features
 
     def _create_per_pod_contexts(self, pod_features, kv_hit_ratios, request_features):
         """
@@ -577,7 +563,78 @@ class NeuralContextualBandit:
         # if self.steps_since_update >= self.update_frequency:
         #     self.learn()
         #     self.steps_since_update = 0
-    
+
+    def remember_batch(self, pod_features, kv_hit_ratios, request_features, actions, rewards, input_tokens=None):
+        """
+        OPTIMIZED: Batched version of remember() for training efficiency.
+        Processes entire batch at once instead of sample-by-sample.
+
+        Args:
+            pod_features: [batch_size, num_pods, pod_feat_dim]
+            kv_hit_ratios: [batch_size, num_pods, kv_dim]
+            request_features: [batch_size, req_feat_dim]
+            actions: [batch_size] tensor of actions
+            rewards: [batch_size] tensor of rewards
+            input_tokens: Optional [batch_size] tensor of input token counts
+        """
+        batch_size = pod_features.shape[0]
+        num_pods = pod_features.shape[1]
+
+        # Create per-pod contexts for ALL samples at once
+        per_pod_contexts = self._create_per_pod_contexts(pod_features, kv_hit_ratios, request_features)
+        # per_pod_contexts shape: [batch_size * num_pods, per_pod_context_dim]
+
+        # Reshape to [batch_size, num_pods, per_pod_context_dim]
+        per_pod_context_dim = per_pod_contexts.shape[1]
+        per_pod_contexts = per_pod_contexts.view(batch_size, num_pods, per_pod_context_dim)
+
+        # POLICY GRADIENT: Compute log probabilities for all samples at once
+        with torch.no_grad():
+            # Reshape for batch forward pass: [batch_size * num_pods, per_pod_context_dim]
+            contexts_flat = per_pod_contexts.view(batch_size * num_pods, per_pod_context_dim)
+            scores_flat = self.reward_net(contexts_flat).squeeze(1)  # [batch_size * num_pods]
+            scores = scores_flat.view(batch_size, num_pods)  # [batch_size, num_pods]
+
+            # Apply temperature
+            temperature = max(self.epsilon, 0.1)
+            logits = scores / temperature
+
+            log_probs = F.log_softmax(logits, dim=1)  # [batch_size, num_pods]
+
+            # Extract log prob for chosen actions - ensure actions are on the same device as log_probs
+            if torch.is_tensor(actions):
+                action_indices = actions.long().to(log_probs.device)
+            else:
+                action_indices = torch.tensor(actions, dtype=torch.long, device=log_probs.device)
+            log_prob_actions = log_probs.gather(1, action_indices.unsqueeze(1)).squeeze(1)  # [batch_size]
+
+        # Move contexts to CPU once for all samples
+        per_pod_contexts_cpu = per_pod_contexts.cpu()
+
+        # Add all experiences to replay buffer
+        for i in range(batch_size):
+            action_idx = actions[i].item() if torch.is_tensor(actions[i]) else int(actions[i])
+            reward_val = rewards[i].item() if torch.is_tensor(rewards[i]) else float(rewards[i])
+            inp_tok = input_tokens[i].item() if input_tokens is not None and torch.is_tensor(input_tokens[i]) else (input_tokens[i] if input_tokens is not None else -1)
+
+            experience = {
+                'per_pod_contexts': per_pod_contexts_cpu[i],  # [num_pods, per_pod_context_dim]
+                'action': action_idx,
+                'reward': reward_val,
+                'log_prob': log_prob_actions[i].item(),
+                'input_tokens': inp_tok if inp_tok is not None else -1
+            }
+
+            self.replay_buffer.append(experience)
+            self.steps_since_update += 1
+
+            # Track routing history for temporal features
+            self.routing_history.append({
+                'timestamp': time.time(),
+                'pod': action_idx,
+                'input_tokens': inp_tok if inp_tok is not None else 0
+            })
+
     def learn(self, epoch, batch_index, batch_size, update_in_epoch):
         """
         POLICY GRADIENT VERSION: Update policy using REINFORCE algorithm.
@@ -1146,42 +1203,45 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             input_tokens = batch_data.get('input_tokens', None)
             
             batch_size = len(actions)
-            
-            # Add experiences to replay buffer
-            for batch_index in range(batch_size):
-                # Pass input_tokens if available for stratified analysis
-                inp_tok = input_tokens[batch_index] if input_tokens is not None else None
-                _cached_agent.remember(
-                    pod_features[batch_index:batch_index+1],
-                    kv_hit_ratios[batch_index:batch_index+1],
-                    request_features[batch_index:batch_index+1],
-                    actions[batch_index].item(),
-                    rewards[batch_index].item(),
-                    input_tokens=inp_tok
-                )
-                
-                # Collect reward-latency-context tuples for stratified function analysis (sample 10% to save memory)
-                if np.random.random() < 0.1 and ttft is not None:
+
+            # OPTIMIZED: Use batched remember for all experiences at once
+            _cached_agent.remember_batch(
+                pod_features,
+                kv_hit_ratios,
+                request_features,
+                actions,
+                rewards,
+                input_tokens=input_tokens
+            )
+
+            # Collect reward-latency-context tuples for stratified function analysis (sample 10% to save memory)
+            if ttft is not None:
+                sample_mask = np.random.random(batch_size) < 0.1
+                for batch_index in np.where(sample_mask)[0]:
                     _cached_agent.training_metrics['reward_latency_pairs'].append(
                         (rewards[batch_index].item(), ttft[batch_index].item())
                     )
                     _cached_agent.training_metrics['ttft_values'].append(ttft[batch_index].item())
                     if avg_tpot is not None:
                         _cached_agent.training_metrics['tpot_values'].append(avg_tpot[batch_index].item())
-                    
-                    # NEW: Store (reward, latency, input_tokens) for stratified analysis
+
+                    # Store (reward, latency, input_tokens) for stratified analysis
                     if input_tokens is not None:
                         _cached_agent.training_metrics['reward_latency_input_tuples'].append(
                             (rewards[batch_index].item(), ttft[batch_index].item(), input_tokens[batch_index].item())
                         )
-                
-                total_samples += 1
 
-                # Trigger learning periodically (use update_frequency hyperparameter)
-                update_freq = HYPERPARAMETERS.get('update_frequency', 500)
-                if total_samples % update_freq == 0 and len(_cached_agent.replay_buffer) >= _cached_agent.batch_size:
+            total_samples += batch_size
+
+            # Trigger learning periodically (use update_frequency hyperparameter)
+            update_freq = HYPERPARAMETERS.get('update_frequency', 500)
+            # Check if we crossed any update boundaries in this batch
+            prev_total = total_samples - batch_size
+            num_updates = (total_samples // update_freq) - (prev_total // update_freq)
+            for _ in range(num_updates):
+                if len(_cached_agent.replay_buffer) >= _cached_agent.batch_size:
                     update_in_epoch = len(epoch_losses) + 1
-                    metrics = _cached_agent.learn(epoch, batch_index, batch_size, update_in_epoch)
+                    metrics = _cached_agent.learn(epoch, batch_size - 1, batch_size, update_in_epoch)
                     epoch_losses.append(metrics['loss'])
                     epoch_rewards.append(metrics['reward'])
         

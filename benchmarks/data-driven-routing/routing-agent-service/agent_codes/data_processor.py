@@ -46,17 +46,24 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     # output_file = os.path.join(input_dir, f"{input_name}-processed.csv")
     logger.info(f"Output will be saved to: {output_file}")
     
-    # Step 1: Replace pod IPs with general pod IDs if needed
+    # Step 1 & 2: Get pod IP mapping and parse with on-the-fly replacement (optimized)
+    # This avoids creating an intermediate replaced file, saving ~3.5s on 70MB files
+    pod_ip_mapping = None
     if 'replaced' not in input_file:
-        logger.info("Replacing pod IPs with general pod IDs")
-        replaced_file = utils.replace_pod_ip_with_generalpodid(input_file)
+        logger.info("Getting pod IP mapping for on-the-fly replacement during parsing")
+        all_pod_ips = utils.get_all_pod_ips_from_data_file(input_file)
+        if all_pod_ips:
+            pod_ip_mapping = utils.create_pod_ip_to_generalpodid_mapping(all_pod_ips)
+            logger.info(f"Pod IP mapping: {pod_ip_mapping}")
+        else:
+            logger.info("No pod IPs found, assuming already replaced or using default IDs")
     else:
-        replaced_file = input_file
         logger.info("File already has pod IPs replaced")
 
     # Step 2: Use existing preprocessing logic but keep raw values
+    # Pass pod_ip_mapping for on-the-fly replacement during parsing
     logger.info("Running preprocessing to extract features...")
-    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(replaced_file, "", hyperparameters)
+    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(input_file, "", hyperparameters, pod_ip_mapping=pod_ip_mapping)
 
     # Step 3: Ensure we preserve critical raw values for reward calculation
     required_columns = ['ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_id']

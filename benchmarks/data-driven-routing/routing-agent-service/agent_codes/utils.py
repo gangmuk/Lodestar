@@ -183,17 +183,22 @@ def replace_pod_ip_with_generalpodid(data_input):
         logger.info(f"Deterministic pod IP order: {all_pod_ips_from_training_data}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_training_data)
         logger.info(f"Deterministic mapping: {pod_ip_to_generalpodid}")
-        
+
         with open(data_input, 'r') as f:
             content = f.read()
-        
-        for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
-            content = content.replace(pod_ip, generalpodid)
-        
+
+        # OPTIMIZED: Use regex for single-pass replacement instead of multiple str.replace() calls
+        import re
+        # Build regex pattern that matches any of the pod IPs
+        # Sort by length descending to match longer IPs first (prevents partial matches)
+        sorted_ips = sorted(pod_ip_to_generalpodid.keys(), key=len, reverse=True)
+        pattern = re.compile('|'.join(re.escape(ip) for ip in sorted_ips))
+        content = pattern.sub(lambda m: pod_ip_to_generalpodid[m.group(0)], content)
+
         replaced_data_file = data_input.replace('.csv', '_replaced.csv')
         with open(replaced_data_file, 'w') as f:
             f.write(content)
-        
+
         logger.info(f"File written {replaced_data_file} with replaced generalpodids")
         return replaced_data_file
     else:
