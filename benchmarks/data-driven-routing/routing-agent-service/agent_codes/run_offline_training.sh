@@ -8,7 +8,7 @@ batch_size=256
 training_epochs=10
 # training_epochs=1
 # sampling_ratio=1.0
-sampling_ratio=0.3
+sampling_ratio=1.0
 ttft_threshold=30000
 # excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
 # excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # kinda bad
@@ -130,7 +130,12 @@ python3 write_hyperparameters.py \
 
 echo "📄 STEP 1: start data_processor"
 start_time=$(date +%s)
-python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold} 2>&1 | tee ${data_processor_log}
+data_processor_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold}"
+# python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold} 2>&1 | tee ${data_processor_log}
+
+echo "data_processor_cmd: ${data_processor_cmd}"
+echo "${data_processor_cmd}" > "${final_model_dir}/data_processor_command.txt"
+${data_processor_cmd} 2>&1 | tee ${data_processor_log}
 end_time=$(date +%s)
 echo "finished data_processor in $((end_time - start_time)) seconds"
 
@@ -164,6 +169,7 @@ if [ "${analyze_behavior}" = "true" ]; then
 fi
 
 python_cmd="python3 offline_routing_agent.py ${processed_csv} ${analyze_flag} --final_model_dir ${final_model_dir} --hyperparameter_file_path ${hyper_json}"
+echo "python_cmd: ${python_cmd}"
 echo "${python_cmd}" > "${final_model_dir}/python_command.txt"
 ${python_cmd} 2>&1 | tee ${offline_routing_agent_log}
 
