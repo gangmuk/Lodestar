@@ -702,7 +702,6 @@ def handle_infer():
         remaining_work_start = time.time()
         result["requestID"] = request_id
         result["num_trains"] = NUM_TRAINS
-        logger.info(f"requestID: {request_id}, inference result: {result}")
         
         # Map the pod index back to the actual pod ID
         selected_pod_index = result['selected_pod_index']
@@ -719,7 +718,10 @@ def handle_infer():
         logger.debug(f"selected_pod_generalpodid: {selected_pod_generalpodid}, selected_pod_ip: {selected_pod_ip}, pod_probability: {result['pod_probabilities']}")
         
         handle_infer_overhead_summary['remaining_work'] = time.time() - remaining_work_start
-        handle_infer_overhead_summary["end_to_end"] = time.time() - handle_infer_start_time
+        endtoendoverhead = time.time() - handle_infer_start_time
+        handle_infer_overhead_summary["end_to_end"] = endtoendoverhead
+        result['end_to_end_overhead'] = endtoendoverhead
+        logger.info(f"requestID: {request_id}, inference result: {result}")
         
         overhead_log = "oh"
         for key, value in handle_infer_overhead_summary.items():
@@ -816,8 +818,7 @@ def online_train_routine():
                 
                 # Remove from the beginning of dataframe (where offline data resides)
                 training_df_copy = training_df_copy.iloc[to_remove:].reset_index(drop=True)
-                logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). "
-                           f"Removed {to_remove} oldest offline samples (overflow={overflow}, offline_size={current_offline_size})")
+                logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). Removed {to_remove} oldest offline samples (overflow={overflow}, offline_size={current_offline_size})")
                 
                 # Update the global TRAINING_DF and OFFLINE_DATA_SIZE
                 with TRAINING_DF_LOCK:

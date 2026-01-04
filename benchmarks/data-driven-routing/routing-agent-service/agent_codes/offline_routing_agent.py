@@ -62,7 +62,7 @@ def train_model(ENCODED_DATA_DIR, is_online_learning, final_model_dir):
                 if model_type == 'contextual_bandit_perpodmodel_advanced':
                     logger.info("Training with Neural Contextual Bandit Per-Pod Model Advanced model")
                     saved_plot_path = neural_contextual_bandit_perpodmodel_advanced.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
-                elif model_type == 'contextual_bandit_perpodmodel':
+                elif model_type == 'contextual_bandit_perpodmodel_checkpoint':
                     logger.info("Training with Neural Contextual Bandit Per-Pod Model model")
                     saved_plot_path = neural_contextual_bandit_perpodmodel_checkpoint.train(ENCODED_DATA_DIR, final_model_dir, HYPERPARAMETERS, is_online_learning)
                 elif model_type == 'contextual_bandit_perpodmodel_policygradient':

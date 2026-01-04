@@ -2,14 +2,12 @@
 
 set -e
 
-lr_scheduler_type="constant" # "exponential", "constant", "gradient_adaptive"
+lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 hidden_dim=128 # 64, 128, 256, 128 was very very slightly better than 64
 batch_size=256
 training_epochs=10
 # training_epochs=1
 # sampling_ratio=1.0
-sampling_ratio=1.0
-ttft_threshold=30000
 # excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
 # excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # kinda bad
 # excluded_pod_features="gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # this is also kinda bad
@@ -21,8 +19,12 @@ excluded_pod_features="none" #
 excluded_request_features="output_tokens"
 # excluded_pod_features="kv_hit_ratio,gpu_kv_cache,inflight_requests" # slightly better 2
 # excluded_pod_features="gpu_kv_cache,inflight_requests" # same
-
 include_gpu_features=0
+
+sampling_ratio=1.0
+ttft_threshold=30000
+buffer_size=10000
+REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
 
 ## For excluded_pod_features, you need to use the same name in preprocess.py
 # 'kv_hit_ratio': f"{pod_id}-kv_hit_ratio"]
@@ -38,9 +40,10 @@ include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 
 # model_type="latency_predictor"
+model_type="contextual_bandit_perpodmodel_checkpoint"
 # model_type="contextual_bandit_perpodmodel_advanced"
-# model_type="contextual_bandit_perpodmodel"
-model_type="contextual_bandit_perpodmodel_policygradient"
+# model_type="contextual_bandit_perpodmodel_policygradient"
+
 
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 analyze_behavior=false # true, false
@@ -49,8 +52,7 @@ reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
-REWARD_FUNCTION="quantile_based" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "quantile_based", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware", 
-offline_learning_rate=0.0001
+learning_rate=0.0001
 time_stamp=$(date +%Y%m%d_%H%M%S)
 lr_scheduler_gamma=0.95
 
@@ -71,7 +73,7 @@ processed_csv="${data_dir}/${data_name}-processed.csv"
 ## final_mode_dir naming
 final_model_dir="${data_dir}/final_model"
 # if [ "${model_type}" == "contextual_bandit" ]; then
-#     final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${offline_learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
+#     final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
 #     if [ "${excluded_pod_features}" != "" ]; then
 #         final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
 #     fi
@@ -115,7 +117,7 @@ python3 write_hyperparameters.py \
 --hidden_dim ${hidden_dim} \
 --ttft_reward_weight ${ttft_reward_weight} \
 --reward_function ${REWARD_FUNCTION} \
---offline_learning_rate ${offline_learning_rate} \
+--learning_rate ${learning_rate} \
 --excluded_pod_features "${excluded_pod_features}" \
 --excluded_request_features "${excluded_request_features}" \
 --no_normalize_features "${no_normalize_features}" \
@@ -126,7 +128,8 @@ python3 write_hyperparameters.py \
 --reward_decay_factor ${reward_decay_factor} \
 --model_type ${model_type} \
 --latency_metric ${latency_metric} \
---include_gpu_features ${include_gpu_features}
+--include_gpu_features ${include_gpu_features} \
+--buffer_size ${buffer_size}
 
 echo "📄 STEP 1: start data_processor"
 start_time=$(date +%s)
