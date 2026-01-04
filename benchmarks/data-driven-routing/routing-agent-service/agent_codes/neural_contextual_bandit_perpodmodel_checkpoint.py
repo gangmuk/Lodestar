@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import deque
 import pickle
 import time
 from logger import logger
@@ -91,11 +90,7 @@ class NeuralContextualBandit:
             lr=hyperparameters.get('learning_rate', 3e-4),
             weight_decay=hyperparameters.get('weight_decay', 1e-5)
         )
-        
-        # Experience replay buffer (keep last N experiences)
-        self.buffer_size = hyperparameters.get('buffer_size', 10000)
-        self.replay_buffer = deque(maxlen=self.buffer_size)
-        
+
         # Exploration parameters
         self.exploration_method = hyperparameters.get('exploration_method', 'epsilon_greedy')
         self.epsilon = hyperparameters.get('initial_epsilon', 0.3)
@@ -240,59 +235,44 @@ class NeuralContextualBandit:
             
             return action, predicted_rewards, explored
     
-    def remember(self, pod_features, kv_hit_ratios, request_features, action, reward, input_tokens=None):
+    def learn(self, pod_features, kv_hit_ratios, request_features, actions, rewards, input_tokens=None):
         """
-        Store experience in replay buffer
-        
-        Args:
-            pod_features: [1, num_pods, pod_feat_dim]
-            kv_hit_ratios: [1, num_pods, kv_dim]
-            request_features: [1, req_feat_dim]
-            action: Scalar action (which pod was selected)
-            reward: Scalar reward
-            input_tokens: Optional scalar input token count (for stratified analysis)
-        """
-        # Create per-pod contexts for all pods
-        per_pod_contexts = self._create_per_pod_contexts(pod_features, kv_hit_ratios, request_features)
-        
-        experience = {
-            'per_pod_contexts': per_pod_contexts.cpu(),  # [num_pods, per_pod_context_dim]
-            'action': action if isinstance(action, int) else action.item(),
-            'reward': reward.item() if torch.is_tensor(reward) else reward,
-            'input_tokens': input_tokens.item() if torch.is_tensor(input_tokens) else (input_tokens if input_tokens is not None else -1)
-        }
-        
-        self.replay_buffer.append(experience)
-        self.steps_since_update += 1
-        
-        # Note: Automatic learning disabled for batch training
-        # The train function handles learning explicitly
-        # Uncomment below for online learning scenarios:
-        # if self.steps_since_update >= self.update_frequency:
-        #     self.learn()
-        #     self.steps_since_update = 0
-    
-    def learn(self):
-        """
-        Update the reward network using experiences from replay buffer.
+        Update the reward network using batch data directly.
         Per-pod architecture: trains on individual pod evaluations.
+
+        Args:
+            pod_features: [batch_size, num_pods, pod_feat_dim]
+            kv_hit_ratios: [batch_size, num_pods, kv_dim]
+            request_features: [batch_size, req_feat_dim]
+            actions: [batch_size] - which pod was selected for each request
+            rewards: [batch_size] - actual rewards received
+            input_tokens: [batch_size] - optional input token counts for analysis
         """
-        if len(self.replay_buffer) < self.batch_size:
-            logger.debug(f"Not enough experiences to learn: {len(self.replay_buffer)} < {self.batch_size}")
+        batch_size = len(actions)
+
+        if batch_size == 0:
+            logger.debug("Empty batch, skipping learning")
             return {'loss': 0.0, 'reward': 0.0}
-        
-        # Sample batch from replay buffer
-        batch_size = min(self.batch_size, len(self.replay_buffer))
-        indices = np.random.choice(len(self.replay_buffer), batch_size, replace=False)
-        batch = [self.replay_buffer[i] for i in indices]
-        
-        # Prepare batch tensors
-        # Each experience has per_pod_contexts [num_pods, per_pod_context_dim]
-        # Stack them: [batch_size, num_pods, per_pod_context_dim]
-        per_pod_contexts_batch = torch.stack([exp['per_pod_contexts'] for exp in batch], dim=0).to(device)
-        actions = torch.tensor([exp['action'] for exp in batch], dtype=torch.long).to(device)
-        rewards = torch.tensor([exp['reward'] for exp in batch], dtype=torch.float32).to(device)
-        input_tokens_batch = [exp.get('input_tokens', -1) for exp in batch]
+
+        # Create per-pod contexts for all samples
+        # per_pod_contexts will be [batch_size, num_pods, per_pod_context_dim]
+        per_pod_contexts_list = []
+        for i in range(batch_size):
+            per_pod_ctx = self._create_per_pod_contexts(
+                pod_features[i:i+1],
+                kv_hit_ratios[i:i+1],
+                request_features[i:i+1]
+            )
+            per_pod_contexts_list.append(per_pod_ctx)
+
+        per_pod_contexts_batch = torch.stack(per_pod_contexts_list, dim=0).to(device)
+        actions = torch.tensor(actions, dtype=torch.long).to(device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+
+        if input_tokens is not None:
+            input_tokens_batch = input_tokens if isinstance(input_tokens, list) else input_tokens.tolist()
+        else:
+            input_tokens_batch = [-1] * batch_size
         
         # Reshape contexts: [batch_size * num_pods, per_pod_context_dim]
         batch_size_actual, num_pods, per_pod_dim = per_pod_contexts_batch.shape
@@ -350,8 +330,8 @@ class NeuralContextualBandit:
             # Store input_tokens for each sample (for stratified analysis in plots 13-15)
             self.training_metrics['input_tokens_per_sample'].extend(input_tokens_batch)
         
-        logger.info(f"[Update] Loss: {loss.item():.4f}, Avg Reward: {rewards.mean().item():.4f}, "
-                   f"Epsilon: {self.epsilon:.4f}, Buffer: {len(self.replay_buffer)}")
+        logger.debug(f"[Update] Loss: {loss.item():.4f}, Avg Reward: {rewards.mean().item():.4f}, "
+                    f"Epsilon: {self.epsilon:.4f}, Batch size: {batch_size}")
         
         return {
             'loss': loss.item(),
@@ -517,7 +497,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     )
     overhead_summary['inference'] = time.time() - inference_start
     
-    logger.info(f"Neural CB request {request_id}: action={action}, explored={explored}, total_steps={_cached_agent.total_steps}, buffer_size={len(_cached_agent.replay_buffer)}, epsilon={_cached_agent.epsilon:.3f}")
+    logger.info(f"Neural CB request {request_id}: action={action}, explored={explored}, total_steps={_cached_agent.total_steps}, epsilon={_cached_agent.epsilon:.3f}")
     
     # Format predicted_rewards as dict (same format as predicted_latencies)
     predicted_rewards_formatted = {sorted_all_pod_ids[i]: float(predicted_rewards[i]) for i in range(len(sorted_all_pod_ids))}
@@ -537,6 +517,188 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     overhead_summary['total_inference'] = time.time() - infer_start_time
     
     return result, overhead_summary
+
+
+def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
+    """
+    Train neural contextual bandit on batch of encoded experiences.
+    Compatible with existing data pipeline (called from online_train_routine).
+    
+    Args:
+        encoded_training_dir: Directory containing encoded .pt files
+        final_model_dir: Directory to save model
+        HYPERPARAMETERS: Model hyperparameters
+    """
+    global _cached_agent
+    
+    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('num_epochs', 10)}, dir={encoded_training_dir}")
+    logger.info(f"HYPERPARAMETERS: {HYPERPARAMETERS}")
+    
+    # Load encoded tensor files
+    if not os.path.exists(encoded_training_dir):
+        logger.error(f"Encoded data directory not found: {encoded_training_dir}")
+        return
+    
+    # Look for tensor_dataset.pt files in batch subdirectories (batch_1, batch_2, etc.)
+    # OR directly in the encoded_training_dir (for online training)
+    tensor_files = []
+    
+    # First check for batch subdirectories (offline training pattern)
+    for item in os.listdir(encoded_training_dir):
+        item_path = os.path.join(encoded_training_dir, item)
+        if os.path.isdir(item_path):
+            tensor_file = os.path.join(item_path, 'tensor_dataset.pt')
+            if os.path.exists(tensor_file):
+                tensor_files.append(tensor_file)
+    
+    # If no batch subdirectories, check for direct file (online training pattern)
+    if not tensor_files:
+        direct_file = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
+        if os.path.exists(direct_file):
+            tensor_files.append(direct_file)
+    
+    if not tensor_files:
+        logger.error(f"No tensor_dataset.pt files found in {encoded_training_dir} (checked batch subdirectories and direct file)")
+        return
+    
+    # Sort by batch number for consistent ordering
+    tensor_files.sort()
+    file_desc = [os.path.basename(os.path.dirname(f)) if os.path.dirname(f) != encoded_training_dir else 'direct' for f in tensor_files]
+    logger.info(f"Found {len(tensor_files)} encoded tensor file(s): {file_desc}")
+    
+    # Load first file to get dimensions
+    batch_data = torch.load(tensor_files[0])
+    
+    # Initialize agent if needed
+    if _cached_agent is None:
+        state_dim = {
+            'pod_features': batch_data['pod_features_with_staleness'].shape[2],
+            'kv_hit_ratios': batch_data['kv_hit_ratios'].shape[2],
+            'request_features': batch_data['request_features'].shape[1]
+        }
+        action_dim = batch_data['pod_features_with_staleness'].shape[1]
+        
+        logger.info(f"Initializing Neural CB agent: state_dim={state_dim}, action_dim={action_dim}")
+        
+        _cached_agent = NeuralContextualBandit(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            hyperparameters=HYPERPARAMETERS,
+            final_model_dir=final_model_dir
+        )
+        
+        # Try to load existing model
+        model_path = os.path.join(final_model_dir, 'reward_net.pth')
+        if os.path.exists(model_path):
+            try:
+                _cached_agent.load_model(final_model_dir)
+                logger.info(f"Loaded existing model from {final_model_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to load existing model: {e}, starting fresh")
+    
+    # Training loop
+    total_samples = 0
+    for epoch in range(HYPERPARAMETERS.get('num_epochs', 10)):
+        epoch_start = time.time()
+        epoch_losses = []
+        epoch_rewards = []
+
+        # Shuffle tensor files at the start of each epoch to prevent periodic loss spikes
+        # Use epoch-specific random state to ensure different order each epoch despite global seed
+        shuffled_tensor_files = tensor_files.copy()
+        # Use abs() and modulo to ensure seed is within valid range [0, 2^32-1]
+        epoch_seed = (HYPERPARAMETERS.get('training_seed', 42) + epoch + abs(int(hash(time.time())))) % (2**32)
+        epoch_rng = np.random.RandomState(seed=epoch_seed)
+        epoch_rng.shuffle(shuffled_tensor_files)
+
+        for tensor_file in shuffled_tensor_files:
+            # tensor_file is already the full path
+            batch_data = torch.load(tensor_file)
+
+            # Extract tensors
+            pod_features = batch_data['pod_features_with_staleness']
+            kv_hit_ratios = batch_data['kv_hit_ratios']
+            request_features = batch_data['request_features']
+            actions = batch_data['actions']
+            rewards = batch_data['rewards']
+
+            # Extract latency and context values for reward function analysis
+            ttft = batch_data.get('ttft', None)
+            avg_tpot = batch_data.get('avg_tpot', None)
+            input_tokens = batch_data.get('input_tokens', None)
+
+            dataset_size = len(actions)
+            train_batch_size = HYPERPARAMETERS.get('batch_size', 256)
+
+            # Split dataset into mini-batches for training
+            num_batches = (dataset_size + train_batch_size - 1) // train_batch_size
+
+            # Shuffle indices for this epoch
+            indices = torch.randperm(dataset_size)
+
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * train_batch_size
+                end_idx = min(start_idx + train_batch_size, dataset_size)
+                batch_indices = indices[start_idx:end_idx]
+
+                # Extract mini-batch
+                batch_pod_features = pod_features[batch_indices]
+                batch_kv_ratios = kv_hit_ratios[batch_indices]
+                batch_request_features = request_features[batch_indices]
+                batch_actions = actions[batch_indices]
+                batch_rewards = rewards[batch_indices]
+                batch_input_tokens = input_tokens[batch_indices] if input_tokens is not None else None
+
+                batch_size = len(batch_actions)
+                total_samples += batch_size
+
+                # Collect reward-latency-context tuples for stratified function analysis (sample 10% to save memory)
+                if ttft is not None:
+                    batch_ttft = ttft[batch_indices]
+                    batch_tpot = avg_tpot[batch_indices] if avg_tpot is not None else None
+
+                    sample_indices = np.random.choice(batch_size, size=max(1, int(batch_size * 0.1)), replace=False)
+                    for i in sample_indices:
+                        _cached_agent.training_metrics['reward_latency_pairs'].append(
+                            (batch_rewards[i].item(), batch_ttft[i].item())
+                        )
+                        _cached_agent.training_metrics['ttft_values'].append(batch_ttft[i].item())
+                        if batch_tpot is not None:
+                            _cached_agent.training_metrics['tpot_values'].append(batch_tpot[i].item())
+
+                        # Store (reward, latency, input_tokens) for stratified analysis
+                        if batch_input_tokens is not None:
+                            _cached_agent.training_metrics['reward_latency_input_tuples'].append(
+                                (batch_rewards[i].item(), batch_ttft[i].item(), batch_input_tokens[i].item())
+                            )
+
+                # Train on mini-batch
+                metrics = _cached_agent.learn(
+                    batch_pod_features,
+                    batch_kv_ratios,
+                    batch_request_features,
+                    batch_actions,
+                    batch_rewards,
+                    input_tokens=batch_input_tokens
+                )
+                epoch_losses.append(metrics['loss'])
+                epoch_rewards.append(metrics['reward'])
+        
+        # Log epoch metrics
+        avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
+        avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
+        epoch_time = time.time() - epoch_start
+        
+        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('num_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
+                   f"time={epoch_time:.2f}s")
+    
+    # Save trained model
+    _cached_agent.save(final_model_dir)
+    logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
+    
+    # Generate comprehensive training plots (use total_steps as num_trains)
+    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('num_epochs', 10), total_samples, num_trains=num_trains)
+    return plot_path
 
 
 def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains):
@@ -633,15 +795,13 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     
-    # 4. Replay Buffer Size
+    # 4. Training Samples (removed buffer size plot)
     plt.subplot(4, 6, 4)
-    buffer_sizes = [min(agent.buffer_size, i+1) for i in range(total_samples)]
-    plt.plot(buffer_sizes, 'purple', linewidth=2)
-    plt.axhline(y=agent.buffer_size, color='r', linestyle='--', label=f'Max Size: {agent.buffer_size}')
-    plt.title('4. Replay Buffer Size')
+    plt.plot(range(total_samples), 'purple', linewidth=2)
+    plt.title('4. Training Samples')
     plt.xlabel('Sample')
-    plt.ylabel('Buffer Size')
-    plt.legend()
+    plt.ylabel('Count')
+    plt.grid(True, alpha=0.3)
     plt.grid(True, alpha=0.3)
     
     # 5. Loss Distribution
@@ -663,24 +823,58 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
                 transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
-    # 6. Reward Distribution
+    # 6. Reward Distribution (sample-level, not batch-level)
     plt.subplot(4, 6, 6)
-    if metrics['rewards']:
-        plt.hist(metrics['rewards'], bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
-        plt.axvline(np.mean(metrics['rewards']), color='r', linestyle='--', linewidth=2, label='Mean')
-        plt.axvline(np.median(metrics['rewards']), color='g', linestyle='--', linewidth=2, label='Median')
-        plt.title('6. Reward Distribution')
+
+    # Load actual sample rewards from encoded data
+    import torch
+    import glob
+    sample_rewards = None
+    encoded_dir = os.path.join(final_model_dir, 'encoded_data')
+    if os.path.exists(encoded_dir):
+        # Find first tensor file
+        tensor_files = glob.glob(os.path.join(encoded_dir, 'batch_*', 'tensor_dataset.pt'))
+        if tensor_files:
+            try:
+                data = torch.load(tensor_files[0])
+                if 'rewards' in data:
+                    sample_rewards = data['rewards'].numpy()
+            except Exception as e:
+                logger.warning(f"Could not load sample rewards: {e}")
+
+    if sample_rewards is not None:
+        # Plot actual sample reward distribution
+        plt.hist(sample_rewards, bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
+        plt.axvline(np.mean(sample_rewards), color='r', linestyle='--', linewidth=2, label='Mean')
+        plt.axvline(np.median(sample_rewards), color='g', linestyle='--', linewidth=2, label='Median')
+        plt.title('6. Sample Reward Distribution')
         plt.xlabel('Reward')
         plt.ylabel('Frequency')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
+
         # Add statistics
-        mean_reward = np.mean(metrics['rewards'])
-        std_reward = np.std(metrics['rewards'])
-        plt.text(0.98, 0.98, f'Mean: {mean_reward:.4f}\nStd: {std_reward:.4f}',
+        mean_reward = np.mean(sample_rewards)
+        std_reward = np.std(sample_rewards)
+        plt.text(0.98, 0.98, f'Samples: {len(sample_rewards)}\nMean: {mean_reward:.4f}\nStd: {std_reward:.4f}',
                 transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    elif metrics['rewards']:
+        # Fallback: plot batch mean rewards if sample rewards not available
+        plt.hist(metrics['rewards'], bins=50, alpha=0.7, color='orange', edgecolor='black')
+        plt.axvline(np.mean(metrics['rewards']), color='r', linestyle='--', linewidth=2, label='Mean')
+        plt.axvline(np.median(metrics['rewards']), color='g', linestyle='--', linewidth=2, label='Median')
+        plt.title('6. Batch Mean Reward Dist (fallback)')
+        plt.xlabel('Batch Mean Reward')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        mean_reward = np.mean(metrics['rewards'])
+        std_reward = np.std(metrics['rewards'])
+        plt.text(0.98, 0.98, f'Batches: {len(metrics["rewards"])}\nMean: {mean_reward:.4f}\nStd: {std_reward:.4f}',
+                transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='orange', alpha=0.8))
     
     # 7. Learning Progress (Loss & Reward together, normalized)
     plt.subplot(4, 6, 7)
@@ -1840,159 +2034,6 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     return plot_path
 
 
-def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
-    """
-    Train neural contextual bandit on batch of encoded experiences.
-    Compatible with existing data pipeline (called from online_train_routine).
-    
-    Args:
-        encoded_training_dir: Directory containing encoded .pt files
-        final_model_dir: Directory to save model
-        HYPERPARAMETERS: Model hyperparameters
-    """
-    global _cached_agent
-    
-    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('num_epochs', 10)}, dir={encoded_training_dir}")
-    
-    # Load encoded tensor files
-    if not os.path.exists(encoded_training_dir):
-        logger.error(f"Encoded data directory not found: {encoded_training_dir}")
-        return
-    
-    # Look for tensor_dataset.pt files in batch subdirectories (batch_1, batch_2, etc.)
-    # OR directly in the encoded_training_dir (for online training)
-    tensor_files = []
-    
-    # First check for batch subdirectories (offline training pattern)
-    for item in os.listdir(encoded_training_dir):
-        item_path = os.path.join(encoded_training_dir, item)
-        if os.path.isdir(item_path):
-            tensor_file = os.path.join(item_path, 'tensor_dataset.pt')
-            if os.path.exists(tensor_file):
-                tensor_files.append(tensor_file)
-    
-    # If no batch subdirectories, check for direct file (online training pattern)
-    if not tensor_files:
-        direct_file = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
-        if os.path.exists(direct_file):
-            tensor_files.append(direct_file)
-    
-    if not tensor_files:
-        logger.error(f"No tensor_dataset.pt files found in {encoded_training_dir} (checked batch subdirectories and direct file)")
-        return
-    
-    # Sort by batch number for consistent ordering
-    tensor_files.sort()
-    file_desc = [os.path.basename(os.path.dirname(f)) if os.path.dirname(f) != encoded_training_dir else 'direct' for f in tensor_files]
-    logger.info(f"Found {len(tensor_files)} encoded tensor file(s): {file_desc}")
-    
-    # Load first file to get dimensions
-    batch_data = torch.load(tensor_files[0])
-    
-    # Initialize agent if needed
-    if _cached_agent is None:
-        state_dim = {
-            'pod_features': batch_data['pod_features_with_staleness'].shape[2],
-            'kv_hit_ratios': batch_data['kv_hit_ratios'].shape[2],
-            'request_features': batch_data['request_features'].shape[1]
-        }
-        action_dim = batch_data['pod_features_with_staleness'].shape[1]
-        
-        logger.info(f"Initializing Neural CB agent: state_dim={state_dim}, action_dim={action_dim}")
-        
-        _cached_agent = NeuralContextualBandit(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            hyperparameters=HYPERPARAMETERS,
-            final_model_dir=final_model_dir
-        )
-        
-        # Try to load existing model
-        model_path = os.path.join(final_model_dir, 'reward_net.pth')
-        if os.path.exists(model_path):
-            try:
-                _cached_agent.load_model(final_model_dir)
-                logger.info(f"Loaded existing model from {final_model_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to load existing model: {e}, starting fresh")
-    
-    # Training loop
-    total_samples = 0
-    for epoch in range(HYPERPARAMETERS.get('num_epochs', 10)):
-        epoch_start = time.time()
-        epoch_losses = []
-        epoch_rewards = []
-        
-        for tensor_file in tensor_files:
-            # tensor_file is already the full path
-            batch_data = torch.load(tensor_file)
-            
-            # Extract tensors
-            pod_features = batch_data['pod_features_with_staleness']
-            kv_hit_ratios = batch_data['kv_hit_ratios']
-            request_features = batch_data['request_features']
-            actions = batch_data['actions']
-            rewards = batch_data['rewards']
-            
-            # Extract latency and context values for reward function analysis
-            ttft = batch_data.get('ttft', None)
-            avg_tpot = batch_data.get('avg_tpot', None)
-            input_tokens = batch_data.get('input_tokens', None)
-            
-            batch_size = len(actions)
-            
-            # Add experiences to replay buffer
-            for i in range(batch_size):
-                # Pass input_tokens if available for stratified analysis
-                inp_tok = input_tokens[i] if input_tokens is not None else None
-                _cached_agent.remember(
-                    pod_features[i:i+1],
-                    kv_hit_ratios[i:i+1],
-                    request_features[i:i+1],
-                    actions[i].item(),
-                    rewards[i].item(),
-                    input_tokens=inp_tok
-                )
-                
-                # Collect reward-latency-context tuples for stratified function analysis (sample 10% to save memory)
-                if np.random.random() < 0.1 and ttft is not None:
-                    _cached_agent.training_metrics['reward_latency_pairs'].append(
-                        (rewards[i].item(), ttft[i].item())
-                    )
-                    _cached_agent.training_metrics['ttft_values'].append(ttft[i].item())
-                    if avg_tpot is not None:
-                        _cached_agent.training_metrics['tpot_values'].append(avg_tpot[i].item())
-                    
-                    # NEW: Store (reward, latency, input_tokens) for stratified analysis
-                    if input_tokens is not None:
-                        _cached_agent.training_metrics['reward_latency_input_tuples'].append(
-                            (rewards[i].item(), ttft[i].item(), input_tokens[i].item())
-                        )
-                
-                total_samples += 1
-                
-                # Trigger learning periodically (every 500 samples, not every sample!)
-                if total_samples % 500 == 0 and len(_cached_agent.replay_buffer) >= _cached_agent.batch_size:
-                    metrics = _cached_agent.learn()
-                    epoch_losses.append(metrics['loss'])
-                    epoch_rewards.append(metrics['reward'])
-        
-        # Log epoch metrics
-        avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
-        avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
-        epoch_time = time.time() - epoch_start
-        
-        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('num_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
-                   f"time={epoch_time:.2f}s, buffer_size={len(_cached_agent.replay_buffer)}")
-    
-    # Save trained model
-    _cached_agent.save(final_model_dir)
-    logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
-    
-    # Generate comprehensive training plots (use total_steps as num_trains)
-    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('num_epochs', 10), total_samples, num_trains=num_trains)
-    return plot_path
-
 
 if __name__ == "__main__":
     # Test the neural contextual bandit
@@ -2017,37 +2058,4 @@ if __name__ == "__main__":
         final_model_dir='/tmp/test_neural_cb'
     )
     logger.info("Neural Contextual Bandit initialized successfully!")
-if __name__ == "__main__":
-    # Test the neural contextual bandit
-    logger.info("Testing Neural Contextual Bandit...")
     
-    state_dim = {'pod_features': 8, 'kv_hit_ratios': 1, 'request_features': 3}
-    action_dim = 7
-    hyperparameters = {
-        'hidden_dim': 128,
-        'learning_rate': 3e-4,
-        'buffer_size': 1000,
-        'exploration_method': 'epsilon_greedy',
-        'initial_epsilon': 0.3,
-        'batch_size': 32,
-        'update_frequency': 10
-    }
-    
-    agent = NeuralContextualBandit(state_dim, action_dim, hyperparameters, "/tmp/test_bandit")
-    
-    # Simulate some experiences
-    for i in range(100):
-        pod_features = torch.randn(1, action_dim, state_dim['pod_features'])
-        kv_hit_ratios = torch.rand(1, action_dim, state_dim['kv_hit_ratios'])
-        request_features = torch.randn(1, state_dim['request_features'])
-        
-        action, _ = agent.choose_action(pod_features, kv_hit_ratios, request_features)
-        
-        # Simulate reward (inverse latency)
-        simulated_latency = np.random.uniform(100, 500)  # ms
-        reward = 1.0 / (simulated_latency / 100.0)  # Normalize
-        
-        agent.remember(pod_features, kv_hit_ratios, request_features, action, reward)
-    
-    logger.info("Test completed successfully!")
-

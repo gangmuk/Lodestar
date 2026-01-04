@@ -302,30 +302,29 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
     
     return averaged_metrics
 
-def export_metrics_to_csv(all_metrics, base_dir, output_dir="../workload-and-experiment_results"):
-    """Export performance metrics to an aggregated CSV file."""
+def export_metrics_to_csv(all_metrics, base_dir):
+    """Export performance metrics to a CSV file in the same directory as the PDF."""
     if not all_metrics:
         print("No metrics to export.")
-        return
+        return None
 
-    # Resolve relative path from current working directory
-    if not os.path.isabs(output_dir):
-        output_dir = os.path.join(os.getcwd(), output_dir)
-
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Use a single aggregated CSV file
-    csv_filename = "aggregated_summary.csv"
-    csv_filepath = os.path.join(output_dir, csv_filename)
-
-    # Extract group from base_dir (part after workload-and-experiment_results)
-    group = ""
+    # Extract workload identifier from base_dir for the workload column
+    # e.g., "NVIDIA-A10/maxTokens_1-maxTokensStd_0/SharingRatio71%/rps7" -> "SharingRatio71%/rps7"
+    workload = ""
     if "workload-and-experiment_results" in base_dir:
-        # Split by workload-and-experiment_results and take everything after it
         parts = base_dir.split("workload-and-experiment_results")
         if len(parts) > 1:
-            group = parts[1].lstrip("/")
+            # Get the path after workload-and-experiment_results
+            full_path = parts[1].lstrip("/")
+            # Extract just the SharingRatio and rps parts
+            path_parts = full_path.split("/")
+            # Find the SharingRatio part and everything after
+            for i, part in enumerate(path_parts):
+                if "SharingRatio" in part or "MixedSharingRatio" in part:
+                    workload = "/".join(path_parts[i:])
+                    break
+            if not workload:
+                workload = full_path
 
     # Define the metrics we want to export
     metric_columns = [
@@ -334,28 +333,16 @@ def export_metrics_to_csv(all_metrics, base_dir, output_dir="../workload-and-exp
         'throughput_rps', 'throughput_tps'
     ]
 
-    print(f"Exporting metrics to aggregated file: {csv_filepath}")
+    # Save CSV file in the same directory as the PDF
+    csv_filepath = os.path.join(base_dir, "routing_strategy_metrics.csv")
 
-    # Read existing data if file exists
-    existing_data = {}
-    if os.path.exists(csv_filepath):
-        try:
-            with open(csv_filepath, 'r', newline='') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    filename = row.get('filename', '')
-                    if filename:
-                        existing_data[filename] = row
-        except Exception as e:
-            print(f"Warning: Could not read existing CSV file: {e}")
-
-    # Prepare new data for current run
+    rows = []
     for metrics in all_metrics:
         strategy_name = metrics.get('strategy', '')
         row = {
-            'filename': strategy_name,
+            'workload': workload,
             'routing_policy': categorize_strategy(strategy_name),
-            'group': group,
+            'strategy_full_name': strategy_name,
         }
 
         # Add all metric values
@@ -365,39 +352,33 @@ def export_metrics_to_csv(all_metrics, base_dir, output_dir="../workload-and-exp
         # Add additional info if available (from averaging)
         if 'experiment_count' in metrics:
             row['experiment_count'] = metrics['experiment_count']
-        if f'avg_ttft_std' in metrics:
+        if 'avg_ttft_std' in metrics:
             row['avg_ttft_std'] = metrics.get('avg_ttft_std', '')
             row['avg_ttft_min'] = metrics.get('avg_ttft_min', '')
             row['avg_ttft_max'] = metrics.get('avg_ttft_max', '')
 
-        # Update existing data with new data (always update group for current run)
-        if strategy_name in existing_data:
-            # Preserve any existing fields not in current row, but update group
-            existing_row = existing_data[strategy_name]
-            existing_row.update(row)
-            existing_data[strategy_name] = existing_row
-        else:
-            existing_data[strategy_name] = row
+        rows.append(row)
 
-    # Write aggregated data back to CSV
-    if existing_data:
-        # Get all fieldnames from existing data
-        all_fieldnames = set()
-        for row in existing_data.values():
-            all_fieldnames.update(row.keys())
-
-        # Ensure consistent field order
-        fieldnames = ['filename', 'routing_policy', 'group'] + metric_columns
-        extra_fields = sorted(all_fieldnames - set(fieldnames))
-        fieldnames.extend(extra_fields)
+    # Write CSV file
+    if rows:
+        # Define fieldnames
+        fieldnames = ['workload', 'routing_policy', 'strategy_full_name'] + metric_columns
+        # Add optional fields if present
+        optional_fields = ['experiment_count', 'avg_ttft_std', 'avg_ttft_min', 'avg_ttft_max']
+        for field in optional_fields:
+            if any(field in row for row in rows):
+                fieldnames.append(field)
 
         with open(csv_filepath, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            for row in existing_data.values():
+            for row in rows:
                 writer.writerow(row)
 
-        print(f"Successfully exported {len(existing_data)} total strategy results to {csv_filepath} ({len(all_metrics)} updated from current run)")
+        print(f"** Saved metrics CSV to {csv_filepath}")
+        return csv_filepath
+
+    return None
 
 def normalize_time(df):
     first_request_start_time = df['request_start_time'].min()

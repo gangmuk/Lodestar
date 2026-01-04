@@ -291,7 +291,7 @@ class LatencyPredictor:
         # Model configuration
         self.latency_metric = HYPERPARAMETERS.get('LATENCY_METRIC', 'ttft')
         self.hidden_dim = HYPERPARAMETERS['hidden_dim']
-        self.learning_rate = HYPERPARAMETERS['OFFLINE_LEARNING_RATE']
+        self.learning_rate = HYPERPARAMETERS['learning_rate']
         self.weight_initialization = HYPERPARAMETERS['weight_initialization']
     
         # Create network
@@ -319,7 +319,7 @@ class LatencyPredictor:
         self.validation_r2 = []   # R-squared scores
         self.routing_accuracies = []  # How often we pick the actual best pod
         self.epoch_times = []  # Training time per epoch
-        self.learning_rates = []  # Track learning rate changes
+        self.learning_rate = []  # Track learning rate changes
         
         # Prediction tracking for analysis
         self.latest_predictions = None
@@ -364,7 +364,7 @@ class LatencyPredictor:
         
         # Track current learning rate
         current_lr = self.optimizer.param_groups[0]['lr']
-        self.learning_rates.append(current_lr)
+        self.learning_rate.append(current_lr)
         return current_lr
     
     def train_epoch(self, dataloader):
@@ -533,7 +533,7 @@ class LatencyPredictor:
             'latency_metric': self.latency_metric,
             'state_dims': self.state_dims,
             'lr_scheduler_type': self.lr_scheduler_type,
-            'learning_rates': self.learning_rates
+            'learning_rate': self.learning_rate
         }
         
         # Save scheduler state if it exists
@@ -1052,7 +1052,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
             'mae': predictor.validation_mae,
             'r2': match_length(predictor.validation_r2, num_epochs),
             'routing_accuracy': match_length(predictor.routing_accuracies, num_epochs),
-            'learning_rate': match_length(predictor.learning_rates, num_epochs)
+            'learning_rate': match_length(predictor.learning_rate, num_epochs)
         })
         metrics_csv_path = os.path.join(final_model_dir, f'training_metrics_data-{num_train}.csv')
         metrics_df.to_csv(metrics_csv_path, index=False)
@@ -1406,16 +1406,16 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     
     # 9. Learning Rate Schedule
     plt.subplot(3, 4, 9)
-    if predictor.learning_rates:
-        plt.plot(predictor.learning_rates, 'darkblue', linewidth=2, marker='o', markersize=4)
+    if predictor.learning_rate:
+        plt.plot(predictor.learning_rate, 'darkblue', linewidth=2, marker='o', markersize=4)
         plt.title(f'Learning Rate Schedule ({predictor.lr_scheduler_type})')
         plt.xlabel('Epoch')
         plt.ylabel('Learning Rate')
         plt.grid(True, alpha=0.3)
         
         # Add initial and final LR
-        initial_lr = predictor.learning_rates[0]
-        final_lr = predictor.learning_rates[-1]
+        initial_lr = predictor.learning_rate[0]
+        final_lr = predictor.learning_rate[-1]
         plt.text(0.02, 0.98, f'Initial: {initial_lr:.6f}\nFinal: {final_lr:.6f}', 
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
@@ -1480,8 +1480,8 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     arch_text += f"Learning Rate: {predictor.learning_rate}\n"
     arch_text += f"LR Scheduler: {predictor.lr_scheduler_type}\n"
     
-    if predictor.learning_rates:
-        arch_text += f"Final LR: {predictor.learning_rates[-1]:.6f}\n"
+    if predictor.learning_rate:
+        arch_text += f"Final LR: {predictor.learning_rate[-1]:.6f}\n"
     
     plt.text(0.1, 0.9, arch_text, transform=plt.gca().transAxes, 
             fontsize=10, verticalalignment='top', fontfamily='monospace',

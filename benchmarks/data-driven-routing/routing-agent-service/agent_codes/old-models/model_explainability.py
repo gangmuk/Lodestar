@@ -92,7 +92,7 @@ def _load_model_config(final_model_dir: str) -> Dict[str, Any]:
     return {
         "hidden_dim": 64,
         "weight_initialization": "xavier",
-        "OFFLINE_LEARNING_RATE": 1e-3,
+        "learning_rate": 1e-3,
         "weight_decay": 1e-4,
         "entropy_bonus_factor": 0.02,
         "batch_size": 64,
@@ -125,8 +125,8 @@ def _build_agent(model_cfg: Dict[str, Any], num_pods: int, pod_feat_dim: int, kv
         "num_pods": num_pods,
     }
     H = dict(model_cfg)
-    if "OFFLINE_LEARNING_RATE" not in H:
-        H["OFFLINE_LEARNING_RATE"] = 1e-3
+    if "learning_rate" not in H:
+        H["learning_rate"] = 1e-3
     if "weight_decay" not in H:
         H["weight_decay"] = 1e-4
     if "entropy_bonus_factor" not in H:

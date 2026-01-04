@@ -252,7 +252,7 @@ class SimplifiedContextualBandit:
         
 
         # Optimizer with weight decay for regularization
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['OFFLINE_LEARNING_RATE'], weight_decay= self.hyperparameters['weight_decay'])
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr= self.hyperparameters['learning_rate'], weight_decay= self.hyperparameters['weight_decay'])
         
         # Learning rate scheduler - multiple options based on hyperparameters
         self.scheduler_type = self.hyperparameters.get('lr_scheduler_type', 'plateau')
@@ -1947,7 +1947,7 @@ def train(encoded_data_dir, final_model_dir, HYPERPARAMETERS, is_online_learning
             ################################################
             # Adjust learning rate for online learning (typically lower)
             for param_group in agent.optimizer.param_groups:
-                param_group['lr'] = HYPERPARAMETERS['ONLINE_LEARNING_RATE']
+                param_group['lr'] = HYPERPARAMETERS['learning_rate']
         except Exception as e:
             logger.error(f"Error loading pretrained model: {e}")
             logger.info("Starting training from scratch")

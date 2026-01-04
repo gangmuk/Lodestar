@@ -21,7 +21,14 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
-    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
+
+    # "contextual_bandit_perpodmodel_advanced_negative_linear|SharingRatio71%|${target_gpu}|7|2"
+    # "contextual_bandit_perpodmodel_advanced_throughput_based|SharingRatio71%|${target_gpu}|7|2"
+    # "contextual_bandit_perpodmodel_advanced_quantile_based|SharingRatio71%|${target_gpu}|7|2"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio71%|${target_gpu}|7|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio71%|${target_gpu}|7|6"
+
+    # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_negative_linear_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
     # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
@@ -32,50 +39,72 @@ experiment_configs=(
     # # # # # ## SharingRatio47%, total number of requests: 2000
     # "contextual_bandit_perpodmodel_policygradient_throughput_based-2|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio47%|${target_gpu}|6|4"
-    "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|1"
-    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio47%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|1"
+    # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio47%|${target_gpu}|6|4"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
     # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|4"
     # "least_latency|SharingRatio47%|${target_gpu}|6|1"
     # "least_request|SharingRatio47%|${target_gpu}|6|4"
     # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
     # "random|SharingRatio47%|${target_gpu}|6|1"
+    "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio47%|${target_gpu}|6|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|6"
+
+    # # # # # # ## SharingRatio28%, total number of requests: 2000
+    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|5|4"
+    # # # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
+    # # # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
+    # # # "least_latency|SharingRatio28%|${target_gpu}|5|1"
+    # # "least_request|SharingRatio28%|${target_gpu}|5|4"
+    # # # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
+    # # # "random|SharingRatio28%|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio28%|${target_gpu}|5|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|6"
+
+    # ## rps 6 for SharingRatio28% does not work in 7 A10.
+    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|6|2"
+    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|6|2"
+    # # "contextual_bandit_perpodmodel_advanced_negative_linear|SharingRatio28%|${target_gpu}|6|2"
+    # # "contextual_bandit_perpodmodel_advanced_throughput_based|SharingRatio28%|${target_gpu}|6|2"
+    # # "contextual_bandit_perpodmodel_advanced_quantile_based|SharingRatio28%|${target_gpu}|6|2"
+    # # "latency_predictor|SharingRatio28%|${target_gpu}|6|4"
+    # # "prefix_cache_1|SharingRatio28%|${target_gpu}|6|4"
+    # # "least_latency|SharingRatio28%|${target_gpu}|6|2"
+    # # "least_request|SharingRatio28%|${target_gpu}|6|2"
+    # # "least_kv_cache|SharingRatio28%|${target_gpu}|6|4"
+    # # # "random|SharingRatio28%|${target_gpu}|6|2"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio28%|${target_gpu}|6|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|6|6"
 
 
-    # # # # # ## SharingRatio28%, total number of requests: 2000
-    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
-    # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
-    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
-    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio28%|${target_gpu}|5|4"
-    # # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
-    # # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
-    # # "least_latency|SharingRatio28%|${target_gpu}|5|1"
-    # "least_request|SharingRatio28%|${target_gpu}|5|4"
-    # # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
-    # # "random|SharingRatio28%|${target_gpu}|5|1"
+    # # # # # # ## SharingRatio9%, total number of requests: 2000
+    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio9%|${target_gpu}|5|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
+    # # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
+    # # # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
+    # # # "least_latency|SharingRatio9%|${target_gpu}|5|1"
+    # # "least_request|SharingRatio9%|${target_gpu}|5|4"
+    # # # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
+    # # # "random|SharingRatio9%|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio9%|${target_gpu}|5|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio9%|${target_gpu}|5|6"
 
-
-    # # # # # ## SharingRatio9%, total number of requests: 2000
-    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
-    # "contextual_bandit_quantile_based_perpodmodel|SharingRatio9%|${target_gpu}|5|4"
-    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
-    # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
-    # # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
-    # # "least_latency|SharingRatio9%|${target_gpu}|5|1"
-    # "least_request|SharingRatio9%|${target_gpu}|5|4"
-    # # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
-    # # "random|SharingRatio9%|${target_gpu}|5|1"
-
-    # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # "contextual_bandit_quantile_based_perpodmodel|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
-    # # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
+    # # # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # # # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # # # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
 
 )
 
@@ -83,12 +112,12 @@ INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
 
 ENABLE_ONLINE_LEARNING=1
-MAX_TOTAL_DATA=40000
+MAX_TOTAL_DATA=50000
 # MIN_NUM_TRAINING_DATA=2000
 # MIN_NUM_UPDATE_DATA=1000
 
-MIN_NUM_TRAINING_DATA=1000
-MIN_NUM_UPDATE_DATA=1000
+MIN_NUM_TRAINING_DATA=10000
+MIN_NUM_UPDATE_DATA=2000
 
 EXPLORATION_ENABLED=0
 EXPLORATION_RATE=0.1
@@ -259,7 +288,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         # experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}"
         experiment_result_output_dir="${experiment_result_output_dir}_ttft"
     fi
-    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${timestamp}"
+    experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-onlinelearning_${ENABLE_ONLINE_LEARNING}-${timestamp}"
     echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
     if [ ! -d "${experiment_result_output_dir}" ]; then
         mkdir -p "${experiment_result_output_dir}"
@@ -333,6 +362,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     sleep 2
 
     kubectl rollout restart deployment client-service --namespace default
+    kubectl rollout restart deployment routing-agent-service --namespace default
 
     sleep 2
     python3 check_ready.py --deployment llama-3-8b-instruct --namespace default
@@ -443,7 +473,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         while true; do
             checkpoint_ts=$(date +%Y%m%d_%H%M%S)
             echo "[$(date)] Copying checkpoints at ${checkpoint_ts}..."
-            python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default 2>&1 | grep -v "tar: Removing leading"
+            # python kubectl_cp_from_pod_to_host.py /app/final_model/checkpoints "${output_dir}/checkpoints_${checkpoint_ts}" routing-agent-service default 2>&1 | grep -v "tar: Removing leading"
+            python kubectl_cp_from_pod_to_host.py --src /app/final_model/checkpoints --dst "${output_dir}/checkpoints_${checkpoint_ts}" --deployment routing-agent-service --namespace default 2>&1 | grep -v "tar: Removing leading"
             echo "[$(date)] Checkpoint copy completed: checkpoints_${checkpoint_ts}"
             sleep ${interval}
         done
@@ -515,14 +546,18 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
 
     
     # Copy final model
-    if [ "${routing_policy}" == "contextual_bandit" ] || [ "${routing_policy}" == "latency_predictor" ]; then
+    # if [ "${routing_policy}" == "contextual_bandit" ] || [ "${routing_policy}" == "latency_predictor" ]; then
+    # if routing_policy has contextual_bandit or latency_predictor in its name, then copy the final model
+    if [[ "${routing_policy}" == *"contextual_bandit"* ]] || [[ "${routing_policy}" == *"latency_predictor"* ]]; then
         kubectl_cp_start_time=$(date +%s)
         echo "Copying final_model from pod..."
         # python kubectl_cp_from_pod_to_host.py /app/final_model/${target_gpu} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default
         model_dir_in_pod="/app/${target_gpu}/${architecture}/final_model/${routing_policy}"
         echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
         echo "* model_dir_in_pod: ${model_dir_in_pod}"
-        python kubectl_cp_from_pod_to_host.py ${model_dir_in_pod} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default --skip-files "tensor_dataset.pt"
+        # python kubectl_cp_from_pod_to_host.py ${model_dir_in_pod} "${experiment_result_output_dir}/final_model/${target_gpu}" routing-agent-service default --skip-files "tensor_dataset.pt"
+        python kubectl_cp_from_pod_to_host.py --src ${model_dir_in_pod} --dst "${experiment_result_output_dir}/final_model/${target_gpu}" --deployment routing-agent-service --namespace default --skip-files "tensor_dataset.pt"
+        
         kubectl_cp_end_time=$(date +%s)
         echo "* copying final_model took: $((kubectl_cp_end_time - kubectl_cp_start_time))s"
         hyperparameters_file_path=$(find "${experiment_result_output_dir}/final_model/${target_gpu}" -name "model_config.json" | head -1)

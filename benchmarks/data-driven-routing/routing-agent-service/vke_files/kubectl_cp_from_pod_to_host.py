@@ -112,9 +112,14 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
                 # If source is a directory and destination doesn't exist, create the directory
                 os.makedirs(dst, exist_ok=True)
             elif not is_src_dir:
-                # If source is a file, ensure destination directory exists
+                # If source is a file, ensure destination directory exists and construct full path
+                if os.path.isdir(dst):
+                    # If dst is a directory, construct full destination file path
+                    filename = os.path.basename(src)
+                    dst = os.path.join(dst, filename)
+                # Ensure destination directory exists
                 dst_dir = os.path.dirname(dst)
-                if dst_dir:
+                if dst_dir and not os.path.exists(dst_dir):
                     os.makedirs(dst_dir, exist_ok=True)
         
         # Handle single file copy with skip check
@@ -310,12 +315,12 @@ def kubectl_cp_from_pod_to_host(src: str, dst: str, deployment: str, namespace: 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Copy files or directories between a Kubernetes pod and local filesystem using kubectl.')
-    parser.add_argument('src', help='Source file/directory path (local or in pod)')
-    parser.add_argument('dst', help='Destination file/directory path')
-    parser.add_argument('deployment', help='Kubernetes deployment name')
-    parser.add_argument('namespace', help='Kubernetes namespace')
-    parser.add_argument('-c', '--container', help='Container name (defaults to first container)')
-    parser.add_argument('-s', '--skip-files', nargs='*', help='Filename patterns to skip (supports wildcards)')
+    parser.add_argument('--src', help='Source file/directory path (local or in pod)')
+    parser.add_argument('--dst', help='Destination file/directory path')
+    parser.add_argument('--deployment', help='Kubernetes deployment name')
+    parser.add_argument('--namespace', help='Kubernetes namespace')
+    parser.add_argument('--container', help='Container name (defaults to first container)')
+    parser.add_argument('--skip-files', nargs='*', help='Filename patterns to skip (supports wildcards)')
 
     args = parser.parse_args()
 
