@@ -30,7 +30,7 @@ experiment_configs=(
 
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_negative_linear_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
-    # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|4"
+    "prefix_cache_1|SharingRatio71%|${target_gpu}|5|1"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
     # "least_request|SharingRatio71%|${target_gpu}|7|4"
     # "least_kv_cache|SharingRatio71%|${target_gpu}|7|2"
@@ -47,8 +47,8 @@ experiment_configs=(
     # "least_request|SharingRatio47%|${target_gpu}|6|4"
     # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
     # "random|SharingRatio47%|${target_gpu}|6|1"
-    "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio47%|${target_gpu}|6|6"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|6"
+    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio47%|${target_gpu}|6|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|6"
 
     # # # # # # ## SharingRatio28%, total number of requests: 2000
     # # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
@@ -124,7 +124,7 @@ EXPLORATION_RATE=0.1
 
 max_input_tokens=8000
 override_workload_output_length=1
-max_tokens=1
+max_tokens=30
 max_tokens_std=0
 force_exact_output_tokens=1
 
@@ -525,6 +525,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --iterations ${total_num_episodes} \
             --streaming \
             --max_input_tokens ${max_input_tokens} \
+            --tweak_workload gradual_increase \
             2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
     sleep 5

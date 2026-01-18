@@ -28,7 +28,7 @@ class K8sDeployment:
         self.namespace = namespace
         self.app_label = app_label
         # kube_config_file = os.path.expanduser('~/.kube/config')
-        kube_config_file = os.path.expanduser('~/.kube/config')
+        kube_config_file = os.path.expanduser('~/.kube/config-vke')
         if not os.path.exists(kube_config_file):
             print(f"Error: {kube_config_file} does not exist")
             assert False
@@ -97,7 +97,7 @@ class K8sDeployment:
                 self.execute_command(pod_name, f"mkdir -p {remote_dir}")
             
             # Use kubectl cp with the kubeconfig
-            kubeconfig_path = os.path.expanduser('~/.kube/config')
+            kubeconfig_path = os.path.expanduser('~/.kube/config-vke')
             cmd = f"kubectl --kubeconfig={kubeconfig_path} cp {local_path} {self.namespace}/{pod_name}:{remote_path}"
             
             logger.info(f"Executing: {cmd}")
