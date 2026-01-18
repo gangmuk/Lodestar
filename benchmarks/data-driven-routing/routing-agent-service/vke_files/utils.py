@@ -123,13 +123,16 @@ def check_deployment_ready_kubernetes(deployment_name, k8s_cluster, namespace):
         bool: True if all pods and their containers are ready, False otherwise (will keep checking).
     """
     try:
-        if k8s_cluster == "vke" or k8s_cluster == "aws":
-            kube_config_file = os.path.expanduser('~/.kube/config')
+        if k8s_cluster == "vke":
+            kube_config_file = os.path.expanduser('~/.kube/config-vke')
+        elif k8s_cluster == "aws":
+            kube_config_file = os.path.expanduser('~/.kube/config-aws')
         else:
             kube_config_file = os.path.expanduser('~/.kube/config-local')
         if not os.path.exists(kube_config_file):
             logger.error(f"Error: {kube_config_file} does not exist")
             assert False
+        print(f"Using kube config file: {kube_config_file}")
         config.load_kube_config(config_file=kube_config_file)
         
         apps_v1 = client.AppsV1Api()

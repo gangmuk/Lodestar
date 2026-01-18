@@ -15,8 +15,15 @@ import httpx
 import re
 import utils
 import hashlib
+import math
 import random
 import numpy as np
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    plt = None
 from transformers import AutoTokenizer
 
 def static_hash(input_str: str) -> str:
@@ -618,6 +625,638 @@ def calculate_slo_metrics(prompt_tokens, output_tokens, gateway_side_ttft, gatew
         "ttft_slo_satisfied": ttft_slo_satisfied,
         "tpot_slo_satisfied": tpot_slo_satisfied
     }
+
+def build_profiling_target_times(num_requests: int, base_time: float, max_rps: float) -> List[float]:
+    """
+    Generate target times that exercise diverse load shapes. Each RPS value runs for
+    a fixed duration (seconds_per_step), emitting exactly that many requests per second.
+    Never exceeds max_rps.
+
+    Phases (more diverse patterns):
+    - Ramp up with varying slopes (slow start, fast middle, slow end)
+    - Ramp down with different curve
+    - Multiple burst patterns: asymmetric waves, irregular spikes, multi-level steps
+    - Sine waves with different frequencies
+    - Random walk patterns
+    """
+    if max_rps is None or max_rps <= 0:
+        raise ValueError("Profiling mode requires a positive --rps value as the max RPS.")
+
+    target_times: List[float] = []
+    current_offset = 0.0  # seconds from base_time
+    min_rps = max(1.0, max_rps * 0.1)  # 10% of max or at least 1
+
+    def emit_second(rps_value: float) -> bool:
+        """Emit requests for one second at the given RPS. Returns True if we've scheduled enough."""
+        nonlocal current_offset
+        requests_this_second = int(round(rps_value))
+        if requests_this_second < 1:
+            requests_this_second = 1
+
+        inter_arrival = 1.0 / rps_value if rps_value > 0 else 1.0
+
+        for i in range(requests_this_second):
+            if len(target_times) >= num_requests:
+                return True
+            target_times.append(base_time + current_offset + i * inter_arrival)
+
+        current_offset += 1.0
+        return len(target_times) >= num_requests
+
+    def emit_phase(rps_values: List[float], seconds_per_step: int = 1) -> bool:
+        """Emit a phase with given RPS values, each running for seconds_per_step seconds."""
+        for rps_value in rps_values:
+            for _ in range(seconds_per_step):
+                if emit_second(rps_value):
+                    return True
+        return False
+
+    # Define RPS levels
+    low_rps = max(1.0, max_rps * 0.15)
+    low_mid_rps = max_rps * 0.35
+    mid_rps = max_rps * 0.5
+    high_mid_rps = max_rps * 0.7
+    high_rps = max_rps * 0.85
+    peak_rps = max_rps
+
+    # Calculate durations based on workload size
+    estimated_total_duration = num_requests / (max_rps * 0.5)
+    # Fewer steps but MUCH longer time at each RPS level (6-10 seconds)
+    num_ramp_steps = max(6, min(12, int(estimated_total_duration * 0.05)))
+    seconds_per_ramp_step = max(6, min(10, int(estimated_total_duration * 0.04)))
+
+    # 1) Ramp up with exponential curve (slow start, accelerating)
+    ramp_up_rps = []
+    for i in range(num_ramp_steps):
+        t = i / (num_ramp_steps - 1) if num_ramp_steps > 1 else 1
+        eased_t = t * t
+        rps = min_rps + (peak_rps - min_rps) * eased_t
+        ramp_up_rps.append(rps)
+    if emit_phase(ramp_up_rps, seconds_per_step=seconds_per_ramp_step):
+        return target_times
+
+    # 2) Hold at peak
+    if emit_phase([peak_rps] * 10):
+        return target_times
+
+    # 3) Ramp down with different curve (fast start, slow end)
+    ramp_down_rps = []
+    for i in range(num_ramp_steps):
+        t = i / (num_ramp_steps - 1) if num_ramp_steps > 1 else 1
+        eased_t = 1 - (1 - t) * (1 - t)
+        rps = peak_rps - (peak_rps - min_rps) * eased_t
+        ramp_down_rps.append(rps)
+    if emit_phase(ramp_down_rps, seconds_per_step=seconds_per_ramp_step):
+        return target_times
+
+    # === DIVERSE BURST AND STABLE LOAD SECTION WITH SMOOTH TRANSITIONS ===
+    # Mix of bursty patterns (varying intensities, not all reaching max_rps) and stable loads
+    # All transitions are smooth (gradual ramps) to avoid disconnected jumps
+    burst_hold = max(4, seconds_per_ramp_step // 2)  # 4-5 seconds per level
+    low_hold = burst_hold + 2  # Shorter recovery for smoother flow
+    stable_hold = burst_hold * 2  # Longer duration for stable loads
+    transition_steps = 6  # Number of steps for smooth transitions
+    
+    def smooth_transition(start_rps, end_rps, num_steps=transition_steps, duration_per_step=2):
+        """Create a smooth transition between two RPS levels"""
+        transition = []
+        for i in range(num_steps + 1):
+            t = i / num_steps
+            # Use easing function for smoother curve
+            eased_t = t * t * (3 - 2 * t)  # Smoothstep function
+            rps = start_rps + (end_rps - start_rps) * eased_t
+            transition.append(rps)
+        return transition, duration_per_step
+    
+    def smooth_burst(base_rps, peak_rps, hold_duration, num_steps=4):
+        """Create a smooth burst: gradual up, hold, gradual down"""
+        up_transition, _ = smooth_transition(base_rps, peak_rps, num_steps, 2)
+        down_transition, _ = smooth_transition(peak_rps, base_rps, num_steps, 2)
+        return up_transition + [peak_rps] * (hold_duration // 2) + down_transition
+    
+    # Track current RPS level for smooth transitions
+    current_rps = low_rps
+    
+    # === STABLE/STEADY LOAD PATTERNS WITH SMOOTH TRANSITIONS ===
+    # Pattern A1: Smooth transition to stable medium load
+    transition, _ = smooth_transition(current_rps, mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_mid_rps
+    
+    # Pattern A2: Smooth transition to stable low-mid load
+    if emit_phase([low_mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern A3: Smooth rise to stable high-mid load
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 8, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    
+    # === MODERATE BURST PATTERNS WITH SMOOTH TRANSITIONS ===
+    # Pattern B1: Smooth moderate burst to high-mid (not peak)
+    transition, _ = smooth_transition(current_rps, high_mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_mid_rps
+    
+    # Pattern B2: Smooth small burst to mid level
+    transition, _ = smooth_transition(current_rps, mid_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_mid_rps)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_mid_rps
+    if emit_phase([low_mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    
+    # Pattern B3: Smooth gradual rise to high-mid, hold, then smooth down
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 8, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=stable_hold // 2):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # === VARIED INTENSITY BURST PATTERNS WITH SMOOTH TRANSITIONS ===
+    # Pattern C1: Smooth small spike to low-mid
+    transition, _ = smooth_transition(current_rps, low_mid_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = low_mid_rps
+    if emit_phase([low_mid_rps], seconds_per_step=3):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern C2: Smooth medium burst to high (not peak)
+    transition, _ = smooth_transition(current_rps, high_rps, 7, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_rps
+    if emit_phase([high_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    
+    # Pattern C3: Smooth asymmetric burst: quick up to mid, slow down
+    quick_up, _ = smooth_transition(current_rps, mid_rps, 4, 1)
+    if emit_phase(quick_up, seconds_per_step=1):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=3):
+        return target_times
+    slow_down, _ = smooth_transition(current_rps, low_mid_rps, 6, 2)
+    if emit_phase(slow_down, seconds_per_step=2):
+        return target_times
+    current_rps = low_mid_rps
+    transition, _ = smooth_transition(current_rps, low_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern C4: Smooth double spike pattern (medium intensity)
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 5, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=3):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=2):
+        return target_times
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 5, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=3):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern C5: Smooth sawtooth pattern (medium intensity, not peak)
+    sawtooth = []
+    for i in range(10):
+        if i % 2 == 0:
+            target = low_mid_rps
+        else:
+            target = mid_rps
+        transition, _ = smooth_transition(current_rps, target, 3, 1)
+        sawtooth.extend(transition)
+        current_rps = target
+    if emit_phase(sawtooth, seconds_per_step=1):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = low_rps
+    
+    # === OCCASIONAL PEAK BURSTS WITH SMOOTH TRANSITIONS ===
+    # Pattern D1: Smooth rise to peak, then smooth down to moderate
+    transition, _ = smooth_transition(current_rps, peak_rps, 8, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = peak_rps
+    if emit_phase([peak_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    
+    # Pattern D2: Quick smooth peak spike, then smooth to stable mid
+    transition, _ = smooth_transition(current_rps, peak_rps, 5, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = peak_rps
+    if emit_phase([peak_rps], seconds_per_step=2):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # === MIXED PATTERNS (bursty + stable) WITH SMOOTH TRANSITIONS ===
+    # Pattern E1: Smooth burst then smooth transition to stable hold
+    transition, _ = smooth_transition(current_rps, high_rps, 7, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_rps
+    if emit_phase([high_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, mid_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = mid_rps
+    if emit_phase([mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern E2: Smooth transition to stable, then smooth burst
+    transition, _ = smooth_transition(current_rps, low_mid_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_mid_rps
+    if emit_phase([low_mid_rps], seconds_per_step=stable_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, high_mid_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = high_mid_rps
+    if emit_phase([high_mid_rps], seconds_per_step=burst_hold):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern E3: Smooth wave pattern (sine-like, medium intensity)
+    wave = []
+    for i in range(16):
+        t = i / 16 * 2 * math.pi
+        target_rps = low_mid_rps + (high_mid_rps - low_mid_rps) * 0.5 * (1 + math.sin(t))
+        transition, _ = smooth_transition(current_rps, target_rps, 3, 1)
+        wave.extend(transition)
+        current_rps = target_rps
+    if emit_phase(wave, seconds_per_step=1):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 5, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern E4: Smooth step pattern with varying intensities
+    steps = [low_rps, low_mid_rps, mid_rps, high_mid_rps, high_rps]
+    step_pattern = []
+    for step_rps in steps:
+        transition, _ = smooth_transition(current_rps, step_rps, 4, 1)
+        step_pattern.extend(transition)
+        current_rps = step_rps
+        step_pattern.append(step_rps)  # Hold briefly at each step
+    if emit_phase(step_pattern, seconds_per_step=1):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 6, 2)
+    if emit_phase(transition, seconds_per_step=2):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern E5: Smooth decay pattern from high (not peak)
+    decay = []
+    for i in range(8):
+        target_rps = high_rps * math.exp(-i * 0.2) + low_rps * (1 - math.exp(-i * 0.2))
+        transition, _ = smooth_transition(current_rps, target_rps, 3, 1)
+        decay.extend(transition)
+        current_rps = target_rps
+    if emit_phase(decay, seconds_per_step=1):
+        return target_times
+    transition, _ = smooth_transition(current_rps, low_rps, 4, 1)
+    if emit_phase(transition, seconds_per_step=1):
+        return target_times
+    current_rps = low_rps
+    
+    # Pattern E6: Smooth bell curve (gradual up and down)
+    bell_curve = []
+    for i in range(12):
+        t = i / 11  # 0 to 1
+        # Bell curve: low at edges, peak in middle
+        bell_factor = 4 * t * (1 - t)  # Parabolic curve
+        target_rps = low_rps + (high_mid_rps - low_rps) * bell_factor
+        transition, _ = smooth_transition(current_rps, target_rps, 2, 1)
+        bell_curve.extend(transition)
+        current_rps = target_rps
+    if emit_phase(bell_curve, seconds_per_step=1):
+        return target_times
+    
+    # Pattern E7: Smooth pulse train (multiple small bursts)
+    for _ in range(3):
+        transition, _ = smooth_transition(current_rps, mid_rps, 3, 1)
+        if emit_phase(transition, seconds_per_step=1):
+            return target_times
+        current_rps = mid_rps
+        if emit_phase([mid_rps], seconds_per_step=2):
+            return target_times
+        transition, _ = smooth_transition(current_rps, low_mid_rps, 3, 1)
+        if emit_phase(transition, seconds_per_step=1):
+            return target_times
+        current_rps = low_mid_rps
+        if emit_phase([low_mid_rps], seconds_per_step=2):
+            return target_times
+    
+    # === FINAL CYCLING PATTERNS WITH SMOOTH TRANSITIONS ===
+    # If still have requests, cycle through diverse patterns with smooth transitions
+    diverse_patterns = [
+        # Stable loads with smooth transitions
+        (low_mid_rps, stable_hold),
+        (mid_rps, stable_hold),
+        (high_mid_rps, stable_hold),
+        # Moderate bursts (not peak) with smooth transitions
+        (high_mid_rps, burst_hold),
+        (high_rps, burst_hold),
+        (mid_rps, burst_hold),
+        # Low recovery
+        (low_rps, low_hold),
+        # Occasional peak (only 1 in 8 patterns)
+        (peak_rps, burst_hold),
+    ]
+    pattern_idx = 0
+    while len(target_times) < num_requests:
+        target_rps, hold_time = diverse_patterns[pattern_idx % len(diverse_patterns)]
+        transition, _ = smooth_transition(current_rps, target_rps, 5, 1)
+        if emit_phase(transition, seconds_per_step=1):
+            break
+        current_rps = target_rps
+        if emit_phase([target_rps], seconds_per_step=hold_time):
+            break
+        pattern_idx += 1
+
+    return target_times
+
+def build_gradual_increase_target_times(num_requests: int, base_time: float, max_rps: float) -> List[float]:
+    """
+    Generate target times for a workload where RPS starts at 1 and increases
+    by 0.5 RPS every 10 seconds until reaching max_rps, then stays at max_rps.
+    """
+    if max_rps is None or max_rps <= 0:
+        raise ValueError("gradual_increase tweak requires a positive --rps value.")
+
+    target_times: List[float] = []
+    current_offset = 0.0  # seconds from base_time
+
+    rps_level = 1.0
+    while len(target_times) < num_requests:
+        # Cap at max_rps once we reach it
+        effective_rps = min(rps_level, max_rps)
+        if effective_rps <= 0:
+            effective_rps = 1.0
+
+        inter_arrival = 1.0 / effective_rps
+
+        # Run this RPS level for 10 seconds
+        for _ in range(10):
+            # For each second, emit approximately effective_rps requests evenly
+            requests_this_second = int(round(effective_rps))
+            if requests_this_second < 1:
+                requests_this_second = 1
+
+            for i in range(requests_this_second):
+                if len(target_times) >= num_requests:
+                    return target_times
+                target_times.append(base_time + current_offset + i * inter_arrival)
+
+            current_offset += 1.0
+            if len(target_times) >= num_requests:
+                return target_times
+
+        # Increase RPS level by 0.5 every 10 seconds until we reach max_rps
+        if rps_level < max_rps:
+            rps_level += 0.5
+
+    return target_times
+    
+def _estimate_input_tokens_from_prompt(prompt: Union[str, List, Dict[str, Any]]) -> int:
+    """Estimate input tokens for a prompt (chat format or token-ids placeholder)."""
+    if isinstance(prompt, str):
+        return estimate_tokens_from_text(prompt, use_word_count=True)
+    if isinstance(prompt, list):
+        contents = []
+        for msg in prompt:
+            if isinstance(msg, dict) and "content" in msg:
+                contents.append(str(msg["content"]))
+            else:
+                contents.append(str(msg))
+        return estimate_tokens_from_text(" ".join(contents), use_word_count=True)
+    if isinstance(prompt, dict) and "content" in prompt:
+        return estimate_tokens_from_text(str(prompt["content"]), use_word_count=True)
+    return 0
+
+def dump_profiling_workload(path: str, iteration_tasks: List[Dict[str, Any]], iteration_base_time: float, prompt_type: str, iteration: int = 0, total_iterations: int = 1):
+    """
+    Persist the profiling-generated schedule as a workload-style JSONL file for visualization.
+    Each line groups requests by millisecond timestamp offset from iteration_base_time.
+
+    For multiple iterations, timestamps are offset so they don't overlap in the plot.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
+
+    # Calculate the duration of one iteration to offset subsequent iterations
+    if iteration_tasks:
+        max_time = max(task["target_time"] for task in iteration_tasks)
+        min_time = min(task["target_time"] for task in iteration_tasks)
+        iteration_duration_ms = int((max_time - min_time) * 1000) + 1000  # Add 1 second gap
+    else:
+        iteration_duration_ms = 0
+
+    # Offset for this iteration (so iterations don't overlap in the plot)
+    iteration_offset_ms = iteration * iteration_duration_ms
+
+    # Bucket tasks by timestamp (ms)
+    buckets: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for task in iteration_tasks:
+        ts_ms = int(round((task["target_time"] - iteration_base_time) * 1000)) + iteration_offset_ms
+        # Estimate input tokens
+        if prompt_type == "token-ids":
+            input_tokens_est = len(task.get("token_ids") or [])
+        else:
+            input_tokens_est = _estimate_input_tokens_from_prompt(task.get("prompt"))
+        output_tokens_req = task.get("max_tokens", 0)
+        buckets[ts_ms].append({
+            "prompt": task["prompt"],
+            "session_id": task.get("session_id"),
+            "max_tokens": task.get("max_tokens"),
+            "token_ids": task.get("token_ids"),
+            "request_id": task.get("request_id"),
+            "iteration": task.get("iteration"),
+            "input_tokens_est": input_tokens_est,
+            "output_tokens_req": output_tokens_req,
+        })
+
+    # First iteration overwrites, subsequent iterations append
+    mode = "w" if iteration == 0 else "a"
+    with open(path, mode, encoding="utf-8") as f:
+        for ts in sorted(buckets.keys()):
+            line = {"timestamp": ts, "requests": buckets[ts]}
+            f.write(json.dumps(line) + "\n")
+
+def plot_profiling_timeseries(profiling_path: str, output_dir: str):
+    """Plot requests/sec and input tokens/sec from profiling workload with professional styling."""
+    if not MATPLOTLIB_AVAILABLE:
+        logger.warning("matplotlib is not available, skipping plot generation. Install matplotlib to enable plotting.")
+        return
+    if not os.path.exists(profiling_path):
+        logger.warning(f"Profiling workload file not found, skipping plot: {profiling_path}")
+        return
+    per_sec = defaultdict(lambda: {"req": 0, "in_tokens": 0, "out_tokens": 0})
+    with open(profiling_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            ts_ms = int(rec.get("timestamp", 0))
+            bucket = ts_ms // 1000
+            requests = rec.get("requests", [])
+            per_sec[bucket]["req"] += len(requests)
+            for r in requests:
+                per_sec[bucket]["in_tokens"] += int(r.get("input_tokens_est", 0) or 0)
+                per_sec[bucket]["out_tokens"] += int(r.get("output_tokens_req", 0) or 0)
+
+    # Sort by time
+    times = sorted(per_sec.keys())
+    reqs = [per_sec[t]["req"] for t in times]
+    in_tok = [per_sec[t]["in_tokens"] for t in times]
+
+    # Professional plot styling
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 11,
+        'axes.linewidth': 1.2,
+        'axes.spines.top': False,
+        'axes.spines.right': True,
+        'xtick.major.width': 1.2,
+        'ytick.major.width': 1.2,
+        'xtick.direction': 'out',
+        'ytick.direction': 'out',
+    })
+
+    fig, ax1 = plt.subplots(figsize=(12, 5))
+
+    # Primary axis: Requests/sec with filled area
+    color_req = '#2563eb'  # Blue
+    ax1.fill_between(times, reqs, alpha=0.15, color=color_req)
+    ax1.plot(times, reqs, label="Requests/sec", color=color_req, linewidth=1.8)
+    ax1.set_ylabel("Requests/sec", color=color_req, fontsize=12, fontweight='medium')
+    ax1.tick_params(axis='y', labelcolor=color_req, labelsize=10)
+    ax1.set_ylim(bottom=0)
+
+    # Secondary axis: Input tokens/sec
+    ax2 = ax1.twinx()
+    color_tok = '#16a34a'  # Green
+    ax2.plot(times, in_tok, label="Input tokens/sec", color=color_tok, linewidth=1.5, alpha=0.8)
+    ax2.set_ylabel("Input tokens/sec", color=color_tok, fontsize=12, fontweight='medium')
+    ax2.tick_params(axis='y', labelcolor=color_tok, labelsize=10)
+    ax2.set_ylim(bottom=0)
+
+    # X-axis styling
+    ax1.set_xlabel("Time (seconds)", fontsize=12, fontweight='medium')
+    ax1.tick_params(axis='x', labelsize=10)
+    ax1.set_xlim(left=0)
+
+    # Grid (only horizontal, subtle)
+    ax1.yaxis.grid(True, linestyle='--', alpha=0.3, color='gray')
+    ax1.set_axisbelow(True)
+
+    # Legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right',
+               frameon=True, framealpha=0.9, edgecolor='none', fontsize=10)
+
+    # Title
+    ax1.set_title("Profiling Workload: Request Rate Over Time", fontsize=13, fontweight='bold', pad=15)
+
+    fig.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+    plot_path = os.path.join(output_dir, "profiling_timeseries.pdf")
+    fig.savefig(plot_path, format="pdf", bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"profiling_plot_path: {plot_path}")
 
 def create_success_result(request_id, start_time, response_time, client_side_ttft, client_side_tpot, 
                           prompt_tokens, output_tokens, total_tokens, headers_data, 
@@ -1226,10 +1865,21 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
-                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10, force_exact_output_tokens=0):
+                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10, force_exact_output_tokens=0,
+                       workload_path=None):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
-    # Create a client
-    client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
+    profiling_mode = getattr(args, "profiling", None) == "profiling"
+    profiling_dump_path = None
+    if profiling_mode:
+        # Save next to the input workload as workload_profiling.jsonl
+        workload_dir = os.path.dirname(workload_path) if workload_path else os.path.dirname(args.workload_path)
+        profiling_dump_path = os.path.join(workload_dir, "workload_profiling.jsonl")
+        logger.info(f"Profiling mode enabled. Generated workload will be saved to: {profiling_dump_path}")
+
+    # Create a client only for non-profiling (benchmark) runs
+    client = None
+    if not profiling_mode:
+        client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
     
     # Track total statistics
     total_requests = 0
@@ -1253,12 +1903,24 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         # Calculate inter-arrival time if RPS is specified
         mean_inter_arrival_time = 1.0 / rps if rps else None
         if rps:
-            if poisson_arrivals:
+            if getattr(args, "tweak_workload", None) == "gradual_increase":
+                logger.info(f"Using gradual_increase workload: RPS ramps from 1 to {rps} (step +0.5 RPS every 10 seconds).")
+            elif poisson_arrivals:
                 logger.info(f"Using RPS-based scheduling with Poisson arrivals: {rps} requests/second (mean inter-arrival: {mean_inter_arrival_time:.4f}s)")
             else:
                 logger.info(f"Using RPS-based scheduling: {rps} requests/second (inter-arrival time: {mean_inter_arrival_time:.4f}s)")
         else:
             logger.info(f"Using timestamp-based scheduling from workload file")
+        
+        if profiling_mode:
+            if not rps:
+                raise ValueError("Profiling mode requires --rps (used as the maximum target RPS).")
+            if shuffle_requests:
+                logger.warning("Profiling mode ignores --shuffle_requests to preserve load pattern ordering.")
+                shuffle_requests = False
+            if poisson_arrivals:
+                logger.warning("Profiling mode ignores --poisson_arrivals; profiling schedule already includes variability.")
+                poisson_arrivals = False
         
         if shuffle_requests:
             logger.info(f"Request shuffling enabled for iteration {iteration+1}")
@@ -1285,10 +1947,21 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 if args.prompt_type == "token-ids":
                     # Parse token IDs from workload file
                     try:
-                        # Expect prompt field to contain a list of token IDs like "[123, 456, 789, ...]"
+                        # Support multiple formats:
+                        # 1. JSON list format: "[123, 456, 789]"
+                        # 2. Space-separated format: "123 456 789"
+                        # 3. Already a list: [123, 456, 789]
                         if isinstance(request["prompt"], str):
-                            # Parse string representation of list
-                            token_ids = json.loads(request["prompt"])
+                            # Try JSON format first (backward compatible)
+                            try:
+                                token_ids = json.loads(request["prompt"])
+                            except json.JSONDecodeError:
+                                # If JSON parsing fails, try space-separated format
+                                # Split by whitespace and convert to integers
+                                token_ids_str = request["prompt"].strip()
+                                if not token_ids_str:
+                                    raise ValueError("Empty token IDs string")
+                                token_ids = [int(x) for x in token_ids_str.split()]
                         elif isinstance(request["prompt"], list):
                             # Already a list
                             token_ids = request["prompt"]
@@ -1296,7 +1969,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                             raise ValueError(f"Invalid token_ids format: {request['prompt']}")
 
                         prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
-                    except (json.JSONDecodeError, KeyError) as e:
+                    except (json.JSONDecodeError, KeyError, ValueError) as e:
                         logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
                         raise
                 else:
@@ -1369,11 +2042,33 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         total_num_requests_per_iter = len(temp_requests)
         total_num_requests_overall = total_num_requests_per_iter * iterations
         
+        profiling_target_times = None
+        if profiling_mode:
+            profiling_target_times = build_profiling_target_times(
+                num_requests=total_num_requests_per_iter,
+                base_time=iteration_base_time,
+                max_rps=rps,
+            )
+            logger.info(f"Profiling mode: scheduled {len(profiling_target_times)} target times across ramp, burst, and steady phases.")
+
+        gradual_increase_target_times = None
+        if (not profiling_mode) and rps and getattr(args, "tweak_workload", None) == "gradual_increase":
+            gradual_increase_target_times = build_gradual_increase_target_times(
+                num_requests=total_num_requests_per_iter,
+                base_time=iteration_base_time,
+                max_rps=rps,
+            )
+            logger.info(f"gradual_increase workload: scheduled {len(gradual_increase_target_times)} target times.")
+
         # Now assign target times and create final tasks
         cumulative_time = 0.0  # For Poisson arrivals
         for idx, req in enumerate(temp_requests):
             # Calculate target_time based on mode
-            if rps:
+            if profiling_target_times is not None:
+                target_time = profiling_target_times[idx]
+            elif gradual_increase_target_times is not None:
+                target_time = gradual_increase_target_times[idx]
+            elif rps:
                 if poisson_arrivals:
                     # Use exponential distribution for Poisson process
                     # Sample inter-arrival time from exponential distribution
@@ -1401,8 +2096,17 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         
         logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
         print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
-        
-        # Execute only this iteration's tasks
+
+        # In profiling mode, ONLY dump the generated workload and do not send any requests
+        if profiling_mode and profiling_dump_path:
+            logger.info("Profiling mode: dumping generated workload and skipping request execution.")
+            dump_profiling_workload(profiling_dump_path, iteration_tasks, iteration_base_time, args.prompt_type, iteration=iteration, total_iterations=iterations)
+            total_requests += len(iteration_tasks)
+            # Do not execute or record successes/failures
+            iteration_tasks = None
+            continue
+
+        # Execute only this iteration's tasks (benchmark mode)
         start_time = time.time()
         results = await schedule_and_execute_tasks(
             tasks=iteration_tasks,
@@ -1450,6 +2154,12 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
     logger.info(f"Total requests: {total_requests}")
     logger.info(f"Successful requests: {total_success}")
     logger.info(f"Failed requests: {total_failures}")
+    if profiling_mode and profiling_dump_path:
+        # Print so users can easily find the generated profiling workload
+        print(f"profiling_workload_path: {profiling_dump_path}")
+        # Also generate a timeseries plot in the same directory as the workload
+        workload_dir = os.path.dirname(profiling_dump_path)
+        plot_profiling_timeseries(profiling_dump_path, workload_dir)
     
     return {"total_requests": total_requests, "successful": total_success, "failed": total_failures}
 
@@ -1459,11 +2169,15 @@ async def main(args):
     if '.jsonl' not in args.workload_path:
         raise ValueError("Workload path must be a .jsonl file")
 
-    output_csv_file_name = f"{args.output_dir}/output.csv"
-
-    # Initialize CSV file
-    with open(output_csv_file_name, 'w', encoding='utf-8') as f:
-        f.write("")  # Create empty file
+    profiling_mode = args.profiling == "profiling"
+    os.makedirs(args.output_dir, exist_ok=True)
+    if profiling_mode:
+        output_csv_file_name = ""
+    else:
+        output_csv_file_name = f"{args.output_dir}/output.csv"
+        # Initialize CSV file
+        with open(output_csv_file_name, 'w', encoding='utf-8') as f:
+            f.write("")  # Create empty file
 
     # Load workload
     load_struct = await load_workload(args.workload_path)
@@ -1471,9 +2185,9 @@ async def main(args):
     results_lock = asyncio.Lock()  # Async lock for result writing
     history_lock = asyncio.Lock()  # Async lock for session history
 
-    # Open output file
-    with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
-        # Run benchmark
+    # Open output file only when not profiling
+    if profiling_mode:
+        output_file_handle = None
         start_time = time.time()
         await run_benchmark(
             api_key=args.api_key,
@@ -1482,7 +2196,7 @@ async def main(args):
             timeout=args.timeout,
             routing_strategy=args.routing_strategy,
             load_struct=load_struct,
-            output_file=output_file,
+            output_file=output_file_handle,
             model=args.model,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
@@ -1496,11 +2210,39 @@ async def main(args):
             max_input_tokens=args.max_input_tokens,
             max_tokens_std=args.max_tokens_std,
             force_exact_output_tokens=args.force_exact_output_tokens,
+            workload_path=args.workload_path,
         )
         end_time = time.time()
-        
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
-        print(f"** output_csv_file_name: {output_csv_file_name}")
+    else:
+        with open(args.output_file_path, 'w', encoding='utf-8') as output_file_handle:
+            start_time = time.time()
+            await run_benchmark(
+                api_key=args.api_key,
+                endpoint=args.endpoint,
+                max_retries=args.max_retries,
+                timeout=args.timeout,
+                routing_strategy=args.routing_strategy,
+                load_struct=load_struct,
+                output_file=output_file_handle,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                is_streaming=args.streaming,
+                results_lock=results_lock,
+                history_lock=history_lock,
+                iterations=args.iterations,
+                rps=args.rps,
+                shuffle_requests=args.shuffle_requests,
+                poisson_arrivals=args.poisson_arrivals,
+                max_input_tokens=args.max_input_tokens,
+                max_tokens_std=args.max_tokens_std,
+                force_exact_output_tokens=args.force_exact_output_tokens,
+                workload_path=args.workload_path,
+            )
+            end_time = time.time()
+            logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
+            print(f"** output_csv_file_name: {output_csv_file_name}")
 
 def write_experiment_config_to_file(output_dir, args):
         config_file = f'{output_dir}/experiment_config.txt'
@@ -1542,13 +2284,26 @@ if __name__ == "__main__":
                        help="Shuffle the order of requests for each iteration (makes iterations non-identical)")
     parser.add_argument("--poisson_arrivals", action="store_true",
                        help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")
+    parser.add_argument("--profiling", type=str, choices=["profiling", "benchmark"],
+                       help="Profiling mode ('profiling') sweeps diverse load shapes (ramp up/down, bursty, steady) from 1 RPS up to --rps. "
+                            "Use 'benchmark' or omit this flag for standard behavior. Generated workload JSONL and PDF plot will be saved in the same directory as the input workload file.")
+    parser.add_argument("--tweak_workload", type=str, default=None,
+                       help="Optional workload tweak. 'gradual_increase' ramps RPS from 1 to --rps by +1 RPS every 10 seconds in benchmark mode.")
 
     args = parser.parse_args()
     
+    if args.profiling == "profiling" and not args.rps:
+        raise ValueError("Profiling mode requires --rps to define the maximum RPS for load patterns.")
+
     # Validation: poisson_arrivals only makes sense with RPS
     if args.poisson_arrivals and not args.rps:
         logger.warning("--poisson_arrivals flag requires --rps to be specified. Ignoring poisson_arrivals.")
         args.poisson_arrivals = False
+
+    # Validation: tweak_workload=gradual_increase only makes sense with RPS
+    if args.tweak_workload == "gradual_increase" and not args.rps:
+        logger.warning("--tweak_workload=gradual_increase requires --rps to be specified. Ignoring tweak_workload.")
+        args.tweak_workload = None
 
     asyncio.run(main(args))
     if not os.path.exists(args.output_dir):
