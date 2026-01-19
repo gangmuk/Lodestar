@@ -14,98 +14,80 @@ k8s_cluster="vke"
 # Define experiment configurations
 # Format: "routing_policy|workload_name|target_gpu|rps|total_num_episodes"
 
-target_gpu="NVIDIA-A10"
-
+target_gpu="NVIDIA-A30"
+workload_mode="benchmark" # benchmark, profiling
 experiment_configs=(
-    # # ## SharingRatio71%, total number of requests: 1500
+    # "least_request|ten_request|${target_gpu}|7|4"
+
+    ## SharingRatio71%, total number of requests: 1500
     # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio71%|${target_gpu}|7|4"
-
     # "contextual_bandit_perpodmodel_advanced_negative_linear|SharingRatio71%|${target_gpu}|7|2"
     # "contextual_bandit_perpodmodel_advanced_throughput_based|SharingRatio71%|${target_gpu}|7|2"
     # "contextual_bandit_perpodmodel_advanced_quantile_based|SharingRatio71%|${target_gpu}|7|2"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio71%|${target_gpu}|7|6"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio71%|${target_gpu}|7|6"
-
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio71%|${target_gpu}|7|4"
     # "contextual_bandit_negative_linear_perpodmodel|SharingRatio71%|${target_gpu}|7|4"
-    "prefix_cache_1|SharingRatio71%|${target_gpu}|5|1"
+
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio71%|${target_gpu}|7|1"
     # "least_latency|SharingRatio71%|${target_gpu}|7|4"
-    # "least_request|SharingRatio71%|${target_gpu}|7|4"
     # "least_kv_cache|SharingRatio71%|${target_gpu}|7|2"
+    # "prefix_cache_1|SharingRatio71%|${target_gpu}|7|2"
+    # "least_request|SharingRatio71%|${target_gpu}|7|2"
     # "random|SharingRatio71%|${target_gpu}|7|2"
 
-    # # # # # ## SharingRatio47%, total number of requests: 2000
+    ## SharingRatio47%, total number of requests: 2000
     # "contextual_bandit_perpodmodel_policygradient_throughput_based-2|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio47%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio47%|${target_gpu}|6|4"
-    # "latency_predictor|SharingRatio47%|${target_gpu}|6|5"
-    # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|4"
-    # "least_latency|SharingRatio47%|${target_gpu}|6|1"
-    # "least_request|SharingRatio47%|${target_gpu}|6|4"
-    # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
-    # "random|SharingRatio47%|${target_gpu}|6|1"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio47%|${target_gpu}|6|6"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|6"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|2"
+    # "latency_predictor|SharingRatio47%|${target_gpu}|6|2"
+    "least_latency|SharingRatio47%|${target_gpu}|6|2"
+    "prefix_cache_1|SharingRatio47%|${target_gpu}|6|2"
+    "random|SharingRatio47%|${target_gpu}|6|2"
+    # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
 
-    # # # # # # ## SharingRatio28%, total number of requests: 2000
-    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|5|4"
-    # # # "latency_predictor|SharingRatio28%|${target_gpu}|5|5"
-    # # # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|1"
-    # # # "least_latency|SharingRatio28%|${target_gpu}|5|1"
-    # # "least_request|SharingRatio28%|${target_gpu}|5|4"
-    # # # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
-    # # # "random|SharingRatio28%|${target_gpu}|5|1"
+
+    ## SharingRatio28%, total number of requests: 2000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio28%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_policygradient|SharingRatio28%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio28%|${target_gpu}|5|6"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|6"
-
-    # ## rps 6 for SharingRatio28% does not work in 7 A10.
-    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|6|2"
-    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|6|2"
-    # # "contextual_bandit_perpodmodel_advanced_negative_linear|SharingRatio28%|${target_gpu}|6|2"
-    # # "contextual_bandit_perpodmodel_advanced_throughput_based|SharingRatio28%|${target_gpu}|6|2"
-    # # "contextual_bandit_perpodmodel_advanced_quantile_based|SharingRatio28%|${target_gpu}|6|2"
-    # # "latency_predictor|SharingRatio28%|${target_gpu}|6|4"
-    # # "prefix_cache_1|SharingRatio28%|${target_gpu}|6|4"
-    # # "least_latency|SharingRatio28%|${target_gpu}|6|2"
-    # # "least_request|SharingRatio28%|${target_gpu}|6|2"
-    # # "least_kv_cache|SharingRatio28%|${target_gpu}|6|4"
-    # # # "random|SharingRatio28%|${target_gpu}|6|2"
-    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio28%|${target_gpu}|6|6"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|6|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|2"
+    # "latency_predictor|SharingRatio28%|${target_gpu}|5|2"
+    "least_latency|SharingRatio28%|${target_gpu}|5|2"
+    "prefix_cache_1|SharingRatio28%|${target_gpu}|5|2"
+    "random|SharingRatio28%|${target_gpu}|5|2"
+    # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
 
 
-    # # # # # # ## SharingRatio9%, total number of requests: 2000
-    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio9%|${target_gpu}|5|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
-    # # # "latency_predictor|SharingRatio9%|${target_gpu}|5|5"
-    # # # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|1"
-    # # # "least_latency|SharingRatio9%|${target_gpu}|5|1"
-    # # "least_request|SharingRatio9%|${target_gpu}|5|4"
-    # # # "least_kv_cache|SharingRatio9%|${target_gpu}|5|1"
-    # # # "random|SharingRatio9%|${target_gpu}|5|1"
-    # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio9%|${target_gpu}|5|6"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio9%|${target_gpu}|5|6"
+    ## SharingRatio9%, total number of requests: 2000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio9%|${target_gpu}|5|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|2"
+    # "latency_predictor|SharingRatio28%|${target_gpu}|5|2"
+    "least_latency|SharingRatio28%|${target_gpu}|5|2"
+    "prefix_cache_1|SharingRatio28%|${target_gpu}|5|2"
+    "random|SharingRatio28%|${target_gpu}|5|2"
+    # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
 
-    # # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
-    # # # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # # # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # # # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
-    # # # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel_checkpoint|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
+    # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
+    "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+    # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
 )
 
 INCLUDE_GPU_FEATURES=0
@@ -124,13 +106,14 @@ EXPLORATION_RATE=0.1
 
 max_input_tokens=8000
 override_workload_output_length=1
-max_tokens=30
+max_tokens=1
 max_tokens_std=0
 force_exact_output_tokens=1
 
 ship_model=0
 ship_code=1
 ship_offline_training_data=0
+prompt_type="chat" # chat, token-ids
 
 ENABLE_FLUSH=1
 FLUSH_PERIOD=10
@@ -263,9 +246,28 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         fi
     fi
 
-
-    workload_path_in_pod="/app/workload/${workload_name}/workload.jsonl"
-    workload_path_in_host="../workload-and-experiment_results/${workload_name}/workload.jsonl"
+    if [ "${prompt_type}" == "chat" ]; then
+        # Always use the base workload.jsonl as input to async-client.py.
+        # In profiling mode, async-client.py will internally generate a profiling
+        # schedule (and optionally dump workload_profiling.jsonl) at runtime.
+        workload_file_name="workload.jsonl"
+        workload_path_in_pod="/app/workload/${workload_name}/${workload_file_name}"
+        workload_path_in_host="../workload-and-experiment_results/${workload_name}/${workload_file_name}"
+    elif [ "${prompt_type}" == "token-ids" ]; then
+        # Same idea for token-ids mode: async-client.py handles profiling generation.
+        workload_file_name="workload_token.jsonl"
+        workload_path_in_pod="/app/workload/${workload_name}/${workload_file_name}"
+        workload_path_in_host="../workload-and-experiment_results/${workload_name}/${workload_file_name}"
+    else
+        echo "Error: Unknown prompt type: ${prompt_type}"
+        echo "Exiting... 8"
+        exit 1
+    fi
+    if [ ! -f "${workload_path_in_host}" ]; then
+        echo "Error: Workload file does not exist: ${workload_path_in_host}"
+        echo "Exiting... 9"
+        exit 1
+    fi
     output_dir="/app/output/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
     output_jsonl_path="${output_dir}/output.jsonl"
 
@@ -504,6 +506,9 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
 
     # Run the client using kubectl exec
         # python3 /app/async-client.py \
+    # Run client inside the pod. async-client.py will interpret --workload_mode:
+    # - benchmark: use original timing or RPS-based scheduling
+    # - profiling: build a profiling schedule from --rps, dump it, and send requests accordingly
     kubectl exec ${ACTUAL_POD} -c ${CLIENT_SERVICE_CONTAINER_NAME} -- \
         python3 /app/async-client.py \
             --workload_path ${workload_path_in_pod} \
@@ -518,14 +523,14 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --override_workload_output_length ${override_workload_output_length} \
             --force_exact_output_tokens ${force_exact_output_tokens} \
             --output_dir ${output_dir} \
-            --prompt_type chat \
+            --prompt_type ${prompt_type} \
             --rps ${rps} \
             --poisson_arrivals \
             --shuffle_requests \
             --iterations ${total_num_episodes} \
             --streaming \
             --max_input_tokens ${max_input_tokens} \
-            --tweak_workload gradual_increase \
+            --workload_mode ${workload_mode} \
             2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 
     sleep 5

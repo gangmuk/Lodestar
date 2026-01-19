@@ -2,12 +2,12 @@
 
 message=$(for i in $(seq 1 2000); do echo -n "hello "; done)
 
-llm_model="llama-3-8b-instruct"
-subAlgorithm="least_latency"
-# llm_model=$1
-# subAlgorithm=$2
-random_request_id=$((RANDOM % 1000))
 routing_policy="rl-online-router"
+# subAlgorithm="least_latency"
+subAlgorithm="contextual_bandit_perpodmodel_checkpoint_quantile_based_new"
+
+llm_model="llama-3-8b-instruct"
+random_request_id=$((RANDOM % 1000))
 # routing_policy="preble"
 
 for i in {1..1}; do
@@ -32,5 +32,5 @@ for i in {1..1}; do
             "max_tokens": 50,
             "min_tokens": 50,
             "ignore_eos": true
-        }' &
+        }'
 done

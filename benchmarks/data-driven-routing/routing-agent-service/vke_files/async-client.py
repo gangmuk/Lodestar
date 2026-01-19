@@ -1868,7 +1868,9 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                        shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10, force_exact_output_tokens=0,
                        workload_path=None):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
-    profiling_mode = getattr(args, "profiling", None) == "profiling"
+    # Determine workload mode from CLI args (benchmark vs profiling)
+    workload_mode = getattr(args, "workload_mode", "benchmark")
+    profiling_mode = workload_mode == "profiling"
     profiling_dump_path = None
     if profiling_mode:
         # Save next to the input workload as workload_profiling.jsonl
@@ -1876,10 +1878,9 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         profiling_dump_path = os.path.join(workload_dir, "workload_profiling.jsonl")
         logger.info(f"Profiling mode enabled. Generated workload will be saved to: {profiling_dump_path}")
 
-    # Create a client only for non-profiling (benchmark) runs
-    client = None
-    if not profiling_mode:
-        client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
+    # Always create a client; in profiling mode we both generate a profiling schedule
+    # and actually send requests using it.
+    client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
     
     # Track total statistics
     total_requests = 0
@@ -2065,6 +2066,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         for idx, req in enumerate(temp_requests):
             # Calculate target_time based on mode
             if profiling_target_times is not None:
+                # Profiling mode: use precomputed profiling schedule
                 target_time = profiling_target_times[idx]
             elif gradual_increase_target_times is not None:
                 target_time = gradual_increase_target_times[idx]
@@ -2097,14 +2099,17 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
         print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
 
-        # In profiling mode, ONLY dump the generated workload and do not send any requests
+        # In profiling mode, also persist the generated profiling schedule as a workload-style JSONL
         if profiling_mode and profiling_dump_path:
-            logger.info("Profiling mode: dumping generated workload and skipping request execution.")
-            dump_profiling_workload(profiling_dump_path, iteration_tasks, iteration_base_time, args.prompt_type, iteration=iteration, total_iterations=iterations)
-            total_requests += len(iteration_tasks)
-            # Do not execute or record successes/failures
-            iteration_tasks = None
-            continue
+            logger.info("Profiling mode: dumping generated profiling workload (will also execute requests).")
+            dump_profiling_workload(
+                profiling_dump_path,
+                iteration_tasks,
+                iteration_base_time,
+                args.prompt_type,
+                iteration=iteration,
+                total_iterations=iterations,
+            )
 
         # Execute only this iteration's tasks (benchmark mode)
         start_time = time.time()
@@ -2169,15 +2174,12 @@ async def main(args):
     if '.jsonl' not in args.workload_path:
         raise ValueError("Workload path must be a .jsonl file")
 
-    profiling_mode = args.profiling == "profiling"
     os.makedirs(args.output_dir, exist_ok=True)
-    if profiling_mode:
-        output_csv_file_name = ""
-    else:
-        output_csv_file_name = f"{args.output_dir}/output.csv"
-        # Initialize CSV file
-        with open(output_csv_file_name, 'w', encoding='utf-8') as f:
-            f.write("")  # Create empty file
+    # Always prepare a CSV output file; both benchmark and profiling modes
+    # will record per-request metrics there.
+    output_csv_file_name = f"{args.output_dir}/output.csv"
+    with open(output_csv_file_name, 'w', encoding='utf-8') as f:
+        f.write("")  # Create empty file
 
     # Load workload
     load_struct = await load_workload(args.workload_path)
@@ -2185,9 +2187,8 @@ async def main(args):
     results_lock = asyncio.Lock()  # Async lock for result writing
     history_lock = asyncio.Lock()  # Async lock for session history
 
-    # Open output file only when not profiling
-    if profiling_mode:
-        output_file_handle = None
+    # Always open an output JSONL file; both modes send requests and record results.
+    with open(args.output_file_path, 'w', encoding='utf-8') as output_file_handle:
         start_time = time.time()
         await run_benchmark(
             api_key=args.api_key,
@@ -2214,35 +2215,7 @@ async def main(args):
         )
         end_time = time.time()
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
-    else:
-        with open(args.output_file_path, 'w', encoding='utf-8') as output_file_handle:
-            start_time = time.time()
-            await run_benchmark(
-                api_key=args.api_key,
-                endpoint=args.endpoint,
-                max_retries=args.max_retries,
-                timeout=args.timeout,
-                routing_strategy=args.routing_strategy,
-                load_struct=load_struct,
-                output_file=output_file_handle,
-                model=args.model,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-                is_streaming=args.streaming,
-                results_lock=results_lock,
-                history_lock=history_lock,
-                iterations=args.iterations,
-                rps=args.rps,
-                shuffle_requests=args.shuffle_requests,
-                poisson_arrivals=args.poisson_arrivals,
-                max_input_tokens=args.max_input_tokens,
-                max_tokens_std=args.max_tokens_std,
-                force_exact_output_tokens=args.force_exact_output_tokens,
-                workload_path=args.workload_path,
-            )
-            end_time = time.time()
-            logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
-            print(f"** output_csv_file_name: {output_csv_file_name}")
+        print(f"** output_csv_file_name: {output_csv_file_name}")
 
 def write_experiment_config_to_file(output_dir, args):
         config_file = f'{output_dir}/experiment_config.txt'
@@ -2284,16 +2257,25 @@ if __name__ == "__main__":
                        help="Shuffle the order of requests for each iteration (makes iterations non-identical)")
     parser.add_argument("--poisson_arrivals", action="store_true",
                        help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")
-    parser.add_argument("--profiling", type=str, choices=["profiling", "benchmark"],
-                       help="Profiling mode ('profiling') sweeps diverse load shapes (ramp up/down, bursty, steady) from 1 RPS up to --rps. "
-                            "Use 'benchmark' or omit this flag for standard behavior. Generated workload JSONL and PDF plot will be saved in the same directory as the input workload file.")
+    parser.add_argument(
+        "--workload_mode",
+        type=str,
+        default="benchmark",
+        choices=["benchmark", "profiling"],
+        help=(
+            "Workload mode: 'benchmark' uses the original workload timing or RPS-based scheduling; "
+            "'profiling' sweeps diverse load shapes (ramp up/down, bursty, steady) from 1 RPS up to --rps, "
+            "generates a profiling workload JSONL, and sends requests according to that schedule."
+        ),
+    )
     parser.add_argument("--tweak_workload", type=str, default=None,
                        help="Optional workload tweak. 'gradual_increase' ramps RPS from 1 to --rps by +1 RPS every 10 seconds in benchmark mode.")
 
     args = parser.parse_args()
     
-    if args.profiling == "profiling" and not args.rps:
-        raise ValueError("Profiling mode requires --rps to define the maximum RPS for load patterns.")
+    # Validation: profiling-style workload mode requires --rps
+    if args.workload_mode == "profiling" and not args.rps:
+        raise ValueError("workload_mode='profiling' requires --rps to define the maximum RPS for load patterns.")
 
     # Validation: poisson_arrivals only makes sense with RPS
     if args.poisson_arrivals and not args.rps:
