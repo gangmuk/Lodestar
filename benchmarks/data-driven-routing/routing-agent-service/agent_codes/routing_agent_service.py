@@ -1408,13 +1408,13 @@ def initialize():
     # Model directory and offline data are GPU-specific
     if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
         base_dir = None
-        if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
-            base_dir = "/app/NVIDIA-A30/Aggregated"
-            final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        elif TARGET_GPU_MODEL == "NVIDIA-A10":
+        # if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
+        #     base_dir = "/app/NVIDIA-A30/Aggregated"
+        #     final_model_dir = f"{base_dir}/final_model/latency_predictor"
+        if TARGET_GPU_MODEL == "NVIDIA-A10" or TARGET_GPU_MODEL == "NVIDIA-A30":
             base_dir = "/app/NVIDIA-A10/PrefillOnly"
             final_model_dir = f"{base_dir}/final_model/{ROUTING_STRATEGY}"
-        elif TARGET_GPU_MODEL == "GPU-L3c" or TARGET_GPU_MODEL == "NVIDIA-L40" or TARGET_GPU_MODEL == "NVIDIA-L40S" or TARGET_GPU_MODEL == "NVIDIA-L20":
+        elif TARGET_GPU_MODEL in ["GPU-L3c", "NVIDIA-L40", "NVIDIA-L40S", "NVIDIA-L20"]:
             base_dir = "/app/NVIDIA-L20/Aggregated"
             final_model_dir = f"{base_dir}/final_model/latency_predictor"
         elif TARGET_GPU_MODEL == "hetero":
@@ -1447,11 +1447,15 @@ def initialize():
     assert hyperparameter_file_path is not None, f"hyperparameter_file_path is None for {TARGET_GPU_MODEL}"
     assert offline_csv_path is not None, f"offline_csv_path is None for {TARGET_GPU_MODEL}"
     assert feature_normalization_stats_file is not None, f"feature_normalization_stats_file is None for {TARGET_GPU_MODEL}"
+    assert offline_training_data_distribution is not None, f"offline_training_data_distribution is None for {TARGET_GPU_MODEL}"
     assert os.path.exists(final_model_dir), f"final_model_dir does not exist: {final_model_dir}"
     assert os.path.exists(hyperparameter_file_path), f"hyperparameter_file_path does not exist: {hyperparameter_file_path}"
     assert os.path.exists(offline_csv_path), f"offline_csv_path does not exist: {offline_csv_path}"
     assert os.path.exists(feature_normalization_stats_file), f"feature_normalization_stats_file does not exist: {feature_normalization_stats_file}"
-    assert os.path.exists(offline_training_data_distribution), f"offline_training_data_distribution does not exist: {offline_training_data_distribution}"
+    # offline_training_data_distribution is optional (used only for distribution shift monitoring)
+    if offline_training_data_distribution and not os.path.exists(offline_training_data_distribution):
+        logger.warning(f"offline_training_data_distribution file does not exist: {offline_training_data_distribution}")
+        logger.warning("Distribution shift monitoring will be disabled")
     
     if HYPERPARAMETERS is None:
         logger.info(f"{GREEN_COLOR}HYPERPARAMETERS is None{RESET_COLOR}")
