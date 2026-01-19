@@ -1433,6 +1433,7 @@ def initialize():
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+        offline_training_data_distribution = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based-2/feature_distribution_statistics.csv"
 
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
     logger.info(f"WORKLOAD: {WORKLOAD}")

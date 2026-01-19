@@ -72,6 +72,11 @@ const (
 	HeaderKVCacheHitRatio            = "x-kvcache-hit-ratio"
 	HeaderKVCacheHitRatioAllPods     = "x-kvcache-hit-ratio-all"
 	HeaderNumInflightRequestsAllPods = "x-num-inflight-requests-all"
+	HeaderNumInflightRequestsForAllPods = "x-num-inflight-requests-for-all-pods"
+	HeaderNumInflightPrefillRequestsForAllPods = "x-num-inflight-prefill-requests-for-all-pods"
+	HeaderNumInflightDecodeRequestsForAllPods = "x-num-inflight-decode-requests-for-all-pods"
+	HeaderNumInflightPrefillTokensForAllPods = "x-num-inflight-prefill-tokens-for-all-pods"
+	HeaderNumInflightDecodeTokensForAllPods = "x-num-inflight-decode-tokens-for-all-pods"
 	// HeaderThroughput                 = "x-throughput"
 
 	HeadervLLMGPUKVCacheUsage     = "x-vllm-gpu-kvcache-usage"

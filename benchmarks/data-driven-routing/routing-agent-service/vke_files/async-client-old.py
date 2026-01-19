@@ -1,0 +1,1572 @@
+import argparse
+import logging
+import time
+import asyncio
+import openai
+import json
+import io
+import traceback
+from typing import List, Dict, Any, Optional, Union
+from collections import defaultdict
+import csv
+import os
+import aiohttp
+import httpx
+import re
+import utils
+import hashlib
+import random
+import numpy as np
+from transformers import AutoTokenizer
+
+def static_hash(input_str: str) -> str:
+    """Generate a 64-character unique hash for the given input"""
+    return hashlib.sha256(input_str.encode()).hexdigest()  # Returns 64 hex characters
+
+def sample_output_tokens(mean: int, std: float) -> int:
+    """
+    Sample output tokens from a normal distribution.
+    
+    Args:
+        mean: Mean number of output tokens
+        std: Standard deviation
+    
+    Returns:
+        Sampled number of output tokens (at least 1)
+    """
+    sampled = int(np.random.normal(mean, std))
+    # Ensure at least 1 token and not more than 2x the mean (reasonable bound)
+    return max(1, min(sampled, mean * 2))
+
+def estimate_tokens_from_text(text: str, use_word_count: bool = True) -> int:
+    """
+    Estimate the number of tokens in a text string.
+
+    Args:
+        text: The text to estimate tokens for
+        use_word_count: If True, use word count approximation (fast). If False, use actual tokenizer (accurate but slower)
+
+    Returns:
+        Estimated number of tokens
+    """
+    if use_word_count:
+        # Approximation: 1 token ≈ 0.75 words, so 1 word ≈ 1.33 tokens
+        word_count = len(text.split())
+        return int(word_count * 1.33)
+    else:
+        # Use actual tokenizer (requires model name to be set)
+        # This is more accurate but slower
+        try:
+            from transformers import AutoTokenizer
+            # You might need to specify the correct model/tokenizer
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Default fallback
+            return len(tokenizer.encode(text))
+        except:
+            # Fallback to word count if tokenizer fails
+            word_count = len(text.split())
+            return int(word_count * 1.33)
+
+def truncate_text_to_tokens(text: str, max_tokens: int, use_word_count: bool = True) -> str:
+    """
+    Truncate text to fit within a maximum token limit.
+
+    Args:
+        text: The text to truncate
+        max_tokens: Maximum number of tokens allowed
+        use_word_count: If True, use word count approximation
+
+    Returns:
+        Truncated text that should fit within max_tokens
+    """
+    if use_word_count:
+        # Simple word-based truncation
+        # Since 1 token ≈ 0.75 words, we can keep roughly max_tokens / 1.33 words
+        max_words = int(max_tokens / 1.33)
+        words = text.split()
+        if len(words) <= max_words:
+            return text
+        return ' '.join(words[:max_words])
+    else:
+        # Use actual tokenizer for precise truncation
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+            # Encode the text
+            tokens = tokenizer.encode(text)
+
+            # If already within limit, return as-is
+            if len(tokens) <= max_tokens:
+                return text
+
+            # Truncate tokens and decode back to text
+            truncated_tokens = tokens[:max_tokens]
+            truncated_text = tokenizer.decode(truncated_tokens)
+
+            return truncated_text
+        except:
+            # Fallback to word-based truncation
+            max_words = int(max_tokens / 1.33)
+            words = text.split()
+            if len(words) <= max_words:
+                return text
+            return ' '.join(words[:max_words])
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Suppress verbose logs from OpenAI and httpx libraries (only show errors)
+logging.getLogger('openai').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# Global variables
+session_history = {}
+output_csv_file_name = ''
+
+class HeaderCaptureTransport(httpx.AsyncHTTPTransport):
+    """Custom transport to capture response headers"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.captured_headers = {}
+        
+    async def handle_async_request(self, request):
+        response = await super().handle_async_request(request)
+        self.captured_headers = dict(response.headers)
+        return response
+
+async def load_workload(workload_path: str) -> List[Dict[str, Any]]:
+    """Load workload file asynchronously"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            with open(workload_path, 'r', encoding='utf-8') as f:
+                load_struct = []
+                for line in f:
+                    if line.strip():
+                        load_struct.append(json.loads(line))
+                return load_struct
+        except Exception as e:
+            logger.error(f"Error loading workload: {e}")
+            raise
+
+async def send_request_streaming(client, model, prompt, output_file, request_id,
+                                session_id, target_time, max_tokens,
+                                temperature, routing_strategy, results_lock, history_lock, iteration, 
+                                local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
+                                force_exact_output_tokens=0):
+    """Send a streaming request asynchronously"""
+    start_time = asyncio.get_running_loop().time()
+    first_response_time = None
+    selected_pod_ip = ""
+    selected_pod_name = ""
+    client_side_ttft = -1
+    client_side_tpot = -1
+    scheduled_time = target_time
+    actual_start_time = time.time()
+    
+    try:
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                # logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+            
+        #     # Record the actual start time after waiting
+        #     actual_start_time = time.time()
+        #     scheduling_accuracy = actual_start_time - target_time
+        #     logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+        #               f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        # else:
+        #     logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
+        
+        # # Double-check prompt format
+        # if not isinstance(prompt, list):
+        #     # Convert to list format for chat completions
+        #     prompt = [{"role": "user", "content": str(static_hash(str(iteration))) + " " + str(prompt)}]
+        # else:
+        #     assert prompt, "Prompt list should not be empty"
+        
+        # # Ensure each item in the list has role and content
+        # for i, msg in enumerate(prompt):
+        #     if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+        #         prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
+        
+        # Format validation logging
+        logger.debug(f"Request {request_id}: Formatted prompt for streaming: {prompt}")
+        
+        # Set additional headers if needed
+        extra_headers = {}
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
+        extra_headers["request-id"] = str(request_id)
+        extra_headers["subAlgorithm"] = args.subAlgorithm
+        
+        # Patch the client to capture headers
+
+        # Send streaming request
+        request_params = {
+            "model": model,
+            "messages": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "extra_headers": extra_headers,
+        }
+
+        # Add exact token control if requested
+        if force_exact_output_tokens:
+            request_params["extra_body"] = {
+                "min_tokens": max_tokens,
+                "ignore_eos": True
+            }
+
+        response_stream = await client.chat.completions.create(**request_params)
+        
+        # Extract headers
+        transport = patch_openai_client(client)
+        headers_data = extract_headers_data(transport.captured_headers)
+        text_chunks = []
+        prompt_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+        ttft_logged = False
+        
+        async for chunk in response_stream:
+            if chunk.choices:
+                if chunk.choices[0].delta.content is not None:
+                    if first_response_time is None:
+                        first_response_time = asyncio.get_running_loop().time()
+                        first_token_time = time.time()
+                        ttft = (first_token_time - actual_start_time) * 1000
+                        if not ttft_logged:
+                            ttft_logged = True
+                            
+                    output_text = chunk.choices[0].delta.content
+                    text_chunks.append(output_text)
+            
+            # Extract usage information if available
+            if hasattr(chunk, 'usage') and chunk.usage is not None:
+                if chunk.usage.prompt_tokens is not None:
+                    prompt_tokens = chunk.usage.prompt_tokens
+                if chunk.usage.completion_tokens is not None:
+                    output_tokens = chunk.usage.completion_tokens
+                if chunk.usage.total_tokens is not None:
+                    total_tokens = chunk.usage.total_tokens
+        # Combine text chunks to get full response
+        response_text = "".join(text_chunks)
+        # print(f"Request {request_id}, response_text: {response_text}")
+        response_time = asyncio.get_running_loop().time()
+        completion_time = time.time()
+    
+        # Update session history if needed
+        if session_id:
+            await update_response(response_text, session_id, history_lock)
+        
+        # Calculate streaming metrics
+        client_side_ttft = (first_response_time - start_time) * 1000 if first_response_time else None
+        client_side_tpot = ((response_time - first_response_time) * 1000 / output_tokens) if first_response_time and output_tokens > 0 else None
+        
+        # Create success result
+        result = create_success_result(
+            request_id=request_id,
+            start_time=start_time,
+            response_time=response_time,
+            client_side_ttft=client_side_ttft,
+            client_side_tpot=client_side_tpot,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            headers_data=headers_data,
+            prompt_text=prompt,
+            output_text=response_text,
+            session_id=session_id
+        )
+        
+        # Calculate total elapsed time
+        total_elapsed = (completion_time - actual_start_time)*1000
+        total_decode_time = (completion_time - first_token_time)*1000 if first_response_time else 0
+        avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
+        
+        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        
+        # # Log scheduling information
+        # if scheduled_time:
+        #     scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+        #     actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+        #     logger.info(f"Request {request_id}: Scheduling summary - Scheduled: {scheduled_dt}, Started: {actual_dt}, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        
+        # Write results
+        await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
+        return result
+    
+    except Exception as e:
+        error_time = asyncio.get_running_loop().time()
+        completion_time = time.time()
+        
+        # Create error result
+        error_result = create_error_result(
+            request_id=request_id,
+            start_time=start_time,
+            error_time=error_time,
+            e=e,
+            prompt=prompt,
+            selected_pod_ip=selected_pod_ip,
+            selected_pod_name=selected_pod_name,
+            session_id=session_id
+        )
+        
+        # Calculate total elapsed time
+        total_elapsed = completion_time - actual_start_time
+        
+        logger.error(f"Request {request_id}: Streaming error at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]} "
+                   f"after {total_elapsed:.3f}s: {error_result['error_type']}: {error_result['error_message']}")
+        
+        # Log scheduling information for errors too
+        if scheduled_time:
+            scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+            actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+            logger.error(f"Request {request_id}: Scheduling error summary - "
+                      f"Scheduled: {scheduled_dt}, "
+                      f"Started: {actual_dt}, "
+                      f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        
+        # Write error results
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
+        return error_result
+
+
+async def send_request_with_token_ids(client, model, token_ids, output_file, request_id,
+                                   session_id, target_time, max_tokens,
+                                   temperature, routing_strategy, results_lock, history_lock, iteration,
+                                   local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1):
+    """Send a request with directly sampled token IDs (bypasses text tokenization)"""
+    start_time = asyncio.get_running_loop().time()
+    selected_pod_ip = ""
+    selected_pod_name = ""
+    client_side_ttft = -1
+    client_side_tpot = -1
+    scheduled_time = target_time
+    actual_start_time = time.time()
+
+    try:
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, "
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id}: Starting token-ids request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
+
+        # Use provided token IDs from workload
+        logger.info(f"Request {request_id}: Using {len(token_ids)} token IDs from workload: {token_ids[:10]}...")
+
+        # Set additional headers if needed
+        extra_headers = {}
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
+        extra_headers["request-id"] = str(request_id)
+        try:
+            # Send request using completions endpoint with prompt_token_ids
+            # Note: We need to provide a dummy prompt to satisfy OpenAI client validation
+            # but vLLM will use the prompt_token_ids from extra_body
+            response = await client.completions.create(
+                model=model,
+                prompt="",  # Dummy prompt required by OpenAI client validation
+                max_tokens=max_tokens,
+                temperature=temperature,
+                extra_body={
+                    "prompt_token_ids": token_ids,
+                },
+                extra_headers=extra_headers,
+            )
+
+            # Validate response
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                raise ValueError("Incomplete or invalid response received")
+
+            # Extract headers data
+            transport = patch_openai_client(client)
+            headers_data = extract_headers_data(transport.captured_headers)
+            print(f"Request {request_id}, headers_data: {headers_data}")
+            # Extract response time and token counts
+            response_time = asyncio.get_running_loop().time()
+            completion_time = time.time()
+            prompt_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens
+            output_text = response.choices[0].text
+
+            # Update session history if needed
+            if session_id:
+                await update_response(output_text, session_id)
+
+            # Create success result
+            result = create_success_result(
+                request_id=request_id,
+                start_time=start_time,
+                response_time=response_time,
+                client_side_ttft=client_side_ttft,
+                client_side_tpot=client_side_tpot,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                headers_data=headers_data,
+                prompt_text=f"token_ids:{token_ids[:10]}...",  # Store first 10 token IDs for reference
+                output_text=output_text,
+                session_id=session_id
+            )
+
+            # Calculate total elapsed time
+            total_elapsed = completion_time - actual_start_time
+
+            logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+                       f"Elapsed: {total_elapsed:.3f}s, "
+                       f"Tokens: {prompt_tokens} in / {output_tokens} out, "
+                       f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+
+            # Log scheduling information
+            if scheduled_time:
+                scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+                actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+                logger.info(f"Request {request_id}: Scheduling summary - "
+                          f"Scheduled: {scheduled_dt}, "
+                          f"Started: {actual_dt}, "
+                          f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+
+            # Write results to files
+            await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
+            return result
+
+        except openai.BadRequestError as e:
+            logger.error(f"Request {request_id}: Bad request error: {str(e)}")
+            error_msg = str(e)
+            raise e
+
+    except Exception as e:
+        error_time = asyncio.get_running_loop().time()
+        completion_time = time.time()
+
+        # Create error result
+        error_result = create_error_result(
+            request_id=request_id,
+            start_time=start_time,
+            error_time=error_time,
+            e=e,
+            prompt=f"token_ids_from_workload:{len(token_ids)}",  # Store token count for reference
+            selected_pod_ip=selected_pod_ip,
+            selected_pod_name=selected_pod_name,
+            session_id=session_id
+        )
+
+        # Calculate total elapsed time
+        total_elapsed = completion_time - actual_start_time
+
+        logger.error(f"Request {request_id}: Error at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]} "
+                   f"after {total_elapsed:.3f}s: {error_result['error_type']}: {error_result['error_message']}")
+
+        # Log scheduling information for errors too
+        if scheduled_time:
+            scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+            actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+            logger.error(f"Request {request_id}: Scheduling error summary - "
+                      f"Scheduled: {scheduled_dt}, "
+                      f"Started: {actual_dt}, "
+                      f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+
+        # Write error results
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
+        return error_result
+
+
+async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = None, iteration: Optional[int] = None) -> List[Dict[str, str]]:
+    """Prepare prompt with session history if needed and ensure it's in the correct format"""
+    # Convert string prompts to proper chat format
+    formatted_prompt = []
+    
+    # If prompt is a string, convert it to a proper chat message
+    if isinstance(prompt, str):
+        # Check if the prompt starts with a number (as seen in error logs)
+        if prompt and prompt[0].isdigit():
+            # Remove the first character if it's a digit
+            prompt = prompt[1:]
+        formatted_prompt = [{"role": "user", "content": "iteration: " + str(static_hash(str(iteration))) + "-" + str(prompt)}]
+    elif isinstance(prompt, list):
+        # If it's already a list, make sure each item has role and content
+        formatted_prompt = prompt
+        # Validate each message in the list
+        for i, msg in enumerate(formatted_prompt):
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                # Convert invalid messages to proper format
+                formatted_prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
+        
+    # Note: Session history handling is done in the calling function for token-ids mode
+    
+    # # Validate final prompt format to ensure it's correct
+    # if not formatted_prompt:
+    #     # Provide a default message if somehow we ended up with an empty prompt
+    #     formatted_prompt = [{"role": "user", "content": str(static_hash(str(iteration))) + " " + "Hello"}]
+    
+    logger.debug(f"Formatted prompt: {formatted_prompt}")
+    return formatted_prompt
+
+async def update_response(response: str, session_id: Optional[str] = None, history_lock=None):
+    """Update session history with response"""
+    if session_id is None:
+        return
+    
+    async with history_lock:
+        if session_id not in session_history:
+            session_history[session_id] = []
+        
+        # Add user message and assistant response to history
+        # Assuming the last prompt was added before this response
+        session_history[session_id].append({"role": "assistant", "content": response})
+
+def patch_openai_client(client):
+    """Patch the OpenAI client to capture headers from responses"""
+    transport = HeaderCaptureTransport()
+    # Access the internal httpx client and modify its transport
+    if hasattr(client, "_client"):
+        client._client._transport = transport
+    elif hasattr(client, "client"):
+        client.client._transport = transport
+    
+    return transport
+
+def extract_headers_data(headers):
+    """Extract and parse all relevant headers from the response"""
+    # Basic headers
+    selected_pod_ip = headers.get('target-pod', 'Not Found')
+    selected_pod_name = headers.get('target-pod-name', 'Not Found')
+    
+    # Log missing important headers
+    if not selected_pod_name:
+        logger.warning("target-pod-name header not found in response")
+    if not selected_pod_ip:
+        logger.warning("target-pod header not found in response")
+    
+    # Timing headers with defaults
+    gateway_side_ttft = float(headers.get('x-timing-ttft-ms', -1))
+    gateway_side_tpot = float(headers.get('x-timing-tpot-ms', -1))
+    gateway_side_e2e_latency = float(headers.get('x-timing-e2e-ms', -1))
+    kv_cache_hit_ratio = float(headers.get('x-kvcache-hit-ratio', -1))
+    
+    # Parse JSON headers safely
+    def parse_json_header(header_name):
+        if header_name in headers:
+            try:
+                return json.loads(headers.get(header_name))
+            except json.JSONDecodeError:
+                logger.warning(f"Could not parse {header_name} header")
+        return "Not Found"
+    
+    # Complex JSON headers
+    all_pods_kv_cache_hit_ratio = parse_json_header('x-kvcache-hit-ratio-all')
+    all_pods_num_inflight_requests = parse_json_header('x-num-inflight-requests-all')
+    vllm_gpu_kv_cache_usage = parse_json_header('x-vllm-gpu-kvcache-usage')
+    vllm_cpu_kv_cache_usage = parse_json_header('x-vllm-cpu-kvcache-usage')
+    vllm_num_running_requests = parse_json_header('x-vllm-num-running-requests')
+    vllm_num_waiting_requests = parse_json_header('x-vllm-num-waiting-requests')
+    
+    return {
+        "selected_pod_ip": selected_pod_ip,
+        "selected_pod_name": selected_pod_name,
+        "gateway_side_ttft": gateway_side_ttft,
+        "gateway_side_tpot": gateway_side_tpot,
+        "gateway_side_e2e_latency": gateway_side_e2e_latency,
+        "kv_cache_hit_ratio": kv_cache_hit_ratio,
+        "kv_cache_hit_ratio_all": all_pods_kv_cache_hit_ratio,
+        "num_inflight_requests": all_pods_num_inflight_requests,
+        "vllm_gpu_kv_cache_usage": vllm_gpu_kv_cache_usage,
+        "vllm_cpu_kv_cache_usage": vllm_cpu_kv_cache_usage,
+        "vllm_num_running_requests": vllm_num_running_requests,
+        "vllm_num_waiting_requests": vllm_num_waiting_requests
+    }
+
+def calculate_slo_metrics(prompt_tokens, output_tokens, gateway_side_ttft, gateway_side_tpot, gateway_side_e2e_latency):
+    """Calculate SLO metrics based on token counts and latencies"""
+    per_token_ttft_slo_in_ms = 1000
+    per_token_tpot_slo_in_ms = 40
+    
+    ttft_slo_in_ms = per_token_ttft_slo_in_ms * prompt_tokens
+    tpot_slo_in_ms = per_token_tpot_slo_in_ms * output_tokens
+    e2e_slo_in_ms = ttft_slo_in_ms + tpot_slo_in_ms
+    
+    e2e_slo_satisfied = gateway_side_e2e_latency <= e2e_slo_in_ms
+    ttft_slo_satisfied = gateway_side_ttft <= ttft_slo_in_ms
+    tpot_slo_satisfied = gateway_side_tpot <= tpot_slo_in_ms
+    
+    return {
+        "e2e_slo_in_ms": e2e_slo_in_ms,
+        "ttft_slo_in_ms": ttft_slo_in_ms,
+        "tpot_slo_in_ms": tpot_slo_in_ms,
+        "e2e_slo_satisfied": e2e_slo_satisfied,
+        "ttft_slo_satisfied": ttft_slo_satisfied,
+        "tpot_slo_satisfied": tpot_slo_satisfied
+    }
+
+def create_success_result(request_id, start_time, response_time, client_side_ttft, client_side_tpot, 
+                          prompt_tokens, output_tokens, total_tokens, headers_data, 
+                          prompt_text, output_text, session_id=None):
+    """Create a result dictionary for successful requests"""
+    # Calculate client-side latency
+    client_side_e2e_latency_in_ms = (response_time - start_time) * 1000
+    throughput = output_tokens / (client_side_e2e_latency_in_ms / 1000) if output_tokens > 0 else 0
+    
+    # Calculate SLO metrics
+    slo_metrics = calculate_slo_metrics(
+        prompt_tokens, 
+        output_tokens, 
+        headers_data["gateway_side_ttft"], 
+        headers_data["gateway_side_tpot"], 
+        headers_data["gateway_side_e2e_latency"]
+    )
+    
+    # Combine all data into a result dictionary
+    result = {
+        "request_id": request_id,
+        "status": "success",
+        "prompt_tokens": prompt_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "selected_pod_ip": headers_data["selected_pod_ip"],
+        "selected_pod_name": headers_data["selected_pod_name"],
+        "gpu_model": "NVIDIA-L20",
+        "kv_cache_hit_ratio": headers_data["kv_cache_hit_ratio_all"],
+        # "num_inflight_requests": headers_data["num_inflight_requests"],
+        # "vllm_gpu_kv_cache_usage": headers_data["vllm_gpu_kv_cache_usage"],
+        # "vllm_cpu_kv_cache_usage": headers_data["vllm_cpu_kv_cache_usage"],
+        # "vllm_num_running_requests": headers_data["vllm_num_running_requests"],
+        # "vllm_num_waiting_requests": headers_data["vllm_num_waiting_requests"],
+        "client_side_token_per_second": f"{throughput:.2f}",
+        "client_side_start_time": f"{start_time:.2f}",
+        "client_side_end_time": f"{response_time:.2f}",
+        "client_side_e2e_latency_in_ms": f"{client_side_e2e_latency_in_ms:.4f}",
+        "client_side_ttft": client_side_ttft,
+        "client_side_tpot": client_side_tpot,
+        "gateway_side_ttft": headers_data["gateway_side_ttft"],
+        "gateway_side_tpot": headers_data["gateway_side_tpot"],
+        "gateway_side_e2e_latency": headers_data["gateway_side_e2e_latency"],
+        "e2e_slo_in_ms": slo_metrics["e2e_slo_in_ms"],
+        "ttft_slo_in_ms": slo_metrics["ttft_slo_in_ms"],
+        "tpot_slo_in_ms": slo_metrics["tpot_slo_in_ms"],
+        "e2e_slo_satisfied": slo_metrics["e2e_slo_satisfied"],
+        "ttft_slo_satisfied": slo_metrics["ttft_slo_satisfied"],
+        "tpot_slo_satisfied": slo_metrics["tpot_slo_satisfied"],
+        # "prompt_text": prompt_text,
+        # "output_text": output_text,
+        "error_type": None,
+        "error_message": None,
+        # "error_traceback": None,
+        "session_id": session_id,
+    }
+    return result
+
+def create_error_result(request_id, start_time, error_time, e, prompt, selected_pod_ip="", selected_pod_name="", session_id=None):
+    """Create a result dictionary for failed requests"""
+    error_type = type(e).__name__
+    client_side_e2e_latency_in_ms = (error_time - start_time) * 1000
+    
+    result = {
+        "request_id": request_id,
+        "status": "error",
+        "prompt_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "client_side_token_per_second": None,
+        "client_side_start_time": f"{start_time:.2f}",
+        "client_side_end_time": f"{error_time:.2f}",
+        "client_side_e2e_latency_in_ms": f"{client_side_e2e_latency_in_ms:.4f}",
+        "client_side_ttft": None,
+        "client_side_tpot": None,
+        "gateway_side_ttft": None,
+        "gateway_side_tpot": None,
+        "gateway_side_e2e_latency": None,
+        "selected_pod_ip": selected_pod_ip,
+        "selected_pod_name": selected_pod_name,
+        "gpu_model": None,
+        "kv_cache_hit_ratio": None,
+        "num_inflight_requests": None,
+        "vllm_gpu_kv_cache_usage": None,
+        "vllm_cpu_kv_cache_usage": None,
+        "vllm_num_running_requests": None,
+        "vllm_num_waiting_requests": None,
+        "e2e_slo_in_ms": None,
+        "ttft_slo_in_ms": None,
+        "tpot_slo_in_ms": None,
+        "e2e_slo_satisfied": None,
+        "ttft_slo_satisfied": None,
+        "tpot_slo_satisfied": None,
+        # "prompt_text": prompt,
+        # "output_text": None,
+        "error_type": error_type,
+        "error_message": str(e),
+        # "error_traceback": traceback.format_exc(),
+        "session_id": session_id,
+    }
+    
+    logger.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
+    logger.error(traceback.format_exc())
+    
+    return result
+
+async def write_result_to_files(result_data, output_file, csv_file, results_lock):
+    """Write results to output and CSV files with async locking"""
+    if csv_file is None and output_csv_file_name == "":
+        raise ValueError("CSV file path not specified")
+    
+    # Use async lock to ensure thread safety
+    async with results_lock:
+        # Write to output file (JSON lines)
+        if output_file:
+            output_line = json.dumps(result_data) + "\n"
+            if isinstance(output_file, io.StringIO):
+                output_file.write(output_line)
+            else:
+                output_file.write(output_line)
+                await asyncio.to_thread(output_file.flush)  # Flush using a thread to avoid blocking
+        
+        # Write to CSV file
+        csv_path = csv_file if csv_file else output_csv_file_name
+        if csv_path:
+            try:
+                # Check if file exists and has content
+                file_exists = os.path.exists(csv_path)
+                is_new_file = not file_exists or os.path.getsize(csv_path) == 0
+                
+                # Prepare row data
+                csv_row = {}
+                for key, value in result_data.items():
+                    if isinstance(value, (dict, list)):
+                        csv_row[key] = json.dumps(value)
+                    else:
+                        csv_row[key] = value
+                
+                # Use a thread for file I/O operations to avoid blocking the event loop
+                await asyncio.to_thread(write_csv_row, 
+                                      csv_path, 
+                                      csv_row, 
+                                      is_new_file)
+            except Exception as e:
+                logger.error(f"Error writing to CSV: {e}")
+                logger.error(traceback.format_exc())
+
+def write_csv_row(csv_path, row_data, is_new_file):
+    """Helper function to write CSV rows in a separate thread"""
+    mode = 'w' if is_new_file else 'a'
+    with open(csv_path, mode, newline='', encoding='utf-8') as f:
+        fieldnames = list(row_data.keys())  # Get the keys in the current order
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if is_new_file:
+            writer.writeheader()
+        writer.writerow(row_data)
+
+async def create_client(api_key, endpoint, max_retries, timeout, routing_strategy):
+    """Create an OpenAI client instance"""
+    if api_key is None:
+        client = openai.AsyncOpenAI(
+            base_url=endpoint + "/v1",
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+    else:
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url=endpoint + "/v1",
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+    
+    if routing_strategy is not None:
+        client = client.with_options(
+            default_headers={"routing-strategy": routing_strategy}
+        )
+    
+    return client
+
+# async def send_request_batch(client, model, prompt, output_file, request_id,
+#                              session_id, target_time, max_tokens,
+#                              temperature=0.0, routing_strategy=None):
+async def send_request_batch(client, model, prompt, output_file, request_id,
+                                session_id, target_time, max_tokens,
+                                temperature, routing_strategy, results_lock, history_lock, iteration,
+                                local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
+                                force_exact_output_tokens=0):
+    """Send a batch (non-streaming) request asynchronously"""
+    start_time = asyncio.get_running_loop().time()
+    selected_pod_ip = ""
+    selected_pod_name = ""
+    client_side_ttft = -1
+    client_side_tpot = -1
+    scheduled_time = target_time
+    actual_start_time = time.time()
+    
+    try:
+        # If target_time is provided, wait until that time
+        if target_time is not None:
+            current_time = time.time()
+            if current_time < target_time:
+                schedule_delay = target_time - current_time
+                logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, " 
+                          f"waiting {schedule_delay:.3f}s")
+                await asyncio.sleep(schedule_delay)
+            
+            # Record the actual start time after waiting
+            actual_start_time = time.time()
+            scheduling_accuracy = actual_start_time - target_time
+            logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
+                      f"scheduling accuracy: {scheduling_accuracy:.6f}s")
+        else:
+            logger.info(f"Request {request_id}: Starting batch request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
+        
+        # # Double-check prompt format
+        # if not isinstance(prompt, list):
+        #     # Convert to list format for chat completions
+        #     prompt = [{"role": "user", "content": str(prompt)}]
+        # elif not prompt:
+        #     prompt = [{"role": "user", "content": "Hello"}]
+        
+        # # Ensure each item in the list has role and content
+        # for i, msg in enumerate(prompt):
+        #     if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+        #         prompt[i] = {"role": "user", "content": str(iteration) + "-" + str(msg)}
+        
+        # Format validation logging
+        logger.debug(f"Request {request_id}: Formatted prompt: {prompt}")
+        
+        # Set additional headers if needed
+        # Set additional headers if needed
+        extra_headers = {}
+        extra_headers["routing-strategy"] = routing_strategy
+        extra_headers["iteration"] = str(iteration)
+        extra_headers["request-id"] = str(request_id)
+        transport = patch_openai_client(client)
+
+        try:
+            # Send request using the OpenAI client
+            response = await client.chat.completions.create(
+                model=model,
+                messages=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                extra_headers=extra_headers,
+            )
+            
+            # Validate response
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                raise ValueError("Incomplete or invalid response received")
+
+            # Extract headers data
+            headers_data = extract_headers_data(transport.captured_headers)
+            print(f"Request {request_id}, headers_data: {headers_data}")
+            # Extract response time and token counts
+            response_time = asyncio.get_running_loop().time()
+            completion_time = time.time()
+            prompt_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            total_tokens = response.usage.total_tokens
+            output_text = response.choices[0].message.content
+            
+            # Update session history if needed
+            if session_id:
+                await update_response(output_text, session_id)
+
+            # Create success result
+            result = create_success_result(
+                request_id=request_id,
+                start_time=start_time,
+                response_time=response_time,
+                client_side_ttft=client_side_ttft,
+                client_side_tpot=client_side_tpot,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                headers_data=headers_data,
+                prompt_text=prompt,
+                output_text=output_text,
+                session_id=session_id
+            )
+            
+            # Calculate total elapsed time
+            total_elapsed = completion_time - actual_start_time
+            
+            logger.info(f"[Request {request_id}]: Completed at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+                       f"Elapsed: {total_elapsed:.3f}s, "
+                       f"Tokens: {prompt_tokens} in / {output_tokens} out, "
+                       f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+            
+            # Log scheduling information
+            if scheduled_time:
+                scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+                actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+                logger.info(f"Request {request_id}: Scheduling summary - "
+                          f"Scheduled: {scheduled_dt}, "
+                          f"Started: {actual_dt}, "
+                          f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+            
+            # Write results to files
+            await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
+            return result
+            
+        except openai.BadRequestError as e:
+            # Specific handling for format errors
+            logger.error(f"Request {request_id}: Bad request error: {str(e)}")
+            # Attempt to get error details
+            error_msg = str(e)
+            
+            # If the error is related to message format, retry with a simplified format
+            if "messages" in error_msg and "Input should be a valid list" in error_msg:
+                logger.warning(f"Request {request_id}: Message format error detected, retrying with simplified format")
+                # Extract just the text content and retry with a simplified format
+                try:
+                    simple_content = "".join([msg.get("content", "") for msg in prompt if isinstance(msg, dict)])
+                    if not simple_content:
+                        simple_content = str(prompt)
+                    
+                    simple_prompt = [{"role": "user", "content": simple_content}]
+                    logger.debug(f"Request {request_id}: Retrying with simplified prompt: {simple_prompt}")
+                    
+                    # Retry with simplified format
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=simple_prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        extra_headers=extra_headers,
+                    )
+                    
+                    # Process response as before
+                    if not response or not hasattr(response, 'choices') or not response.choices:
+                        raise ValueError("Incomplete or invalid response received on retry")
+                    
+                    headers_data = extract_headers_data(transport.captured_headers)
+                    response_time = asyncio.get_running_loop().time()
+                    completion_time = time.time()
+                    prompt_tokens = response.usage.prompt_tokens
+                    output_tokens = response.usage.completion_tokens
+                    total_tokens = response.usage.total_tokens
+                    output_text = response.choices[0].message.content
+                    
+                    if session_id:
+                        await update_response(output_text, session_id)
+                    
+                    result = create_success_result(
+                        request_id=request_id,
+                        start_time=start_time,
+                        response_time=response_time,
+                        client_side_ttft=client_side_ttft,
+                        client_side_tpot=client_side_tpot,
+                        prompt_tokens=prompt_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        headers_data=headers_data,
+                        prompt_text=simple_prompt,
+                        output_text=output_text,
+                        session_id=session_id
+                    )
+                    
+                    # Calculate total elapsed time
+                    total_elapsed = completion_time - actual_start_time
+                    
+                    logger.info(f"Request {request_id}: Completed on retry at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]}. "
+                              f"Elapsed: {total_elapsed:.3f}s, "
+                              f"Tokens: {prompt_tokens} in / {output_tokens} out, "
+                              f"E2E latency: {float(result['client_side_e2e_latency_in_ms']):.2f}ms")
+                    
+                    # Log scheduling information
+                    if scheduled_time:
+                        scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+                        actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+                        logger.info(f"Request {request_id}: Scheduling summary - "
+                                  f"Scheduled: {scheduled_dt}, "
+                                  f"Started: {actual_dt}, "
+                                  f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+                    
+                    # Write results to files
+                    await write_result_to_files(result, output_file, output_csv_file_name, results_lock)
+                    return result
+                    
+                except Exception as retry_e:
+                    # If retry failed, continue to error handling
+                    logger.error(f"Request {request_id}: Retry failed: {str(retry_e)}")
+                    raise retry_e
+            
+            # If we're here, either it wasn't a format error or the retry failed
+            raise e
+
+    except Exception as e:
+        error_time = asyncio.get_running_loop().time()
+        completion_time = time.time()
+        
+        # Create error result
+        error_result = create_error_result(
+            request_id=request_id,
+            start_time=start_time,
+            error_time=error_time,
+            e=e,
+            prompt=prompt,
+            selected_pod_ip=selected_pod_ip,
+            selected_pod_name=selected_pod_name,
+            session_id=session_id
+        )
+        
+        # Calculate total elapsed time
+        total_elapsed = completion_time - actual_start_time
+        
+        logger.error(f"Request {request_id}: Error at {time.strftime('%H:%M:%S.%f', time.localtime(completion_time))[:-3]} "
+                   f"after {total_elapsed:.3f}s: {error_result['error_type']}: {error_result['error_message']}")
+        
+        # Log scheduling information for errors too
+        if scheduled_time:
+            scheduled_dt = time.strftime('%H:%M:%S.%f', time.localtime(scheduled_time))[:-3]
+            actual_dt = time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]
+            logger.error(f"Request {request_id}: Scheduling error summary - "
+                      f"Scheduled: {scheduled_dt}, "
+                      f"Started: {actual_dt}, "
+                      f"Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        
+        # Write error results
+        await write_result_to_files(error_result, output_file, output_csv_file_name, results_lock)
+        return error_result
+
+
+
+async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, iteration, 
+                                    total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
+                                    prompt_type="chat", force_exact_output_tokens=0):
+    """Schedule and execute tasks based on their target times with true concurrency"""
+    # Sort tasks by target_time
+    tasks.sort(key=lambda t: t["target_time"])
+
+    # Select the appropriate send function based on streaming mode and prompt type
+    if prompt_type == "token-ids":
+        send_func = send_request_with_token_ids
+        logger.info(f"Using token-ids mode (token IDs from workload file)")
+    else:
+        send_func = send_request_streaming if is_streaming else send_request_batch
+    
+    # Create a list to hold all task futures
+    all_task_futures = []
+    
+    # Current time reference
+    base_time = time.time()
+    logger.info(f"Base time for scheduling: {time.strftime('%H:%M:%S.%f', time.localtime(base_time))[:-3]}")
+    
+    # Create a task for each request with its own scheduled execution time
+    for idx, task in enumerate(tasks):
+        target_time = task["target_time"]
+        delay = max(0, target_time - base_time)
+        local_request_id = idx  # Local ID within this iteration
+        
+        # Create a scheduled task using asyncio
+        if prompt_type == "token-ids":
+            scheduled_task = asyncio.create_task(
+                schedule_task_token_ids(
+                    delay=delay,
+                    target_time=target_time,
+                    request_id=task["request_id"],
+                    client=client,
+                    model=model,
+                    token_ids=task["token_ids"],
+                    output_file=output_file,
+                    session_id=task["session_id"],
+                    max_tokens=task["max_tokens"],
+                    temperature=temperature,
+                    routing_strategy=routing_strategy,
+                    results_lock=results_lock,
+                    history_lock=history_lock,
+                    iteration=iteration,
+                    local_request_id=local_request_id,
+                    total_num_requests=total_num_requests,
+                    total_num_requests_per_iter=total_num_requests_per_iter,
+                    total_num_episodes=total_num_episodes,
+                    force_exact_output_tokens=force_exact_output_tokens,
+                )
+            )
+        else:
+            scheduled_task = asyncio.create_task(
+                schedule_task(
+                    delay=delay,
+                    target_time=target_time,
+                    request_id=task["request_id"],
+                    send_func=send_func,
+                    client=client,
+                    model=model,
+                    prompt=task["prompt"],
+                    output_file=output_file,
+                    session_id=task["session_id"],
+                    max_tokens=task["max_tokens"],
+                    temperature=temperature,
+                    routing_strategy=routing_strategy,
+                    results_lock=results_lock,
+                    history_lock=history_lock,
+                    iteration=iteration,
+                    local_request_id=local_request_id,
+                    total_num_requests=total_num_requests,
+                    total_num_requests_per_iter=total_num_requests_per_iter,
+                    total_num_episodes=total_num_episodes,
+                    force_exact_output_tokens=force_exact_output_tokens,
+                )
+            )
+        
+        all_task_futures.append(scheduled_task)
+    
+    logger.info(f"Scheduled {len(all_task_futures)} tasks for concurrent execution")
+    
+    # Wait for all tasks to complete
+    results = await asyncio.gather(*all_task_futures, return_exceptions=True)
+    
+    # Process results
+    success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+    failure_count = len(tasks) - success_count
+    
+    logger.info(f"All tasks completed: {success_count} successful, {failure_count} failed")
+    
+    return results
+
+async def schedule_task(delay, target_time, request_id, send_func, client, model, prompt,
+                        output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, iteration, 
+                        local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
+                        force_exact_output_tokens=0):
+    """Schedule and execute a single task at the specified time"""
+    task_start = time.time()
+
+    # Wait until the scheduled time
+    if delay > 0:
+        logger.debug(f"Request {request_id}: Waiting {delay:.3f}s until scheduled time {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}")
+        await asyncio.sleep(delay)
+
+    # Record actual start time after waiting
+    actual_start = time.time()
+    wait_accuracy = actual_start - (task_start + delay)
+
+    logger.debug(f"Request {request_id}: Executing at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start))[:-3]}, "
+               f"scheduling accuracy: {(actual_start - target_time)*1000:.2f}ms, wait accuracy: {wait_accuracy*1000:.2f}ms")
+
+    # Execute the task
+    result = await send_func(
+        client=client,
+        model=model,
+        prompt=prompt,
+        output_file=output_file,
+        request_id=request_id,
+        session_id=session_id,
+        target_time=target_time,  # No additional waiting as we've already done that
+        max_tokens=max_tokens,
+        temperature=temperature,
+        routing_strategy=routing_strategy,
+        results_lock=results_lock,
+        history_lock=history_lock,
+        iteration=iteration,
+        local_request_id=local_request_id,
+        total_num_requests=total_num_requests,
+        total_num_requests_per_iter=total_num_requests_per_iter,
+        total_num_episodes=total_num_episodes,
+        force_exact_output_tokens=force_exact_output_tokens,
+    )
+
+    return result
+
+async def schedule_task_token_ids(delay, target_time, request_id, client, model, token_ids,
+                                output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, iteration,
+                                local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
+                                force_exact_output_tokens=0):
+    """Schedule and execute a single token-ids task at the specified time"""
+    task_start = time.time()
+
+    # Wait until the scheduled time
+    if delay > 0:
+        logger.debug(f"Request {request_id}: Waiting {delay:.3f}s until scheduled time {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}")
+        await asyncio.sleep(delay)
+
+    # Record actual start time after waiting
+    actual_start = time.time()
+    wait_accuracy = actual_start - (task_start + delay)
+
+    logger.debug(f"Request {request_id}: Executing token-ids task at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start))[:-3]}, "
+               f"scheduling accuracy: {(actual_start - target_time)*1000:.2f}ms, wait accuracy: {wait_accuracy*1000:.2f}ms")
+
+    # Execute the token-ids task
+    result = await send_request_with_token_ids(
+        client=client,
+        model=model,
+        token_ids=token_ids,
+        output_file=output_file,
+        request_id=request_id,
+        session_id=session_id,
+        target_time=target_time,  # No additional waiting as we've already done that
+        max_tokens=max_tokens,
+        temperature=temperature,
+        routing_strategy=routing_strategy,
+        results_lock=results_lock,
+        history_lock=history_lock,
+        iteration=iteration,
+        local_request_id=local_request_id,
+        total_num_requests=total_num_requests,
+        total_num_requests_per_iter=total_num_requests_per_iter,
+        total_num_episodes=total_num_episodes,
+    )
+
+    return result
+
+async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
+                       load_struct, output_file, model, max_tokens,
+                       temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
+                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10, force_exact_output_tokens=0):
+    """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
+    # Create a client
+    client = await create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
+    
+    # Track total statistics
+    total_requests = 0
+    total_success = 0
+    total_failures = 0
+    request_id = 0
+    overall_start_time = time.time()
+    
+    # For each iteration
+    for iteration in range(iterations):
+        logger.info(f"Starting iteration {iteration+1}/{iterations}")
+        
+        # Calculate base time for this iteration
+        # For first iteration, use current time
+        # For subsequent iterations, wait until previous iteration is completely done
+        iteration_base_time = time.time()
+        
+        # Prepare tasks for this iteration only
+        iteration_tasks = []
+        
+        # Calculate inter-arrival time if RPS is specified
+        mean_inter_arrival_time = 1.0 / rps if rps else None
+        if rps:
+            if poisson_arrivals:
+                logger.info(f"Using RPS-based scheduling with Poisson arrivals: {rps} requests/second (mean inter-arrival: {mean_inter_arrival_time:.4f}s)")
+            else:
+                logger.info(f"Using RPS-based scheduling: {rps} requests/second (inter-arrival time: {mean_inter_arrival_time:.4f}s)")
+        else:
+            logger.info(f"Using timestamp-based scheduling from workload file")
+        
+        if shuffle_requests:
+            logger.info(f"Request shuffling enabled for iteration {iteration+1}")
+        
+        if max_input_tokens:
+            logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration+1}")
+        
+        if max_tokens_std > 0:
+            logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
+        else:
+            logger.info(f"Using fixed output tokens: {max_tokens}")
+        
+        # First, collect all requests for this iteration (without target times yet)
+        temp_requests = []
+        
+        # Process the load structure and create tasks for this iteration only
+        for requests_dict in load_struct:
+            ts = int(requests_dict["timestamp"])
+            requests = requests_dict["requests"]
+            
+            for request in requests:
+                session_id = request.get("session_id", None)
+
+                if args.prompt_type == "token-ids":
+                    # Parse token IDs from workload file
+                    try:
+                        # Expect prompt field to contain a list of token IDs like "[123, 456, 789, ...]"
+                        if isinstance(request["prompt"], str):
+                            # Parse string representation of list
+                            token_ids = json.loads(request["prompt"])
+                        elif isinstance(request["prompt"], list):
+                            # Already a list
+                            token_ids = request["prompt"]
+                        else:
+                            raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+
+                        prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
+                        raise
+                else:
+                    token_ids = None
+                    prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+
+                # Filter or truncate by max_input_tokens if specified
+                if max_input_tokens:
+                    if args.prompt_type == "token-ids":
+                        # For token-ids mode, truncate the token list directly
+                        if len(token_ids) > max_input_tokens:
+                            original_length = len(token_ids)
+                            token_ids = token_ids[:max_input_tokens]
+                            logger.info(f"[Iteration {iteration+1}] Truncated token-ids from {original_length} to {len(token_ids)} tokens")
+                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                    else:
+                        # For chat mode, estimate and truncate text
+                        original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                        estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+
+                        if estimated_tokens > max_input_tokens:
+                            # Truncate the text to fit within token limit
+                            truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
+                            logger.info(f"[Iteration {iteration+1}] Truncated prompt from ~{estimated_tokens} to ~{max_input_tokens} tokens")
+
+                            # Update the prompt with truncated text
+                            if isinstance(request["prompt"], str):
+                                prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                            else:
+                                # For list format, replace the content
+                                truncated_prompt = request["prompt"].copy()
+                                if isinstance(truncated_prompt, list) and truncated_prompt:
+                                    # Find the last user message and truncate it
+                                    for i in range(len(truncated_prompt) - 1, -1, -1):
+                                        if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                            truncated_prompt[i]["content"] = truncated_text
+                                            break
+                                prompt = truncated_prompt
+
+                # Get base max_tokens value (from workload or default)
+                if args.override_workload_output_length:
+                    base_max_tokens = max_tokens
+                else:
+                    base_max_tokens = request.get("Output Length", max_tokens)
+                
+                
+                # Sample from normal distribution to make it more realistic
+                if max_tokens_std > 0:
+                    sampled_max_tokens = sample_output_tokens(base_max_tokens, max_tokens_std)
+                else:
+                    sampled_max_tokens = base_max_tokens
+                
+                # Store request info with original timestamp (for non-RPS mode)
+                temp_request = {
+                    "prompt": prompt,
+                    "session_id": session_id,
+                    "max_tokens": sampled_max_tokens,
+                    "token_ids": token_ids,
+                    "original_timestamp_ms": ts  # Store original timestamp
+                }
+                temp_requests.append(temp_request)
+        
+        
+        # Shuffle requests if enabled
+        if shuffle_requests:
+            random.shuffle(temp_requests)
+            logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+        
+        # Calculate metrics for logging
+        total_num_requests_per_iter = len(temp_requests)
+        total_num_requests_overall = total_num_requests_per_iter * iterations
+        
+        # Now assign target times and create final tasks
+        cumulative_time = 0.0  # For Poisson arrivals
+        for idx, req in enumerate(temp_requests):
+            # Calculate target_time based on mode
+            if rps:
+                if poisson_arrivals:
+                    # Use exponential distribution for Poisson process
+                    # Sample inter-arrival time from exponential distribution
+                    inter_arrival = np.random.exponential(mean_inter_arrival_time)
+                    cumulative_time += inter_arrival
+                    target_time = iteration_base_time + cumulative_time
+                else:
+                    # Fixed inter-arrival time
+                    target_time = iteration_base_time + (idx * mean_inter_arrival_time)
+            else:
+                # Use timestamp from workload file
+                target_time = iteration_base_time + req["original_timestamp_ms"] / 1000.0
+            
+            task = {
+                "prompt": req["prompt"],
+                "request_id": request_id,
+                "session_id": req["session_id"],
+                "target_time": target_time,
+                "max_tokens": req["max_tokens"],
+                "iteration": iteration,
+                "token_ids": req["token_ids"]
+            }
+            iteration_tasks.append(task)
+            request_id += 1
+        
+        logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+        
+        # Execute only this iteration's tasks
+        start_time = time.time()
+        results = await schedule_and_execute_tasks(
+            tasks=iteration_tasks,
+            client=client,
+            model=model,
+            is_streaming=is_streaming,
+            output_file=output_file,
+            temperature=temperature,
+            routing_strategy=routing_strategy,
+            results_lock=results_lock,
+            history_lock=history_lock,
+            iteration=iteration,
+            total_num_requests=total_num_requests_overall,
+            total_num_requests_per_iter=total_num_requests_per_iter,
+            total_num_episodes=iterations,
+            prompt_type=args.prompt_type,
+            force_exact_output_tokens=force_exact_output_tokens,
+        )
+        end_time = time.time()
+        
+        # Count successes and failures for this iteration
+        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        error_count = len(iteration_tasks) - success_count
+        
+        logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
+        
+        # Update totals
+        total_requests += len(iteration_tasks)
+        total_success += success_count
+        total_failures += error_count
+        
+        # Free up memory
+        iteration_tasks = None
+        results = None
+
+        # # Add a small buffer before next iteration if not the last iteration
+        # if iteration < iterations - 1:
+        #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
+        #     await asyncio.sleep(2.0)
+    
+    # Log overall benchmark completion
+    overall_end_time = time.time()
+    logger.info(f"All {iterations} iterations completed in {overall_end_time - overall_start_time:.2f} seconds")
+    logger.info(f"Total requests: {total_requests}")
+    logger.info(f"Successful requests: {total_success}")
+    logger.info(f"Failed requests: {total_failures}")
+    
+    return {"total_requests": total_requests, "successful": total_success, "failed": total_failures}
+
+
+async def main(args):
+    global output_csv_file_name
+    if '.jsonl' not in args.workload_path:
+        raise ValueError("Workload path must be a .jsonl file")
+
+    output_csv_file_name = f"{args.output_dir}/output.csv"
+
+    # Initialize CSV file
+    with open(output_csv_file_name, 'w', encoding='utf-8') as f:
+        f.write("")  # Create empty file
+
+    # Load workload
+    load_struct = await load_workload(args.workload_path)
+
+    results_lock = asyncio.Lock()  # Async lock for result writing
+    history_lock = asyncio.Lock()  # Async lock for session history
+
+    # Open output file
+    with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
+        # Run benchmark
+        start_time = time.time()
+        await run_benchmark(
+            api_key=args.api_key,
+            endpoint=args.endpoint,
+            max_retries=args.max_retries,
+            timeout=args.timeout,
+            routing_strategy=args.routing_strategy,
+            load_struct=load_struct,
+            output_file=output_file,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            is_streaming=args.streaming,
+            results_lock=results_lock,
+            history_lock=history_lock,
+            iterations=args.iterations,
+            rps=args.rps,
+            shuffle_requests=args.shuffle_requests,
+            poisson_arrivals=args.poisson_arrivals,
+            max_input_tokens=args.max_input_tokens,
+            max_tokens_std=args.max_tokens_std,
+            force_exact_output_tokens=args.force_exact_output_tokens,
+        )
+        end_time = time.time()
+        
+        logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
+        print(f"** output_csv_file_name: {output_csv_file_name}")
+
+def write_experiment_config_to_file(output_dir, args):
+        config_file = f'{output_dir}/experiment_config.txt'
+        with open(config_file, 'w') as f:
+            f.write("Experiment Configuration:\n")
+            for key, value in vars(args).items():
+                f.write(f"{key}: {value}\n")
+        return config_file
+
+if __name__ == "__main__":
+    print(f"starting async-client.py")
+    """Main entry point for the script"""
+    parser = argparse.ArgumentParser(description='Async Workload Generator')
+    parser.add_argument("--workload_path", type=str, required=True, help="File path to the workload file.")
+    parser.add_argument("--model", type=str, required=True, help="Default target model.")
+    parser.add_argument('--endpoint', type=str, required=True, help="API endpoint URL.")
+    parser.add_argument("--api_key", type=str, default=None, help="API key for the service.")
+    parser.add_argument('--output_file_path', type=str, default="output.jsonl", help="Output file path for JSON results.")
+    parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
+    parser.add_argument("--routing_strategy", type=str, default="random", help="Routing strategy to use.")
+    parser.add_argument("--subAlgorithm", type=str, default="random", help="Sub Routing strategy that will be used for flexible prefix cache.")
+    parser.add_argument("--max_input_tokens", type=int, default=None,
+                       help="Maximum number of input tokens per request. Requests exceeding this limit will be filtered out. Uses word count approximation (words * 1.33).")
+    parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request (used as mean for sampling).")
+    parser.add_argument("--max_tokens_std", type=float, default=10.0, help="Standard deviation for sampling output tokens from normal distribution. Set to 0 to disable sampling (use fixed max_tokens).")
+    parser.add_argument("--force_exact_output_tokens", type=int, default=0, help="Force generation of exactly max_tokens tokens by setting min_tokens=max_tokens and ignore_eos=True. Useful for consistent benchmarking.")
+    parser.add_argument("--override_workload_output_length", type=int, default=1,
+                       help="Override workload output length with --max_tokens value")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for the request.")
+    parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout in seconds.")
+    parser.add_argument("--max_retries", type=int, default=0, help="Maximum number of retries for failed requests.")
+    parser.add_argument("--output_dir", type=str, default="./", help="output dir")
+    parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
+    parser.add_argument("--prompt_type", type=str, default="chat", choices=["chat", "token-ids"],
+                       help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
+    parser.add_argument("--rps", type=float, default=None, 
+                       help="Requests per second (RPS). If specified, requests are sent at this rate instead of using workload timestamps.")
+    parser.add_argument("--shuffle_requests", action="store_true",
+                       help="Shuffle the order of requests for each iteration (makes iterations non-identical)")
+    parser.add_argument("--poisson_arrivals", action="store_true",
+                       help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")
+
+    args = parser.parse_args()
+    
+    # Validation: poisson_arrivals only makes sense with RPS
+    if args.poisson_arrivals and not args.rps:
+        logger.warning("--poisson_arrivals flag requires --rps to be specified. Ignoring poisson_arrivals.")
+        args.poisson_arrivals = False
+
+    asyncio.run(main(args))
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    config_file = write_experiment_config_to_file(args.output_dir, args)
+
+    # success = utils.save_k8s_logs(
+    #     namespace='aibrix-system',
+    #     deployment_name='aibrix-gateway-plugins',
+    #     label='gateway-plugins',
+    #     output_dir=args.output_dir,
+    #     keyword='**@latency_metrics',
+    # )
+
+    # success = utils.save_k8s_logs(
+    #     namespace='default',
+    #     deployment_name='latency-predictor-service',
+    #     label='latency-predictor-service',
+    #     output_dir=args.output_dir,
+    #     keyword=None,
+    # )

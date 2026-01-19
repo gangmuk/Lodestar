@@ -921,6 +921,8 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     json_columns = [
         'allPodsKvCacheHitRatios', 
         'numInflightRequestsAllPods', 
+        'numInflightPrefillRequestsAllPods',  # NEW: Added new column
+        'numInflightDecodeRequestsAllPods',  # NEW: Added new column
         'vllmGPUKVCacheUsage', 
         'vllmCPUKVCacheUsage', 
         'vllmNumRequestsRunning', 
@@ -933,10 +935,12 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     json_parse_start_time = time.time()
     for col in json_columns:
-        # if col in parsed_df.columns:
-        sample_val = parsed_df[col].iloc[0]
-        if isinstance(sample_val, str):
-            parsed_df[col] = parsed_df[col].apply(safe_parse_json)
+        if col in parsed_df.columns:
+            sample_val = parsed_df[col].iloc[0]
+            if isinstance(sample_val, str):
+                parsed_df[col] = parsed_df[col].apply(safe_parse_json)
+        else:
+            logger.warning(f"Column '{col}' not found in parsed DataFrame. Available columns: {list(parsed_df.columns)}")
     
     # # Handle podMetricsLastSecond separately (optional column)
     # if 'podMetricsLastSecond' in parsed_df.columns:
@@ -1051,16 +1055,31 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     # GPU info is in pod_xxxx-GPU columns, will be extracted later in encoding phase
     
+    # Helper function to safely get column values with default
+    def safe_get_column(df, col_name, default_value=None):
+        """Safely get column values, returning default if column doesn't exist."""
+        if col_name in df.columns:
+            return df[col_name].values
+        else:
+            logger.warning(f"Column '{col_name}' not found, using default value: {default_value}")
+            if default_value is None:
+                # For dict/list columns, return array of empty dicts
+                return np.array([{}] * len(df))
+            elif isinstance(default_value, (dict, list)):
+                return np.array([default_value] * len(df))
+            else:
+                return np.full(len(df), default_value)
+    
     # Pre-extract all JSON data to avoid repeated parsing
-    all_kv_cache = parsed_df['allPodsKvCacheHitRatios'].values
-    all_inflight = parsed_df['numInflightRequestsAllPods'].values
-    all_gpu_cache = parsed_df['vllmGPUKVCacheUsage'].values
-    all_cpu_cache = parsed_df['vllmCPUKVCacheUsage'].values
-    all_running = parsed_df['vllmNumRequestsRunning'].values
-    all_waiting = parsed_df['vllmNumRequestsWaiting'].values
-    all_prefill = parsed_df['numPrefillTokensForAllPods'].values
-    all_decode = parsed_df['numDecodeTokensForAllPods'].values
-    all_gpu_models = parsed_df['GPU'].values  # Extract GPU model mapping
+    all_kv_cache = safe_get_column(parsed_df, 'allPodsKvCacheHitRatios', {})
+    all_inflight = safe_get_column(parsed_df, 'numInflightRequestsAllPods', {})
+    all_gpu_cache = safe_get_column(parsed_df, 'vllmGPUKVCacheUsage', {})
+    all_cpu_cache = safe_get_column(parsed_df, 'vllmCPUKVCacheUsage', {})
+    all_running = safe_get_column(parsed_df, 'vllmNumRequestsRunning', {})
+    all_waiting = safe_get_column(parsed_df, 'vllmNumRequestsWaiting', {})
+    all_prefill = safe_get_column(parsed_df, 'numPrefillTokensForAllPods', {})
+    all_decode = safe_get_column(parsed_df, 'numDecodeTokensForAllPods', {})
+    all_gpu_models = safe_get_column(parsed_df, 'GPU', {})  # Extract GPU model mapping
     # NOTE: podMetricsLastSecond features are not used in training anymore
     # all_pod_metrics = parsed_df['podMetricsLastSecond'].values
 
