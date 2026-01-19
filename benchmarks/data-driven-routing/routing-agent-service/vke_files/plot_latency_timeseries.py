@@ -14,6 +14,7 @@ import json
 from matplotlib.lines import Line2D
 import numpy as np
 from numpy.polynomial.polynomial import polyfit
+import os
 # from logger import logger
 
 linewidth = 1.5
@@ -156,7 +157,25 @@ def parse_metrics_string(metrics_str):
                 try:
                     parsed[key] = int(value)
                 except ValueError:
-                    parsed[key] = value
+                    # Handle Go formatting errors like "%!d(float64=-99)" or "%!d(string={})"
+                    # Try to extract number from Go error format
+                    if value.startswith('%!') and '(' in value:
+                        # Extract number from format like "%!d(float64=-99)"
+                        num_match = re.search(r'-?\d+', value)
+                        if num_match:
+                            try:
+                                parsed[key] = int(num_match.group())
+                            except ValueError:
+                                parsed[key] = value
+                        else:
+                            # Handle "%!d(string={})" - treat as None/NaN
+                            parsed[key] = None
+                    else:
+                        # Try to convert to float if int fails
+                        try:
+                            parsed[key] = float(value)
+                        except ValueError:
+                            parsed[key] = value
             i += 2
     
     return parsed
@@ -1914,17 +1933,27 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         exit()
     
     # Filter out rows with negative iteration or numTrains values
+    # But allow -99 as a sentinel value meaning "not set" (common in non-learning policies like prefix_cache)
     original_count = len(df)
     if 'iteration' in df.columns:
-        df = df[df['iteration'] >= 0]
+        # Convert to numeric, handling string values and Go formatting errors
+        df['iteration'] = pd.to_numeric(df['iteration'], errors='coerce')
+        # Filter out negative values EXCEPT -99 (sentinel for "not set")
+        # Keep: >= 0, == -99, or NaN (invalid/unparseable values)
+        df = df[(df['iteration'] >= 0) | (df['iteration'] == -99) | (df['iteration'].isna())]
     if 'num_trains' in df.columns:
-        df = df[df['num_trains'] >= 0]
+        # Convert to numeric, handling string values like "%!d(string={})"
+        df['num_trains'] = pd.to_numeric(df['num_trains'], errors='coerce')
+        # Filter out negative values, but allow NaN (from parsing errors) and -99
+        df = df[(df['num_trains'] >= 0) | (df['num_trains'] == -99) | (df['num_trains'].isna())]
     filtered_count = original_count - len(df)
     if filtered_count > 0:
         print(f"Filtered out {filtered_count} rows with negative iteration or numTrains values ({len(df)} rows remaining)")
     
     if len(df) == 0:
         print("Error, No valid data remaining after filtering negative values.")
+        print(f"Note: This might happen if all rows have invalid iteration/numTrains values.")
+        print(f"For non-learning policies (like prefix_cache), iteration=-99 is normal and should be allowed.")
         exit()
     
     # Calculate reward columns first before cluster statistics
@@ -2089,12 +2118,30 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     log_file = args.log_file
-    log_dir = log_file.rsplit('/', 1)[0]
+    # Get absolute path to handle relative paths correctly
+    log_file = os.path.abspath(log_file)
+    log_dir = os.path.dirname(log_file) if os.path.dirname(log_file) else '.'
     setylim = args.setylim
     slo_ttft = args.slo_ttft
     slo_tpot = args.slo_tpot
     skip_first_seconds = args.skip_first_seconds
-    routing_policy = log_file.split('/')[-2].split('-')[0]
+    
+    # Extract routing policy from path structure more robustly
+    path_parts = log_file.split('/')
+    if len(path_parts) >= 2:
+        # Try to extract from second-to-last directory
+        try:
+            routing_policy = path_parts[-2].split('-')[0]
+        except (IndexError, AttributeError):
+            routing_policy = "unknown"
+    else:
+        # If no directory structure, try to extract from filename
+        filename = os.path.basename(log_file)
+        try:
+            routing_policy = filename.split('-')[0]
+        except (IndexError, AttributeError):
+            routing_policy = "unknown"
+    
     print(f"routing_policy: {routing_policy}")
     data = parse_log_file(log_file)
     

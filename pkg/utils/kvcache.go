@@ -675,7 +675,23 @@ var (
 	requestAllPodsKVCache      map[string]map[string]int // requestID -> (podIP -> hit ratio)
 
 	requestInflightMutex sync.RWMutex
-	requestInflight      map[string]map[string]int // requestID -> (podIP -> num inflight requests
+	requestInflight      map[string]map[string]int // requestID -> (podIP -> num inflight requests)
+
+	// Snapshot of inflight prefill requests per request
+	RequestToNumInflightPrefillRequestsMutex sync.RWMutex
+	requestToNumInflightPrefillRequests      map[string]map[string]int // requestID -> (podIP -> num inflight prefill requests)
+
+	// Snapshot of inflight decode requests per request
+	RequestToNumInflightDecodeRequestsMutex sync.RWMutex
+	requestToNumInflightDecodeRequests      map[string]map[string]int // requestID -> (podIP -> num inflight decode requests)
+
+	// Snapshot of inflight prefill tokens per request
+	RequestToNumInflightPrefillTokensMutex sync.RWMutex
+	requestToNumInflightPrefillTokens      map[string]map[string]int // requestID -> (podIP -> num inflight prefill tokens)
+
+	// Snapshot of inflight decode tokens per request
+	RequestToNumInflightDecodeTokensMutex sync.RWMutex
+	requestToNumInflightDecodeTokens      map[string]map[string]int // requestID -> (podIP -> num inflight decode tokens)
 
 	requestToNumPrefillTokensMutex sync.RWMutex
 	requestToNumPrefillTokens      map[string]int // requestID -> num prefill tokens
@@ -775,6 +791,18 @@ func init() {
 
 	requestInflightMutex = sync.RWMutex{}
 	requestInflight = make(map[string]map[string]int)
+
+	RequestToNumInflightPrefillRequestsMutex = sync.RWMutex{}
+	requestToNumInflightPrefillRequests = make(map[string]map[string]int)
+
+	RequestToNumInflightDecodeRequestsMutex = sync.RWMutex{}
+	requestToNumInflightDecodeRequests = make(map[string]map[string]int)
+
+	RequestToNumInflightPrefillTokensMutex = sync.RWMutex{}
+	requestToNumInflightPrefillTokens = make(map[string]map[string]int)
+
+	RequestToNumInflightDecodeTokensMutex = sync.RWMutex{}
+	requestToNumInflightDecodeTokens = make(map[string]map[string]int)
 
 	requestToNumPrefillTokensMutex = sync.RWMutex{}
 	requestToNumPrefillTokens = make(map[string]int)
@@ -1609,31 +1637,24 @@ func CleanupRawMessageForRequest(requestID string) {
 }
 
 // Increment the number of inflight requests for a specific pod
-func IncrementNumInflightForPod(requestID string, podIP string) {
+func IncrementNumInflightForPod(podIP string) {
 	PodInflightMutex.Lock()
 	defer PodInflightMutex.Unlock()
 	if _, ok := podInflightRequests[podIP]; !ok {
 		podInflightRequests[podIP] = 0
 	}
-
 	podInflightRequests[podIP]++
 	klog.V(5).Infof("Incremented inflight requests for pod %s: %d", podIP, podInflightRequests[podIP])
 }
 
 // Decrement the number of inflight requests for a specific pod
-func DecrementNumInflightForPod(requestID string, podIP string) {
+func DecrementNumInflightRequestsForPod(podIP string) {
 	PodInflightMutex.Lock()
 	defer PodInflightMutex.Unlock()
-	// podIP, exists := GetPodIPForRequest(requestID)
-	// if !exists {
-	// 	klog.Errorf("Error, Pod name not found for request ID: %s", requestID)
-	// 	return
-	// }
 	if _, ok := podInflightRequests[podIP]; !ok {
 		klog.Errorf("Error, Pod name not found in podInflightRequests: %s", podIP)
 		return
 	}
-
 	podInflightRequests[podIP]--
 	if podInflightRequests[podIP] < 0 {
 		klog.Errorf("Error, podInflightRequests[%s]: %d is negative!", podIP, podInflightRequests[podIP])
@@ -1689,7 +1710,170 @@ func CleanupInflightRequests(requestID string) {
 	delete(requestInflight, requestID)
 }
 
-func IncrementNumPrefillTokensForPod(podIP string, numTokens int) int {
+// GetSnapshotInflightRequestsForRequest returns the snapshot of inflight requests for a request
+func GetSnapshotInflightRequestsForRequest(requestID string) map[string]int {
+	requestInflightMutex.RLock()
+	defer requestInflightMutex.RUnlock()
+
+	if inflightRequests, ok := requestInflight[requestID]; ok {
+		result := make(map[string]int, len(inflightRequests))
+		for k, v := range inflightRequests {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int)
+}
+
+// =====================================================
+// Inflight Prefill Requests Functions
+// =====================================================
+
+func IncrementNumInflightPrefillRequestsForPod(podIP string) {
+	podTotalPrefillRequestsMutex.Lock()
+	defer podTotalPrefillRequestsMutex.Unlock()
+	if _, ok := podTotalPrefillRequests[podIP]; !ok {
+		podTotalPrefillRequests[podIP] = 0
+	}
+	podTotalPrefillRequests[podIP]++
+	klog.V(5).Infof("Incremented inflight prefill requests for pod %s: %d", podIP, podTotalPrefillRequests[podIP])
+}
+
+func DecrementNumInflightPrefillRequestsForPod(podIP string) {
+	podTotalPrefillRequestsMutex.Lock()
+	defer podTotalPrefillRequestsMutex.Unlock()
+	if _, ok := podTotalPrefillRequests[podIP]; !ok {
+		klog.Errorf("Error, Pod name not found in podTotalPrefillRequests: %s", podIP)
+		return
+	}
+	podTotalPrefillRequests[podIP]--
+	if podTotalPrefillRequests[podIP] < 0 {
+		klog.Errorf("Error, podTotalPrefillRequests[%s]: %d is negative!", podIP, podTotalPrefillRequests[podIP])
+	}
+	klog.V(5).Infof("Decremented inflight prefill requests for pod %s: %d", podIP, podTotalPrefillRequests[podIP])
+}
+
+func GetNumInflightPrefillRequestsForPod(podIP string) (int, bool) {
+	podTotalPrefillRequestsMutex.RLock()
+	defer podTotalPrefillRequestsMutex.RUnlock()
+	val, exists := podTotalPrefillRequests[podIP]
+	return val, exists
+}
+
+func StoreNumInflightPrefillRequestsForTheRequest(requestID string) {
+	RequestToNumInflightPrefillRequestsMutex.Lock()
+	defer RequestToNumInflightPrefillRequestsMutex.Unlock()
+	if _, exists := requestToNumInflightPrefillRequests[requestID]; exists {
+		klog.Errorf("Error, requestID already exists in requestToNumInflightPrefillRequests: %s", requestID)
+		return
+	}
+	requestToNumInflightPrefillRequests[requestID] = make(map[string]int)
+	podTotalPrefillRequestsMutex.RLock()
+	defer podTotalPrefillRequestsMutex.RUnlock()
+	for podIP, numRequests := range podTotalPrefillRequests {
+		requestToNumInflightPrefillRequests[requestID][podIP] = numRequests
+	}
+}
+
+func GetSnapshotNumInflightPrefillRequestsForRequest(requestID string) map[string]int {
+	RequestToNumInflightPrefillRequestsMutex.RLock()
+	defer RequestToNumInflightPrefillRequestsMutex.RUnlock()
+
+	if requests, ok := requestToNumInflightPrefillRequests[requestID]; ok {
+		result := make(map[string]int, len(requests))
+		for k, v := range requests {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int)
+}
+
+func CleanupSnapshotNumInflightPrefillRequestsForRequest(requestID string) {
+	RequestToNumInflightPrefillRequestsMutex.Lock()
+	defer RequestToNumInflightPrefillRequestsMutex.Unlock()
+	if _, ok := requestToNumInflightPrefillRequests[requestID]; ok {
+		delete(requestToNumInflightPrefillRequests, requestID)
+	}
+}
+
+// =====================================================
+// Inflight Decode Requests Functions
+// =====================================================
+
+func IncrementNumInflightDecodeRequestsForPod(podIP string) {
+	podTotalDecodeRequestsMutex.Lock()
+	defer podTotalDecodeRequestsMutex.Unlock()
+	if _, ok := podTotalDecodeRequests[podIP]; !ok {
+		podTotalDecodeRequests[podIP] = 0
+	}
+	podTotalDecodeRequests[podIP]++
+	klog.V(5).Infof("Incremented inflight decode requests for pod %s: %d", podIP, podTotalDecodeRequests[podIP])
+}
+
+func DecrementNumInflightDecodeRequestsForPod(podIP string) {
+	podTotalDecodeRequestsMutex.Lock()
+	defer podTotalDecodeRequestsMutex.Unlock()
+	if _, ok := podTotalDecodeRequests[podIP]; !ok {
+		klog.Errorf("Error, Pod name not found in podTotalDecodeRequests: %s", podIP)
+		return
+	}
+	podTotalDecodeRequests[podIP]--
+	if podTotalDecodeRequests[podIP] < 0 {
+		klog.Errorf("Error, podTotalDecodeRequests[%s]: %d is negative!", podIP, podTotalDecodeRequests[podIP])
+	}
+	klog.V(5).Infof("Decremented inflight decode requests for pod %s: %d", podIP, podTotalDecodeRequests[podIP])
+}
+
+func GetNumInflightDecodeRequestsForPod(podIP string) (int, bool) {
+	podTotalDecodeRequestsMutex.RLock()
+	defer podTotalDecodeRequestsMutex.RUnlock()
+	val, exists := podTotalDecodeRequests[podIP]
+	return val, exists
+}
+
+func StoreNumInflightDecodeRequestsForTheRequest(requestID string) {
+	RequestToNumInflightDecodeRequestsMutex.Lock()
+	defer RequestToNumInflightDecodeRequestsMutex.Unlock()
+	if _, exists := requestToNumInflightDecodeRequests[requestID]; exists {
+		klog.Errorf("Error, requestID already exists in requestToNumInflightDecodeRequests: %s", requestID)
+		return
+	}
+	requestToNumInflightDecodeRequests[requestID] = make(map[string]int)
+	podTotalDecodeRequestsMutex.RLock()
+	defer podTotalDecodeRequestsMutex.RUnlock()
+	for podIP, numRequests := range podTotalDecodeRequests {
+		requestToNumInflightDecodeRequests[requestID][podIP] = numRequests
+	}
+}
+
+func GetSnapshotNumInflightDecodeRequestsForRequest(requestID string) map[string]int {
+	RequestToNumInflightDecodeRequestsMutex.RLock()
+	defer RequestToNumInflightDecodeRequestsMutex.RUnlock()
+
+	if requests, ok := requestToNumInflightDecodeRequests[requestID]; ok {
+		result := make(map[string]int, len(requests))
+		for k, v := range requests {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int)
+}
+
+func CleanupSnapshotNumInflightDecodeRequestsForRequest(requestID string) {
+	RequestToNumInflightDecodeRequestsMutex.Lock()
+	defer RequestToNumInflightDecodeRequestsMutex.Unlock()
+	if _, ok := requestToNumInflightDecodeRequests[requestID]; ok {
+		delete(requestToNumInflightDecodeRequests, requestID)
+	}
+}
+
+// =====================================================
+// Inflight Prefill Tokens Functions
+// =====================================================
+
+func IncrementNumInflightPrefillTokensForPod(podIP string, numTokens int) {
 	podTotalPrefillTokensMutex.Lock()
 	defer podTotalPrefillTokensMutex.Unlock()
 	if _, ok := podTotalPrefillTokens[podIP]; !ok {
@@ -1697,8 +1881,145 @@ func IncrementNumPrefillTokensForPod(podIP string, numTokens int) int {
 	}
 	old_numTokens := podTotalPrefillTokens[podIP]
 	podTotalPrefillTokens[podIP] += numTokens
-	klog.V(5).Infof("TokenCount, Incremented prefill tokens for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, podTotalPrefillTokens[podIP])
+	klog.V(5).Infof("TokenCount, IncrementNumInflightPrefillTokensForPod for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, podTotalPrefillTokens[podIP])
+}
+
+func DecrementNumInflightPrefillTokensForPod(podIP string, numTokens int) int {
+	podTotalPrefillTokensMutex.Lock()
+	defer podTotalPrefillTokensMutex.Unlock()
+	if _, ok := podTotalPrefillTokens[podIP]; !ok {
+		klog.Errorf("Error, Pod name not found in podTotalPrefillTokens: %s", podIP)
+		return -1
+	}
+	if podTotalPrefillTokens[podIP] < numTokens {
+		klog.Errorf("Error, podTotalPrefillTokens[%s]: %d is less than numTokens: %d", podIP, podTotalPrefillTokens[podIP], numTokens)
+		return -1
+	}
+	old_numTokens := podTotalPrefillTokens[podIP]
+	podTotalPrefillTokens[podIP] -= numTokens
+	klog.V(5).Infof("TokenCount, DecrementNumInflightPrefillTokensForPod for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, podTotalPrefillTokens[podIP])
+	if podTotalPrefillTokens[podIP] < 0 {
+		klog.Errorf("Error, podTotalPrefillTokens[%s]: %d is negative!", podIP, podTotalPrefillTokens[podIP])
+	}
 	return podTotalPrefillTokens[podIP]
+}
+
+func StoreNumInflightPrefillTokensForTheRequest(requestID string) {
+	RequestToNumInflightPrefillTokensMutex.Lock()
+	defer RequestToNumInflightPrefillTokensMutex.Unlock()
+	if _, exists := requestToNumInflightPrefillTokens[requestID]; exists {
+		klog.Errorf("Error, requestID already exists in requestToNumInflightPrefillTokens: %s", requestID)
+		return
+	}
+	requestToNumInflightPrefillTokens[requestID] = make(map[string]int)
+	podTotalPrefillTokensMutex.RLock()
+	defer podTotalPrefillTokensMutex.RUnlock()
+	for podIP, numTokens := range podTotalPrefillTokens {
+		requestToNumInflightPrefillTokens[requestID][podIP] = numTokens
+	}
+}
+
+func GetSnapshotNumInflightPrefillTokensForRequest(requestID string) map[string]int {
+	RequestToNumInflightPrefillTokensMutex.RLock()
+	defer RequestToNumInflightPrefillTokensMutex.RUnlock()
+
+	if tokens, ok := requestToNumInflightPrefillTokens[requestID]; ok {
+		result := make(map[string]int, len(tokens))
+		for k, v := range tokens {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int)
+}
+
+func CleanupSnapshotNumInflightPrefillTokensForRequest(requestID string) {
+	RequestToNumInflightPrefillTokensMutex.Lock()
+	defer RequestToNumInflightPrefillTokensMutex.Unlock()
+	if _, ok := requestToNumInflightPrefillTokens[requestID]; ok {
+		delete(requestToNumInflightPrefillTokens, requestID)
+	}
+}
+
+// =====================================================
+// Inflight Decode Tokens Functions
+// =====================================================
+
+func IncrementNumInflightDecodeTokensForPod(podIP string, numTokens int) int {
+	podTotalDecodeTokensMutex.Lock()
+	defer podTotalDecodeTokensMutex.Unlock()
+	if _, ok := podTotalDecodeTokens[podIP]; !ok {
+		podTotalDecodeTokens[podIP] = 0
+	}
+	old_numTokens := podTotalDecodeTokens[podIP]
+	podTotalDecodeTokens[podIP] += numTokens
+	klog.V(5).Infof("TokenCount, IncrementNumInflightDecodeTokensForPod for pod %s by %d, from %d to %d", podIP, numTokens, old_numTokens, podTotalDecodeTokens[podIP])
+	return podTotalDecodeTokens[podIP]
+}
+
+func DecrementNumInflightDecodeTokensForPod(podIP string, numTokens int) int {
+	podTotalDecodeTokensMutex.Lock()
+	defer podTotalDecodeTokensMutex.Unlock()
+	if _, ok := podTotalDecodeTokens[podIP]; !ok {
+		klog.Errorf("Error, Pod name not found in podTotalDecodeTokens: %s", podIP)
+		return -1
+	}
+	old_numTokens := podTotalDecodeTokens[podIP]
+	podTotalDecodeTokens[podIP] -= numTokens
+	if podTotalDecodeTokens[podIP] < 0 {
+		klog.Errorf("Error, DecrementNumInflightDecodeTokensForPod, podTotalDecodeTokens[%s]: %d is negative!", podIP, podTotalDecodeTokens[podIP])
+	}
+	klog.V(5).Infof("TokenCount, DecrementNumInflightDecodeTokensForPod for pod %s by %d, from %d to %d", podIP, numTokens, old_numTokens, podTotalDecodeTokens[podIP])
+	return podTotalDecodeTokens[podIP]
+}
+
+func StoreNumInflightDecodeTokensForTheRequest(requestID string) {
+	RequestToNumInflightDecodeTokensMutex.Lock()
+	defer RequestToNumInflightDecodeTokensMutex.Unlock()
+	if _, exists := requestToNumInflightDecodeTokens[requestID]; exists {
+		klog.Errorf("Error, requestID already exists in requestToNumInflightDecodeTokens: %s", requestID)
+		return
+	}
+	requestToNumInflightDecodeTokens[requestID] = make(map[string]int)
+	podTotalDecodeTokensMutex.RLock()
+	defer podTotalDecodeTokensMutex.RUnlock()
+	for podIP, numTokens := range podTotalDecodeTokens {
+		requestToNumInflightDecodeTokens[requestID][podIP] = numTokens
+	}
+}
+
+func GetSnapshotNumInflightDecodeTokensForRequest(requestID string) map[string]int {
+	RequestToNumInflightDecodeTokensMutex.RLock()
+	defer RequestToNumInflightDecodeTokensMutex.RUnlock()
+
+	if tokens, ok := requestToNumInflightDecodeTokens[requestID]; ok {
+		result := make(map[string]int, len(tokens))
+		for k, v := range tokens {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int)
+}
+
+func CleanupSnapshotNumInflightDecodeTokensForRequest(requestID string) {
+	RequestToNumInflightDecodeTokensMutex.Lock()
+	defer RequestToNumInflightDecodeTokensMutex.Unlock()
+	if _, ok := requestToNumInflightDecodeTokens[requestID]; ok {
+		delete(requestToNumInflightDecodeTokens, requestID)
+	}
+}
+
+func IncrementNumPrefillTokensForPod(podIP string, numTokens int) {
+	podTotalPrefillTokensMutex.Lock()
+	defer podTotalPrefillTokensMutex.Unlock()
+	if _, ok := podTotalPrefillTokens[podIP]; !ok {
+		podTotalPrefillTokens[podIP] = 0
+	}
+	old_numTokens := podTotalPrefillTokens[podIP]
+	podTotalPrefillTokens[podIP] += numTokens
+	klog.V(5).Infof("TokenCount, IncrementNumPrefillTokensForPod for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, 
+	podTotalPrefillTokens[podIP])
 }
 
 func DecrementNumPrefillTokensForPod(podIP string, numTokens int) int {

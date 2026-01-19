@@ -110,8 +110,7 @@ func selectTargetPodWithLeastKVCache(cache cache.Cache, readyPods []*v1.Pod, mod
 		
 		totalCache := gpuCache.GetSimpleValue()
 
-		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, cpuCache: %v, kvCache: %v",
-			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), cpuCache.GetSimpleValue(), totalCache)
+		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v, kvCache: %v", pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue(), totalCache)
 
 		if totalCache <= minKvCache {
 			minKvCache = totalCache

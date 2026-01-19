@@ -190,24 +190,20 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			}(pod)
 		}
 		wg.Wait()
-
-		ts := time.Now()
 		detailedpodmetrics := utils.MetricsTracker.GetDetailedMetrics(time.Now().Add(-utils.MetricsTracker.WindowSize))
 		utils.AddRequestPodMetrics(routingCtx.RequestID, detailedpodmetrics)
-		klog.V(5).Infof("AddRequestPodMetrics took %dms, %s", time.Since(ts).Milliseconds(), routingCtx.RequestID)
-
-		//////////////////////////////////////////////////////////
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		s.selectedPodIP.Store(requestID, targetPodIP)
-		//////////////////////////////////////////////////////////'
-
 		targetPodIPWithPort := routingCtx.TargetAddressWithoutPort()
 		utils.StoreRequestToPodIP(routingCtx.RequestID, targetPodIPWithPort)
-
-		utils.IncrementNumInflightForPod(routingCtx.RequestID, targetPodIPWithPort)
-
-		ret := utils.IncrementNumPrefillTokensForPod(targetPodIPWithPort, prefill_token_len)
-		klog.V(5).Infof("IncrementNumPrefillTokensForPod(%s) by %d, %d", targetPodIPWithPort, prefill_token_len, ret)
+		utils.IncrementNumInflightForPod(targetPodIPWithPort)
+		utils.IncrementNumInflightPrefillRequestsForPod(targetPodIPWithPort)
+		utils.IncrementNumInflightPrefillTokensForPod(targetPodIPWithPort, prefill_token_len)
+		// Store snapshots for the request (to be used in response path for logging)
+		utils.StoreNumInflightPrefillRequestsForTheRequest(routingCtx.RequestID)
+		utils.StoreNumInflightDecodeRequestsForTheRequest(routingCtx.RequestID)
+		utils.StoreNumInflightPrefillTokensForTheRequest(routingCtx.RequestID)
+		utils.StoreNumInflightDecodeTokensForTheRequest(routingCtx.RequestID)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
 			return generateErrorResponse(

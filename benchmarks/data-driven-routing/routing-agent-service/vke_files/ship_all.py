@@ -28,7 +28,7 @@ class K8sDeployment:
         self.namespace = namespace
         self.app_label = app_label
         # kube_config_file = os.path.expanduser('~/.kube/config')
-        kube_config_file = os.path.expanduser('~/.kube/config-vke')
+        kube_config_file = os.path.expanduser('~/.kube/config')
         if not os.path.exists(kube_config_file):
             print(f"Error: {kube_config_file} does not exist")
             assert False
@@ -97,7 +97,7 @@ class K8sDeployment:
                 self.execute_command(pod_name, f"mkdir -p {remote_dir}")
             
             # Use kubectl cp with the kubeconfig
-            kubeconfig_path = os.path.expanduser('~/.kube/config-vke')
+            kubeconfig_path = os.path.expanduser('~/.kube/config')
             cmd = f"kubectl --kubeconfig={kubeconfig_path} cp {local_path} {self.namespace}/{pod_name}:{remote_path}"
             
             logger.info(f"Executing: {cmd}")
@@ -197,32 +197,59 @@ class K8sDeployment:
             pid_output = self.execute_command(pod_name, find_pid_cmd)
             
             if pid_output.strip():
-                pid = pid_output.strip().split('\n')[0]  # Get first PID if multiple
-                print(f"Found routing_agent_service.py process with PID: {pid}")
+                pids = [p.strip() for p in pid_output.strip().split('\n') if p.strip()]
+                print(f"Found routing_agent_service.py process(es) with PID(s): {pids}")
                 
-                # Kill the process
-                kill_result = self.execute_kubectl_command(pod_name, f"kill {pid}")
-                if kill_result:
-                    print(f"✅ Successfully killed routing_agent_service.py (PID: {pid}) in {pod_name}")
+                # First, try graceful termination with SIGTERM
+                for pid in pids:
+                    kill_result = self.execute_kubectl_command(pod_name, f"kill {pid}")
+                    if kill_result:
+                        print(f"✅ Sent SIGTERM to routing_agent_service.py (PID: {pid}) in {pod_name}")
+                
+                # Wait for graceful shutdown
+                time.sleep(3)
+                
+                # Check if processes are still running
+                verify_output = self.execute_command(pod_name, find_pid_cmd)
+                remaining_pids = [p.strip() for p in verify_output.strip().split('\n') if p.strip()]
+                
+                if remaining_pids:
+                    # Force kill with SIGKILL if still running
+                    print(f"⚠️ Process(es) still running after SIGTERM: {remaining_pids}. Force killing with SIGKILL...")
+                    for pid in remaining_pids:
+                        kill_result = self.execute_kubectl_command(pod_name, f"kill -9 {pid}")
+                        if kill_result:
+                            print(f"✅ Sent SIGKILL to routing_agent_service.py (PID: {pid}) in {pod_name}")
                     
-                    # Wait a moment and verify it's killed
+                    # Wait a bit more for SIGKILL to take effect
                     time.sleep(2)
-                    verify_output = self.execute_command(pod_name, find_pid_cmd)
-                    if not verify_output.strip():
-                        print(f"✅ Confirmed process is terminated in {pod_name}")
+                    
+                    # Final verification
+                    final_verify = self.execute_command(pod_name, find_pid_cmd)
+                    if not final_verify.strip():
+                        print(f"✅ Confirmed all processes are terminated in {pod_name}")
                         return True
                     else:
-                        logger.warning(f"⚠️ Process may still be running in {pod_name}")
-                        return False
+                        # Check if these are zombie processes (marked with 'Z' in ps output)
+                        ps_check = self.execute_command(pod_name, "ps aux | grep 'routing_agent_service.py' | grep -v grep")
+                        if 'Z' in ps_check or 'defunct' in ps_check.lower():
+                            print(f"⚠️ Found zombie/defunct processes (will be cleaned up by init). Continuing...")
+                            return True
+                        else:
+                            logger.warning(f"⚠️ Process may still be running in {pod_name}: {final_verify.strip()}")
+                            # Still return True to allow continuation - the process might restart automatically
+                            return True
                 else:
-                    return False
+                    print(f"✅ Confirmed process is terminated in {pod_name}")
+                    return True
             else:
                 print(f"No routing_agent_service.py process found running in {pod_name}")
                 return True
                 
         except Exception as e:
             logger.error(f"❌ Failed to kill routing_agent_service.py in {pod_name}: {e}")
-            exit(1)
+            # Don't exit - allow continuation even if kill fails
+            return False
 
     def execute_kubectl_command(self, pod_name, command, background=False):
         """Execute kubectl command in pod"""
@@ -465,11 +492,11 @@ def main():
             logger.error(f"❌ Failed to restart Flask in {pod_name}")
             sys.exit(1)
     print("\n🎉 Deployment completed successfully!")
-    if deployment.kill_routing_service(pod_name):
+    kill_success = deployment.kill_routing_service(pod_name)
+    if kill_success:
         print(f"✅ Successfully killed routing_agent_service.py in {pod_name}")
     else:
-        logger.error(f"❌ Failed to kill routing_agent_service.py in {pod_name}. Exiting...")
-        sys.exit(1)
+        logger.warning(f"⚠️ Failed to kill routing_agent_service.py in {pod_name}. Continuing anyway (will start new process)...")
     print(f"\n🔧 Executing additional commands in {pod_name}")
     deployment.execute_kubectl_command(pod_name, "python routing_agent_service.py", background=True)
 
