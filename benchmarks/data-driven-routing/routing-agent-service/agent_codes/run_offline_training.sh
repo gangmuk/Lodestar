@@ -2,60 +2,6 @@
 
 set -e
 
-lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
-hidden_dim=128 # 64, 128, 256, 128 was very very slightly better than 64
-batch_size=256
-training_epochs=10
-# training_epochs=1
-# sampling_ratio=1.0
-# excluded_pod_features="waiting_requests,cpu_kv_cache,running_requests" # still working
-# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # kinda bad
-# excluded_pod_features="gpu_kv_cache,running_requests,waiting_requests,inflight_requests" # this is also kinda bad
-# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,running_requests,inflight_requests" #
-# excluded_pod_features="gpu_kv_cache,running_requests,inflight_requests" #
-excluded_pod_features="none" #
-# kv_hit_ratio is not really helpful.... at least in 28% workload
-# excluded_request_features="input_tokens,total_tokens" # very bad
-excluded_request_features="output_tokens"
-# excluded_pod_features="kv_hit_ratio,gpu_kv_cache,inflight_requests" # slightly better 2
-# excluded_pod_features="gpu_kv_cache,inflight_requests" # same
-include_gpu_features=0
-
-sampling_ratio=1.0
-ttft_threshold=30000
-buffer_size=10000
-REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
-
-## For excluded_pod_features, you need to use the same name in preprocess.py
-# 'kv_hit_ratio': f"{pod_id}-kv_hit_ratio"]
-# 'inflight_requests': f"{pod_id}-inflight_requests"
-# 'gpu_kv_cache': f"{pod_id}-gpu_kv_cache"]
-# 'cpu_kv_cache': f"{pod_id}-cpu_kv_cache"]
-# 'running_requests': f"{pod_id}-running_requests"]
-# 'waiting_requests': f"{pod_id}-waiting_requests"]
-# 'prefill_tokens': f"{pod_id}-prefill_tokens"]
-# 'decode_tokens': f"{pod_id}-decode_tokens"]
-# 'GPU': f"{pod_id}-GPU"] 
-
-no_normalize_features="none" # "kv_hit_ratio", "none"
-
-# model_type="latency_predictor"
-model_type="contextual_bandit_perpodmodel_checkpoint"
-# model_type="contextual_bandit_perpodmodel_advanced"
-# model_type="contextual_bandit_perpodmodel_policygradient"
-
-
-latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
-analyze_behavior=false # true, false
-analyze_dataset=false # true, false
-reward_decay_factor=0.91
-ttft_slo=1000
-avg_tpot_slo=50
-ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
-learning_rate=0.0001
-time_stamp=$(date +%Y%m%d_%H%M%S)
-lr_scheduler_gamma=0.95
-
 # data_file=../workload-and-experiment_results/NVIDIA-A10/data.csv
 data_file=$1
 data_dir=$(dirname "${data_file}")
@@ -65,31 +11,33 @@ if [ ! -f "${data_file}" ]; then
 fi
 echo "✓ Found data file: ${data_file}"
 
-# Generate processed CSV filename automatically
+analyze_dataset=1
+analyze_behavior=0
+sampling_ratio=1.0
+ttft_threshold=30000
+buffer_size=10000
+REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
+lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
+hidden_dim=128
+batch_size=256
+training_epochs=10
+excluded_pod_features="none" # waiting_requests,cpu_kv_cache,running_requests" # still working
+excluded_request_features="output_tokens"
+include_gpu_features=0
+no_normalize_features="none" # "kv_hit_ratio", "none"
+model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
+latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
+reward_decay_factor=0.91
+ttft_slo=1000
+avg_tpot_slo=50
+ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
+learning_rate=0.0001
+time_stamp=$(date +%Y%m%d_%H%M%S)
+lr_scheduler_gamma=0.95
 data_basename=$(basename -- "${data_file}")
-data_name="${data_basename%.*}"  # Remove .csv extension
+data_name="${data_basename%.*}"
 processed_csv="${data_dir}/${data_name}-processed.csv"
-
-## final_mode_dir naming
 final_model_dir="${data_dir}/final_model"
-# if [ "${model_type}" == "contextual_bandit" ]; then
-#     final_model_dir="${final_model_dir}-${data_name}-processed-${REWARD_FUNCTION}-lr_${learning_rate}-ttft_weight_${ttft_reward_weight}-ttftslo_${ttft_slo}-avgtpotslo_${avg_tpot_slo}"
-#     if [ "${excluded_pod_features}" != "" ]; then
-#         final_model_dir="${final_model_dir}-without_${excluded_pod_features}"
-#     fi
-#     final_model_dir="${final_model_dir}-hidden_dim_${hidden_dim}"
-
-#     if [ "${lr_scheduler_type}" == "gradient_adaptive" ]; then
-#         final_model_dir="${final_model_dir}-lrs_grad_adapt"
-#     elif [ "${lr_scheduler_type}" == "exponential" ]; then
-#         final_model_dir="${final_model_dir}-lrs_exp"
-#     elif [ "${lr_scheduler_type}" == "plateau" ]; then
-#         final_model_dir="${final_model_dir}-lrs_plateau"
-#     else
-#         echo "❌ Unknown LR scheduler type: ${lr_scheduler_type}"
-#         exit 1
-#     fi
-# fi
 final_model_dir="${final_model_dir}-${model_type}"
 if [ "${model_type}" == "latency_predictor" ]; then
     final_model_dir="${final_model_dir}_${latency_metric}"
@@ -147,7 +95,7 @@ if [ ! -f "${processed_csv}" ]; then
     exit 1
 fi
 
-if [ "${analyze_dataset}" = "true" ]; then
+if [ "${analyze_dataset}" = "1" ] || [ "${analyze_dataset}" = "true" ]; then
     python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset 2>&1 | tee ${dataset_analyzer_log}
 fi
 
@@ -165,19 +113,13 @@ echo "Final model directory: ${final_model_dir}"
 echo "✅ Using model directory: ${final_model_dir}"
 
 # Step 3: Run training with the new streamlined pipeline
-# Build command arguments
-analyze_flag=""
-if [ "${analyze_behavior}" = "true" ]; then
-    analyze_flag="--analyze_behavior"
-fi
-
-python_cmd="python3 offline_routing_agent.py ${processed_csv} ${analyze_flag} --final_model_dir ${final_model_dir} --hyperparameter_file_path ${hyper_json}"
+python_cmd="python3 offline_routing_agent.py ${processed_csv} --analyze_behavior ${analyze_behavior} --final_model_dir ${final_model_dir} --hyperparameter_file_path ${hyper_json}"
 echo "python_cmd: ${python_cmd}"
 echo "${python_cmd}" > "${final_model_dir}/python_command.txt"
 ${python_cmd} 2>&1 | tee ${offline_routing_agent_log}
 
 cat ${data_processor_log} >> ${offline_routing_agent_log}
-if [ "${analyze_dataset}" = "true" ]; then
+if [ "${analyze_dataset}" = "1" ] || [ "${analyze_dataset}" = "true" ]; then
     cat ${dataset_analyzer_log} >> ${offline_routing_agent_log}
 fi
 cat ${offline_routing_agent_log} >> ${final_model_dir}/output.txt
@@ -188,4 +130,3 @@ echo "processed_csv: ${processed_csv}" >> ${final_model_dir}/full_path.txt
 # if [ "${model_type}" == "contextual_bandit" ]; then
 #     python csv_training_analyzer.py ${final_model_dir}/training_metrics.csv
 # fi
-echo "Model saved to: ${final_model_dir}"

@@ -45,9 +45,9 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio47%|${target_gpu}|6|6"
     # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio47%|${target_gpu}|6|2"
     # "latency_predictor|SharingRatio47%|${target_gpu}|6|2"
-    "least_latency|SharingRatio47%|${target_gpu}|6|2"
-    "prefix_cache_1|SharingRatio47%|${target_gpu}|6|2"
-    "random|SharingRatio47%|${target_gpu}|6|2"
+    # "least_latency|SharingRatio47%|${target_gpu}|6|2"
+    # "prefix_cache_1|SharingRatio47%|${target_gpu}|6|2"
+    # "random|SharingRatio47%|${target_gpu}|6|2"
     # "least_kv_cache|SharingRatio47%|${target_gpu}|6|1"
 
 
@@ -57,11 +57,11 @@ experiment_configs=(
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio28%|${target_gpu}|5|4"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|SharingRatio28%|${target_gpu}|5|6"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|2"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|2"
     # "latency_predictor|SharingRatio28%|${target_gpu}|5|2"
-    "least_latency|SharingRatio28%|${target_gpu}|5|2"
-    "prefix_cache_1|SharingRatio28%|${target_gpu}|5|2"
-    "random|SharingRatio28%|${target_gpu}|5|2"
+    # "least_latency|SharingRatio28%|${target_gpu}|5|2"
+    # "prefix_cache_1|SharingRatio28%|${target_gpu}|5|2"
+    # "random|SharingRatio28%|${target_gpu}|5|2"
     # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
 
 
@@ -69,71 +69,73 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_policygradient_throughput_based|SharingRatio9%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|SharingRatio9%|${target_gpu}|5|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|SharingRatio9%|${target_gpu}|5|4"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio28%|${target_gpu}|5|2"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|SharingRatio9%|${target_gpu}|5|2"
     # "latency_predictor|SharingRatio28%|${target_gpu}|5|2"
-    "least_latency|SharingRatio28%|${target_gpu}|5|2"
-    "prefix_cache_1|SharingRatio28%|${target_gpu}|5|2"
-    "random|SharingRatio28%|${target_gpu}|5|2"
+    # "least_latency|SharingRatio9%|${target_gpu}|5|2"
+    # "prefix_cache_1|SharingRatio9%|${target_gpu}|5|2"
+    # "random|SharingRatio9%|${target_gpu}|5|2"
     # "least_kv_cache|SharingRatio28%|${target_gpu}|5|1"
+
+    
 
     ## MixedSharingRatio10_30_50_70, total number of requests: 4000
     # "contextual_bandit_perpodmodel_policygradient_throughput_based|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_checkpoint|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_quantile_based_perpodmodel_advanced|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
     # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|MixedSharingRatio10_30_50_70%|${target_gpu}|6|4"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
     # "latency_predictor|MixedSharingRatio10_30_50_70%|${target_gpu}|6|3"
-    "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
-    "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
-    "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "least_latency|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "prefix_cache_1|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
+    # "random|MixedSharingRatio10_30_50_70%|${target_gpu}|6|2"
     # "least_request|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
     # "least_kv_cache|MixedSharingRatio10_30_50_70%|${target_gpu}|6|1"
+
+
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure_code_poisson|${target_gpu}|14|1"
+    # "latency_predictor|azure_code_poisson|${target_gpu}|10|2"
+    # "least_latency|azure_code_poisson|${target_gpu}|10|2"
+    # "prefix_cache_1|azure_code_poisson|${target_gpu}|8|1"
+    # "random|azure_code_poisson|${target_gpu}|10|2"
+    # "least_request|azure_code_poisson|${target_gpu}|10|2"
+    # "least_kv_cache|azure_code_poisson|${target_gpu}|10|2"
 )
 
-INCLUDE_GPU_FEATURES=0
-LOAD_PRETRAINED_MODEL=1
+ship_model=1
+ship_code=1
+ship_data=0
 
-ENABLE_ONLINE_LEARNING=1
-MAX_TOTAL_DATA=50000
-# MIN_NUM_TRAINING_DATA=2000
-# MIN_NUM_UPDATE_DATA=1000
-
-MIN_NUM_TRAINING_DATA=10000
-MIN_NUM_UPDATE_DATA=2000
-
-EXPLORATION_ENABLED=0
-EXPLORATION_RATE=0.1
-
-max_input_tokens=8000
+force_exact_output_tokens=1
 override_workload_output_length=1
 max_tokens=1
 max_tokens_std=0
-force_exact_output_tokens=1
+max_input_tokens=8000
 
-ship_model=0
-ship_code=1
-ship_offline_training_data=0
+if [ "${override_workload_output_length}" == "1" ]; then
+    output_wrk_name="maxTokens_${max_tokens}-maxTokensStd_${max_tokens_std}"
+else
+    output_wrk_name="use_given_output_length"
+fi
+
+ENABLE_ONLINE_LEARNING=0
+INCLUDE_GPU_FEATURES=0
+LOAD_PRETRAINED_MODEL=1
+MAX_TOTAL_DATA=50000
+MIN_NUM_TRAINING_DATA=10000
+MIN_NUM_UPDATE_DATA=2000
+EXPLORATION_ENABLED=0
+EXPLORATION_RATE=0.1
 prompt_type="chat" # chat, token-ids
-
 ENABLE_FLUSH=1
 FLUSH_PERIOD=10
 MIN_NUM_LOG_MESSAGES_TO_FLUSH=100
-
 architecture="PrefillOnly" # PrefillOnly, Aggregated
-
 
 # Configuration for the client
 api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
-# POD_LABEL_SELECTOR="llama2-7b"
-# POD_LABEL_SELECTOR="tinyllama"
 POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
 llm_model="llama-3-8b-instruct"
-# POD_LABEL_SELECTOR="model.aibrix.ai/name=llama3-1-8b"
-# llm_model="llama3-1-8b"
 
-
-# async-client.py will run inside the client-service pod. So we don't need to port forward. ClusterIP of envoy-aibrix-system-aibrix-eg-903790dc svc will work!
-# but for curl (e.g., ./curl-aws.sh), we need to port forward. It is done inside ./curl-aws.sh.
 ipaddr=$(kubectl get svc -n envoy-gateway-system envoy-aibrix-system-aibrix-eg-903790dc -o jsonpath='{.spec.clusterIP}')
 port=80
 echo "ipaddr of aibrix-system-aibrix-eg-903790dc svc: ${ipaddr}, port: ${port}"
@@ -142,7 +144,6 @@ if [ -z "${ipaddr}" ]; then
     exit 1
 fi
 
-# Display experiment configurations
 num_experiments=${#experiment_configs[@]}
 echo "========================================="
 echo "Will run ${num_experiments} experiment(s):"
@@ -174,77 +175,81 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     routing="${config%%${delimiter}*}"
     subAlgorithm="${config#*${delimiter}}"
     if [ "${routing_policy}" == "scalable_rl_agent" ]; then
-        final_model_dir="../training_data/scalable_rl_agent/final_model"
-    elif [ "${routing_policy}" == "contextual_bandit" ]; then
-        # Use the contextual bandit model from training
-        # When shipping: model is in Docker at /app/final_model/{GPU}/contextual_bandit/
-        # When developing: point to host path for ship_all.py to copy
+        source_final_model_dir="../training_data/scalable_rl_agent/final_model"
+    elif [[ "${routing_policy}" == *"contextual_bandit"* ]]; then
         if [ "${target_gpu}" == "NVIDIA-A10" ]; then
-            # Point to the inverse_latency trained model (will be shipped to pod)
-            final_model_dir="../workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit-20251208_164438"
-            echo "✓ Using contextual bandit model: ${final_model_dir}"
+            source_final_model_dir="../workload-and-experiment_results/NVIDIA-A10/${output_wrk_name}/final_model-contextual_bandit-20251208_164438"
+            echo "✓ Using contextual bandit model: ${source_final_model_dir}"
         elif [ "${target_gpu}" == "GPU-L3c" ] || [ "${target_gpu}" == "NVIDIA-L40" ] || [ "${target_gpu}" == "NVIDIA-L40S" ]; then
             echo "Error: No contextual bandit model trained for ${target_gpu} yet"
             echo "Exiting... 3"
             exit 1
+        elif [ "${target_gpu}" == "NVIDIA-A30" ]; then
+            source_final_model_dir="../workload-and-experiment_results/NVIDIA-A30/${output_wrk_name}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear" # only model for now
+            echo "✓ Using contextual bandit model: ${source_final_model_dir}"
         else
             echo "Error: Unknown target GPU model for contextual_bandit: ${target_gpu}"
             echo "Exiting... 3"
             exit 1
         fi
-    else
+    elif [[ "${routing_policy}" == *"latency_predictor"* ]]; then
         if [ "${target_gpu}" == "GPU-L3c" ] || [ "${target_gpu}" == "NVIDIA-L40" ] || [ "${target_gpu}" == "NVIDIA-L40S" ]; then
-            # final_model_dir="../training_data/L20-7/merged-data/all-with-mixed/final_model-latency_predictor_ttft"
-
-            final_model_dir="../workload-and-experiment_results/GPU-L3c/SharingRatio71%/rps8/final_model-latency_predictor_ttft-20251119_192610"
-
+            source_final_model_dir="../workload-and-experiment_results/GPU-L3c/SharingRatio71%/rps8/final_model-latency_predictor_ttft-20251119_192610"
         elif [ "${target_gpu}" == "NVIDIA-A30" ] || [ "${target_gpu}" == "NVIDIA-L4" ] || [ "${target_gpu}" == "NVIDIA-A10" ]; then
-            final_model_dir="../training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743"
+            source_final_model_dir="../training_data/A30-8/final_model-latency_predictor_ttft-20251028_183743"
         elif [ "${target_gpu}" == "hetero" ]; then
-            # final_model_dir="../training_data/hetero/used-in-paper/final_model-latency_predictor_ttft-20251029_034844"
-            final_model_dir="../training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60"
+            source_final_model_dir="../training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60"
         else
             echo "Error: Unknown target GPU model: ${target_gpu}"
             echo "Exiting... 3"
             exit 1
         fi
+    else
+        echo "Error: Unknown routing policy: ${routing_policy}"
+        echo "Exiting... 3"
+        exit 1
     fi
 
-
     if [ "${ship_model}" == "1" ]; then
-        if [ ! -d "${final_model_dir}" ]; then
-        echo "Error: Final model directory does not exist: ${final_model_dir}"
+        if [ ! -d "${source_final_model_dir}" ]; then
+        echo "Error: Final model directory does not exist: ${source_final_model_dir}"
             echo "Exiting... 4"
             exit 1
         fi
 
-        if [ ! -f "${final_model_dir}/model_config.json" ]; then
-            echo "Error: model_config.json does not exist: ${final_model_dir}/model_config.json"
+        if [ ! -f "${source_final_model_dir}/model_config.json" ]; then
+            echo "Error: model_config.json does not exist: ${source_final_model_dir}/model_config.json"
             echo "Exiting... 5"
             exit 1
         fi
 
         # Check for model weights based on routing policy
-        if [ "${routing_policy}" == "contextual_bandit" ]; then
-            if [ ! -f "${final_model_dir}/reward_net.pth" ]; then
-                echo "Error: reward_net.pth does not exist: ${final_model_dir}/reward_net.pth"
+        if [[ "${routing_policy}" == *"contextual_bandit"* ]]; then
+            if [ ! -f "${source_final_model_dir}/reward_net.pth" ]; then
+                echo "Error: reward_net.pth does not exist: ${source_final_model_dir}/reward_net.pth"
                 echo "Exiting... 6"
                 exit 1
             fi
-        elif [ "${routing_policy}" == "latency_predictor" ]; then
-            if [ ! -f "${final_model_dir}/latency_predictor.pth" ]; then
-                echo "Error: latency_predictor.pth does not exist: ${final_model_dir}/latency_predictor.pth"
+        elif [[ "${routing_policy}" == *"latency_predictor"* ]]; then
+            if [ ! -f "${source_final_model_dir}/latency_predictor.pth" ]; then
+                echo "Error: latency_predictor.pth does not exist: ${source_final_model_dir}/latency_predictor.pth"
                 echo "Exiting... 6"
                 exit 1
             fi
         fi
 
-        if [ ! -f "${final_model_dir}/feature_normalization_statistics.csv" ]; then
-            echo "Error: feature_normalization_statistics.csv does not exist: ${final_model_dir}/feature_normalization_statistics.csv"
+        if [ ! -f "${source_final_model_dir}/feature_normalization_statistics.csv" ]; then
+            echo "Error: feature_normalization_statistics.csv does not exist: ${source_final_model_dir}/feature_normalization_statistics.csv"
             echo "Exiting... 7"
             exit 1
         fi
+        if [ ! -f "${source_final_model_dir}/feature_distribution_statistics.csv" ]; then
+            echo "Error: feature_distribution_statistics.csv does not exist: ${source_final_model_dir}/feature_distribution_statistics.csv"
+            echo "Exiting... 8"
+            exit 1
+        fi
     fi
+
 
     if [ "${prompt_type}" == "chat" ]; then
         # Always use the base workload.jsonl as input to async-client.py.
@@ -263,28 +268,28 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         echo "Exiting... 8"
         exit 1
     fi
-    if [ ! -f "${workload_path_in_host}" ]; then
-        echo "Error: Workload file does not exist: ${workload_path_in_host}"
-        echo "Exiting... 9"
-        exit 1
-    fi
+    # if [ ! -f "${workload_path_in_host}" ]; then
+    #     echo "Error: Workload file does not exist: ${workload_path_in_host}"
+    #     echo "Exiting... 9"
+    #     exit 1
+    # fi
     output_dir="/app/output/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
     output_jsonl_path="${output_dir}/output.jsonl"
 
     # Create local experiment result output directory
     timestamp=$(date +%Y%m%d_%H%M%S)
-    experiment_result_output_dir="../workload-and-experiment_results/${target_gpu}/maxTokens_${max_tokens}-maxTokensStd_${max_tokens_std}/${workload_name}/rps${rps}/${subAlgorithm}"
+    experiment_result_output_dir="../workload-and-experiment_results/${target_gpu}/${output_wrk_name}/${workload_name}/rps${rps}/${subAlgorithm}"
     if [ "${subAlgorithm}" == "rl_naive" ]; then
-        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
-        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
-        hyperparameter_name=$(echo "$final_model_dir" | awk -F'processed-' '{print $2}')
+        trained_model_data_name=$(echo "$source_final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+        used_data_name=$(echo "$source_final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+        hyperparameter_name=$(echo "$source_final_model_dir" | awk -F'processed-' '{print $2}')
         hyperparameter_name="${hyperparameter_name}-explr_${EXPLORATION_ENABLED}"
         postfix="onlinelearning_${ENABLE_ONLINE_LEARNING}-trained_on_${trained_model_data_name}_${used_data_name}-${hyperparameter_name}-total_num_episodes${total_num_episodes}"
         experiment_result_output_dir="${experiment_result_output_dir}-${postfix}"
     elif [ "${subAlgorithm}" == "latency_predictor" ]; then
-        trained_model_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
-        prediction_metric=$(echo "$final_model_dir" | awk -F'latency_predictor_' '{print $2}')
-        used_data_name=$(echo "$final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
+        trained_model_data_name=$(echo "$source_final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f1)
+        prediction_metric=$(echo "$source_final_model_dir" | awk -F'latency_predictor_' '{print $2}')
+        used_data_name=$(echo "$source_final_model_dir" | awk -F'training_data/' '{print $2}' | cut -d'/' -f2)
         # postfix="trained_on_${trained_model_data_name}_${used_data_name}"
         # postfix="trained_on_${used_data_name}"
         # experiment_result_output_dir="${experiment_result_output_dir}_${prediction_metric}"
@@ -301,7 +306,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     echo "* target_gpu: ${target_gpu}"
     echo "* rps: ${rps}"
     echo "* total_num_episodes: ${total_num_episodes}"
-    echo "* final_model_dir: ${final_model_dir}"
+    echo "* source_final_model_dir: ${source_final_model_dir}"
     echo "* experiment_result_output_dir: ${experiment_result_output_dir}"
     echo "========================================="
 
@@ -326,7 +331,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         echo "total_num_episodes (recalculated): ${total_num_episodes}"
         echo "*******************************************"
         python update_model_config.py \
-            --final_model_dir "../training_data/scalable_rl_agent/final_model" \
+            --source_final_model_dir "../training_data/scalable_rl_agent/final_model" \
             --num_requests_per_episode ${num_requests_per_episode} \
             --num_iterations ${num_iterations} \
             --num_episodes_per_iteration ${num_episodes_per_iteration} \
@@ -351,7 +356,8 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
         --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
         --env WORKLOAD=${workload_name} \
-        --env ROUTING_STRATEGY=${routing_policy}
+        --env ROUTING_STRATEGY=${routing_policy} \
+        --env OUTPUT_WRK_NAME=${output_wrk_name}
     
     echo "Starting to update k8s env for aibrix-gateway-plugins"
     python3 update_k8s_env.py \
@@ -378,7 +384,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     ###############
 
     ship_start_time=$(date +%s)
-    python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --final_model_dir ${final_model_dir} --k8s_cluster ${k8s_cluster} --ship_offline_training_data ${ship_offline_training_data}
+    python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --source_final_model_dir ${source_final_model_dir} --ship_data ${ship_data} --k8s_cluster ${k8s_cluster}
     
     if [ "${routing_policy}" == "scalable_rl_agent" ]; then
         scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
@@ -569,7 +575,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         hyperparameters_file_path=$(find "${experiment_result_output_dir}/final_model/${target_gpu}" -name "model_config.json" | head -1)
         if [ -z "$hyperparameters_file_path" ]; then
             echo "ERROR: Could not find model_config.json in ${experiment_result_output_dir}/final_model/${target_gpu}"
-            exit 1
+            # exit 1
         fi
     else
         echo "Skipping final model copying for ${routing_policy}. It does not use any learned model."

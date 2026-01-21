@@ -154,10 +154,11 @@ class K8sDeployment:
                 remote_parent_dir = os.path.dirname(remote_file_path)
                 if remote_parent_dir != remote_dir:
                     self.execute_command(pod_name, f"mkdir -p {remote_parent_dir}")
+                print(f"Copying: from {file_path}")
+                print(f"\tto {remote_file_path}")
                 if self.copy_file_to_pod(pod_name, str(file_path), remote_file_path):
                     success_count += 1
-                    # print(f"Copied: {file_path} -> {remote_file_path}")
-                    print(f"Copied: {file_path}")
+                    print(f"\tdone")
                 else:
                     logger.error(f"Failed to copy: {file_path}")
                     return False
@@ -368,9 +369,10 @@ def main():
     parser = argparse.ArgumentParser(description='Ship all files and directories')
     parser.add_argument('--ship_code', type=int, default=1, help='ship_code')
     parser.add_argument('--ship_model', type=int, default=1, help='ship_model')
-    parser.add_argument('--ship_offline_training_data', type=int, default=0, help='ship_offline_training_data')
-    parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
+    parser.add_argument('--source_final_model_dir', type=str, default=None, help='Final model directory')
+    parser.add_argument('--ship_data', type=int, default=0, help='ship_data')
     parser.add_argument('--k8s_cluster', type=str, default='vke', choices=['vke', 'aws', 'local'], help='Kubernetes cluster')
+    parser.add_argument('--dst_offline_csv_path', type=str, default='/app/offline_training_data.csv', help='Destination offline training CSV path')
     args = parser.parse_args()
     
     if args.ship_code == 0 and args.ship_model == 0:
@@ -451,15 +453,18 @@ def main():
     if args.ship_model == 1:
         print("Shipping only final_model directory")
         # Convert to absolute path for consistency
-        final_model_abs_path = os.path.abspath(args.final_model_dir)
-        FINAL_MODEL_DIR = {final_model_abs_path: "/app/final_model"}
+        final_model_abs_path = os.path.abspath(args.source_final_model_dir)
+        # /home/ubuntu/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+        # /NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+        dst_model_dir = final_model_abs_path.split("workload-and-experiment_results")[1]
+        FINAL_MODEL_DIR = {final_model_abs_path: f"/app/{dst_model_dir}"}
 
-    if args.ship_offline_training_data:
+    if args.ship_data:
         # NEW: Ship offline training CSV for online learning
-        offline_csv_path = os.path.join(os.path.dirname(final_model_abs_path), "data_replaced-processed.csv")
+        offline_csv_path = os.path.join(os.path.dirname(final_model_abs_path), "data-processed.csv")
         print(f"offline training CSV path: source in host: {offline_csv_path}, destination in pod: /app/offline_training_data.csv")
         if os.path.exists(offline_csv_path):
-            agent_related_files[offline_csv_path] = "/app/offline_training_data.csv"
+            agent_related_files[offline_csv_path] = args.dst_offline_csv_path
             print(f"✅ Will ship offline training CSV: {offline_csv_path}")
         else:
             logger.error(f"❌  offline training CSV not found at {offline_csv_path}")
@@ -477,7 +482,7 @@ def main():
         logger.error(f"Missing directories: {missing_dirs}")
         sys.exit(1)
     print(f"Files: {list(agent_related_files.keys())}")
-    print(f"final_model_dir: {list(FINAL_MODEL_DIR.keys())}")
+    print(f"FINAL_MODEL_DIR: {FINAL_MODEL_DIR}")
     if deployment.deploy_to_pods(agent_related_files, FINAL_MODEL_DIR):
         print(f"✅ Files and directories copied to {pod_name} (no restart)")
     else:

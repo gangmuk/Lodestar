@@ -4,9 +4,25 @@ build=$1
 
 # docker buildx build --platform ${platform} --no-cache -t aibrix/gangmuk-routing-agent:${tag} .
 
+# Check if buildx is available
+if sudo docker buildx version >/dev/null 2>&1; then
+    USE_BUILDX=true
+    BUILDX_CMD="sudo docker buildx build"
+else
+    USE_BUILDX=false
+    BUILDX_CMD="sudo docker build"
+    echo "Warning: docker buildx not available, using legacy docker build"
+    echo "Install buildx to avoid deprecation warnings: https://docs.docker.com/go/buildx/"
+fi
+
 if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
-    sudo docker build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    if [ "$USE_BUILDX" = true ]; then
+        # sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
+        sudo docker buildx build --platform linux/amd64 -f Dockerfile.alternative -t aibrix/gangmuk-routing-agent:${tag} --load .
+    else
+        sudo docker build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    fi
     sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     kubectl set image deployment/routing-agent-service routing-agent=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
@@ -21,8 +37,11 @@ else
         exit
     fi
     POD_LABEL_SELECTOR="model.aibrix.ai/name=llama2-7b"
-    # you don't need to use platform and buildx since sudo docker will build based on the current machine type automatically.
-    sudo docker build -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    if [ "$USE_BUILDX" = true ]; then
+        sudo docker buildx build -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
+    else
+        sudo docker build -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+    fi
     sudo docker tag aibrix/gangmuk-routing-agent:${tag} gangmuk/gangmuk-routing-agent:${tag}
     sudo docker push gangmuk/gangmuk-routing-agent:${tag} # push to dockerhub
     kubectl set image deployment/routing-agent-service routing-agent=gangmuk/gangmuk-routing-agent:${tag}

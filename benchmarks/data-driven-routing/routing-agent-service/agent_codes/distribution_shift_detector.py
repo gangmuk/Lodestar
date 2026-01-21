@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Distribution Shift Detection for Neural Routing Models
-
-This module provides tools for tracking feature distributions during training
-and monitoring for distribution shifts during online deployment.
-"""
-
 import pandas as pd
 import numpy as np
 from collections import defaultdict
@@ -132,15 +125,6 @@ class DistributionShiftMonitor:
         check_interval: int = 100,
         alert_threshold_zscore: float = 2.0
     ):
-        """
-        Initialize distribution shift monitor.
-
-        Args:
-            training_distribution_csv: Path to feature_distribution_statistics.csv from training
-            window_size: Number of recent samples to maintain for comparison
-            check_interval: Check for shifts every N samples
-            alert_threshold_zscore: Alert if mean shifts by this many std devs
-        """
         self.window_size = window_size
         self.check_interval = check_interval
         self.alert_threshold_zscore = alert_threshold_zscore
@@ -190,12 +174,6 @@ class DistributionShiftMonitor:
         return self.sample_count % self.check_interval == 0
 
     def check_distribution_shift(self) -> List[Dict]:
-        """
-        Check for distribution shifts and return warnings.
-
-        Returns:
-            List of warning dictionaries with 'feature', 'severity', 'message'
-        """
         self.warnings = []
 
         for feature_name, current_values in self.current_values.items():

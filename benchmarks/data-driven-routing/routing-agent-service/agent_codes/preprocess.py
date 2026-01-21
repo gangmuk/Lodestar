@@ -80,6 +80,7 @@ def parse_log_file(file_path, pod_ip_mapping=None):
                 break
             column_name = parts[i]
             value = parts[i+1]
+            # Handle JSON objects
             if value.startswith('{') and value.endswith('}'):
                 try:
                     # NEW: Fix escaped quotes issue - replace \" with " before parsing
@@ -92,6 +93,11 @@ def parse_log_file(file_path, pod_ip_mapping=None):
                     logger.error(f"Error: {e}")
                     # Since we can't parse it, store as string to avoid losing data
                     row[column_name] = value
+            # Handle 'null' as empty dict for JSON columns (gateway sometimes logs null instead of {})
+            elif value == 'null':
+                if column_name not in json_columns:
+                    json_columns.append(column_name)
+                row[column_name] = {}
             else:
                 try:
                     row[column_name] = int(value)
@@ -919,16 +925,16 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     # Pre-parse all JSON columns once to avoid repeated parsing
     json_columns = [
-        'allPodsKvCacheHitRatios', 
-        'numInflightRequestsAllPods', 
-        'numInflightPrefillRequestsAllPods',  # NEW: Added new column
-        'numInflightDecodeRequestsAllPods',  # NEW: Added new column
-        'vllmGPUKVCacheUsage', 
-        'vllmCPUKVCacheUsage', 
-        'vllmNumRequestsRunning', 
-        'vllmNumRequestsWaiting', 
+        'allPodsKvCacheHitRatios',
+        'numInflightRequestsAllPods',
+        'numInflightPrefillRequestsAllPods',  # Per-pod inflight prefill requests
+        'numInflightDecodeRequestsAllPods',   # Per-pod inflight decode requests
+        'vllmGPUKVCacheUsage',
+        'vllmCPUKVCacheUsage',
+        'vllmNumRequestsRunning',
+        'vllmNumRequestsWaiting',
         # 'podMetricsLastSecond',  # Made optional - will be handled separately
-        'numPrefillTokensForAllPods', 
+        'numPrefillTokensForAllPods',
         'numDecodeTokensForAllPods',
         'GPU',
     ]
@@ -1073,6 +1079,8 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = safe_get_column(parsed_df, 'allPodsKvCacheHitRatios', {})
     all_inflight = safe_get_column(parsed_df, 'numInflightRequestsAllPods', {})
+    all_inflight_prefill = safe_get_column(parsed_df, 'numInflightPrefillRequestsAllPods', {})  # NEW: Per-pod inflight prefill requests
+    all_inflight_decode = safe_get_column(parsed_df, 'numInflightDecodeRequestsAllPods', {})   # NEW: Per-pod inflight decode requests
     all_gpu_cache = safe_get_column(parsed_df, 'vllmGPUKVCacheUsage', {})
     all_cpu_cache = safe_get_column(parsed_df, 'vllmCPUKVCacheUsage', {})
     all_running = safe_get_column(parsed_df, 'vllmNumRequestsRunning', {})
@@ -1121,6 +1129,18 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         inflight_features = extract_pod_features_fast(all_inflight, sorted_all_pod_ids, 0)
         for pod_id in sorted_all_pod_ids:
             base_data[f"{pod_id}-inflight_requests"] = inflight_features[pod_id]
+
+    # NEW: Extract per-pod inflight prefill requests
+    if 'inflight_prefill_requests' not in excluded_pod_features:
+        inflight_prefill_features = extract_pod_features_fast(all_inflight_prefill, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-inflight_prefill_requests"] = inflight_prefill_features[pod_id]
+
+    # NEW: Extract per-pod inflight decode requests
+    if 'inflight_decode_requests' not in excluded_pod_features:
+        inflight_decode_features = extract_pod_features_fast(all_inflight_decode, sorted_all_pod_ids, 0)
+        for pod_id in sorted_all_pod_ids:
+            base_data[f"{pod_id}-inflight_decode_requests"] = inflight_decode_features[pod_id]
 
     if 'gpu_kv_cache' not in excluded_pod_features:
         gpu_cache_features = extract_pod_features_fast(all_gpu_cache, sorted_all_pod_ids, 0)

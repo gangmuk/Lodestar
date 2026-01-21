@@ -135,7 +135,7 @@ func (r *latencyPredictionRouter) Route(ctx *types.RoutingContext, pods types.Po
 	}
 
 	matchedPods, prefixHashes = r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-	utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
+	utils.SetSnapShotForKVCacheHitRatio(ctx.RequestID, matchedPods)
 	inputTokens := utils.GetNumPrefillTokensForRequest(ctx.RequestID)
 	outputTokens := 128 // NOTE: This is a placeholder. It should be replaced with output token count prediction logic.
 	totalTokens := inputTokens + outputTokens

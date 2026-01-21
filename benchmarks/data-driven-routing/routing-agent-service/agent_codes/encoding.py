@@ -299,14 +299,16 @@ class DataEncoder:
         """
         # Define which features to KEEP (current state, routing-relevant)
         CURRENT_STATE_FEATURES = [
-            'inflight_requests',     # Current load
-            'kv_hit_ratio',         # Current cache performance  
-            'gpu_kv_cache',         # Current GPU memory usage
-            'cpu_kv_cache',         # Current CPU cache usage
-            'running_requests',     # Currently processing
-            'waiting_requests',     # Currently queued
-            'prefill_tokens',       # Current prefill load
-            'decode_tokens'         # Current decode load
+            'inflight_requests',         # Current total inflight requests
+            'inflight_prefill_requests', # Current inflight prefill requests (NEW)
+            'inflight_decode_requests',  # Current inflight decode requests (NEW)
+            'kv_hit_ratio',              # Current cache performance
+            'gpu_kv_cache',              # Current GPU memory usage
+            'cpu_kv_cache',              # Current CPU cache usage
+            'running_requests',          # Currently processing
+            'waiting_requests',          # Currently queued
+            'prefill_tokens',            # Current prefill load
+            'decode_tokens'              # Current decode load
         ]
         
         # Find indices of features to keep
@@ -369,8 +371,9 @@ class DataEncoder:
         
         # Feature definitions (same as batch version) with proper exclusion
         base_features_list = [
-            'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache',
-            'running_requests', 'waiting_requests', 'prefill_tokens', 
+            'inflight_requests', 'inflight_prefill_requests', 'inflight_decode_requests',
+            'gpu_kv_cache', 'cpu_kv_cache',
+            'running_requests', 'waiting_requests', 'prefill_tokens',
             'decode_tokens', 'kv_hit_ratio'
         ]
         excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
@@ -499,6 +502,8 @@ class DataEncoder:
         # Include ALL features we want to potentially keep
         base_features_list = [
             'inflight_requests',
+            'inflight_prefill_requests',  # NEW: Per-pod inflight prefill requests
+            'inflight_decode_requests',   # NEW: Per-pod inflight decode requests
             'gpu_kv_cache',
             'cpu_kv_cache',
             'running_requests',

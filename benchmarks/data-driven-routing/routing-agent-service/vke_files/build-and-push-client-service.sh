@@ -17,7 +17,8 @@ if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
     echo "Building client image for VKE cluster..."
     # Build from parent directory to include workload files
-    cd .. && sudo docker buildx build --platform linux/amd64 -f vke_files/Dockerfile -t aibrix/gangmuk-client:${tag} .
+    # --load flag loads the image into local Docker daemon so it can be tagged/pushed
+    cd .. && sudo docker buildx build --platform linux/amd64 --load -f vke_files/Dockerfile -t aibrix/gangmuk-client:${tag} .
     sudo docker tag aibrix/gangmuk-client:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-client:${tag}
     sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-client:${tag}
     kubectl set image deployment/client-service client=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-client:${tag}

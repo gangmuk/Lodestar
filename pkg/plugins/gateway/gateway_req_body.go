@@ -149,7 +149,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		// prefill_tokens, err := utils.TokenizeInputText(routingCtx.Message)
 		// prefill_token_len := len(prefill_tokens)
 
-		utils.SetRawMessageForRequest(routingCtx.RequestID, routingCtx.Message) // Cleanup in gateway_rsp_body.go
+		// utils.SetRawMessageForRequest(routingCtx.RequestID, routingCtx.Message) // Cleanup in gateway_rsp_body.go
 
 		prefill_tokens_in_bytearray, err := utils.TokenizeInputTextToByteArray(routingCtx.Message) // NOTE: four bytes per token
 		prefill_token_len := len(prefill_tokens_in_bytearray) / 4
@@ -170,7 +170,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		utils.SetByteArrayPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens_in_bytearray) // Cleanup in gateway_rsp_body.go
 
 		readyPods := utils.FilterRoutablePods(podsArr.All())
-		utils.StoreInflightRequestsForTheRequest(routingCtx.RequestID)
 		targetMetrics := [...]string{
 			utils.MetricGPUCacheUsagePerc,
 			// utils.MetricCPUCacheUsagePerc,
@@ -195,15 +194,16 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		s.selectedPodIP.Store(requestID, targetPodIP)
 		targetPodIPWithPort := routingCtx.TargetAddressWithoutPort()
-		utils.StoreRequestToPodIP(routingCtx.RequestID, targetPodIPWithPort)
+		utils.SetSnapshotForRequestToPodIP(routingCtx.RequestID, targetPodIPWithPort)
 		utils.IncrementNumInflightForPod(targetPodIPWithPort)
 		utils.IncrementNumInflightPrefillRequestsForPod(targetPodIPWithPort)
 		utils.IncrementNumInflightPrefillTokensForPod(targetPodIPWithPort, prefill_token_len)
-		// Store snapshots for the request (to be used in response path for logging)
-		utils.StoreNumInflightPrefillRequestsForTheRequest(routingCtx.RequestID)
-		utils.StoreNumInflightDecodeRequestsForTheRequest(routingCtx.RequestID)
-		utils.StoreNumInflightPrefillTokensForTheRequest(routingCtx.RequestID)
-		utils.StoreNumInflightDecodeTokensForTheRequest(routingCtx.RequestID)
+
+		// Set snapshots for the request (to be used in response path for logging)
+		utils.SetSnapshotForNumInflightPrefillRequestsForTheRequest(routingCtx.RequestID)
+		utils.SetSnapshotForNumInflightDecodeRequestsForTheRequest(routingCtx.RequestID)
+		utils.SetSnapshotForNumInflightPrefillTokensForTheRequest(routingCtx.RequestID)
+		utils.SetSnapshotForNumInflightDecodeTokensForTheRequest(routingCtx.RequestID)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
 			return generateErrorResponse(

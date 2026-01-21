@@ -190,9 +190,12 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
     """
     Improved feature-specific sensitivity analysis that uses statistically meaningful perturbations
     """
-    
-    if offline_routing_agent.NUM_TRAINS == 0:
-        logger.warning("No trained model available for detailed feature analysis")
+    import os
+
+    # Check if model file exists instead of NUM_TRAINS counter
+    model_path = os.path.join(args.final_model_dir, 'reward_net.pth')
+    if not os.path.exists(model_path):
+        logger.warning(f"No trained model available for detailed feature analysis (model not found at {model_path})")
         return None
     
     print("🔬 IMPROVED FEATURE-SPECIFIC SENSITIVITY ANALYSIS")
@@ -767,18 +770,22 @@ def analyze_detailed_feature_sensitivity(args, test_data_subset, stats_file):
     # 5. COMPARATIVE BASELINE
     print(f"\n📏 BASELINE COMPARISON:")
     print("-" * 20)
-    
+
     # Compare against random routing
-    random_sensitivity = 1.0 / len(all_pods)  # Random chance of changing prediction
-    print(f"Random baseline sensitivity: {random_sensitivity:.1%}")
-    print(f"Model average sensitivity: {overall_sensitivity_score:.1%}")
-    
-    if overall_sensitivity_score > random_sensitivity * 3:
-        print("✅ Model significantly outperforms random routing")
-    elif overall_sensitivity_score > random_sensitivity * 1.5:
-        print("📊 Model moderately better than random")
+    if all_pods is not None and len(all_pods) > 0:
+        random_sensitivity = 1.0 / len(all_pods)  # Random chance of changing prediction
+        print(f"Random baseline sensitivity: {random_sensitivity:.1%}")
+        print(f"Model average sensitivity: {overall_sensitivity_score:.1%}")
+
+        if overall_sensitivity_score > random_sensitivity * 3:
+            print("✅ Model significantly outperforms random routing")
+        elif overall_sensitivity_score > random_sensitivity * 1.5:
+            print("📊 Model moderately better than random")
+        else:
+            print("❌ Model barely better than random - check training")
     else:
-        print("❌ Model barely better than random - check training")
+        print("⚠️  Could not compute baseline comparison - no valid pod data extracted")
+        print(f"Model average sensitivity: {overall_sensitivity_score:.1%}")
     
     # Compare against simple heuristics
     if capacity_sensitivity > 0.2:
