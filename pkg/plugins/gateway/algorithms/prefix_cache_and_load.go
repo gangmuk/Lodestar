@@ -705,7 +705,7 @@ func (p *prefixCacheAndLoadRouter) Route(routingCtx *types.RoutingContext, pods 
 		podHitRatio := p.cache.GetCacheHitRatioForTargetPod(prefill_tokens, routingCtx.Model, pod.Status.PodIP)
 		allPodCacheHitRatio[pod.Status.PodIP] = podHitRatio
 	}
-	utils.StoreKVCacheHitRatio(routingCtx.RequestID, allPodCacheHitRatio)
+	utils.SetSnapShotForKVCacheHitRatio(routingCtx.RequestID, allPodCacheHitRatio)
 
 	currentNode := node
 	for currentNode != nil {

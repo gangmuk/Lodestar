@@ -435,7 +435,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupSnapshotNumInflightPrefillRequestsForRequest(routerCtx.RequestID)
 			utils.CleanupSnapshotNumInflightDecodeRequestsForRequest(routerCtx.RequestID)
 			utils.CleanupRequestPodMetrics(routerCtx.RequestID)
-			utils.CleanupRawMessageForRequest(routerCtx.RequestID)
+			// utils.CleanupRawMessageForRequest(routerCtx.RequestID)
 			utils.CleanupByteArrayPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupHashOfPrefixHashesForRequest(routerCtx.RequestID)
 			utils.CleanupExploration(routerCtx.RequestID)

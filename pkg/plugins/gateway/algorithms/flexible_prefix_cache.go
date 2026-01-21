@@ -113,7 +113,7 @@ func (p flexiblePrefixCacheRouter) Route(ctx *types.RoutingContext, pods types.P
 	}
 
 	// klog.InfoS("request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
-	utils.StoreKVCacheHitRatio(ctx.RequestID, matchedPods)
+	utils.SetSnapShotForKVCacheHitRatio(ctx.RequestID, matchedPods)
 
 	// if len(prefixHashes) > 0 {
 	p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Status.PodIP)

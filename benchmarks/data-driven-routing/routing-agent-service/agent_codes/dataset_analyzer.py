@@ -21,14 +21,19 @@ import matplotlib.patches as mpatches
 # Import reward functions from preprocess.py
 from preprocess import (
     calculate_rewards_simple,
-    calculate_rewards_simple_extended, 
+    calculate_rewards_simple_extended,
     calculate_rewards_piecewise_linear_steeper_gradient,
     calculate_rewards_inverse_latency,
     calculate_rewards_latency_optimization,
     calculate_rewards_simple_latency_minimization,
     calculate_rewards_negative_reciprocal,
     calculate_rewards_negative_linear,
-    calculate_rewards_negative_squared
+    calculate_rewards_negative_squared,
+    calculate_rewards_quantile_based,
+    calculate_rewards_absolute_latency,
+    calculate_rewards_throughput_based,
+    calculate_rewards_log_normalized,
+    calculate_rewards_context_aware
 )
 
 class RLDatasetAnalyzer:
@@ -135,6 +140,21 @@ class RLDatasetAnalyzer:
             print("WARNING: quantile_based reward function requires detailed context data not available in analyzer")
             print("Falling back to latency_optimized for analysis")
             reward_result = calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, tpot_slo, ttft_reward_weight)
+        elif reward_function == 'absolute_latency':
+            reward_result = calculate_rewards_absolute_latency(ttft_values, tpot_values, ttft_reward_weight=ttft_reward_weight)
+        elif reward_function == 'throughput_based':
+            # throughput_based requires input_tokens
+            if 'input_tokens' in self.df.columns:
+                input_tokens = self.df['input_tokens'].values
+                reward_result = calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, ttft_reward_weight)
+            else:
+                print("WARNING: throughput_based requires input_tokens column, falling back to negative_linear")
+                reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight)
+        elif reward_function == 'log_normalized':
+            # log_normalized requires p99 values computed from data
+            ttft_p99 = np.percentile(ttft_values, 99)
+            tpot_p99 = np.percentile(tpot_values, 99)
+            reward_result = calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p99, ttft_reward_weight)
         else:
             print(f"Unknown reward function: {reward_function}, defaulting to linear_simple")
             reward_result = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, tpot_slo)
@@ -2634,8 +2654,11 @@ def main():
                        help='TTFT SLO threshold (default: 1000ms)')
     parser.add_argument('--avg-tpot-slo', type=float, default=50,
                        help='TPOT SLO threshold (default: 50ms)')
-    parser.add_argument('--reward-function', 
-                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient', 'inverse_latency', 'latency_optimized', 'context_aware', 'quantile_based', 'simple_latency_minimization', 'negative_reciprocal', 'negative_linear', 'negative_squared'],
+    parser.add_argument('--reward-function',
+                       choices=['linear_simple', 'linear_simple_extended', 'piecewise_linear_steeper_gradient',
+                                'inverse_latency', 'latency_optimized', 'context_aware', 'quantile_based',
+                                'simple_latency_minimization', 'negative_reciprocal', 'negative_linear',
+                                'negative_squared', 'absolute_latency', 'throughput_based', 'log_normalized'],
                        default='simple_latency_minimization',
                        help='Reward function to use (default: simple_latency_minimization)')
     parser.add_argument('--ttft-reward-weight', type=float, default=0.5,
@@ -2677,6 +2700,22 @@ def main():
             reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, args.ttft_reward_weight)
         elif args.reward_function == 'negative_squared':
             reward_result = calculate_rewards_negative_squared(ttft_values, tpot_values, args.ttft_reward_weight)
+        elif args.reward_function == 'absolute_latency':
+            reward_result = calculate_rewards_absolute_latency(ttft_values, tpot_values, ttft_reward_weight=args.ttft_reward_weight)
+        elif args.reward_function == 'throughput_based':
+            if 'input_tokens' in analyzer.df.columns:
+                input_tokens = analyzer.df['input_tokens'].values
+                reward_result = calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, args.ttft_reward_weight)
+            else:
+                print("WARNING: throughput_based requires input_tokens column, falling back to negative_linear")
+                reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, args.ttft_reward_weight)
+        elif args.reward_function == 'log_normalized':
+            ttft_p99 = np.percentile(ttft_values, 99)
+            tpot_p99 = np.percentile(tpot_values, 99)
+            reward_result = calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p99, args.ttft_reward_weight)
+        else:
+            print(f"Unknown reward function: {args.reward_function}, defaulting to negative_linear")
+            reward_result = calculate_rewards_negative_linear(ttft_values, tpot_values, args.ttft_reward_weight)
         rewards = reward_result['combined_rewards']
 
         # Create uniform sample

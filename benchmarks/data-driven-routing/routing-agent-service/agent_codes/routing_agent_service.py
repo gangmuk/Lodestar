@@ -71,14 +71,7 @@ final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
 ROUTING_STRATEGY = os.getenv("ROUTING_STRATEGY", "latency_predictor")
-
-# hyperparameter_file_path = '/app/final_model/model_config.json'
-# final_model_dir = "/app/final_model"
-# feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-
-
 MAX_TOTAL_DATA = int(os.getenv("MAX_TOTAL_DATA", 20000))
-
 NUM_TRAINS = 0
 MODEL_UPDATED = True
 LOCK_TRAINING_DATA = threading.Lock()
@@ -128,6 +121,7 @@ if POD_LABEL_SELECTOR == "":
     logger.error(f"POD_LABEL_SELECTOR is empty")
     assert False
 ENABLE_ONLINE_LEARNING = int(os.getenv("ENABLE_ONLINE_LEARNING", 0))
+OUTPUT_WRK_NAME = os.getenv("OUTPUT_WRK_NAME", "Unknown")
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
 TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
 EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
@@ -1403,49 +1397,51 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME
     
     # Model directory and offline data are GPU-specific
     if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
         base_dir = None
-        # if TARGET_GPU_MODEL == "NVIDIA-A30" or TARGET_GPU_MODEL == "NVIDIA-L4":
-        #     base_dir = "/app/NVIDIA-A30/Aggregated"
-        #     final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        if TARGET_GPU_MODEL == "NVIDIA-A10" or TARGET_GPU_MODEL == "NVIDIA-A30":
-            base_dir = "/app/NVIDIA-A10/PrefillOnly"
-            final_model_dir = f"{base_dir}/final_model/{ROUTING_STRATEGY}"
-        elif TARGET_GPU_MODEL in ["GPU-L3c", "NVIDIA-L40", "NVIDIA-L40S", "NVIDIA-L20"]:
-            base_dir = "/app/NVIDIA-L20/Aggregated"
-            final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        elif TARGET_GPU_MODEL == "hetero":
-            base_dir = "/app/hetero/Aggregated"
-            final_model_dir = f"{base_dir}/final_model/latency_predictor"
-        else:
-            logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
-            assert False
+        # if TARGET_GPU_MODEL == "NVIDIA-A10":
+        #     base_dir = "/app/NVIDIA-A10/PrefillOnly"
+        #     final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
+        # elif TARGET_GPU_MODEL == "NVIDIA-A30":
+        #     base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
+        #     final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
+        # elif TARGET_GPU_MODEL in ["GPU-L3c", "NVIDIA-L40", "NVIDIA-L40S", "NVIDIA-L20"]:
+        #     base_dir = "/app/NVIDIA-L20/Aggregated"
+        #     final_model_dir = f"{base_dir}/final_model-latency_predictor"
+        # elif TARGET_GPU_MODEL == "hetero":
+        #     base_dir = "/app/hetero/Aggregated"
+        #     final_model_dir = f"{base_dir}/final_model-latency_predictor"
+        # else:
+        #     logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
+        #     assert False
+        base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
+        final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         offline_csv_path = f"{base_dir}/offline_training_data.csv"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-        offline_training_data_distribution = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based-2/feature_distribution_statistics.csv"
+        offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
     else:
         ## some default model for non learning based routing startegies
-        final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model/latency_predictor"
+        final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
-        offline_training_data_distribution = f"/app/NVIDIA-A10/PrefillOnly/final_model/contextual_bandit_perpodmodel_policygradient_throughput_based-2/feature_distribution_statistics.csv"
-
+        offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+        
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
     logger.info(f"WORKLOAD: {WORKLOAD}")
     logger.info(f"final_model_dir: {final_model_dir}")
     logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
-    logger.info(f"offline_csv_path: {offline_csv_path}")
     logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
     logger.info(f"offline_training_data_distribution: {offline_training_data_distribution}")
-    
+    logger.info(f"offline_csv_path: {offline_csv_path}")
+    if ENABLE_ONLINE_LEARNING:
+        assert offline_csv_path is not None, f"offline_csv_path is None for {TARGET_GPU_MODEL}"
     assert final_model_dir is not None, f"final_model_dir is None for {TARGET_GPU_MODEL}"
     assert hyperparameter_file_path is not None, f"hyperparameter_file_path is None for {TARGET_GPU_MODEL}"
-    assert offline_csv_path is not None, f"offline_csv_path is None for {TARGET_GPU_MODEL}"
     assert feature_normalization_stats_file is not None, f"feature_normalization_stats_file is None for {TARGET_GPU_MODEL}"
     assert offline_training_data_distribution is not None, f"offline_training_data_distribution is None for {TARGET_GPU_MODEL}"
     assert os.path.exists(final_model_dir), f"final_model_dir does not exist: {final_model_dir}"
@@ -1787,45 +1783,45 @@ def periodic_checkpoint_scalable_rl():
         logger.error(f"scalable_rl_routing_agent, Error in periodic_checkpoint_scalable_rl: {e}")
 
 
-def cleanup_old_checkpoints(checkpoint_dir, keep_latest=5):
-    """
-    Remove old checkpoints, keeping only the most recent ones.
+# def cleanup_old_checkpoints(checkpoint_dir, keep_latest=5):
+#     """
+#     Remove old checkpoints, keeping only the most recent ones.
     
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-        keep_latest: Number of recent checkpoints to keep
-    """
-    try:
-        # Find all checkpoint files (main model file, not metadata)
-        import glob
-        checkpoint_files = []
+#     Args:
+#         checkpoint_dir: Directory containing checkpoints
+#         keep_latest: Number of recent checkpoints to keep
+#     """
+#     try:
+#         # Find all checkpoint files (main model file, not metadata)
+#         import glob
+#         checkpoint_files = []
         
-        # Look for .zip files (SB3 PPO saves as .zip)
-        for f in glob.glob(os.path.join(checkpoint_dir, "scalable_rl_step_*.zip")):
-            # Get modification time
-            mtime = os.path.getmtime(f)
-            checkpoint_files.append((f, mtime))
+#         # Look for .zip files (SB3 PPO saves as .zip)
+#         for f in glob.glob(os.path.join(checkpoint_dir, "scalable_rl_step_*.zip")):
+#             # Get modification time
+#             mtime = os.path.getmtime(f)
+#             checkpoint_files.append((f, mtime))
         
-        # Sort by modification time (newest first)
-        checkpoint_files.sort(key=lambda x: x[1], reverse=True)
+#         # Sort by modification time (newest first)
+#         checkpoint_files.sort(key=lambda x: x[1], reverse=True)
         
-        # Delete old ones
-        if len(checkpoint_files) > keep_latest:
-            for checkpoint_path, _ in checkpoint_files[keep_latest:]:
-                try:
-                    # Remove checkpoint and associated files
-                    base_path = checkpoint_path.replace('.zip', '')
+#         # Delete old ones
+#         if len(checkpoint_files) > keep_latest:
+#             for checkpoint_path, _ in checkpoint_files[keep_latest:]:
+#                 try:
+#                     # Remove checkpoint and associated files
+#                     base_path = checkpoint_path.replace('.zip', '')
                     
-                    # Remove .zip, _metadata.pkl, _metadata.json
-                    for ext in ['.zip', '_metadata.pkl', '_metadata.json', '_buffer.pkl']:
-                        file_to_remove = base_path + ext if ext != '.zip' else checkpoint_path
-                        if os.path.exists(file_to_remove):
-                            os.remove(file_to_remove)
-                            logger.info(f"scalable_rl_routing_agent, Removed old checkpoint: {os.path.basename(file_to_remove)}")
-                except Exception as e:
-                    logger.warning(f"scalable_rl_routing_agent, Failed to remove old checkpoint {checkpoint_path}: {e}")
-    except Exception as e:
-        logger.error(f"scalable_rl_routing_agent, Error cleaning up old checkpoints: {e}")
+#                     # Remove .zip, _metadata.pkl, _metadata.json
+#                     for ext in ['.zip', '_metadata.pkl', '_metadata.json', '_buffer.pkl']:
+#                         file_to_remove = base_path + ext if ext != '.zip' else checkpoint_path
+#                         if os.path.exists(file_to_remove):
+#                             os.remove(file_to_remove)
+#                             logger.info(f"scalable_rl_routing_agent, Removed old checkpoint: {os.path.basename(file_to_remove)}")
+#                 except Exception as e:
+#                     logger.warning(f"scalable_rl_routing_agent, Failed to remove old checkpoint {checkpoint_path}: {e}")
+#     except Exception as e:
+#         logger.error(f"scalable_rl_routing_agent, Error cleaning up old checkpoints: {e}")
 
 
 if __name__ == "__main__":

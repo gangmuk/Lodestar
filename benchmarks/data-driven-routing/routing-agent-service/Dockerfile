@@ -22,23 +22,27 @@ COPY start.sh .
 ########################################################
 #### NVIDIA-L20, llama3.1 8B, no bitsandbytes ##########
 ########################################################
-## output 100 with some variance
-COPY workload-and-experiment_results/maxTokens_100-maxTokensStd_10/NVIDIA-L20/merged-data/all-with-mixed/final_model-latency_predictor_ttft NVIDIA-L20/Aggregated/final_model/latency_predictor
-COPY workload-and-experiment_results/maxTokens_100-maxTokensStd_10/NVIDIA-L20/merged-data/all-with-mixed/data_replaced-processed.csv NVIDIA-L20/Aggregated/offline_training_data.csv
+# ## output 100 with some variance
+# COPY workload-and-experiment_results/NVIDIA-L20/maxTokens_100-maxTokensStd_10/merged-data/all-with-mixed/final_model-latency_predictor_ttft NVIDIA-L20/maxTokens_100-maxTokensStd_10/final_model-latency_predictor
+# COPY workload-and-experiment_results/NVIDIA-L20/maxTokens_100-maxTokensStd_10/merged-data/all-with-mixed/data_replaced-processed.csv NVIDIA-L20/maxTokens_100-maxTokensStd_10/offline_training_data.csv
 
 ########################################################
 #### NVIDIA-A30, llama3.1 8B, no bitsandbytes ##########
 ########################################################
-## output 100 with some variance
-COPY workload-and-experiment_results/NVIDIA-A30/final_model-latency_predictor_ttft NVIDIA-A30/Aggregated/final_model/latency_predictor
-COPY workload-and-experiment_results/NVIDIA-A30/data-processed.csv NVIDIA-A30/Aggregated/offline_training_data.csv
+
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/final_model-latency_predictor_ttft NVIDIA-A30/maxTokens_100-maxTokensStd_10/final_model-latency_predictor
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/data-processed.csv NVIDIA-A30/maxTokens_100-maxTokensStd_10/offline_training_data.csv
+
+## output 1
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A30/PrefillOnly/offline_training_data.csv
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/PrefillOnly/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
 
 ###############################################################################
 #### hetero: NVIDIA-L20*7 and NVIDIA-A30*8, , llama3.1 8B, no bitsandbytes ####
 ###############################################################################
-# COPY training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60 hetero/Aggregated/final_model/latency_predictor
-# COPY training_data/hetero/data-processed.csv hetero/Aggregated/offline_training_data.csv
+# COPY training_data/hetero/final_model-latency_predictor_ttft-20251101_213101-epoch60 hetero/maxTokens_100-maxTokensStd_10/final_model-latency_predictor
+# COPY training_data/hetero/data-processed.csv hetero/maxTokens_100-maxTokensStd_10/offline_training_data.csv
 
 ##################################################
 #### NVIDIA-A10 *7, llama3.1 8B, bitsandbytes ####

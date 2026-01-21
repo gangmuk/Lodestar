@@ -10,8 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Create workload directory structure
-RUN mkdir -p \
+# Copy requirements and install Python dependencies (before workloads for better caching)
+COPY vke_files/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy client script and utilities (before workloads for better caching)
+COPY vke_files/async-client.py .
+COPY vke_files/utils.py .
+COPY vke_files/logger.py .
+
+# Create directories
+RUN mkdir -p /app/output \
     /app/workload/hundred_request \
     /app/workload/SharingRatio71% \
     /app/workload/SharingRatio47% \
@@ -19,11 +28,9 @@ RUN mkdir -p \
     /app/workload/SharingRatio9% \
     /app/workload/MixedSharingRatio10_30_50_70%
 
-# Copy workload files from parent directory
+# Copy workload files from parent directory (LAST - changes most frequently)
 # Build context is set to parent directory in build-and-push.sh
-
-
-
+# This order ensures Python dependencies and code are cached when workloads change
 
 # COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/old-version/input10002000/rps2030/SharingRatio10%_avginput1500_globalrps20/workload.jsonl /app/workload/old-version/input10002000/rps2030/SharingRatio10%_avginput1500_globalrps20/
 
@@ -78,21 +85,8 @@ COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workloa
 COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
 COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/
 COPY workload-and-experiment_results/SharingRatio9%/workload.jsonl /app/workload/SharingRatio9%/
-# COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing_mixed_10_30_50_70%/SharingRatio39%_avginput3750_globalrps12/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
-
-# Create output directory
-RUN mkdir -p /app/output
-
-
-# Copy requirements and install Python dependencies
-COPY vke_files/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy client script and utilities
-COPY vke_files/async-client.py .
-COPY vke_files/async-client-og.py .
-COPY vke_files/utils.py .
-COPY vke_files/logger.py .
+COPY workload-and-experiment_results/MixedSharingRatio10_30_50_70%/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
+COPY workload-and-experiment_results/workload-generator/azure/azure_code_poisson/workload.jsonl /app/workload/azure_code_poisson/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

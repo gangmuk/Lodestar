@@ -2,13 +2,27 @@
 
 # Script to merge all filtered-aibrix-gateway-plugins.log.csv files into data.csv
 
-OUTPUT_FILE="data.csv"
+# Check if root directory is provided
+if [ -z "$1" ]; then
+    echo "Usage: $0 <root_directory>"
+    exit 1
+fi
+
+ROOT_DIR="$1"
+
+# Validate that the directory exists
+if [ ! -d "$ROOT_DIR" ]; then
+    echo "Error: Directory '$ROOT_DIR' does not exist"
+    exit 1
+fi
+
+OUTPUT_FILE="$ROOT_DIR/data.csv"
 
 # Remove output file if it exists
 [ -f "$OUTPUT_FILE" ] && rm "$OUTPUT_FILE"
 
 # Find all filtered-aibrix-gateway-plugins.log.csv files recursively
-files=$(find . -type f -name "filtered-aibrix-gateway-plugins.log.csv" | sort)
+files=$(find "$ROOT_DIR" -type f -name "filtered-aibrix-gateway-plugins.log.csv" | sort)
 
 # Check if any files were found
 if [ -z "$files" ]; then

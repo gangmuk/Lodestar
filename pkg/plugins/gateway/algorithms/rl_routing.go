@@ -25,7 +25,6 @@ var (
 	enableFlush                = utils.LoadEnvInt("ENABLE_FLUSH", 0)
 	flushPeriod                = time.Duration(utils.LoadEnvInt("FLUSH_PERIOD", 10)) * time.Second
 	minNumLogMessagesToFlush   = utils.LoadEnvInt("MIN_NUM_LOG_MESSAGES_TO_FLUSH", 100)
-	useRealRequest             = utils.LoadEnvInt("useRealRequest", 1)
 	flushed                    = false
 	received_the_first_request = false
 	allPodIPs                  = []string{}
@@ -86,7 +85,8 @@ func NewRLOnlineRouter() (types.Router, error) {
 	return router, nil
 }
 
-//  pre-populates GPU model information for all pods
+//	pre-populates GPU model information for all pods
+//
 // This runs in the background to avoid blocking router initialization
 func initializeGPUModels(c cache.Cache) {
 	// Wait a bit for pods to be registered in cache
@@ -132,157 +132,73 @@ func initializeGPUModels(c cache.Cache) {
 
 // // flush real request log collected
 func FlushLogMessageToRLAgent() {
-	if useRealRequest == 1 {
-		klog.Infof("flushing real request log to RL agent")
-		done := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(flushPeriod)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if !received_the_first_request {
-						klog.Infof("The first request has not been received yet, skipping the flush. (needed to construct the running pod IPs)")
-						continue // Skip this iteration and check again on the next tick
-					}
-					utils.RequestToLogMessageMutex.RLock()
-					numMessages := len(utils.RequestToLogMessage)
-					utils.RequestToLogMessageMutex.RUnlock()
-
-					if numMessages > minNumLogMessagesToFlush {
-						klog.Infof("Starting flushing %dth flush for %d number of log messages", utils.GetNumFlush(), numMessages)
-						utils.RequestToLogMessageMutex.RLock()
-						reqBody, err := json.Marshal(utils.RequestToLogMessage)
-						utils.RequestToLogMessageMutex.RUnlock()
-						if err != nil {
-							klog.Errorf("Failed flush. failed marshal RequestToLogMessage: %v", err)
-							utils.CleanupAllRequestLogMessage()
-							continue
-						}
-						url := fmt.Sprintf("%s%s", routingAgentURL, flushEndpoint)
-						req, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-						if reqErr != nil {
-							klog.Errorf("Failed flush. failed to create request: %v", reqErr)
-							utils.CleanupAllRequestLogMessage()
-							continue
-						}
-						req.Header.Set("Content-Type", "application/json")
-						resp, sendErr := httpClientForRLAgent.Do(req) // flush request
-						if sendErr != nil {
-							klog.Errorf("Failed flush. failed to send request: %v", sendErr)
-							utils.CleanupAllRequestLogMessage()
-							continue
-						}
-						if resp.StatusCode != http.StatusOK {
-							klog.Errorf("Received non-200 response: %s", resp.Status)
-							utils.CleanupAllRequestLogMessage()
-							klog.Errorf("Failed flush. Received non-200 response: %s", resp.Status)
-							continue
-						}
-						body, readErr := ioutil.ReadAll(resp.Body)
-						if readErr != nil {
-							klog.Errorf("Failed to read response body: %v", readErr)
-							utils.CleanupAllRequestLogMessage()
-							klog.Errorf("Failed flush. Failed to read response body: %v", readErr)
-							continue
-						}
-						resp.Body.Close()
-						utils.CleanupAllRequestLogMessage()
-						klog.Infof("Successfully flush, response: %s", string(body))
-						flushed = true
-						numFlush += 1
-					} else {
-						klog.Infof("Not enough log messages to flush: %d", len(utils.RequestToLogMessage))
-					}
-				case <-done:
-					klog.Info("Flushing goroutine is shutting down")
-					return
+	klog.Infof("flushing real request log to RL agent")
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(flushPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if !received_the_first_request {
+					klog.Infof("The first request has not been received yet, skipping the flush. (needed to construct the running pod IPs)")
+					continue // Skip this iteration and check again on the next tick
 				}
-			}
-		}()
-	} else { // useRealRequest == 0
-		done := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(flushPeriod)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if !received_the_first_request {
-						klog.Infof("The first request has not been received yet, skipping the flush")
-						continue // Skip this iteration and check again on the next tick
-					}
+				utils.RequestToLogMessageMutex.RLock()
+				numMessages := len(utils.RequestToLogMessage)
+				utils.RequestToLogMessageMutex.RUnlock()
 
-					// if flushed {
-					// 	// flush only once to simplify experiment
-					// 	klog.Infof("Skip flushing. Configured to flush only once for Fake data, utils.UseRealRequest == false")
-					// 	continue
-					// }
-
-					// If we got here, the first request has been received
-					klog.Infof("Start flushing log messages to RL agent, %dth flush", numFlush)
-					allPodIPs = utils.GetAllPodIPsFromRegistry()
-					klog.Infof("All pod IPs: %v", allPodIPs)
-
-					logs := utils.GenerateLogMessages(allPodIPs, minNumLogMessagesToFlush)
-					start_request_id_of_this_batch := fake_request_id
-					for _, log := range logs {
-						utils.AddRequestLogMessage(fmt.Sprintf("%d", fake_request_id), log)
-						fake_request_id += 1
-					}
-					end_request_id_of_this_batch := fake_request_id
-					klog.Infof("Newly added request ids %d-%d", start_request_id_of_this_batch, end_request_id_of_this_batch)
+				if numMessages > minNumLogMessagesToFlush {
+					klog.Infof("Starting flushing %dth flush for %d number of log messages", utils.GetNumFlush(), numMessages)
 					utils.RequestToLogMessageMutex.RLock()
-					numLogs := len(utils.RequestToLogMessage)
-					klog.Infof("Starting flushing process for %d logs ", numLogs)
-					klog.V(5).Infof("logs: %v", logs)
 					reqBody, err := json.Marshal(utils.RequestToLogMessage)
 					utils.RequestToLogMessageMutex.RUnlock()
 					if err != nil {
-						klog.Errorf("Failed flush. failed to marshal RequestToLogMessage: %v", err)
+						klog.Errorf("Failed flush. failed marshal RequestToLogMessage: %v", err)
+						utils.CleanupAllRequestLogMessage()
 						continue
 					}
-
 					url := fmt.Sprintf("%s%s", routingAgentURL, flushEndpoint)
 					req, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 					if reqErr != nil {
 						klog.Errorf("Failed flush. failed to create request: %v", reqErr)
+						utils.CleanupAllRequestLogMessage()
 						continue
 					}
-
 					req.Header.Set("Content-Type", "application/json")
-					resp, sendErr := httpClientForRLAgent.Do(req)
+					resp, sendErr := httpClientForRLAgent.Do(req) // flush request
 					if sendErr != nil {
 						klog.Errorf("Failed flush. failed to send request: %v", sendErr)
+						utils.CleanupAllRequestLogMessage()
 						continue
 					}
-
-					// Ensure we have a valid response before proceeding
-					if resp != nil {
-						if resp.StatusCode != http.StatusOK {
-							klog.Errorf("Received non-200 response: %s", resp.Status)
-						}
-
-						body, readErr := ioutil.ReadAll(resp.Body)
-						if readErr != nil {
-							klog.Errorf("Failed flush. failed to read response body: %v", readErr)
-						} else {
-							klog.Infof("Successfully sent RequestToLogMessage to RL agent: %s", string(body))
-						}
-						resp.Body.Close()
+					if resp.StatusCode != http.StatusOK {
+						klog.Errorf("Received non-200 response: %s", resp.Status)
+						utils.CleanupAllRequestLogMessage()
+						klog.Errorf("Failed flush. Received non-200 response: %s", resp.Status)
+						continue
 					}
-
-					//// Delete when the RL agent is doing continuous learning.
-					//// When the RL agent trains the model from scratch at every flush call, don't discard previous logs but flush all history every time.
-					// utils.CleanupAllRequestLogMessage()
-					// flushed = true
+					body, readErr := ioutil.ReadAll(resp.Body)
+					if readErr != nil {
+						klog.Errorf("Failed to read response body: %v", readErr)
+						utils.CleanupAllRequestLogMessage()
+						klog.Errorf("Failed flush. Failed to read response body: %v", readErr)
+						continue
+					}
+					resp.Body.Close()
+					utils.CleanupAllRequestLogMessage()
+					klog.Infof("Successfully flush, response: %s", string(body))
+					flushed = true
 					numFlush += 1
-				case <-done:
-					return
+				} else {
+					klog.Infof("Not enough log messages to flush: %d", len(utils.RequestToLogMessage))
 				}
+			case <-done:
+				klog.Info("Flushing goroutine is shutting down")
+				return
 			}
-		}()
-	}
+		}
+	}()
 }
 
 func init() {
@@ -436,7 +352,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			// podIPsWithMatchingRatios[pod.Name] = 0
 		}
 	}
-	utils.StoreKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
+	utils.SetSnapShotForKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
 
 	if len(readyPods) == 0 {
 		klog.Errorf("requestID: %s, No ready pods available for routing", ctx.RequestID)
@@ -451,162 +367,194 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	var logMessage string
 	log_construction_start_time := time.Now()
-	if useRealRequest == 1 {
-		// Prepare for JSON strings to use in logging
-		var jsonStrings = make(map[string]string)
+	// Prepare for JSON strings to use in logging
+	var jsonStrings = make(map[string]string)
 
-		// 1. KV cache hit ratios
-		allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(ctx.RequestID)
-		jsonStrings["allPodsKvCacheHitRatios"] = jsonStringify(allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
-		klog.V(5).Infof("allPodsKvCacheHitRatios: %s", jsonStrings["allPodsKvCacheHitRatios"])
+	// 1. KV cache hit ratios
+	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(ctx.RequestID)
+	jsonStrings["allPodsKvCacheHitRatios"] = jsonStringify(allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
+	klog.V(5).Infof("allPodsKvCacheHitRatios: %s", jsonStrings["allPodsKvCacheHitRatios"])
 
-		// 2. Inflight requests
-		numInflightRequestsAllPods := utils.GetInflightRequestsForAllPods(ctx.RequestID)
-		jsonStrings["numInflightRequestsAllPods"] = jsonStringify(numInflightRequestsAllPods, utils.GetrequestInflightMutex())
+	// 2. Inflight requests
+	numInflightRequestsAllPods := utils.GetInflightRequestsForAllPods(ctx.RequestID)
+	jsonStrings["numInflightRequestsAllPods"] = jsonStringify(numInflightRequestsAllPods, utils.GetrequestInflightMutex())
 
-		// 3. GPU KV cache usage
-		vllmGPUKVCacheUsage, err := utils.GetvLLMGPUKVCacheUsageForAllPods(ctx.RequestID)
-		if err == nil {
-			jsonStrings["vllmGPUKVCacheUsage"] = jsonStringify(vllmGPUKVCacheUsage, utils.GetvllmGPUKVCacheUsageMutex())
-		} else {
-			jsonStrings["vllmGPUKVCacheUsage"] = "{}"
-		}
+	// 2a. Inflight prefill requests
+	numInflightPrefillRequestsAllPods := utils.GetSnapshotNumInflightPrefillRequestsForRequest(ctx.RequestID)
+	jsonStrings["numInflightPrefillRequestsAllPods"] = jsonStringify(numInflightPrefillRequestsAllPods, utils.GetrequestInflightMutex())
 
-		// // 4. CPU KV cache usage
-		// vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(ctx.RequestID)
-		// if err == nil {
-		// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
-		// } else {
-		// 	klog.ErrorS(err, "error to get vllm cpu kv cache usage, fill vllmCPUKVCacheUsage with empty map {}", "requestID", ctx.RequestID)
-		// 	// create 0 value map for all pods, with type map[string]float64
-		// 	vllmCPUKVCacheUsage = make(map[string]float64)
-		// 	for _, pod := range readyPods {
-		// 		vllmCPUKVCacheUsage[pod.Status.PodIP] = 0.0
-		// 	}
-		// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
-		// }
-		jsonStrings["vllmCPUKVCacheUsage"] = "{}"
+	// 2b. Inflight decode requests
+	numInflightDecodeRequestsAllPods := utils.GetSnapshotNumInflightDecodeRequestsForRequest(ctx.RequestID)
+	jsonStrings["numInflightDecodeRequestsAllPods"] = jsonStringify(numInflightDecodeRequestsAllPods, utils.GetrequestInflightMutex())
 
-		// 5. Number of running requests
-		vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(ctx.RequestID)
-		if err == nil {
-			jsonStrings["vllmNumRequestsRunning"] = jsonStringify(vllmNumRequestsRunning, utils.GetvllmNumRequestsRunningMutex())
-		} else {
-			jsonStrings["vllmNumRequestsRunning"] = "{}"
-		}
-
-		// 6. Number of waiting requests
-		vllmNumRequestWaiting, err := utils.GetvLLMNumRequestsWaitingForAllPods(ctx.RequestID)
-		if err == nil {
-			jsonStrings["vllmNumRequestWaiting"] = jsonStringify(vllmNumRequestWaiting, utils.GetvllmNumRequestsWaitingMutex())
-		} else {
-			jsonStrings["vllmNumRequestWaiting"] = "{}"
-		}
-
-		numPrefillTokensForAllPods := utils.GetNumPrefillTokensForAllPods()
-		jsonStrings["numPrefillTokensForAllPods"] = jsonStringify(numPrefillTokensForAllPods, utils.GetpodTotalPrefillTokensMutex())
-
-		numDecodeTokensForAllPods := utils.GetNumDecodeTokensForAllPods()
-		jsonStrings["numDecodeTokensForAllPods"] = jsonStringify(numDecodeTokensForAllPods, utils.GetpodTotalDecodeTokensMutex())
-
-		// Create GPU model map for each pod (proper JSON format like other metrics)
-		gpuModelMap := make(map[string]string)
-		for _, pod := range readyPods {
-			// Get GPU model for each pod, with fallback to default
-			gpuModel, exists := utils.GetGPUModel(pod.Status.PodIP)
-			if !exists {
-				gpuModel = "GPU-L3c" // Default fallback
-			}
-			gpuModelMap[pod.Status.PodIP] = gpuModel
-		}
-		// Use a local mutex for this request-scoped data
-		var gpuMapMutex sync.RWMutex
-		jsonStrings["GPU"] = jsonStringify(gpuModelMap, &gpuMapMutex)
-		klog.V(5).Infof("GPU model map JSON: %s", jsonStrings["GPU"])
-
-		podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
-		jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
-
-		if utils.FirstRequestStartTime == 0 {
-			utils.FirstRequestStartTime = time.Now().UnixMicro()
-		}
-
-		prev_reward := 0.0 // total latency in seconds of all live and completed requests
-		if ctx.SubAlgorithm == "scalable_rl_agent" {
-			cur_time_in_microseconds := time.Now().UnixMicro()
-			klog.V(5).Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
-
-			// Copy live request IDs to avoid concurrent map iteration and write
-			utils.LiveRequestsMutex.RLock()
-			liveRequestIDs := make([]string, 0, len(utils.LiveRequests))
-			for reqID := range utils.LiveRequests {
-				liveRequestIDs = append(liveRequestIDs, reqID)
-			}
-			utils.LiveRequestsMutex.RUnlock()
-
-			// Now safely iterate over the copy
-			for _, live_request_id := range liveRequestIDs {
-				live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
-				if !exists {
-					klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests. Use default value %d seconds", ctx.RequestID, live_request_id, live_request_last_time)
-					// continue
-				}
-				pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
-				prev_reward += pass_time_in_second
-				klog.V(5).Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
-				utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
-			}
-
-			// Copy completed request IDs to avoid concurrent map iteration and write
-			utils.RemainingLatencyMutex.RLock()
-			completedRequestIDs := make([]string, 0, len(utils.RemainingLatencyInMicroseconds))
-			for reqID := range utils.RemainingLatencyInMicroseconds {
-				completedRequestIDs = append(completedRequestIDs, reqID)
-			}
-			utils.RemainingLatencyMutex.RUnlock()
-
-			// Now safely iterate over the copy
-			for _, completed_request_id := range completedRequestIDs {
-				remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
-				if !exists {
-					klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
-					continue
-				}
-				pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
-				prev_reward += pass_time_in_second
-				klog.V(5).Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
-				utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
-			}
-			utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
-
-			klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
-			utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
-		}
-		logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@podMetricsLastSecond@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s`
-		logMessage = fmt.Sprintf(
-			logFormat,
-			ctx.RequestID,
-			time.Now().UnixMicro(),
-			numInputTokens,
-			expectedNumOutputTokens,
-			numTotalTokens,
-			jsonStrings["allPodsKvCacheHitRatios"],
-			jsonStrings["numInflightRequestsAllPods"],
-			jsonStrings["vllmGPUKVCacheUsage"],
-			jsonStrings["vllmCPUKVCacheUsage"],
-			jsonStrings["vllmNumRequestsRunning"],
-			jsonStrings["vllmNumRequestWaiting"],
-			jsonStrings["podMetricsLastSecond"],
-			jsonStrings["numPrefillTokensForAllPods"],
-			jsonStrings["numDecodeTokensForAllPods"],
-			ctx.SubAlgorithm,
-			prev_reward,
-			jsonStrings["GPU"],
-			"NotDecidedYet",
-		)
-	} else { // useRealRequest == 0
-		logMessage = utils.GenerateLogMessages(allPodIPs, 1)[0]
+	// 3. GPU KV cache usage
+	vllmGPUKVCacheUsage, err := utils.GetvLLMGPUKVCacheUsageForAllPods(ctx.RequestID)
+	if err == nil {
+		jsonStrings["vllmGPUKVCacheUsage"] = jsonStringify(vllmGPUKVCacheUsage, utils.GetvllmGPUKVCacheUsageMutex())
+	} else {
+		jsonStrings["vllmGPUKVCacheUsage"] = "{}"
 	}
+
+	// // 4. CPU KV cache usage
+	// vllmCPUKVCacheUsage, err := utils.GetvLLMCPUKVCacheUsageForTheRequestForAllPods(ctx.RequestID)
+	// if err == nil {
+	// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
+	// } else {
+	// 	klog.ErrorS(err, "error to get vllm cpu kv cache usage, fill vllmCPUKVCacheUsage with empty map {}", "requestID", ctx.RequestID)
+	// 	// create 0 value map for all pods, with type map[string]float64
+	// 	vllmCPUKVCacheUsage = make(map[string]float64)
+	// 	for _, pod := range readyPods {
+	// 		vllmCPUKVCacheUsage[pod.Status.PodIP] = 0.0
+	// 	}
+	// 	jsonStrings["vllmCPUKVCacheUsage"] = jsonStringify(vllmCPUKVCacheUsage, utils.GetvllmCPUKVCacheUsageMutex())
+	// }
+	jsonStrings["vllmCPUKVCacheUsage"] = "{}"
+
+	// 5. Number of running requests
+	vllmNumRequestsRunning, err := utils.GetvLLMNumRequestsRunningForAllPods(ctx.RequestID)
+	if err == nil {
+		jsonStrings["vllmNumRequestsRunning"] = jsonStringify(vllmNumRequestsRunning, utils.GetvllmNumRequestsRunningMutex())
+	} else {
+		jsonStrings["vllmNumRequestsRunning"] = "{}"
+	}
+
+	// 6. Number of waiting requests
+	vllmNumRequestWaiting, err := utils.GetvLLMNumRequestsWaitingForAllPods(ctx.RequestID)
+	if err == nil {
+		jsonStrings["vllmNumRequestWaiting"] = jsonStringify(vllmNumRequestWaiting, utils.GetvllmNumRequestsWaitingMutex())
+	} else {
+		jsonStrings["vllmNumRequestWaiting"] = "{}"
+	}
+
+	numPrefillTokensForAllPods := utils.GetNumPrefillTokensForAllPods()
+	jsonStrings["numPrefillTokensForAllPods"] = jsonStringify(numPrefillTokensForAllPods, utils.GetpodTotalPrefillTokensMutex())
+
+	numDecodeTokensForAllPods := utils.GetNumDecodeTokensForAllPods()
+	jsonStrings["numDecodeTokensForAllPods"] = jsonStringify(numDecodeTokensForAllPods, utils.GetpodTotalDecodeTokensMutex())
+
+	// Create GPU model map for each pod (proper JSON format like other metrics)
+	gpuModelMap := make(map[string]string)
+	for _, pod := range readyPods {
+		// Get GPU model for each pod, with fallback to default
+		gpuModel, exists := utils.GetGPUModel(pod.Status.PodIP)
+		if !exists {
+			gpuModel = "GPU-L3c" // Default fallback
+		}
+		gpuModelMap[pod.Status.PodIP] = gpuModel
+	}
+	// Use a local mutex for this request-scoped data
+	var gpuMapMutex sync.RWMutex
+	jsonStrings["GPU"] = jsonStringify(gpuModelMap, &gpuMapMutex)
+	klog.V(5).Infof("GPU model map JSON: %s", jsonStrings["GPU"])
+
+	podDetailedMetrics := utils.GetRequestPodMetrics(ctx.RequestID)
+	jsonStrings["podMetricsLastSecond"] = jsonStringify(podDetailedMetrics, utils.MetricsTracker.GetMutex())
+
+	if utils.FirstRequestStartTime == 0 {
+		utils.FirstRequestStartTime = time.Now().UnixMicro()
+	}
+
+	prev_reward := 0.0 // total latency in seconds of all live and completed requests
+	if ctx.SubAlgorithm == "scalable_rl_agent" {
+		cur_time_in_microseconds := time.Now().UnixMicro()
+		klog.V(5).Infof("calculate_prev_reward, requestID: %s, cur_time_in_microseconds: %d", ctx.RequestID, cur_time_in_microseconds)
+
+		// Copy live request IDs to avoid concurrent map iteration and write
+		utils.LiveRequestsMutex.RLock()
+		liveRequestIDs := make([]string, 0, len(utils.LiveRequests))
+		for reqID := range utils.LiveRequests {
+			liveRequestIDs = append(liveRequestIDs, reqID)
+		}
+		utils.LiveRequestsMutex.RUnlock()
+
+		// Now safely iterate over the copy
+		for _, live_request_id := range liveRequestIDs {
+			live_request_last_time, exists := utils.GetLiveRequestLastTime(live_request_id)
+			if !exists {
+				klog.Errorf("calculate_prev_reward, requestID: %s, live_requestID: %s, not found in LiveRequests. Use default value %d seconds", ctx.RequestID, live_request_id, live_request_last_time)
+				// continue
+			}
+			pass_time_in_second := float64(cur_time_in_microseconds-live_request_last_time) / 1000000.0 // microseconds to seconds
+			prev_reward += pass_time_in_second
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, live_requestID: %s, pass_time_in_second: %f, prev_reward: %f, cur_time_in_microseconds: %d, live_request_last_time: %d", ctx.RequestID, live_request_id, pass_time_in_second, prev_reward, cur_time_in_microseconds, live_request_last_time)
+			utils.UpdateLiveRequestLastTime(live_request_id, cur_time_in_microseconds)
+		}
+
+		// Copy completed request IDs to avoid concurrent map iteration and write
+		utils.RemainingLatencyMutex.RLock()
+		completedRequestIDs := make([]string, 0, len(utils.RemainingLatencyInMicroseconds))
+		for reqID := range utils.RemainingLatencyInMicroseconds {
+			completedRequestIDs = append(completedRequestIDs, reqID)
+		}
+		utils.RemainingLatencyMutex.RUnlock()
+
+		// Now safely iterate over the copy
+		for _, completed_request_id := range completedRequestIDs {
+			remaining_latency_in_microseconds, exists := utils.GetRemainingLatenyFromCompletedRequest(completed_request_id)
+			if !exists {
+				klog.Errorf("calculate_prev_reward, requestID: %s, completed_requestID: %s, not found in RemainingLatencyInMicroseconds", ctx.RequestID, completed_request_id)
+				continue
+			}
+			pass_time_in_second := float64(remaining_latency_in_microseconds) / 1000000.0 // microseconds to seconds
+			prev_reward += pass_time_in_second
+			klog.V(5).Infof("calculate_prev_reward, requestID: %s, completed_requestID: %s, pass_time_in_second: %f, prev_reward: %f", ctx.RequestID, completed_request_id, pass_time_in_second, prev_reward)
+			utils.RemoveRemainingLatencyFromCompletedRequest(completed_request_id)
+		}
+		utils.UpdateLiveRequestLastTime(ctx.RequestID, cur_time_in_microseconds)
+
+		klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
+		utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
+	}
+
+	// Get exploration values
+	exploration, explorationEnabled := utils.GetExploration(ctx.RequestID)
+
+	// Get predicted latencies and rewards
+	predictedLatencies := utils.GetPredictedLatencies(ctx.RequestID)
+	predictedRewards := utils.GetPredictedRewards(ctx.RequestID)
+	jsonStrings["predictedLatencies"] = jsonStringify(predictedLatencies, utils.GetPredictedLatenciesMutex())
+	jsonStrings["predictedRewards"] = jsonStringify(predictedRewards, utils.GetPredictedRewardsMutex())
+
+	// Get end-to-end overhead
+	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(ctx.RequestID)
+
+	// Normalize request start time
+	normalized_request_start_time := time.Now().UnixMicro() - utils.FirstRequestStartTime
+
+	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s@selectedPodGPU@%s`
+	logMessage = fmt.Sprintf(
+		logFormat,
+		ctx.RequestID,
+		normalized_request_start_time,
+		numInputTokens,
+		expectedNumOutputTokens,
+		numTotalTokens,
+		jsonStrings["allPodsKvCacheHitRatios"],
+		jsonStrings["numInflightRequestsAllPods"],
+		jsonStrings["numInflightPrefillRequestsAllPods"],
+		jsonStrings["numInflightDecodeRequestsAllPods"],
+		jsonStrings["vllmGPUKVCacheUsage"],
+		jsonStrings["vllmCPUKVCacheUsage"],
+		jsonStrings["vllmNumRequestsRunning"],
+		jsonStrings["vllmNumRequestWaiting"],
+		jsonStrings["numPrefillTokensForAllPods"],
+		jsonStrings["numDecodeTokensForAllPods"],
+		utils.GetNumTrains(),
+		utils.GetNumFlush(),
+		exploration,
+		explorationEnabled,
+		jsonStrings["predictedLatencies"],
+		utils.GetChosenPodPredictedLatency(ctx.RequestID),
+		jsonStrings["predictedRewards"],
+		utils.GetChosenPodPredictedReward(ctx.RequestID),
+		ctx.Iteration,
+		ctx.SubAlgorithm,
+		prev_reward,
+		endToEndOverhead,
+		jsonStrings["GPU"],
+		"NotDecidedYet",
+	)
+
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
 	reqBody, err := json.Marshal(logMessage)
 	if err != nil {
@@ -708,7 +656,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
 				utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
-				
+
 				// Set predicted rewards if present (contextual_bandit provides this)
 				if len(routeResponse.PredictedRewards) > 0 {
 					utils.SetPredictedRewards(routeResponse.PredictedRewards, ctx.RequestID)
@@ -716,7 +664,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					klog.V(5).Infof("Predicted rewards for requestID %s: %v, chosen pod reward: %f",
 						ctx.RequestID, routeResponse.PredictedRewards, routeResponse.ChosenPodPredictedReward)
 				}
-				
+
 				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
@@ -799,39 +747,39 @@ func (r *rlOnlineRouter) routeWithPrefixCache1(ctx *types.RoutingContext, readyP
 
 func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
 	klog.Infof("Using fallback routing (prefix_cache_1) for request %s", ctx.RequestID)
-	
+
 	// Try to calculate prefix matches for prefix_cache_1 routing
 	var podIPsWithMatchingRatios map[string]int
-	
+
 	// Get input tokens if available
 	input_tokens_in_bytearray := utils.GetByteArrayPrefillTokensForRequest(ctx.RequestID)
-	
+
 	if len(input_tokens_in_bytearray) > 0 {
 		// Build ready pods map
 		readyPodsMap := map[string]struct{}{}
 		for _, pod := range readyPods {
 			readyPodsMap[pod.Status.PodIP] = struct{}{}
 		}
-		
+
 		// Calculate prefix matches (discard prefix hashes as we don't add to cache in fallback)
 		podIPsWithMatchingRatios, _, _ = r.prefixCacheIndexer.MatchPrefix_returning_matchedprefixes(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
-		
+
 		// Fill in pods without matches
 		for _, pod := range readyPods {
 			if _, ok := podIPsWithMatchingRatios[pod.Status.PodIP]; !ok {
 				podIPsWithMatchingRatios[pod.Status.PodIP] = 0
 			}
 		}
-		
+
 		klog.V(4).Infof("Fallback routing calculated prefix matches for request %s: %v", ctx.RequestID, podIPsWithMatchingRatios)
 	} else {
 		klog.V(4).Infof("No input tokens available for fallback routing, will use least request count for request %s", ctx.RequestID)
 		podIPsWithMatchingRatios = make(map[string]int)
 	}
-	
+
 	// Use prefix_cache_1 routing logic
 	targetPod := r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
-	
+
 	if targetPod == nil {
 		klog.Errorf("prefix_cache_1 fallback failed, using random routing for request %s", ctx.RequestID)
 		var err error
@@ -841,15 +789,14 @@ func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []
 			return nil, err
 		}
 	}
-	
+
 	if targetPod == nil {
 		klog.Errorf("No suitable pod found for fallback routing")
 		return nil, fmt.Errorf("no suitable pod found for fallback routing")
 	}
-	
+
 	return targetPod, nil
 }
-
 
 func (r *rlOnlineRouter) fallbackRouting_with_random(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
 	klog.Infof("Using fallback routing (random) for request %s", ctx.RequestID)

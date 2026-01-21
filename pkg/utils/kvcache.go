@@ -1161,7 +1161,7 @@ func GetChosenPodPredictedReward(requestID string) float64 {
 		return val
 	}
 	klog.Errorf("Error, Failed GetChosenPodPredictedReward for request ID: %s, not found, returning -99.0", requestID)
-	return -99.0  // Sentinel value for missing data (matches routing_agent_service.py)
+	return -99.0 // Sentinel value for missing data (matches routing_agent_service.py)
 }
 
 func CleanupChosenPodPredictedReward(requestID string) {
@@ -1459,7 +1459,7 @@ func CleanuprequestToPodIP(requestID string) {
 	delete(requestToPodIP, requestID)
 }
 
-func StoreKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
+func SetSnapShotForKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
 	requestAllPodsKVCacheMutex.Lock()
 	defer requestAllPodsKVCacheMutex.Unlock()
 
@@ -1468,7 +1468,7 @@ func StoreKVCacheHitRatio(requestID string, allPodsRatios map[string]int) {
 	} else {
 		klog.Errorf("Error, requestID: %s, already exists in requestAllPodsKVCache", requestID)
 	}
-	klog.V(5).Infof("StoreKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
+	klog.V(5).Infof("SetSnapShotForKVCacheHitRatio, requestID: %s, Stored KV cache hit ratios: %v", requestID, allPodsRatios)
 }
 
 func GetAllPodsKVCacheHitRatios(requestID string) map[string]int {
@@ -1492,7 +1492,7 @@ func CleanupKVCacheHitRatio(requestID string) {
 	delete(requestAllPodsKVCache, requestID)
 }
 
-func StoreRequestToPodIP(requestID string, podIP string) {
+func SetSnapshotForRequestToPodIP(requestID string, podIP string) {
 	requestToPodIPMutex.Lock()
 	defer requestToPodIPMutex.Unlock()
 	if _, exists := requestToPodIP[requestID]; exists {
@@ -1669,7 +1669,7 @@ func GetNumInflightRequestsForPod(podIP string) (int, bool) {
 	return val, exists
 }
 
-func StoreInflightRequestsForTheRequest(requestID string) {
+func SetSnapshotForNumInflightRequestsForTheRequest(requestID string) {
 	requestInflightMutex.Lock()
 	defer requestInflightMutex.Unlock()
 	if _, exists := requestInflight[requestID]; exists {
@@ -1760,7 +1760,7 @@ func GetNumInflightPrefillRequestsForPod(podIP string) (int, bool) {
 	return val, exists
 }
 
-func StoreNumInflightPrefillRequestsForTheRequest(requestID string) {
+func SetSnapshotForNumInflightPrefillRequestsForTheRequest(requestID string) {
 	RequestToNumInflightPrefillRequestsMutex.Lock()
 	defer RequestToNumInflightPrefillRequestsMutex.Unlock()
 	if _, exists := requestToNumInflightPrefillRequests[requestID]; exists {
@@ -1792,9 +1792,7 @@ func GetSnapshotNumInflightPrefillRequestsForRequest(requestID string) map[strin
 func CleanupSnapshotNumInflightPrefillRequestsForRequest(requestID string) {
 	RequestToNumInflightPrefillRequestsMutex.Lock()
 	defer RequestToNumInflightPrefillRequestsMutex.Unlock()
-	if _, ok := requestToNumInflightPrefillRequests[requestID]; ok {
-		delete(requestToNumInflightPrefillRequests, requestID)
-	}
+	delete(requestToNumInflightPrefillRequests, requestID)
 }
 
 // =====================================================
@@ -1832,7 +1830,7 @@ func GetNumInflightDecodeRequestsForPod(podIP string) (int, bool) {
 	return val, exists
 }
 
-func StoreNumInflightDecodeRequestsForTheRequest(requestID string) {
+func SetSnapshotForNumInflightDecodeRequestsForTheRequest(requestID string) {
 	RequestToNumInflightDecodeRequestsMutex.Lock()
 	defer RequestToNumInflightDecodeRequestsMutex.Unlock()
 	if _, exists := requestToNumInflightDecodeRequests[requestID]; exists {
@@ -1864,9 +1862,7 @@ func GetSnapshotNumInflightDecodeRequestsForRequest(requestID string) map[string
 func CleanupSnapshotNumInflightDecodeRequestsForRequest(requestID string) {
 	RequestToNumInflightDecodeRequestsMutex.Lock()
 	defer RequestToNumInflightDecodeRequestsMutex.Unlock()
-	if _, ok := requestToNumInflightDecodeRequests[requestID]; ok {
-		delete(requestToNumInflightDecodeRequests, requestID)
-	}
+	delete(requestToNumInflightDecodeRequests, requestID)
 }
 
 // =====================================================
@@ -1904,7 +1900,7 @@ func DecrementNumInflightPrefillTokensForPod(podIP string, numTokens int) int {
 	return podTotalPrefillTokens[podIP]
 }
 
-func StoreNumInflightPrefillTokensForTheRequest(requestID string) {
+func SetSnapshotForNumInflightPrefillTokensForTheRequest(requestID string) {
 	RequestToNumInflightPrefillTokensMutex.Lock()
 	defer RequestToNumInflightPrefillTokensMutex.Unlock()
 	if _, exists := requestToNumInflightPrefillTokens[requestID]; exists {
@@ -1973,7 +1969,7 @@ func DecrementNumInflightDecodeTokensForPod(podIP string, numTokens int) int {
 	return podTotalDecodeTokens[podIP]
 }
 
-func StoreNumInflightDecodeTokensForTheRequest(requestID string) {
+func SetSnapshotForNumInflightDecodeTokensForTheRequest(requestID string) {
 	RequestToNumInflightDecodeTokensMutex.Lock()
 	defer RequestToNumInflightDecodeTokensMutex.Unlock()
 	if _, exists := requestToNumInflightDecodeTokens[requestID]; exists {
@@ -2018,8 +2014,8 @@ func IncrementNumPrefillTokensForPod(podIP string, numTokens int) {
 	}
 	old_numTokens := podTotalPrefillTokens[podIP]
 	podTotalPrefillTokens[podIP] += numTokens
-	klog.V(5).Infof("TokenCount, IncrementNumPrefillTokensForPod for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens, 
-	podTotalPrefillTokens[podIP])
+	klog.V(5).Infof("TokenCount, IncrementNumPrefillTokensForPod for pod %s by %d. from %d to %d", podIP, numTokens, old_numTokens,
+		podTotalPrefillTokens[podIP])
 }
 
 func DecrementNumPrefillTokensForPod(podIP string, numTokens int) int {

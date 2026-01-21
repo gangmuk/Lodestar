@@ -22,6 +22,7 @@ import data_normalizer
 import neural_contextual_bandit_perpodmodel_advanced
 import neural_contextual_bandit_perpodmodel_checkpoint
 import neural_contextual_bandit_perpodmodel_policygradient
+from distribution_shift_detector import DistributionTracker
 
 utils.set_all_seeds(42)
 
@@ -123,13 +124,15 @@ def create_test_data_from_processed_csv(processed_csv_file):
         # Mock pod metrics with realistic values for all detected pods
         kv_cache_ratios = {pod: 0.1 for pod in all_pod_ids}
         inflight_requests = {pod: 2 for pod in all_pod_ids}
+        inflight_prefill_requests = {pod: 1 for pod in all_pod_ids}  # NEW: Inflight prefill requests
+        inflight_decode_requests = {pod: 1 for pod in all_pod_ids}   # NEW: Inflight decode requests
         gpu_cache_usage = {pod: 0.15 for pod in all_pod_ids}
         cpu_cache_usage = {pod: 0.0 for pod in all_pod_ids}
         running_requests = {pod: 2 for pod in all_pod_ids}
         waiting_requests = {pod: 0 for pod in all_pod_ids}
         prefill_tokens = {pod: 5000 for pod in all_pod_ids}
         decode_tokens = {pod: 50000 for pod in all_pod_ids}
-        
+
         # Reflect EXCLUDED_POD_FEATURES in the generated log by blanking those maps
         excluded = set(HYPERPARAMETERS['EXCLUDED_POD_FEATURES'])
         if 'none' in excluded or 'None' in excluded:
@@ -138,6 +141,10 @@ def create_test_data_from_processed_csv(processed_csv_file):
             kv_cache_ratios = {}
         if 'inflight_requests' in excluded:
             inflight_requests = {}
+        if 'inflight_prefill_requests' in excluded:
+            inflight_prefill_requests = {}
+        if 'inflight_decode_requests' in excluded:
+            inflight_decode_requests = {}
         if 'gpu_kv_cache' in excluded:
             gpu_cache_usage = {}
         if 'cpu_kv_cache' in excluded:
@@ -154,13 +161,15 @@ def create_test_data_from_processed_csv(processed_csv_file):
         # Convert to JSON strings
         kv_cache_json = json.dumps(kv_cache_ratios)
         inflight_json = json.dumps(inflight_requests)
+        inflight_prefill_json = json.dumps(inflight_prefill_requests)  # NEW
+        inflight_decode_json = json.dumps(inflight_decode_requests)    # NEW
         gpu_cache_json = json.dumps(gpu_cache_usage)
         cpu_cache_json = json.dumps(cpu_cache_usage)
         running_json = json.dumps(running_requests)
         waiting_json = json.dumps(waiting_requests)
         prefill_json = json.dumps(prefill_tokens)
         decode_json = json.dumps(decode_tokens)
-        
+
         mock_log_message = (
             f"**@latency_metrics@requestID@{request_id}@"
             f"request_start_time@1748656367682891@request_end_time@1748656374420081@"
@@ -169,6 +178,8 @@ def create_test_data_from_processed_csv(processed_csv_file):
             f"numInputTokens@{row.get('input_tokens', 4000)}@numOutputTokens@{row.get('output_tokens', 100)}@"
             f"numTotalTokens@{row.get('total_tokens', 4100)}@"
             f"allPodsKvCacheHitRatios@{kv_cache_json}@numInflightRequestsAllPods@{inflight_json}@"
+            f"numInflightPrefillRequestsAllPods@{inflight_prefill_json}@"
+            f"numInflightDecodeRequestsAllPods@{inflight_decode_json}@"
             f"vllmGPUKVCacheUsage@{gpu_cache_json}@vllmCPUKVCacheUsage@{cpu_cache_json}@"
             f"vllmNumRequestsRunning@{running_json}@vllmNumRequestsWaiting@{waiting_json}@"
             f"podMetricsLastSecond@{{}}@numPrefillTokensForAllPods@{prefill_json}@"
@@ -544,6 +555,40 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
     logger.info(f"Normalization complete: {summary['num_features_normalized']} features normalized")
     logger.info(f"Reward function used: {summary['reward_function']}")
     logger.info(f"Processing time: {summary['processing_time']:.2f} seconds")
+
+    # === Save distribution statistics for distribution shift detection ===
+    # Track feature distributions from the PROCESSED (pre-normalized) data
+    # This will be used by DistributionShiftMonitor during online serving
+    distribution_tracker = DistributionTracker()
+
+    # Define pod features to track (must match encoding.py base_features_list)
+    pod_feature_names = [
+        'inflight_requests', 'inflight_prefill_requests', 'inflight_decode_requests',
+        'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 'waiting_requests',
+        'prefill_tokens', 'decode_tokens', 'kv_hit_ratio'
+    ]
+
+    # Track pod features for each pod
+    for pod_id in sorted_all_pod_ids:
+        for feature_name in pod_feature_names:
+            col_name = f"{pod_id}-{feature_name}"
+            if col_name in processed_df.columns:
+                for value in processed_df[col_name].dropna().values:
+                    distribution_tracker.add_pod_sample({feature_name: value})
+
+    # Track request features
+    request_feature_cols = ['input_tokens', 'output_tokens', 'total_tokens']
+    for col in request_feature_cols:
+        if col in processed_df.columns:
+            for value in processed_df[col].dropna().values:
+                distribution_tracker.add_request_sample({col: value})
+
+    # Save distribution statistics to final_model_dir (will be created later)
+    # For now, save to ENCODED_DATA_DIR parent which is the model output directory
+    distribution_stats_path = os.path.join(os.path.dirname(ENCODED_DATA_DIR), 'feature_distribution_statistics.csv')
+    distribution_tracker.save_distribution_stats(distribution_stats_path)
+    logger.info(f"Saved feature distribution statistics to: {distribution_stats_path}")
+
     # encoding (use normalized data for training)
     ts_encode = time.time()
     encoded_data_output_dir = f"{ENCODED_DATA_DIR}/batch_1"
@@ -639,7 +684,7 @@ def main():
     parser = argparse.ArgumentParser(description='Offline Routing Agent Training and Testing')
     parser.add_argument('processed_csv', help='Processed CSV file containing training data with raw values')
     parser.add_argument('--split_ratio', type=float, default=0.8, help='Train/test split ratio')
-    parser.add_argument('--analyze_behavior', action='store_true', help='Analyze what the model has learned through feature sensitivity tests')
+    parser.add_argument('--analyze_behavior', type=int, default=0, help='Analyze what the model has learned through feature sensitivity tests (1 to enable, 0 to disable)')
     parser.add_argument('--hyperparameter_file_path', type=str, required=True, help='Path to JSON hyperparameter file (single source of truth)')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
     
@@ -737,17 +782,21 @@ def main():
     saved_plot_path = train_model(ENCODED_DATA_DIR, is_online_learning, args.final_model_dir)
 
     # NEW: Behavior Analysis (before regular testing)
-    test_data = create_test_data_from_processed_csv(args.processed_csv)
-    # if args.analyze_behavior and test_data and len(test_data) > 0:
-    logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
-    # model_and_data_analysis_helper.analyze_model_behavior(args, test_data, feature_normalization_stats_file)
-    _ = model_and_data_analysis_helper.analyze_detailed_feature_sensitivity(args, test_data, feature_normalization_stats_file)
-    logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
+    if args.analyze_behavior == 1:
+        test_data_list = create_test_data_from_processed_csv(args.processed_csv)
+        if test_data_list and len(test_data_list) > 0:
+            # Convert list format to dict format expected by analyze_detailed_feature_sensitivity
+            # From: [{"request_id": id, "message": msg}, ...]
+            # To: {request_id: message, ...}
+            test_data = {item["request_id"]: item["message"] for item in test_data_list}
+            logger.info("=== STARTING BEHAVIOR ANALYSIS ===")
+            # model_and_data_analysis_helper.analyze_model_behavior(args, test_data, feature_normalization_stats_file)
+            _ = model_and_data_analysis_helper.analyze_detailed_feature_sensitivity(args, test_data, feature_normalization_stats_file)
+            logger.info("=== BEHAVIOR ANALYSIS COMPLETED ===")
     
     # run_test_inference_phase(args, test_data)
         
     print(f"** saved_plot_path: {saved_plot_path}")
-    print(f"** final_model_dir: {args.final_model_dir}")
     
 if __name__ == "__main__":
     main()
