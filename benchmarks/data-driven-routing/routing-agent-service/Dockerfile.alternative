@@ -1,0 +1,49 @@
+# Alternative: Use NVIDIA CUDA runtime base + install PyTorch via pip
+# This might be smaller than pytorch/pytorch base image (~5-6GB vs 7.68GB)
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# Install Python 3.10
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    python3-setuptools \
+    lsof \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlink for python
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+# Upgrade pip and install PyTorch with CUDA 11.8 support
+# Only install torch (not torchvision/torchaudio) to minimize size
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir torch==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+
+# Install other requirements (torch is already installed above)
+COPY requirements.txt .
+RUN pip install --no-cache-dir $(grep -v "^torch$" requirements.txt | grep -v "^#" | grep -v "^$")
+
+# Copy application code
+COPY agent_codes/ /app/agent_codes/
+COPY start.sh .
+
+########################################################
+#### NVIDIA-A30, llama3.1 8B, no bitsandbytes ##########
+########################################################
+
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/final_model-latency_predictor_ttft NVIDIA-A30/Aggregated/final_model/latency_predictor
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/data-processed.csv NVIDIA-A30/Aggregated/offline_training_data.csv
+
+## output 1
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A30/PrefillOnly/offline_training_data.csv
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/PrefillOnly/final_model/contextual_bandit_perpodmodel_checkpoint_negative_linear
+
+COPY Dockerfile /app/Dockerfile
+RUN chmod +x /app/start.sh
+ENV PORT=8080
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV LOG_LEVEL=INFO
+EXPOSE 8080
+
+CMD ["/app/start.sh"]
