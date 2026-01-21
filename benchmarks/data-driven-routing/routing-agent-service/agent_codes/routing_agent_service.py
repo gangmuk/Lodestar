@@ -1440,13 +1440,13 @@ def initialize():
     logger.info(f"offline_csv_path: {offline_csv_path}")
     if ENABLE_ONLINE_LEARNING:
         assert offline_csv_path is not None, f"offline_csv_path is None for {TARGET_GPU_MODEL}"
+        assert os.path.exists(offline_csv_path), f"offline_csv_path does not exist: {offline_csv_path}"
     assert final_model_dir is not None, f"final_model_dir is None for {TARGET_GPU_MODEL}"
     assert hyperparameter_file_path is not None, f"hyperparameter_file_path is None for {TARGET_GPU_MODEL}"
     assert feature_normalization_stats_file is not None, f"feature_normalization_stats_file is None for {TARGET_GPU_MODEL}"
     assert offline_training_data_distribution is not None, f"offline_training_data_distribution is None for {TARGET_GPU_MODEL}"
     assert os.path.exists(final_model_dir), f"final_model_dir does not exist: {final_model_dir}"
     assert os.path.exists(hyperparameter_file_path), f"hyperparameter_file_path does not exist: {hyperparameter_file_path}"
-    assert os.path.exists(offline_csv_path), f"offline_csv_path does not exist: {offline_csv_path}"
     assert os.path.exists(feature_normalization_stats_file), f"feature_normalization_stats_file does not exist: {feature_normalization_stats_file}"
     # offline_training_data_distribution is optional (used only for distribution shift monitoring)
     if offline_training_data_distribution and not os.path.exists(offline_training_data_distribution):
