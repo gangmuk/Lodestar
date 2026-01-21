@@ -15,7 +15,10 @@ fi
 
 if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
-    sudo docker buildx build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
+    # Note: Since we use 'sudo docker', you must login with 'sudo docker login'
+    # If you get "unauthorized: authentication required", run:
+    # sudo docker login --username=xxxx@bytedance.com@yyyyyyy aibrix-container-registry-cn-beijing.cr.volces.com
+    sudo docker build --platform linux/amd64 -t aibrix/gateway-plugins:nightly -f build/container/Dockerfile.gateway .
     sudo docker tag aibrix/gateway-plugins:nightly aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
     sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag}
     kubectl set image deployment/aibrix-gateway-plugins gateway-plugin=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins:${tag} -n aibrix-system
