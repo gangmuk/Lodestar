@@ -6,14 +6,14 @@ from logger import logger
 import os
 
 
-def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains):
+def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_samples, num_trains):
     """
     Create comprehensive training metrics visualization for Neural Contextual Bandit.
     
     Args:
         agent: Trained NeuralContextualBandit instance
         final_model_dir: Directory to save plots
-        num_epochs: Number of training epochs
+        training_epochs: Number of training epochs
         total_samples: Total number of samples processed
         num_trains: Number of training iterations (for filename)
     
@@ -34,7 +34,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     # Create comprehensive plot - expanded grid for CB-specific plots (4 rows x 6 cols = 24 plots)
     fig = plt.figure(figsize=(30, 22))  # Increased height slightly
     fig.suptitle(f'Neural Contextual Bandit Training Results\n'
-                 f'Epochs: {num_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
+                 f'Epochs: {training_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
                  fontsize=18, fontweight='bold', y=0.995)
     
     # 1. Training Loss
@@ -243,10 +243,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     plt.title('11. Training Statistics', pad=10)
     
     stats_text = "TRAINING SUMMARY\n" + "="*20 + "\n"
-    stats_text += f"Total Epochs: {num_epochs}\n"
+    stats_text += f"Total Epochs: {training_epochs}\n"
     stats_text += f"Total Samples: {total_samples:,}\n"
     stats_text += f"Total Updates: {len(metrics['losses']):,}\n"
-    stats_text += f"Updates/Epoch: {len(metrics['losses'])//num_epochs if num_epochs > 0 else 0}\n\n"
+    stats_text += f"Updates/Epoch: {len(metrics['losses'])//training_epochs if training_epochs > 0 else 0}\n\n"
     
     if metrics['losses']:
         stats_text += f"LOSS:\n"

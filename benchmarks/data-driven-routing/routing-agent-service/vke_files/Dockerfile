@@ -87,6 +87,8 @@ COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workloa
 COPY workload-and-experiment_results/SharingRatio9%/workload.jsonl /app/workload/SharingRatio9%/
 COPY workload-and-experiment_results/MixedSharingRatio10_30_50_70%/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
 COPY workload-and-experiment_results/workload-generator/azure/azure_code_poisson/workload.jsonl /app/workload/azure_code_poisson/
+COPY workload-and-experiment_results/workload-generator/mooncake/workload-conversation/workload.jsonl /app/workload/mooncake-conversation/
+COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -16,16 +16,16 @@ analyze_behavior=0
 sampling_ratio=1.0
 ttft_threshold=30000
 buffer_size=10000
+model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
 REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 hidden_dim=128
 batch_size=256
-training_epochs=10
+training_epochs=5
 excluded_pod_features="none" # waiting_requests,cpu_kv_cache,running_requests" # still working
-excluded_request_features="output_tokens"
+excluded_request_features=""
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
-model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
 reward_decay_factor=0.91
 ttft_slo=1000
@@ -96,6 +96,7 @@ if [ ! -f "${processed_csv}" ]; then
 fi
 
 if [ "${analyze_dataset}" = "1" ] || [ "${analyze_dataset}" = "true" ]; then
+    echo "📄 STEP 2: start dataset_analyzer (can take a while on large CSVs)"
     python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset 2>&1 | tee ${dataset_analyzer_log}
 fi
 

@@ -192,67 +192,64 @@ def calculate_performance_metrics(df):
         df['end_to_end_latency'] = (df['request_end_time'] - df['request_start_time']) / 1000  # Convert to milliseconds
         metrics['avg_end_to_end'] = df['end_to_end_latency'].mean()
         metrics['p99_end_to_end'] = df['end_to_end_latency'].quantile(0.99)
+
+    # Calculate end-to-end overhead metrics if available
+    if 'endToEndOverhead' in df.columns:
+        metrics['avg_end_to_end_overhead'] = df['endToEndOverhead'].mean()
+        metrics['p50_end_to_end_overhead'] = df['endToEndOverhead'].quantile(0.50)
+        metrics['p99_end_to_end_overhead'] = df['endToEndOverhead'].quantile(0.99)
+        metrics['p999_end_to_end_overhead'] = df['endToEndOverhead'].quantile(0.999)
     
     # Calculate throughput metrics - per-second RPS calculation and averaging
-    # This accounts for different experiment durations and gives second-by-second breakdown
-    if 'request_start_time' in df.columns and 'request_end_time' in df.columns:
-        # Convert timestamps to seconds relative to experiment start
-        experiment_start = df['request_start_time'].min()
+    # Prefer normalized/relative start times to avoid outlier end timestamps.
+    start_seconds = None
+    if 'normalized_start_time' in df.columns:
+        start_seconds = df['normalized_start_time'].astype(float)
+    elif 'request_start_time' in df.columns:
+        start_seconds = (df['request_start_time'] - df['request_start_time'].min()) / 1_000_000
+    elif 'relative_time' in df.columns:
+        start_seconds = df['relative_time'].astype(float)
+
+    if start_seconds is not None and len(start_seconds) > 0:
         df_copy = df.copy()
-        df_copy['start_seconds'] = (df_copy['request_start_time'] - experiment_start) / 1_000_000
-        df_copy['end_seconds'] = (df_copy['request_end_time'] - experiment_start) / 1_000_000
+        df_copy['start_seconds'] = pd.to_numeric(start_seconds, errors='coerce')
+        df_copy = df_copy.replace([np.inf, -np.inf], np.nan).dropna(subset=['start_seconds'])
 
-        # Create 1-second bins from experiment start to end
-        experiment_duration = df_copy['end_seconds'].max()
-        time_bins = range(0, int(experiment_duration) + 2)  # +2 to cover the last partial second
-
-        per_second_rps = []
-        per_second_tps = []
-
-        for second in time_bins:
-            # Count requests that STARTED in this second (arrival rate)
-            requests_in_second = df_copy[(df_copy['start_seconds'] >= second) &
-                                       (df_copy['start_seconds'] < second + 1)]
-            rps = len(requests_in_second)
-            per_second_rps.append(rps)
-
-            # Sum tokens from requests that STARTED in this second
-            if 'numOutputTokens' in df.columns and len(requests_in_second) > 0:
-                tps = requests_in_second['numOutputTokens'].sum()
-            else:
-                tps = 0
-            per_second_tps.append(tps)
-
-        # Calculate average RPS across all seconds (weighted by actual experiment duration)
-        if per_second_rps:
-            # Only consider seconds that are within the actual experiment duration
-            valid_seconds = min(len(per_second_rps), int(experiment_duration) + 1)
-            metrics['throughput_rps'] = sum(per_second_rps[:valid_seconds]) / valid_seconds
-
-            if 'numOutputTokens' in df.columns:
-                metrics['throughput_tps'] = sum(per_second_tps[:valid_seconds]) / valid_seconds
-            else:
-                metrics['throughput_tps'] = 0
-        else:
+        if df_copy.empty:
             metrics['throughput_rps'] = 0
             metrics['throughput_tps'] = 0
-    else:
-        # Fallback: use relative_time if available
-        if 'relative_time' in df.columns:
-            total_duration = df['relative_time'].max() - df['relative_time'].min()
-            if total_duration > 0:
-                metrics['throughput_rps'] = len(df) / total_duration
-                if 'numOutputTokens' in df.columns:
-                    metrics['throughput_tps'] = df['numOutputTokens'].sum() / total_duration
+        else:
+            max_second = int(np.floor(df_copy['start_seconds'].max()))
+            effective_max_second = max_second
+
+            # Guard against extreme outliers that would create huge zero-filled ranges.
+            if max_second > len(df_copy) * 10:
+                p99_9 = np.nanpercentile(df_copy['start_seconds'], 99.9)
+                effective_max_second = int(np.floor(p99_9))
+                if effective_max_second < 0:
+                    effective_max_second = 0
+
+            total_seconds = max(effective_max_second + 1, 1)
+            if effective_max_second < max_second:
+                in_window = df_copy['start_seconds'] <= effective_max_second
+                total_requests = int(in_window.sum())
+                if 'numOutputTokens' in df_copy.columns:
+                    total_tokens = df_copy.loc[in_window, 'numOutputTokens'].sum()
                 else:
-                    metrics['throughput_tps'] = 0
+                    total_tokens = 0
             else:
-                metrics['throughput_rps'] = 0
-                metrics['throughput_tps'] = 0
-        else:
-            # Final fallback
-            metrics['throughput_rps'] = 0
-            metrics['throughput_tps'] = 0
+                total_requests = len(df_copy)
+                if 'numOutputTokens' in df_copy.columns:
+                    total_tokens = df_copy['numOutputTokens'].sum()
+                else:
+                    total_tokens = 0
+
+            metrics['throughput_rps'] = total_requests / total_seconds
+            metrics['throughput_tps'] = total_tokens / total_seconds
+    else:
+        # Final fallback
+        metrics['throughput_rps'] = 0
+        metrics['throughput_tps'] = 0
     
     return metrics
 
@@ -284,7 +281,10 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
             
             # Get all numeric metrics to average
             numeric_metrics = ['avg_ttft', 'p99_ttft', 'p999_ttft', 'avg_tpot', 'p99_tpot', 'p999_tpot',
-                             'avg_end_to_end', 'p99_end_to_end', 'num_requests',
+                             'avg_end_to_end', 'p99_end_to_end',
+                             'avg_end_to_end_overhead', 'p50_end_to_end_overhead',
+                             'p99_end_to_end_overhead', 'p999_end_to_end_overhead',
+                             'num_requests',
                              'throughput_rps', 'throughput_tps']
             
             for metric in numeric_metrics:
@@ -328,9 +328,12 @@ def export_metrics_to_csv(all_metrics, base_dir):
 
     # Define the metrics we want to export
     metric_columns = [
-        'avg_ttft', 'p99_ttft', 'p999_ttft', 'avg_tpot', 'p99_tpot', 'p999_tpot',
-        'avg_end_to_end', 'p99_end_to_end', 'num_requests',
-        'throughput_rps', 'throughput_tps'
+        'avg_ttft', 'p99_ttft', 'p999_ttft',
+        'avg_tpot', 'p99_tpot', 'p999_tpot',
+        'avg_end_to_end', 'p99_end_to_end',
+        'avg_end_to_end_overhead', 'p50_end_to_end_overhead',
+        'p99_end_to_end_overhead', 'p999_end_to_end_overhead',
+        'num_requests', 'throughput_rps', 'throughput_tps'
     ]
 
     # Save CSV file in the same directory as the PDF
@@ -526,7 +529,7 @@ def get_strategy_priority(strategy_name):
 def get_strategy_color(strategy_name, index_in_category):
     """Get color for strategy based on category and index within category"""
     if rl_naive_routing in strategy_name.lower():
-        base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
+        base_colors = ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db']  # Slate blue family
     elif e2e_latency_predictor_routing in strategy_name.lower():
         base_colors = ['#8b008b','#ba55d3', '#9932cc', '#8a2be2',  '#c71585']  # Purple family
     elif ttft_latency_predictor_routing in strategy_name.lower():
@@ -548,7 +551,7 @@ def get_strategy_color(strategy_name, index_in_category):
     elif least_request_routing in strategy_name.lower():
         base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']  # Cyan/Teal family
     elif contextual_bandit_routing in strategy_name.lower():
-        base_colors = ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db']  # Slate blue family
+        base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
     else:
         base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
     # Use modulo to cycle through colors if more strategies than colors
@@ -615,12 +618,12 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 28))  # Increased height for 5 rows with more spacing
+    fig = plt.figure(figsize=(18, 32))  # Increased height for 6 rows with more spacing
 
-    # MODIFIED GridSpec: 5 rows (CDFs, TTFT bar chart, TPOT bar chart, time series graphs)
-    # Increased height_ratio for row 1 and 2 (bar charts) and increased hspace for better spacing
-    gs = GridSpec(5, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1, 1],
+    # MODIFIED GridSpec: 6 rows (CDFs, TTFT bar chart, TPOT bar chart, overhead bar chart, time series graphs)
+    # Increased height_ratio for bar charts and increased hspace for better spacing
+    gs = GridSpec(6, 9, figure=fig,
+                  height_ratios=[1, 1.5, 1.5, 1.5, 1, 1],
                   hspace=0.9,
                   wspace=0.35)
     
@@ -644,16 +647,22 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         ax = fig.add_subplot(gs[2, :])
         plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99, P999)')
         
-        # Plot 5: TTFT Time Series (full width, row 3)
+        # Plot 5: End-to-End Overhead Bar Chart (full width, row 3)
         ax = fig.add_subplot(gs[3, :])
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'end_to_end_overhead',
+                                      'End-to-End Overhead Comparison (Avg, P50, P99, P999)')
+
+        # Plot 6: TTFT Time Series (full width, row 4)
+        ax = fig.add_subplot(gs[4, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1s averages)', 'TTFT (ms)')
         
-        # Plot 6: Avg TPOT Time Series (full width, row 4)
-        ax = fig.add_subplot(gs[4, :])
+        # Plot 7: Avg TPOT Time Series (full width, row 5)
+        ax = fig.add_subplot(gs[5, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1s averages)', 'Avg TPOT (ms)')
     else:
         # If no CSV data provided, show placeholder text for all plots
-        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]), (3, [slice(None)]), (4, [slice(None)])]:
+        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
+                                   (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -774,18 +783,24 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
         p99_values = [metrics_indexed.loc[s, 'p99_ttft'] if 'p99_ttft' in metrics_df.columns else 0 for s in strategies]
         p999_values = [metrics_indexed.loc[s, 'p999_ttft'] if 'p999_ttft' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'TTFT (ms)'
-    else:  # tpot
+    elif metric_type == 'tpot':
         avg_values = [metrics_indexed.loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
         p99_values = [metrics_indexed.loc[s, 'p99_tpot'] if 'p99_tpot' in metrics_df.columns else 0 for s in strategies]
         p999_values = [metrics_indexed.loc[s, 'p999_tpot'] if 'p999_tpot' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'Avg TPOT (ms)'
+    else:  # end-to-end overhead
+        avg_values = [metrics_indexed.loc[s, 'avg_end_to_end_overhead'] if 'avg_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
+        p99_values = [metrics_indexed.loc[s, 'p99_end_to_end_overhead'] if 'p99_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
+        p999_values = [metrics_indexed.loc[s, 'p999_end_to_end_overhead'] if 'p999_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
+        ylabel_text = 'End-to-End Overhead (ms)'
 
     # Get max value for y-axis scaling
     max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
 
-    # Create bar positions - 3 bars per strategy with spacing between groups
-    bar_width = 0.25
-    group_width = 3 * bar_width + 0.3  # Space between groups
+    # Create bar positions - 3 bars per strategy (TTFT/TPOT) or 4 bars (overhead)
+    num_bars = 4 if metric_type == 'end_to_end_overhead' else 3
+    bar_width = 0.2 if metric_type == 'end_to_end_overhead' else 0.25
+    group_width = num_bars * bar_width + 0.3  # Space between groups
     group_centers = np.arange(n_strategies) * group_width
 
     # Plot bars for each metric (avg, p99, p999)
@@ -794,14 +809,24 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
         group_center = group_centers[i]
 
         # Calculate positions for the 3 bars in each group
-        offset_start = -bar_width
+        offset_start = -(num_bars - 1) * bar_width / 2
 
         # Create bars with slight color variations
-        for j, (value, label, alpha) in enumerate([
+        bar_sets = [
             (avg_values[i], 'Avg', 0.9),
             (p99_values[i], 'P99', 0.7),
-            (p999_values[i], 'P999', 0.5)
-        ]):
+            (p999_values[i], 'P999', 0.5),
+        ]
+        if metric_type == 'end_to_end_overhead':
+            bar_sets = [
+                (avg_values[i], 'Avg', 0.9),
+                (metrics_indexed.loc[strategy, 'p50_end_to_end_overhead']
+                 if 'p50_end_to_end_overhead' in metrics_df.columns else 0, 'P50', 0.75),
+                (p99_values[i], 'P99', 0.6),
+                (p999_values[i], 'P999', 0.45),
+            ]
+
+        for j, (value, label, alpha) in enumerate(bar_sets):
             pos = group_center + offset_start + j * bar_width
             ax.bar(pos, value, bar_width, color=strategy_color,
                    edgecolor='black', linewidth=0.8, alpha=alpha)
@@ -829,12 +854,21 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
 
     # Add legend for Avg/P99/P999
-    legend_elements = [
-        Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
-        Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99'),
-        Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999')
-    ]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
+    if metric_type == 'end_to_end_overhead':
+        legend_elements = [
+            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.75, label='P50'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.6, label='P99'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.45, label='P999')
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=4)
+    else:
+        legend_elements = [
+            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999')
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
 
     # Styling
     ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)

@@ -531,7 +531,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     """
     global _cached_agent
     
-    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('num_epochs', 10)}, dir={encoded_training_dir}")
+    logger.info(f"Starting Neural CB batch training: num_trains={num_trains}, epochs={HYPERPARAMETERS.get('training_epochs', 10)}, dir={encoded_training_dir}")
     logger.info(f"HYPERPARAMETERS: {HYPERPARAMETERS}")
     
     # Load encoded tensor files
@@ -598,7 +598,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     
     # Training loop
     total_samples = 0
-    for epoch in range(HYPERPARAMETERS.get('num_epochs', 10)):
+    for epoch in range(HYPERPARAMETERS.get('training_epochs', 10)):
         epoch_start = time.time()
         epoch_losses = []
         epoch_rewards = []
@@ -689,7 +689,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
         epoch_time = time.time() - epoch_start
         
-        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('num_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
+        logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('training_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
                    f"time={epoch_time:.2f}s")
     
     # Save trained model
@@ -697,18 +697,18 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
     
     # Generate comprehensive training plots (use total_steps as num_trains)
-    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('num_epochs', 10), total_samples, num_trains=num_trains)
+    plot_path = plot_neural_cb_metrics(_cached_agent, final_model_dir, HYPERPARAMETERS.get('training_epochs', 10), total_samples, num_trains=num_trains)
     return plot_path
 
 
-def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, num_trains):
+def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_samples, num_trains):
     """
     Create comprehensive training metrics visualization for Neural Contextual Bandit.
     
     Args:
         agent: Trained NeuralContextualBandit instance
         final_model_dir: Directory to save plots
-        num_epochs: Number of training epochs
+        training_epochs: Number of training epochs
         total_samples: Total number of samples processed
         num_trains: Number of training iterations (for filename)
     
@@ -732,7 +732,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     # Create comprehensive plot - expanded grid for CB-specific plots (4 rows x 6 cols = 24 plots)
     fig = plt.figure(figsize=(30, 22))  # Increased height slightly
     fig.suptitle(f'Neural Contextual Bandit Training Results\n'
-                 f'Epochs: {num_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
+                 f'Epochs: {training_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
                  fontsize=18, fontweight='bold', y=0.995)
     
     # 1. Training Loss
@@ -973,10 +973,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, num_epochs, total_samples, nu
     plt.title('11. Training Statistics', pad=10)
     
     stats_text = "TRAINING SUMMARY\n" + "="*20 + "\n"
-    stats_text += f"Total Epochs: {num_epochs}\n"
+    stats_text += f"Total Epochs: {training_epochs}\n"
     stats_text += f"Total Samples: {total_samples:,}\n"
     stats_text += f"Total Updates: {len(metrics['losses']):,}\n"
-    stats_text += f"Updates/Epoch: {len(metrics['losses'])//num_epochs if num_epochs > 0 else 0}\n\n"
+    stats_text += f"Updates/Epoch: {len(metrics['losses'])//training_epochs if training_epochs > 0 else 0}\n\n"
     
     if metrics['losses']:
         stats_text += f"LOSS:\n"

@@ -22,7 +22,6 @@ def main():
     parser.add_argument('--test_size_ratio', type=float, default=0.2, help='Test size ratio')
     # RL (SB3 PPO) specific hyperparameters (optional)
     parser.add_argument('--n_steps', type=int, default=32, help='PPO n_steps')
-    parser.add_argument('--n_epochs', type=int, default=10, help='PPO n_epochs')
     parser.add_argument('--gae_lambda', type=float, default=0.95, help='PPO gae_lambda')
     parser.add_argument('--clip_range', type=float, default=0.2, help='PPO clip_range')
     parser.add_argument('--entropy_coeff', type=float, default=0.02, help='PPO entropy coefficient (ent_coef)')
@@ -61,7 +60,6 @@ def main():
     RL_MODEL_HYPERPARAMETERS['NO_NORMALIZE_FEATURES'] = no_normalize_features
     RL_MODEL_HYPERPARAMETERS['MODEL_TYPE'] = args.model_type or 'latency_predictor'
     RL_MODEL_HYPERPARAMETERS['n_steps'] = int(args.n_steps)
-    RL_MODEL_HYPERPARAMETERS['n_epochs'] = int(args.n_epochs)
     RL_MODEL_HYPERPARAMETERS['gae_lambda'] = float(args.gae_lambda)
     RL_MODEL_HYPERPARAMETERS['clip_range'] = float(args.clip_range)
     RL_MODEL_HYPERPARAMETERS['entropy_coeff'] = float(args.entropy_coeff)
