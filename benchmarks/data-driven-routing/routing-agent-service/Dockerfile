@@ -34,8 +34,8 @@ COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/fi
 COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/data-processed.csv NVIDIA-A30/maxTokens_100-maxTokensStd_10/offline_training_data.csv
 
 ## output 1
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A30/PrefillOnly/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/PrefillOnly/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/offline_training_data.csv
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
 
 ###############################################################################

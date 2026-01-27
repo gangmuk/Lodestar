@@ -42,6 +42,7 @@ import neural_contextual_bandit_perpodmodel_advanced
 import neural_contextual_bandit_perpodmodel_checkpoint
 import neural_contextual_bandit_perpodmodel_policygradient
 import distribution_shift_detector
+from distribution_shift_detector import PerSampleOODDetector, OODAction
 
 
 # GPU features are now always included as one-hot encoded features
@@ -60,13 +61,12 @@ NUM_FLUSH = 0
 ENCODED_DATA_DIR = "encoded_data"
 
 TARGET_GPU_MODEL = os.getenv("TARGET_GPU_MODEL", "GPU-L3c")
-WORKLOAD = os.getenv("WORKLOAD", "Unknown")
-
 # Feature normalization statistics are ALWAYS based on GPU-L3c (reference baseline)
 # This ensures consistent feature space across all GPU types and experiments
 feature_normalization_stats_file = None
 offline_training_data_distribution = None
 distribution_shift_monitor = None
+per_sample_ood_detector = None  # Per-sample OOD detector for NN reliability
 final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
@@ -121,6 +121,7 @@ if POD_LABEL_SELECTOR == "":
     logger.error(f"POD_LABEL_SELECTOR is empty")
     assert False
 ENABLE_ONLINE_LEARNING = int(os.getenv("ENABLE_ONLINE_LEARNING", 0))
+WORKLOAD_NAME = os.getenv("WORKLOAD_NAME", "Unknown")
 OUTPUT_WRK_NAME = os.getenv("OUTPUT_WRK_NAME", "Unknown")
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
 TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
@@ -292,6 +293,49 @@ def handle_infer():
                 logger.warning(f"⚠️  Distribution monitoring failed: {e}")
         handle_infer_overhead_summary["distribution_monitor"] = time.time() - distribution_monitor_start
 
+        # Per-sample OOD detection: Check if THIS REQUEST is out-of-distribution
+        # If any feature is outside training [min, max], the NN is extrapolating → unreliable
+        ood_check_start = time.time()
+        ood_result = None
+        use_fallback_routing = False
+
+        if per_sample_ood_detector is not None:
+            try:
+                # OPTIMIZATION: Convert DataFrame row to dict ONCE for O(1) access
+                row_dict = processed_df.iloc[0].to_dict()
+
+                # Extract request features
+                request_ood_features = {}
+                for feat in ['input_tokens', 'output_tokens', 'total_tokens']:
+                    if feat in row_dict:
+                        request_ood_features[feat] = float(row_dict[feat])
+
+                # Extract pod features (use first pod as representative)
+                pod_ood_features = {}
+                if sorted_all_pod_ids:
+                    representative_pod = sorted_all_pod_ids[0]
+                    for feat in ['cpu_kv_cache', 'decode_tokens', 'gpu_kv_cache', 'inflight_requests',
+                                 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests']:
+                        col_name = f"{representative_pod}-{feat}"
+                        if col_name in row_dict:
+                            pod_ood_features[feat] = float(row_dict[col_name])
+
+                # Check for extrapolation (value outside training [min, max])
+                ood_result = per_sample_ood_detector.check_combined(
+                    request_features=request_ood_features,
+                    pod_features=pod_ood_features,
+                    request_id=request_id
+                )
+
+                if ood_result['action'] == OODAction.FALLBACK:
+                    use_fallback_routing = True
+                    # Logging already done in check_combined()
+
+            except Exception as e:
+                logger.warning(f"⚠️  Per-sample OOD check failed: {e}")
+
+        handle_infer_overhead_summary["ood_check"] = time.time() - ood_check_start
+
         normalize_start = time.time()
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
@@ -362,17 +406,52 @@ def handle_infer():
             logger.info(f"   pod_0000 kv: {tensor_data['kv_hit_ratios'][0, 0, :].numpy()}")
 
         infer_from_tensor_start_time = time.time()
-        
+
         get_subAlgorithm_start_time = time.time()
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
         logger.debug(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
         handle_infer_overhead_summary["get_subAlgorithm"] = time.time() - get_subAlgorithm_start_time
-        
+
+        # OOD Fallback: Use simple heuristic instead of neural network when OOD detected
+        # This is critical - NN predictions are unreliable for out-of-distribution inputs
+        if use_fallback_routing:
+            fallback_start = time.time()
+            logger.warning(f"⚠️  Request {request_id}: Using FALLBACK routing (least-inflight) due to OOD input")
+
+            # Simple heuristic: select pod with least inflight requests
+            best_pod_idx = 0
+            min_inflight = float('inf')
+            for i, pod_id in enumerate(sorted_all_pod_ids):
+                inflight_col = f"{pod_id}-inflight_requests"
+                if inflight_col in processed_df.columns:
+                    inflight = processed_df[inflight_col].iloc[0]
+                    if inflight < min_inflight:
+                        min_inflight = inflight
+                        best_pod_idx = i
+
+            # Build result with fallback indicator
+            result = {
+                'selected_pod_index': best_pod_idx,
+                'pod_probabilities': {sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids)
+                                     for i in range(len(sorted_all_pod_ids))},
+                'confidence': 0.1,  # Low confidence for fallback
+                'explore_mask': 0,
+                'ood_fallback': True,
+                'ood_details': {
+                    'extreme_count': ood_result['extreme_count'] if ood_result else 0,
+                    'tail_count': ood_result['tail_count'] if ood_result else 0,
+                    'max_zscore': ood_result['max_zscore'] if ood_result else 0,
+                }
+            }
+            infer_from_tensor_overhead_summary = {'fallback_routing': time.time() - fallback_start}
+            handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
+
+        # Normal routing: Use neural network model
         # "random"
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
-        if subAlgorithm == 'latency_predictor' or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2'}:
+        elif subAlgorithm == 'latency_predictor' or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2'}:
             global LATENCY_PREDICTOR, LOAD_PRETRAINED_MODEL
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             # Only acquire expensive write lock if truly uninitialized
@@ -727,7 +806,7 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
             
-        logger.debug(f"overhead_log: {overhead_log}")
+        logger.info(f"overhead_log: {overhead_log}")
         
         response = {
             "num_trains": NUM_TRAINS,
@@ -746,6 +825,7 @@ def handle_infer():
             "predicted_rewards": result.get('predicted_rewards', {pod_id: -99 for pod_id in sorted_all_pod_ids}),
             "chosen_pod_predicted_reward": result.get('chosen_pod_predicted_reward', -99),
             "smoothing": result.get('smoothing_mask', 0),  # Include smoothing indicator
+            "ood_fallback": result.get('ood_fallback', False),  # True if extrapolation detected → used heuristic
         }
         
         # Return 503 if using random weights (LOAD_PRETRAINED_MODEL=0 and no training yet)
@@ -771,7 +851,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -853,18 +933,18 @@ def online_train_routine():
             normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
                 training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
             
-            # CRITICAL: Skip pooled statistics computation during online training
-            # The pretrained model was trained with PER-POD normalization (each pod normalized separately).
-            # Computing pooled statistics (all pods normalized together) creates incompatible feature distributions
-            # that cause catastrophic model divergence (loss explodes to millions, R² becomes negative).
-            # During online training, we MUST maintain the same normalization strategy as the pretrained model.
+            # UPDATE: We now update statistics during online training
+            # The model is being retrained on the combined (offline + online) data,
+            # so the normalization statistics should reflect that combined distribution.
+            # This ensures consistency between training and inference feature spaces.
             if pod_feature_types:
                 logger.info(f"🔄 Found {len(pod_feature_types)} pod feature types: {pod_feature_types}")
-                logger.info(f"⚠️  SKIPPING pooled statistics computation during online training")
-                logger.info(f"   Reason: Pretrained model uses per-pod normalization - must maintain compatibility")
-                logger.info(f"   Using existing per-pod stats from loaded stats_instance")
-            # Note: stats_instance already contains per-pod stats loaded from pretrained model
-            # We do NOT call _compute_pooled_pod_statistics() during online training
+                logger.info(f"🔄 UPDATING pooled statistics during online training")
+                logger.info(f"   Reason: Model is retrained on new data - stats should reflect new distribution")
+                # Compute pooled statistics for pod features WITH updates
+                data_normalizer._compute_pooled_pod_statistics(
+                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True
+                )
             
             # VERIFICATION: Log normalization stats BEFORE normalization
             logger.info(f"VERIFICATION: Checking normalization stats before online training #{NUM_TRAINS}")
@@ -896,17 +976,20 @@ def online_train_routine():
                                 logger.error(f"VERIFICATION PROOF: {feature} OUTLIER CREATED! Using old stats produces {normalized_with_old_stats:.3f} (should be ~{normalized_with_new_stats:.3f})")
 
             # Normalize features (with special handling for pooled pod features)
+            # UPDATE: We now update statistics during online training (update_statistics=True)
+            # This ensures normalization stats match the data the model is trained on.
             for feature in normalizable_features:
                 # Check if this is a pooled pod feature type (not a column name)
                 if feature in pod_feature_types:
                     # Find all pod columns for this feature type and normalize each
-                    matching_columns = [col for col in training_df_copy.columns 
+                    matching_columns = [col for col in training_df_copy.columns
                                       if data_normalizer._extract_pod_feature_type(col) == feature]
                     for col in matching_columns:
+                        # Pod features: stats already updated via _compute_pooled_pod_statistics above
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
-                    # Regular feature - normalize directly
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=False)
+                    # Regular feature (request features) - update stats during training
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True)
             
             # VERIFICATION: Log normalization stats AFTER normalization
             logger.info(f"VERIFICATION: Checking normalization stats after online training #{NUM_TRAINS}")
@@ -966,6 +1049,20 @@ def online_train_routine():
                 swap_time = time.time() - swap_start_time
                 logger.info(f"Swapped model reference (atomic), swap time: {swap_time*1000:.2f}ms")
                 logger.info(f"✅ Model reload complete with ZERO inference blocking during load")
+
+            # Save updated normalization statistics to file
+            stats_save_start = time.time()
+            stats_instance.write_stats_to_file(feature_normalization_stats_file)
+            logger.info(f"✅ Saved updated normalization stats to {feature_normalization_stats_file} ({time.time() - stats_save_start:.2f}s)")
+
+            # Update distribution shift monitors with new statistics
+            if distribution_shift_monitor is not None:
+                distribution_shift_monitor.update_baseline_from_stats(stats_instance)
+                logger.info(f"✅ Updated DistributionShiftMonitor baseline")
+
+            if per_sample_ood_detector is not None:
+                per_sample_ood_detector.update_stats(stats_instance)
+                logger.info(f"✅ Updated PerSampleOODDetector stats")
         
         elif 'contextual_bandit' in model_type:
             logger.info(f"Training Neural Contextual Bandit on entire dataset (offline + online: {NUM_NEW_DATA} new)")
@@ -1059,6 +1156,20 @@ def online_train_routine():
                 logger.error(f"Unknown contextual bandit ROUTING_STRATEGY: {ROUTING_STRATEGY}")
                 assert False
             logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
+
+            # Save updated normalization statistics to file
+            stats_save_start = time.time()
+            stats_instance.write_stats_to_file(feature_normalization_stats_file)
+            logger.info(f"✅ Saved updated normalization stats to {feature_normalization_stats_file} ({time.time() - stats_save_start:.2f}s)")
+
+            # Update distribution shift monitors with new statistics
+            if distribution_shift_monitor is not None:
+                distribution_shift_monitor.update_baseline_from_stats(stats_instance)
+                logger.info(f"✅ Updated DistributionShiftMonitor baseline")
+
+            if per_sample_ood_detector is not None:
+                per_sample_ood_detector.update_stats(stats_instance)
+                logger.info(f"✅ Updated PerSampleOODDetector stats")
         
         else:
             logger.error(f"Unknown MODEL_TYPE: {model_type}")
@@ -1393,7 +1504,9 @@ def graceful_shutdown(sig=None, frame=None):
     
     # Any other cleanup you need can go here
     logger.info("Graceful shutdown completed")
-    sys.exit(0)
+    # Avoid raising SystemExit from atexit callbacks to prevent noisy tracebacks
+    if sig is not None:
+        sys.exit(0)
 
 
 def initialize():
@@ -1417,22 +1530,35 @@ def initialize():
         # else:
         #     logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
         #     assert False
-        base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
+        
+        ## some default model for non learning based routing startegies
+        if TARGET_GPU_MODEL == "NVIDIA-A10":
+            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+            offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+            offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+        elif TARGET_GPU_MODEL == "NVIDIA-A30":
+            base_dir = f"/app/NVIDIA-A30/{OUTPUT_WRK_NAME}/{WORKLOAD_NAME}"
+            offline_csv_path = f"{base_dir}/offline_training_data.csv"
+            final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+            offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+        else:
+            logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
+            assert False
+    else:
+        # base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
+        base_dir = f"/app/{TARGET_GPU_MODEL}/maxTokens_1-maxTokensStd_0"
         final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         offline_csv_path = f"{base_dir}/offline_training_data.csv"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
-    else:
-        ## some default model for non learning based routing startegies
-        final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
-        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-        feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-        offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
-        offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
-    logger.info(f"WORKLOAD: {WORKLOAD}")
+    logger.info(f"WORKLOAD_NAME: {WORKLOAD_NAME}")
     logger.info(f"final_model_dir: {final_model_dir}")
     logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
     logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
@@ -1584,7 +1710,7 @@ def initialize():
         logger.warning("No normalization statistics available - inference will fail")
         assert False
 
-    # Initialize distribution shift monitor
+    # Initialize distribution shift monitor (aggregate shift detection)
     global distribution_shift_monitor
     if offline_training_data_distribution and os.path.exists(offline_training_data_distribution):
         logger.info(f"Initializing distribution shift monitor: {offline_training_data_distribution}")
@@ -1603,6 +1729,24 @@ def initialize():
     else:
         logger.warning(f"⚠️  Distribution shift monitoring disabled (stats file not found): {offline_training_data_distribution}")
         distribution_shift_monitor = None
+
+    # Initialize per-sample OOD detector (per-request OOD detection for NN reliability)
+    # Detection: if any feature is outside training [min, max] → fallback to heuristic
+    global per_sample_ood_detector
+    if offline_training_data_distribution and os.path.exists(offline_training_data_distribution):
+        logger.info(f"Initializing per-sample OOD detector: {offline_training_data_distribution}")
+        try:
+            per_sample_ood_detector = PerSampleOODDetector(
+                training_distribution_csv=offline_training_data_distribution
+            )
+            logger.info(f"✅ Per-sample OOD detection enabled (extrapolation check)")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize per-sample OOD detector: {e}")
+            logger.warning(f"⚠️  Exception details: {repr(e)}")
+            per_sample_ood_detector = None
+    else:
+        logger.warning(f"⚠️  Per-sample OOD detection disabled (stats file not found)")
+        per_sample_ood_detector = None
 
     # Add checkpointing configuration to hyperparameters
     HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100
@@ -1694,7 +1838,7 @@ def initialize():
                 gae_lambda=HYPERPARAMETERS['gae_lambda'], 
                 tb_log_dir=os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
                 batch_size=HYPERPARAMETERS['batch_size'], 
-                n_epochs=HYPERPARAMETERS['training_epochs'], 
+                training_epochs=HYPERPARAMETERS['training_epochs'], 
                 clip_range=HYPERPARAMETERS['clip_range'], 
                 entropy_coeff=HYPERPARAMETERS['entropy_coeff'], 
                 vf_coef=HYPERPARAMETERS['vf_coef'], 
@@ -1831,8 +1975,8 @@ if __name__ == "__main__":
     
     
     port = int(os.environ.get("PORT", 8080))
-    if not utils.wait_for_port_available(port, max_wait=5):
-        logger.error(f"Cannot start Flask app - port {port} is not available")
+    if not utils.ensure_port_available(port, max_attempts=5):
+        logger.error(f"Cannot start Flask app - port {port} is not available after cleanup attempts")
         sys.exit(1)
         
     logger.info(f"Port {port} is available, starting Flask app properly!")

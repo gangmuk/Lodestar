@@ -13,8 +13,6 @@ import subprocess
 import threading
 import json
 import time
-import datetime
-import pytz
 from typing import List, Dict, Any, Optional
 from kubernetes.config import ConfigException
 import hashlib
@@ -796,15 +794,6 @@ def save_k8s_logs(namespace, deployment_name, output_dir, label=None, keyword=No
         logger.error(f"Error collecting logs: {e}")
         logger.error(traceback.format_exc())
         return False
-
-def get_current_pdt_time():
-    """Get the current time in PDT timezone"""
-    pdt_tz = pytz.timezone('America/Los_Angeles')
-    utc_now = datetime.datetime.utcnow()
-    utc_now = utc_now.replace(tzinfo=pytz.utc)
-    pdt_now = utc_now.astimezone(pdt_tz)
-    return pdt_now.strftime("%Y%m%d_%H%M%S")
-
 
 
 def static_hash(value: str) -> str:

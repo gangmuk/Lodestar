@@ -340,10 +340,10 @@ class LatencyPredictor:
         
         elif self.lr_scheduler_type == 'linear':
             # Linear decay to 0 over training epochs
-            num_epochs = self.HYPERPARAMETERS.get('training_epochs', 100)
-            lambda_lr = lambda epoch: max(0.0, 1.0 - epoch / num_epochs)
+            training_epochs = self.HYPERPARAMETERS.get('training_epochs', 100)
+            lambda_lr = lambda epoch: max(0.0, 1.0 - epoch / training_epochs)
             scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda_lr)
-            logger.info(f"Using linear learning rate decay over {num_epochs} epochs")
+            logger.info(f"Using linear learning rate decay over {training_epochs} epochs")
             return scheduler
         
         elif self.lr_scheduler_type == 'exponential':
@@ -676,15 +676,15 @@ def train_latency_predictor(encoded_data_dir, final_model_dir, HYPERPARAMETERS, 
     logger.info(f"Train samples: {train_size}, Validation samples: {val_size}")
     
     # Training loop
-    num_epochs = HYPERPARAMETERS['training_epochs']
-    print(f"num_epochs: {num_epochs}")
+    training_epochs = HYPERPARAMETERS['training_epochs']
+    print(f"training_epochs: {training_epochs}")
     best_val_loss = float('inf')
     
-    for epoch in range(num_epochs):
+    for epoch in range(training_epochs):
         predictor.current_epoch = epoch
         epoch_start_time = time.time()
         
-        logger.info(f"Epoch {epoch + 1}/{num_epochs}")
+        logger.info(f"Epoch {epoch + 1}/{training_epochs}")
         
         # Train
         train_loss = predictor.train_epoch(train_loader)
@@ -1010,20 +1010,20 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     
     # 2. Save loss data (training and validation loss per epoch)
     if predictor.training_losses:
-        num_epochs = len(predictor.training_losses)
+        training_epochs = len(predictor.training_losses)
         # Ensure validation losses match training losses length
-        if predictor.validation_losses and len(predictor.validation_losses) == num_epochs:
+        if predictor.validation_losses and len(predictor.validation_losses) == training_epochs:
             val_losses = predictor.validation_losses
         else:
             # Pad with None if lengths don't match or validation_losses is empty
-            val_losses = [None] * num_epochs
+            val_losses = [None] * training_epochs
             if predictor.validation_losses:
                 # Copy available validation losses
-                for i in range(min(len(predictor.validation_losses), num_epochs)):
+                for i in range(min(len(predictor.validation_losses), training_epochs)):
                     val_losses[i] = predictor.validation_losses[i]
         
         loss_df = pd.DataFrame({
-            'epoch': list(range(num_epochs)),
+            'epoch': list(range(training_epochs)),
             'train_loss': predictor.training_losses,
             'val_loss': val_losses
         })
@@ -1033,7 +1033,7 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
     
     # 3. Save additional metrics for comprehensive analysis
     if predictor.validation_mae:
-        num_epochs = len(predictor.validation_mae)
+        training_epochs = len(predictor.validation_mae)
         
         # Helper function to pad/truncate list to match length
         def match_length(lst, target_len):
@@ -1048,11 +1048,11 @@ def plot_latency_predictor_metrics(predictor, train_data, val_data, final_model_
             return result
         
         metrics_df = pd.DataFrame({
-            'epoch': list(range(num_epochs)),
+            'epoch': list(range(training_epochs)),
             'mae': predictor.validation_mae,
-            'r2': match_length(predictor.validation_r2, num_epochs),
-            'routing_accuracy': match_length(predictor.routing_accuracies, num_epochs),
-            'learning_rate': match_length(predictor.learning_rate, num_epochs)
+            'r2': match_length(predictor.validation_r2, training_epochs),
+            'routing_accuracy': match_length(predictor.routing_accuracies, training_epochs),
+            'learning_rate': match_length(predictor.learning_rate, training_epochs)
         })
         metrics_csv_path = os.path.join(final_model_dir, f'training_metrics_data-{num_train}.csv')
         metrics_df.to_csv(metrics_csv_path, index=False)

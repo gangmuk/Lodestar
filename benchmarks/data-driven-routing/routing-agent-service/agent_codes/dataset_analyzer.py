@@ -6,6 +6,7 @@ Analyzes training dataset quality to identify potential issues before training.
 This helps diagnose whether dataset problems are causing poor model performance.
 """
 
+import time
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,6 +45,7 @@ class RLDatasetAnalyzer:
         self.num_samples = len(self.df)
         self.pod_ids = self._extract_pod_ids()
         self.num_pods = len(self.pod_ids)
+        self._normalized_feature_cache = {}
         
         # Determine if this is a processed (raw values) or normalized CSV
         self.is_processed_csv = self._detect_csv_type()
@@ -60,6 +62,25 @@ class RLDatasetAnalyzer:
                 pod_id = col.split('-')[0]
                 pod_ids.add(pod_id)
         return sorted(list(pod_ids))
+
+    def _normalize_feature_matrix(self, feature_matrix, cache_key):
+        """Normalize feature rows for fast cosine similarity; cache by key."""
+        cache_id = (cache_key, feature_matrix.shape[0], feature_matrix.shape[1])
+        cached = self._normalized_feature_cache.get(cache_id)
+        if cached is not None:
+            return cached
+        norms = np.linalg.norm(feature_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normalized = feature_matrix / norms
+        self._normalized_feature_cache[cache_id] = normalized
+        return normalized
+
+    def _sample_candidate_indices(self, n_total, max_candidates, random_state=42):
+        """Return a candidate index subset to reduce similarity search cost."""
+        if max_candidates is None or max_candidates >= n_total:
+            return np.arange(n_total)
+        rng = np.random.default_rng(random_state)
+        return rng.choice(n_total, size=max_candidates, replace=False)
     
     def _detect_csv_type(self):
         """Detect if CSV contains processed (raw) or normalized data."""
@@ -447,18 +468,26 @@ class RLDatasetAnalyzer:
             
             signal_strengths = []
             selected_pods = self.df['selected_pod'].values
+
+            pod_feature_values = pod_features.to_numpy(dtype=np.float32, copy=False)
+            normalized_features = self._normalize_feature_matrix(
+                pod_feature_values, cache_key="pod_state"
+            )
+            candidate_indices = self._sample_candidate_indices(
+                len(self.df), max_candidates=min(5000, len(self.df))
+            )
+            candidate_matrix = normalized_features[candidate_indices]
             
             # Sample subset for efficiency
             sample_size = min(500, len(self.df))
             indices = np.random.choice(len(self.df), sample_size, replace=False)
             
             for idx in indices:
-                current_state = pod_features.iloc[idx:idx+1]
                 current_reward = rewards[idx]
-                
-                # Find similar states (cosine similarity)
-                similarities = cosine_similarity(current_state, pod_features)[0]
-                similar_indices = np.where(similarities > 0.8)[0]  # High similarity threshold
+
+                # Find similar states using normalized dot product against a candidate subset
+                similarities = candidate_matrix @ normalized_features[idx]
+                similar_indices = candidate_indices[similarities > 0.8]  # High similarity threshold
                 
                 if len(similar_indices) < 5:  # Need enough similar states
                     continue
@@ -648,8 +677,10 @@ class RLDatasetAnalyzer:
         self._analyze_state_performance_correlation(rewards)
         
         # 2. Cross-Pod State Comparison  
+        ts = time.time()
         print("\n2. Cross-Pod State Comparison Analysis:")
         self._analyze_cross_pod_state_comparison(rewards)
+        print(f"Cross-Pod State Comparison Analysis took {time.time() - ts} seconds")
         
         # 3. Routing Opportunity Detection
         print("\n3. Routing Opportunity Detection:")
@@ -777,19 +808,36 @@ class RLDatasetAnalyzer:
                 print("⚠️  No request context features found for comparison")
                 return
             
-            request_context = self.df[request_cols].values
+            request_context = self.df[request_cols].to_numpy(dtype=np.float32, copy=False)
+            normalized_request_context = self._normalize_feature_matrix(
+                request_context, cache_key="request_context"
+            )
+            candidate_indices = self._sample_candidate_indices(
+                len(self.df), max_candidates=min(5000, len(self.df))
+            )
+            candidate_matrix = normalized_request_context[candidate_indices]
             selected_pods = self.df['selected_pod'].values
+
+            # Precompute per-pod mean state for fast lookup (exact, no approximation)
+            pod_state_means = {}
+            state_feature_types = ['inflight_requests', 'running_requests', 'waiting_requests']
+            for pod_id in self.pod_ids:
+                state_cols = []
+                for feature_type in state_feature_types:
+                    feature_col = f"{pod_id}-{feature_type}"
+                    if feature_col in self.df.columns:
+                        state_cols.append(feature_col)
+                if state_cols:
+                    pod_state_means[pod_id] = self.df[state_cols].to_numpy(dtype=np.float32, copy=False).mean(axis=1)
             
             similar_context_comparisons = []
             sample_size = min(200, len(self.df))  # Sample for efficiency
             indices = np.random.choice(len(self.df), sample_size, replace=False)
             
             for idx in indices:
-                current_context = request_context[idx:idx+1]
-                
-                # Find similar request contexts using cosine similarity
-                similarities = cosine_similarity(current_context, request_context)[0]
-                similar_indices = np.where(similarities > 0.9)[0]  # High similarity
+                # Find similar request contexts using normalized dot product against a candidate subset
+                similarities = candidate_matrix @ normalized_request_context[idx]
+                similar_indices = candidate_indices[similarities > 0.9]  # High similarity
                 
                 if len(similar_indices) < 5:
                     continue
@@ -809,14 +857,9 @@ class RLDatasetAnalyzer:
                     pod_rewards[pod].append(reward)
                     
                     # Get pod state at this time
-                    pod_state = []
-                    for feature_type in ['inflight_requests', 'running_requests', 'waiting_requests']:
-                        feature_col = f"{pod}-{feature_type}"
-                        if feature_col in self.df.columns:
-                            pod_state.append(self.df[feature_col].iloc[sim_idx])
-                    
-                    if pod_state:
-                        pod_states[pod].append(np.mean(pod_state))  # Simple aggregate
+                    pod_state_series = pod_state_means.get(pod)
+                    if pod_state_series is not None:
+                        pod_states[pod].append(pod_state_series[sim_idx])
                 
                 # Analyze if pod states explain reward differences
                 valid_pods = {pod: rewards for pod, rewards in pod_rewards.items() 
@@ -869,6 +912,15 @@ class RLDatasetAnalyzer:
                 return 0.0
             
             selected_pods = self.df['selected_pod'].values
+
+            pod_feature_values = pod_features.to_numpy(dtype=np.float32, copy=False)
+            normalized_features = self._normalize_feature_matrix(
+                pod_feature_values, cache_key="pod_state"
+            )
+            candidate_indices = self._sample_candidate_indices(
+                len(self.df), max_candidates=min(5000, len(self.df))
+            )
+            candidate_matrix = normalized_features[candidate_indices]
             
             # Sample for efficiency
             sample_size = min(500, len(self.df))
@@ -879,13 +931,12 @@ class RLDatasetAnalyzer:
             significant_improvements = 0
             
             for idx in indices:
-                current_cluster_state = pod_features.iloc[idx:idx+1]
                 current_pod = selected_pods[idx]
                 current_reward = rewards[idx]
                 
                 # Find rows with very similar cluster states (high similarity threshold)
-                similarities = cosine_similarity(current_cluster_state, pod_features)[0]
-                similar_indices = np.where(similarities > 0.95)[0]  # Very strict similarity
+                similarities = candidate_matrix @ normalized_features[idx]
+                similar_indices = candidate_indices[similarities > 0.95]  # Very strict similarity
                 
                 if len(similar_indices) < 5:  # Need enough similar states
                     continue

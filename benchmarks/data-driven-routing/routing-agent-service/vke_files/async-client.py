@@ -45,6 +45,21 @@ def sample_output_tokens(mean: int, std: float) -> int:
     # Ensure at least 1 token and not more than 2x the mean (reasonable bound)
     return max(1, min(sampled, mean * 2))
 
+def sample_input_tokens(mean: int, std: float) -> int:
+    """
+    Sample input tokens from a normal distribution.
+    
+    Args:
+        mean: Mean number of input tokens
+        std: Standard deviation
+    
+    Returns:
+        Sampled number of input tokens (at least 1)
+    """
+    sampled = int(np.random.normal(mean, std))
+    # Ensure at least 1 token and not more than 2x the mean (reasonable bound)
+    return max(1, min(sampled, mean * 2))
+
 def estimate_tokens_from_text(text: str, use_word_count: bool = True) -> int:
     """
     Estimate the number of tokens in a text string.
@@ -1865,7 +1880,7 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
-                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, max_tokens_std=10, force_exact_output_tokens=0,
+                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
                        workload_path=None):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Determine workload mode from CLI args (benchmark vs profiling)
@@ -1929,6 +1944,11 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         if max_input_tokens:
             logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration+1}")
         
+        if input_tokens_std > 0:
+            logger.info(f"Sampling input tokens from Normal distribution with std={input_tokens_std} (mean from workload)")
+        else:
+            logger.info(f"Using input token lengths from workload file (no sampling)")
+        
         if max_tokens_std > 0:
             logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
         else:
@@ -1976,6 +1996,74 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 else:
                     token_ids = None
                     prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+
+                # Apply input token sampling if input_tokens_std > 0
+                if input_tokens_std > 0:
+                    if args.prompt_type == "token-ids":
+                        # For token-ids mode, sample the length and adjust the token_ids list
+                        current_length = len(token_ids)
+                        target_length = sample_input_tokens(current_length, input_tokens_std)
+                        
+                        if target_length < current_length:
+                            # Truncate token_ids
+                            token_ids = token_ids[:target_length]
+                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                            logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (truncated)")
+                        elif target_length > current_length:
+                            # Pad token_ids (repeat the last token or use a padding token)
+                            # Using 0 as padding token (common padding token ID)
+                            padding_needed = target_length - current_length
+                            token_ids = token_ids + [0] * padding_needed
+                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                            logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (padded)")
+                        # else: target_length == current_length, no change needed
+                    else:
+                        # For chat mode, estimate tokens, sample target, then adjust text
+                        original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                        current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+                        target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
+                        
+                        if target_tokens < current_estimated_tokens:
+                            # Truncate text to match target tokens
+                            truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
+                            if isinstance(request["prompt"], str):
+                                prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                            else:
+                                # For list format, replace the content
+                                truncated_prompt = request["prompt"].copy()
+                                if isinstance(truncated_prompt, list) and truncated_prompt:
+                                    # Find the last user message and truncate it
+                                    for i in range(len(truncated_prompt) - 1, -1, -1):
+                                        if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                            truncated_prompt[i]["content"] = truncated_text
+                                            break
+                                prompt = truncated_prompt
+                            logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (truncated)")
+                        elif target_tokens > current_estimated_tokens:
+                            # Expand text to match target tokens (append padding text)
+                            # Estimate how many words we need to add
+                            current_words = len(original_prompt_text.split())
+                            target_words = int(target_tokens / 1.33)  # Reverse of 1 word ≈ 1.33 tokens
+                            words_to_add = max(0, target_words - current_words)
+                            
+                            # Add padding words (using a simple pattern)
+                            padding_text = " padding" * words_to_add
+                            expanded_text = original_prompt_text + padding_text
+                            
+                            if isinstance(request["prompt"], str):
+                                prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
+                            else:
+                                # For list format, append to the last user message
+                                expanded_prompt = request["prompt"].copy()
+                                if isinstance(expanded_prompt, list) and expanded_prompt:
+                                    # Find the last user message and append padding
+                                    for i in range(len(expanded_prompt) - 1, -1, -1):
+                                        if isinstance(expanded_prompt[i], dict) and expanded_prompt[i].get("role") == "user":
+                                            expanded_prompt[i]["content"] = expanded_text
+                                            break
+                                prompt = expanded_prompt
+                            logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (expanded)")
+                        # else: target_tokens == current_estimated_tokens, no change needed
 
                 # Filter or truncate by max_input_tokens if specified
                 if max_input_tokens:
@@ -2209,6 +2297,7 @@ async def main(args):
             shuffle_requests=args.shuffle_requests,
             poisson_arrivals=args.poisson_arrivals,
             max_input_tokens=args.max_input_tokens,
+            input_tokens_std=args.input_tokens_std,
             max_tokens_std=args.max_tokens_std,
             force_exact_output_tokens=args.force_exact_output_tokens,
             workload_path=args.workload_path,
@@ -2239,6 +2328,7 @@ if __name__ == "__main__":
     parser.add_argument("--subAlgorithm", type=str, default="random", help="Sub Routing strategy that will be used for flexible prefix cache.")
     parser.add_argument("--max_input_tokens", type=int, default=None,
                        help="Maximum number of input tokens per request. Requests exceeding this limit will be filtered out. Uses word count approximation (words * 1.33).")
+    parser.add_argument("--input_tokens_std", type=float, default=0.0, help="Standard deviation for sampling input tokens from normal distribution. Set to 0 to disable sampling (use workload input length as-is).")
     parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request (used as mean for sampling).")
     parser.add_argument("--max_tokens_std", type=float, default=10.0, help="Standard deviation for sampling output tokens from normal distribution. Set to 0 to disable sampling (use fixed max_tokens).")
     parser.add_argument("--force_exact_output_tokens", type=int, default=0, help="Force generation of exactly max_tokens tokens by setting min_tokens=max_tokens and ignore_eos=True. Useful for consistent benchmarking.")

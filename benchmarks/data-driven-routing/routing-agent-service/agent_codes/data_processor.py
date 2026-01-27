@@ -22,7 +22,7 @@ import preprocess
 from logger import logger
 
 
-def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0):
+def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0, return_df=False):
     """
     Process raw text log file to structured CSV with all features but no normalization.
     
@@ -91,10 +91,11 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
         tpot_filtered_count = before_filter - len(processed_df)
         logger.info(f"  Filtered out {tpot_filtered_count} samples by avg_tpot threshold")
     
-    total_filtered = original_count - len(processed_df)
+    remaining_count = len(processed_df)
+    total_filtered = original_count - remaining_count
     if total_filtered > 0:
         logger.info(f"Total filtered: {total_filtered}/{original_count} samples ({total_filtered/original_count*100:.2f}%)")
-        logger.info(f"Remaining samples: {len(processed_df)}")
+        logger.info(f"Remaining samples: {remaining_count}")
     else:
         logger.info("No filtering applied, keeping all samples")
 
@@ -105,9 +106,10 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
         before_sample = len(processed_df)
         # Random sampling with fixed seed for reproducibility
         processed_df = processed_df.sample(frac=sampling_ratio, random_state=42)
-        sampled_count = before_sample - len(processed_df)
-        logger.info(f"  Sampled {len(processed_df)}/{before_sample} samples ({sampled_count} removed)")
-        logger.info(f"  Sampling ratio applied: {len(processed_df)/before_sample:.3f}")
+        after_sample = len(processed_df)
+        sampled_count = before_sample - after_sample
+        logger.info(f"  Sampled {after_sample}/{before_sample} samples ({sampled_count} removed)")
+        logger.info(f"  Sampling ratio applied: {after_sample/before_sample:.3f}")
 
     # Step 6: Add metadata columns for tracking
     processed_df['source_file'] = os.path.basename(input_file)
@@ -151,6 +153,8 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
         json.dump(summary, f, indent=2)
     logger.info(f"Processing summary saved to: {summary_file}")
     
+    if return_df:
+        return output_file, processed_df
     return output_file
 
 
@@ -180,7 +184,7 @@ def process_directory_batch(input_dir, output_file, hyperparameters, ttft_thresh
     return processed_files
 
 
-def validate_processed_csv(csv_file):
+def validate_processed_csv(csv_file, df=None):
     """
     Validate that a processed CSV file has the expected format and columns.
     
@@ -195,10 +199,11 @@ def validate_processed_csv(csv_file):
     if not os.path.exists(csv_file):
         return {'valid': False, 'error': 'File does not exist'}
     
-    try:
-        df = pd.read_csv(csv_file)
-    except Exception as e:
-        return {'valid': False, 'error': f'Failed to read CSV: {e}'}
+    if df is None:
+        try:
+            df = pd.read_csv(csv_file)
+        except Exception as e:
+            return {'valid': False, 'error': f'Failed to read CSV: {e}'}
     
     # Check required columns
     required_columns = [
@@ -333,10 +338,18 @@ def main():
 
         logger.info(f"args.output_file: {args.output_file}")
         logger.info(f"args.hyperparameters_file_path: {args.hyperparameters_file_path}")
-        processed_file = process_raw_data_to_csv(args.input_file, args.output_file, hyperparameters, args.ttft_threshold, args.avg_tpot_threshold, args.sampling_ratio)
+        processed_file, processed_df = process_raw_data_to_csv(
+            args.input_file,
+            args.output_file,
+            hyperparameters,
+            args.ttft_threshold,
+            args.avg_tpot_threshold,
+            args.sampling_ratio,
+            return_df=True
+        )
         
         # Validate the output
-        validation = validate_processed_csv(processed_file)
+        validation = validate_processed_csv(processed_file, df=processed_df)
         if validation['valid']:
             logger.info("✓ Output validation passed")
         else:

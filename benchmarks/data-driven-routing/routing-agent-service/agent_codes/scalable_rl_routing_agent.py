@@ -727,7 +727,7 @@ class ScalableRLRoutingAgent:
         gae_lambda: float,
         tb_log_dir: str,
         batch_size: int,
-        n_epochs: int,
+        training_epochs: int,
         clip_range: float,
         entropy_coeff: float,
         vf_coef: float,
@@ -770,7 +770,7 @@ class ScalableRLRoutingAgent:
         logger.info(f"    - rl={rl}, static_num_pods={static_num_pods}")
         logger.info(f"    - learning_rate={learning_rate}, hidden_dim={hidden_dim}")
         logger.info(f"    - gamma={gamma}, gae_lambda={gae_lambda}")
-        logger.info(f"    - num_requests_per_episode={num_requests_per_episode}, batch_size={batch_size}, n_epochs={n_epochs}")
+        logger.info(f"    - num_requests_per_episode={num_requests_per_episode}, batch_size={batch_size}, training_epochs={training_epochs}")
         logger.info(f"    - clip_range={clip_range}, entropy_coeff={entropy_coeff}, vf_coef={vf_coef}")
         logger.info(f"    - max_grad_norm={max_grad_norm}")
         logger.info(f"    - last_layer_dim_pi={last_layer_dim_pi}, last_layer_dim_vf={last_layer_dim_vf}")
@@ -798,7 +798,7 @@ class ScalableRLRoutingAgent:
         self.eval_env = self.make_env(num_requests_per_episode, EVAL_SOURCE)
         self.env = self.train_env  # Alias for compatibility with save/load methods
         self.tb_log_dir = os.path.abspath(tb_log_dir)
-        self.setup_model(rl, per_pod_dim, request_dim, learning_rate, hidden_dim, gamma, gae_lambda, batch_size, n_epochs, clip_range, entropy_coeff, vf_coef, max_grad_norm, last_layer_dim_pi, last_layer_dim_vf, lr_scheduler_type)
+        self.setup_model(rl, per_pod_dim, request_dim, learning_rate, hidden_dim, gamma, gae_lambda, batch_size, training_epochs, clip_range, entropy_coeff, vf_coef, max_grad_norm, last_layer_dim_pi, last_layer_dim_vf, lr_scheduler_type)
 
         # CYAN_COLOR = "\033[96m"
         # RESET_COLOR = "\033[0m" 
@@ -857,7 +857,7 @@ class ScalableRLRoutingAgent:
         gamma: float, \
         gae_lambda: float, \
         batch_size: int, \
-        n_epochs: int, \
+        training_epochs: int, \
         clip_range: float, \
         entropy_coeff: float, \
         vf_coef: float, \
@@ -895,7 +895,7 @@ class ScalableRLRoutingAgent:
                 n_steps=self.num_requests_per_iteration, # model update every iteration
                 # n_steps=self.num_requests_per_episode, # model update every episode
                 batch_size=batch_size,
-                n_epochs=n_epochs,
+                training_epochs=training_epochs,
                 gamma=gamma,                    # Discount factor
                 gae_lambda=gae_lambda,          # GAE lambda (short horizon)
                 clip_range=clip_range,
@@ -1275,7 +1275,7 @@ def main():
         gae_lambda=0.95,
         tb_log_dir='./tb_logs',
         batch_size=256,
-        n_epochs=4,
+        training_epochs=4,
         clip_range=0.2,
         entropy_coeff=0.01,
         vf_coef=0.5,
