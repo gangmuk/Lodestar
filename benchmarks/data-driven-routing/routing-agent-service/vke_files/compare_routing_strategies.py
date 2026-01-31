@@ -77,6 +77,16 @@ def parse_strategy_name(filepath):
         # Fallback to the immediate parent directory if the pattern doesn't match
         return os.path.basename(os.path.dirname(filepath))
 
+def is_ml_strategy(strategy_name):
+    """Return True for ML-based routing policies (latency predictor, RL, contextual bandit, etc.)."""
+    strategy_lower = strategy_name.lower()
+    ml_markers = [
+        'latency_predictor',
+        'contextual_bandit',
+        'rl',
+    ]
+    return any(marker in strategy_lower for marker in ml_markers)
+
 def find_log_files(base_dir):
     """Find all filtered log CSV files in the base directory - only one level deep."""
     log_files = []
@@ -406,7 +416,7 @@ def normalize_time(df):
     df.reset_index(drop=True, inplace=True)
     return df
 
-def process_log_file(file_path, warmup_seconds, cut_last_seconds):
+def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from):
     """Process a single log file and return its performance metrics AND the processed DataFrame."""
     print(f"Processing {file_path}...")
     df, json_columns = preprocess.parse_log_file(file_path)
@@ -447,7 +457,18 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds):
     
     # Extract strategy name from the file path
     strategy = parse_strategy_name(file_path)
-    
+
+    # Apply iteration-based filtering only for ML-based policies
+    if iteration_from is not None and iteration_from > 0 and is_ml_strategy(strategy):
+        if 'iteration' in df.columns:
+            df['iteration'] = pd.to_numeric(df['iteration'], errors='coerce')
+            before_count = len(df)
+            df = df[df['iteration'] >= iteration_from]
+            after_count = len(df)
+            print(f"  Iteration filter applied: {before_count - after_count} rows removed (iteration >= {iteration_from})")
+        else:
+            print("  Warning: iteration column not found; skipping iteration filter")
+
     # Calculate performance metrics on filtered data
     metrics = calculate_performance_metrics(df)
     metrics['strategy'] = strategy
@@ -773,6 +794,12 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     """Plot bar chart with single metric (TTFT or TPOT) showing avg, p99, p999 grouped by strategy."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     n_strategies = len(strategies)
+    if n_strategies == 0:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center', fontsize=12,
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
 
     # Extract metrics for each strategy
     metrics_indexed = metrics_df.set_index('strategy')
@@ -794,8 +821,16 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
         p999_values = [metrics_indexed.loc[s, 'p999_end_to_end_overhead'] if 'p999_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'End-to-End Overhead (ms)'
 
-    # Get max value for y-axis scaling
-    max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
+    # Get max value for y-axis scaling (ignore NaN/Inf)
+    all_values = np.array((avg_values or []) + (p99_values or []) + (p999_values or []), dtype=float)
+    finite_values = all_values[np.isfinite(all_values)]
+    if finite_values.size == 0:
+        ax.text(0.5, 0.5, 'No valid data available', ha='center', va='center', fontsize=12,
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+    max_value = float(np.max(finite_values))
 
     # Create bar positions - 3 bars per strategy (TTFT/TPOT) or 4 bars (overhead)
     num_bars = 4 if metric_type == 'end_to_end_overhead' else 3
@@ -832,9 +867,10 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
                    edgecolor='black', linewidth=0.8, alpha=alpha)
 
             # Add value labels on top of bars
-            ax.text(pos, value + max_value * 0.02,
-                   f'{value:.0f}', rotation=90, ha='center', va='bottom',
-                   fontsize=10, fontweight='bold')
+            if np.isfinite(value):
+                ax.text(pos, value + max_value * 0.02,
+                       f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                       fontsize=10, fontweight='bold')
 
     # Set up x-axis with strategy names
     ax.set_xticks(group_centers)
@@ -876,7 +912,7 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     ax.tick_params(axis='y', labelsize=tick_fontsize)
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='y', alpha=0.3)
-    ax.set_ylim(0, max_value * 1.4)
+    ax.set_ylim(0, max(max_value * 1.4, 1.0))
 
 
 # New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99, p999
@@ -1154,6 +1190,8 @@ if __name__ == "__main__":
                        help='Seconds to exclude from start for warmup')
     parser.add_argument('cut_last_seconds', nargs='?', type=int, default=None,
                        help='Seconds to exclude from end')
+    parser.add_argument('--iteration-from', type=int, default=0,
+                       help='Only include rows with iteration >= this value for ML policies')
     parser.add_argument('--average-duplicates', action='store_true',
                        help='Average multiple experiments for the same routing policy')
     
@@ -1162,6 +1200,7 @@ if __name__ == "__main__":
     base_dir = args.base_directory
     warmup_seconds = args.warmup_seconds
     cut_last_seconds = args.cut_last_seconds
+    iteration_from = args.iteration_from
     average_duplicates = args.average_duplicates
     
     print(f"Searching for log files in {base_dir}...")
@@ -1187,7 +1226,7 @@ if __name__ == "__main__":
     csv_data_dict = {}  # ADD: Dictionary to store DataFrames
     
     for log_file in log_files:
-        result = process_log_file(log_file, warmup_seconds, cut_last_seconds)
+        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from)
         if result:
             metrics, df = result  # UNPACK both metrics and DataFrame
             all_metrics.append(metrics)

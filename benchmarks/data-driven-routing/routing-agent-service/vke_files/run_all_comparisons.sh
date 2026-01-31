@@ -2,14 +2,14 @@
 
 set -e
 
-base_dir="/mnt/data/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0"
+base_dir="/mnt/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix"
 
 target_dir_list=(
-    "${base_dir}/SharingRatio71%/rps7"
-    "${base_dir}/SharingRatio47%/rps6"
-    "${base_dir}/SharingRatio28%/rps5"
-    "${base_dir}/SharingRatio9%/rps5"
-    "${base_dir}/MixedSharingRatio10_30_50_70%/rps6"
+    "${base_dir}/SharingRatio71%/rps9-benchmark"
+    "${base_dir}/SharingRatio47%/rps8-benchmark"
+    "${base_dir}/SharingRatio28%/rps7-benchmark"
+    "${base_dir}/SharingRatio9%/rps6-benchmark"
+    "${base_dir}/MixedSharingRatio10_30_50_70%/rps9-benchmark"
 )
 
 # Verify all directories exist
@@ -26,9 +26,9 @@ echo ""
 # Process each workload (in parallel)
 for target_dir in "${target_dir_list[@]}"; do
     echo "Processing ${target_dir}"
-    python compare_routing_strategies.py "${target_dir}" | grep -E "(Saved|metrics CSV)" &
+    # python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)" &
+    python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)"
 done
-wait
 
 echo ""
 echo "=== Step 2: Merging and plotting all workloads ==="

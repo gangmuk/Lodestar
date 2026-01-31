@@ -31,7 +31,7 @@ value_fontsize = 7
 
 # Color families for routing policy categories
 POLICY_COLOR_FAMILIES = {
-    'rl_naive': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'rl_naive': ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db'],  # Slate blue family
     'latency_predictor_e2e_latency': ['#8b008b', '#ba55d3', '#9932cc', '#8a2be2', '#c71585'],  # Purple family
     'latency_predictor_ttft': ['#ff1493', '#ff69b4', '#dc143c', '#ff00ff', '#da70d6'],  # Pink/Magenta family
     'latency_predictor_avg_tpot': ['#8b0000', '#b22222', '#cd5c5c', '#f08080', '#fa8072'],  # Dark red/Coral family
@@ -42,17 +42,58 @@ POLICY_COLOR_FAMILIES = {
     'least_kv_cache': ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460'],  # Brown/Tan family
     'least_latency': ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff'],  # Slate blue family
     'least_request': ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1'],  # Cyan/Teal family
-    # Different contextual bandit variants get different color families
-    'contextual_bandit_quantile_based_perpodmodel_advanced': ['#4169e1', '#5a7be8', '#7390ef', '#8ca5f6', '#a5bafd'],  # Royal blue family
-    'contextual_bandit_quantile_based_perpodmodel': ['#9932cc', '#a64dd4', '#b368dc', '#c083e4', '#cd9eec'],  # Dark orchid family
-    'contextual_bandit_perpodmodel_policygradient_throughput_based': ['#ff4500', '#ff5a1a', '#ff6f33', '#ff844d', '#ff9966'],  # Orange-red family
-    'contextual_bandit_perpodmodel_policygradient': ['#dc143c', '#e12d4f', '#e64662', '#eb5f75', '#f07888'],  # Crimson family
-    'contextual_bandit_negative_linear_perpodmodel': ['#20b2aa', '#3bbdb6', '#56c8c2', '#71d3ce', '#8cdeda'],  # Light sea green family
-    'contextual_bandit_negative_squared_perpodmodel': ['#daa520', '#dfb036', '#e4bb4c', '#e9c662', '#eed178'],  # Goldenrod family
-    'contextual_bandit': ['#6495ed', '#7aa3f0', '#90b1f3', '#a6bff6', '#bccdf9'],  # Cornflower blue family (default CB)
+    # Contextual bandit variants use the same red family as compare_routing_strategies.py
+    'contextual_bandit_quantile_based_perpodmodel_advanced': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit_quantile_based_perpodmodel': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit_perpodmodel_policygradient_throughput_based': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit_perpodmodel_policygradient': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit_negative_linear_perpodmodel': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit_negative_squared_perpodmodel': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
+    'contextual_bandit': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],  # Red family
 }
 
 DEFAULT_COLORS = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
+
+# Preferred ordering for routing policies in plots.
+PREFERRED_POLICY_ORDER = [
+    'random',
+    'least_request',
+    'least_latency',
+    'prefix_cache_1',
+    'contextual_bandit',
+]
+
+PREFERRED_WORKLOAD_ORDER = [
+    'SharingRatio71%',
+    'SharingRatio47%',
+    'SharingRatio28%',
+    'SharingRatio9%',
+]
+
+
+def order_policies(policies):
+    """Order policies with preferred ones first, then remaining alphabetically."""
+    preferred = []
+    preferred_set = set()
+    for name in PREFERRED_POLICY_ORDER:
+        if name in policies:
+            preferred.append(name)
+            preferred_set.add(name)
+    remaining = sorted([p for p in policies if p not in preferred_set])
+    return preferred + remaining
+
+
+def order_workloads(workloads):
+    """Order workloads with preferred SharingRatio groups first, then remaining."""
+    preferred = []
+    preferred_set = set()
+    for name in PREFERRED_WORKLOAD_ORDER:
+        for workload in workloads:
+            if name in workload and workload not in preferred_set:
+                preferred.append(workload)
+                preferred_set.add(workload)
+    remaining = sorted([w for w in workloads if w not in preferred_set])
+    return preferred + remaining
 
 
 def categorize_policy(policy_name):
@@ -182,6 +223,9 @@ def merge_metrics_files(files):
         return None
 
     merged = pd.concat(dfs, ignore_index=True)
+    # Normalize workload to a consistent string column to avoid mixed-type sorting errors.
+    if 'workload' in merged.columns:
+        merged['workload'] = merged['workload'].fillna("unknown").astype(str)
     print(f"\nMerged {len(merged)} total rows from {len(dfs)} files")
     return merged
 
@@ -190,7 +234,7 @@ def plot_individual_results(df, metric, ylabel, title, output_path):
     """Create a grouped bar chart showing each individual experiment result."""
 
     # Get unique workloads
-    workloads = sorted(df['workload'].unique())
+    workloads = order_workloads(df['workload'].unique())
     n_workloads = len(workloads)
 
     # Create figure - wider to accommodate many bars
@@ -209,6 +253,12 @@ def plot_individual_results(df, metric, ylabel, title, output_path):
 
     for workload in workloads:
         workload_data = df[df['workload'] == workload].copy()
+        workload_data = workload_data.copy()
+        workload_data['routing_policy'] = pd.Categorical(
+            workload_data['routing_policy'],
+            categories=order_policies(workload_data['routing_policy'].unique()),
+            ordered=True
+        )
         workload_data = workload_data.sort_values('routing_policy')
 
         group_start = current_pos
@@ -262,8 +312,8 @@ def plot_averaged_results(df, metric, ylabel, title, output_path):
     """Create a grouped bar chart with averaged results per routing policy."""
 
     # Get unique workloads and policies
-    workloads = sorted(df['workload'].unique())
-    policies = sorted(df['routing_policy'].unique())
+    workloads = order_workloads(df['workload'].unique())
+    policies = order_policies(df['routing_policy'].unique())
 
     n_workloads = len(workloads)
     n_policies = len(policies)
@@ -325,8 +375,8 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
     from matplotlib.patches import Patch
 
     # Get unique workloads and policies
-    workloads = sorted(df['workload'].unique())
-    policies = sorted(df['routing_policy'].unique())
+    workloads = order_workloads(df['workload'].unique())
+    policies = order_policies(df['routing_policy'].unique())
 
     n_workloads = len(workloads)
     n_policies = len(policies)
@@ -432,8 +482,7 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         # Styling
         ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize)
         # Use workload name as title
-        short_workload = workload.replace('SharingRatio', 'SR').replace('MixedSharingRatio', 'MixedSR')
-        ax.set_title(f'TTFT Latency Comparison - {short_workload}', fontsize=subtitle_fontsize)
+        ax.set_title(f'TTFT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
         ax.tick_params(axis='y', labelsize=tick_fontsize)
         ax.tick_params(axis='x', labelsize=10)
         ax.grid(axis='y', alpha=0.3)

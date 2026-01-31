@@ -19,14 +19,14 @@ COPY vke_files/async-client.py .
 COPY vke_files/utils.py .
 COPY vke_files/logger.py .
 
-# Create directories
-RUN mkdir -p /app/output \
-    /app/workload/hundred_request \
-    /app/workload/SharingRatio71% \
-    /app/workload/SharingRatio47% \
-    /app/workload/SharingRatio28% \
-    /app/workload/SharingRatio9% \
-    /app/workload/MixedSharingRatio10_30_50_70%
+# # Create directories
+# RUN mkdir -p /app/output \
+#     /app/workload/hundred_request \
+#     /app/workload/SharingRatio71% \
+#     /app/workload/SharingRatio47% \
+#     /app/workload/SharingRatio28% \
+#     /app/workload/SharingRatio9% \
+#     /app/workload/MixedSharingRatio10_30_50_70%
 
 # Copy workload files from parent directory (LAST - changes most frequently)
 # Build context is set to parent directory in build-and-push.sh
@@ -81,14 +81,17 @@ RUN mkdir -p /app/output \
 # COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
 
 # COPY workload-and-experiment_results/hundred_request/workload.jsonl /app/workload/hundred_request/
-COPY workload-and-experiment_results/SharingRatio71%/workload.jsonl /app/workload/SharingRatio71%/
-COPY workload-and-experiment_results/SharingRatio47%/workload.jsonl /app/workload/SharingRatio47%/
-COPY workload-and-experiment_results/SharingRatio28%/workload.jsonl /app/workload/SharingRatio28%/
-COPY workload-and-experiment_results/SharingRatio9%/workload.jsonl /app/workload/SharingRatio9%/
-COPY workload-and-experiment_results/MixedSharingRatio10_30_50_70%/workload.jsonl /app/workload/MixedSharingRatio10_30_50_70%/
-COPY workload-and-experiment_results/workload-generator/azure/azure_code_poisson/workload.jsonl /app/workload/azure_code_poisson/
-COPY workload-and-experiment_results/workload-generator/mooncake/workload-conversation/workload.jsonl /app/workload/mooncake-conversation/
-COPY workload-and-experiment_results/workload-generator/mooncake/workload-toolagent/workload.jsonl /app/workload/mooncake-toolagent/
+COPY workload-and-experiment_results/gangmuk-prefix/SharingRatio71%/workload.jsonl /app/workload/gangmuk-prefix/SharingRatio71%/
+COPY workload-and-experiment_results/gangmuk-prefix/SharingRatio47%/workload.jsonl /app/workload/gangmuk-prefix/SharingRatio47%/
+COPY workload-and-experiment_results/gangmuk-prefix/SharingRatio28%/workload.jsonl /app/workload/gangmuk-prefix/SharingRatio28%/
+COPY workload-and-experiment_results/gangmuk-prefix/SharingRatio9%/workload.jsonl /app/workload/gangmuk-prefix/SharingRatio9%/
+COPY workload-and-experiment_results/gangmuk-prefix/MixedSharingRatio10_30_50_70%/workload.jsonl /app/workload/gangmuk-prefix/MixedSharingRatio10_30_50_70%/
+COPY workload-and-experiment_results/azure/azure_code/workload.jsonl /app/workload/azure/azure_code_poisson/
+COPY workload-and-experiment_results/azure/azure_conversation/workload.jsonl /app/workload/azure/azure_code_poisson/
+COPY workload-and-experiment_results/mooncake/conversation-1/workload.jsonl /app/workload/mooncake/conversation-1/
+COPY workload-and-experiment_results/mooncake/toolagent-1/workload.jsonl /app/workload/mooncake/toolagent-1/
+COPY workload-and-experiment_results/mooncake/conversation-2/workload.jsonl /app/workload/mooncake/conversation-2/
+COPY workload-and-experiment_results/mooncake/toolagent-2/workload.jsonl /app/workload/mooncake/toolagent-2/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
