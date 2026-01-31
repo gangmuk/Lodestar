@@ -95,6 +95,71 @@ class DataEncoder:
         self.gpu_models = set()
         self.num_gpu_types = 0
 
+        # Hot-path caches (safe: keyed by inputs, invalidated on change)
+        self._cached_pod_ids_key = None
+        self._cached_pod_id_set = None
+        self._cached_pod_feature_columns_key = None
+        self._cached_pod_feature_columns = None
+        self._cached_pod_features_list = None
+        self._cached_feature_config_key = None
+        self._cached_feature_config = None
+        self._cached_gpu_mapping_key = None
+        self._cached_gpu_encoded_per_pod = None
+
+    def _get_first_value(self, value):
+        """Return a scalar for Series/ndarray/singletons without changing semantics."""
+        if hasattr(value, 'iloc'):
+            return value.iloc[0]
+        if isinstance(value, np.ndarray):
+            return value[0] if value.size > 0 else value
+        return value
+
+    def _get_feature_values(self, value):
+        """Return array-like values for batch processing."""
+        if hasattr(value, 'fillna'):
+            return value.fillna(0)
+        if isinstance(value, np.ndarray):
+            return np.nan_to_num(value, nan=0.0)
+        return value
+
+    def _get_feature_config(self, HYPERPARAMETERS):
+        excluded = tuple(sorted(set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))))
+        cache_key = (excluded, self.num_gpu_types)
+        if cache_key == self._cached_feature_config_key and self._cached_feature_config is not None:
+            # Validate cached data consistency before returning
+            cached_all_numeric, cached_pod_numeric, cached_n_numeric, cached_n_pod_numeric, cached_gpu_dim, cached_total_dim = self._cached_feature_config
+            if len(cached_all_numeric) == cached_n_numeric and cached_total_dim == cached_n_numeric + cached_gpu_dim:
+                return self._cached_feature_config
+            else:
+                logger.warning(f"Cache consistency check failed: len(all_numeric)={len(cached_all_numeric)}, n_numeric={cached_n_numeric}, total_dim={cached_total_dim}, expected={cached_n_numeric + cached_gpu_dim}. Recomputing.")
+
+        base_features_list = [
+            'inflight_requests',
+            'inflight_prefill_requests',
+            'inflight_decode_requests',
+            'gpu_kv_cache',
+            'cpu_kv_cache',
+            'running_requests',
+            'waiting_requests',
+            'prefill_tokens',
+            'decode_tokens',
+            'kv_hit_ratio'
+        ]
+        excluded_set = set(excluded)
+        all_numeric = [f for f in base_features_list if f not in excluded_set]
+        pod_numeric = [f for f in all_numeric if f != 'kv_hit_ratio']
+        n_numeric = len(all_numeric)
+        n_pod_numeric = len(pod_numeric)
+        gpu_onehot_dim = self.num_gpu_types
+        # FIX: Use n_numeric (not n_pod_numeric) to match the loop in _process_pod_features
+        # which iterates over ALL_NUMERIC_FEATURES (all_numeric, includes kv_hit_ratio)
+        total_feature_dim = n_numeric + gpu_onehot_dim
+
+        self._cached_feature_config_key = cache_key
+        # Store as tuples (immutable) to prevent accidental mutation
+        self._cached_feature_config = (tuple(all_numeric), tuple(pod_numeric), n_numeric, n_pod_numeric, gpu_onehot_dim, total_feature_dim)
+        return self._cached_feature_config
+
 
     def analyze_request_features(self, df, request_features_train, request_features_reward):
         """Analyze request features - OPTIMIZED."""
@@ -367,29 +432,29 @@ class DataEncoder:
 
     def _single_row_process_pod_features(self, pod_data, overhead_summary, HYPERPARAMETERS):
         """Optimized processing for single-row inference (n_samples=1)."""
+        debug_timers = HYPERPARAMETERS.get('ENCODE_DEBUG_TIMERS', 0)
         vectorized_extraction_start_time = time.time()
         
         # Feature definitions (same as batch version) with proper exclusion
-        base_features_list = [
-            'inflight_requests', 'inflight_prefill_requests', 'inflight_decode_requests',
-            'gpu_kv_cache', 'cpu_kv_cache',
-            'running_requests', 'waiting_requests', 'prefill_tokens',
-            'decode_tokens', 'kv_hit_ratio'
-        ]
-        excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
-        # Apply exclusions and remove kv_hit_ratio from pod features (handled separately)
-        filtered_numeric = [f for f in base_features_list if f not in excluded]
-        POD_NUMERIC_FEATURES = [f for f in filtered_numeric if f != 'kv_hit_ratio']
+        # Note: n_numeric includes kv_hit_ratio, n_pod_numeric excludes it
+        _, POD_NUMERIC_FEATURES, n_numeric, n_pod_numeric, gpu_onehot_dim, total_feature_dim = self._get_feature_config(HYPERPARAMETERS)
         n_pods = len(self.sorted_all_pod_ids)
-        n_pod_numeric = len(POD_NUMERIC_FEATURES)
-        
-        # Calculate feature dimensions (for pod features only, not including kv_hit_ratio)
-        # GPU one-hot encoding is conditional based on INCLUDE_GPU_FEATURES
-        gpu_onehot_dim = self.num_gpu_types
-        total_feature_dim = n_pod_numeric + gpu_onehot_dim
-        
+
+        # VALIDATION: Ensure feature dimensions are consistent (same check as batch path)
+        if len(POD_NUMERIC_FEATURES) != n_pod_numeric:
+            logger.error(f"CRITICAL (single-row): Feature count mismatch! len(POD_NUMERIC_FEATURES)={len(POD_NUMERIC_FEATURES)}, n_pod_numeric={n_pod_numeric}")
+            # Clear cache and retry
+            self._cached_feature_config_key = None
+            self._cached_feature_config = None
+            _, POD_NUMERIC_FEATURES, n_numeric, n_pod_numeric, gpu_onehot_dim, total_feature_dim = self._get_feature_config(HYPERPARAMETERS)
+
+        # FIX: Use n_pod_numeric (excludes kv_hit_ratio) to match batch path output
+        # The batch path removes kv_hit_ratio from pod_features after extraction
+        # Single-row path should produce same shape: n_pod_numeric + gpu_onehot_dim
+        single_row_feature_dim = n_pod_numeric + gpu_onehot_dim
+
         # OPTIMIZATION: Use 2D array instead of 3D for single row
-        pod_features_2d = np.zeros((n_pods, total_feature_dim), dtype=np.float32)
+        pod_features_2d = np.zeros((n_pods, single_row_feature_dim), dtype=np.float32)
         kv_hit_ratios_1d = np.zeros(n_pods, dtype=np.float32)
         
         # GPU encoding setup (conditional)
@@ -397,9 +462,11 @@ class DataEncoder:
         gpu_encoded_per_pod = {}
         
         # Only process GPU features if enabled
+        gpu_mapping_start_time = time.time()
         if gpu_onehot_dim == 0:
             logger.debug("Skipping GPU encoding (INCLUDE_GPU_FEATURES=0)")
         else:
+            gpu_key_parts = []
             for pod_id in self.sorted_all_pod_ids:
                 gpu_model_id = None
                 
@@ -408,10 +475,8 @@ class DataEncoder:
                     # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
                     gpu_column = pod_data[pod_id]['GPU']
                     # Handle both Series (batch) and single value (inference)
-                    if hasattr(gpu_column, 'iloc'):
-                        gpu_model_name = gpu_column.iloc[0]
-                    else:
-                        gpu_model_name = gpu_column
+                    gpu_model_name = self._get_first_value(gpu_column)
+                    gpu_key_parts.append(gpu_model_name)
                     
                     # Check if GPU value is NaN (missing data in CSV)
                     if pd.isna(gpu_model_name):
@@ -429,6 +494,8 @@ class DataEncoder:
                 if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
                     gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
                     logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
+                if pod_id not in pod_data or 'GPU' not in pod_data[pod_id]:
+                    gpu_key_parts.append(None)
                 
                 # No GPU info available anywhere
                 if gpu_model_id is None:
@@ -447,8 +514,18 @@ class DataEncoder:
                     assert False
                 
                 gpu_encoded_per_pod[pod_id] = gpu_model_id
+
+            gpu_key = (tuple(self.sorted_all_pod_ids), tuple(gpu_key_parts))
+            if gpu_key == self._cached_gpu_mapping_key and self._cached_gpu_encoded_per_pod is not None:
+                gpu_encoded_per_pod = self._cached_gpu_encoded_per_pod
+            else:
+                self._cached_gpu_mapping_key = gpu_key
+                self._cached_gpu_encoded_per_pod = dict(gpu_encoded_per_pod)
+        if debug_timers:
+            overhead_summary['single_row_gpu_mapping'] = time.time() - gpu_mapping_start_time
         
         # Direct value extraction for single row (no array indexing)
+        numeric_extract_start_time = time.time()
         for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
             if pod_id in pod_data:
                 pod_features = pod_data[pod_id]
@@ -456,26 +533,33 @@ class DataEncoder:
                 # Extract pod numeric features (excluding kv_hit_ratio) 
                 for feat_idx, feature_name in enumerate(POD_NUMERIC_FEATURES):
                     if feature_name in pod_features:
-                        value = pod_features[feature_name].iloc[0] if hasattr(pod_features[feature_name], 'iloc') else pod_features[feature_name]
+                        value = self._get_first_value(pod_features[feature_name])
                         pod_features_2d[pod_idx, feat_idx] = value
                 
                 # Extract kv_hit_ratio separately (not included in pod features)
                 if 'kv_hit_ratio' in pod_features:
-                    kv_value = pod_features['kv_hit_ratio'].iloc[0] if hasattr(pod_features['kv_hit_ratio'], 'iloc') else pod_features['kv_hit_ratio']
+                    kv_value = self._get_first_value(pod_features['kv_hit_ratio'])
                     kv_hit_ratios_1d[pod_idx] = kv_value
+        if debug_timers:
+            overhead_summary['single_row_numeric_extract'] = time.time() - numeric_extract_start_time
                 
                 # GPU one-hot encoding (conditional)
-                if gpu_onehot_dim > 0:
+        gpu_onehot_start_time = time.time()
+        for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
+            if pod_id in pod_data and gpu_onehot_dim > 0:
                     gpu_model_id = gpu_encoded_per_pod[pod_id]
                     gpu_onehot = np.zeros(gpu_onehot_dim)
                     gpu_onehot[gpu_model_id] = 1
+                    # GPU features start after pod numeric features (kv_hit_ratio excluded)
                     pod_features_2d[pod_idx, n_pod_numeric:] = gpu_onehot
+        if debug_timers:
+            overhead_summary['single_row_gpu_onehot'] = time.time() - gpu_onehot_start_time
         
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         overhead_summary['vectorized_extraction'] = vectorized_extraction_overhead
         
         # Convert back to 3D format expected by caller (reshape 2D -> 3D with batch dimension 1)
-        pod_features_3d = pod_features_2d.reshape(1, n_pods, total_feature_dim)
+        pod_features_3d = pod_features_2d.reshape(1, n_pods, single_row_feature_dim)
         # CRITICAL FIX: KV hit ratios must be [1, n_pods, 1] not [1, n_pods]
         kv_hit_ratios_3d = kv_hit_ratios_1d.reshape(1, n_pods, 1)
         
@@ -497,30 +581,26 @@ class DataEncoder:
         if n_samples == 1:
             return self._single_row_process_pod_features(pod_data, overhead_summary, HYPERPARAMETERS)
         
+        debug_timers = HYPERPARAMETERS.get('ENCODE_DEBUG_TIMERS', 0)
         vectorized_extraction_start_time = time.time()
         
         # Include ALL features we want to potentially keep
-        base_features_list = [
-            'inflight_requests',
-            'inflight_prefill_requests',  # NEW: Per-pod inflight prefill requests
-            'inflight_decode_requests',   # NEW: Per-pod inflight decode requests
-            'gpu_kv_cache',
-            'cpu_kv_cache',
-            'running_requests',
-            'waiting_requests',
-            'prefill_tokens',
-            'decode_tokens',
-            'kv_hit_ratio'
-        ]
-        excluded = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
-        ALL_NUMERIC_FEATURES = [f for f in base_features_list if f not in excluded]
+        ALL_NUMERIC_FEATURES, _, n_numeric, _, gpu_onehot_dim, total_feature_dim = self._get_feature_config(HYPERPARAMETERS)
         n_pods = len(self.sorted_all_pod_ids)
-        n_numeric = len(ALL_NUMERIC_FEATURES)
-        
-        # Calculate total feature dimensions including GPU one-hot encoding (conditional)
-        gpu_onehot_dim = self.num_gpu_types
-        total_feature_dim = n_numeric + gpu_onehot_dim
-        
+
+        # VALIDATION: Ensure feature dimensions are consistent
+        if len(ALL_NUMERIC_FEATURES) != n_numeric:
+            logger.error(f"CRITICAL: Feature count mismatch! len(ALL_NUMERIC_FEATURES)={len(ALL_NUMERIC_FEATURES)}, n_numeric={n_numeric}")
+            logger.error(f"ALL_NUMERIC_FEATURES: {ALL_NUMERIC_FEATURES}")
+            logger.error(f"EXCLUDED_POD_FEATURES: {HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', [])}")
+            logger.error(f"num_gpu_types: {self.num_gpu_types}, gpu_onehot_dim: {gpu_onehot_dim}")
+            logger.error(f"total_feature_dim: {total_feature_dim}, expected: {n_numeric + gpu_onehot_dim}")
+            # Clear cache and retry
+            self._cached_feature_config_key = None
+            self._cached_feature_config = None
+            ALL_NUMERIC_FEATURES, _, n_numeric, _, gpu_onehot_dim, total_feature_dim = self._get_feature_config(HYPERPARAMETERS)
+            logger.info(f"After cache clear: len(ALL_NUMERIC_FEATURES)={len(ALL_NUMERIC_FEATURES)}, n_numeric={n_numeric}, total_feature_dim={total_feature_dim}")
+
         all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
 
         # GPU encoding setup (conditional)
@@ -528,9 +608,11 @@ class DataEncoder:
         gpu_encoded_per_pod = {}
         
         # Only process GPU features if enabled
+        gpu_mapping_start_time = time.time()
         if gpu_onehot_dim == 0:
             logger.debug("Skipping GPU encoding in batch processing (INCLUDE_GPU_FEATURES=0)")
         else:
+            gpu_key_parts = []
             for pod_id in self.sorted_all_pod_ids:
                 gpu_model_id = None
                 
@@ -539,10 +621,8 @@ class DataEncoder:
                     # Extract GPU model name from data (e.g., "GPU-L3c", "NVIDIA-A30")
                     gpu_column = pod_data[pod_id]['GPU']
                     # Handle both Series (batch) and single value
-                    if hasattr(gpu_column, 'iloc'):
-                        gpu_model_name = gpu_column.iloc[0]
-                    else:
-                        gpu_model_name = gpu_column
+                    gpu_model_name = self._get_first_value(gpu_column)
+                    gpu_key_parts.append(gpu_model_name)
                     
                     # Check if GPU value is NaN (missing data in CSV)
                     if pd.isna(gpu_model_name):
@@ -560,6 +640,8 @@ class DataEncoder:
                 if gpu_model_id is None and pod_id in HYPERPARAMETERS.get('pod_gpu_id_mapping', {}):
                     gpu_model_id = HYPERPARAMETERS['pod_gpu_id_mapping'][pod_id]
                     logger.debug(f"Using runtime mapping for pod {pod_id}: GPU ID {gpu_model_id}")
+                if pod_id not in pod_data or 'GPU' not in pod_data[pod_id]:
+                    gpu_key_parts.append(None)
                 
                 # No GPU info available anywhere
                 if gpu_model_id is None:
@@ -579,9 +661,19 @@ class DataEncoder:
                 
                 gpu_encoded_per_pod[pod_id] = gpu_model_id
 
+            gpu_key = (tuple(self.sorted_all_pod_ids), tuple(gpu_key_parts))
+            if gpu_key == self._cached_gpu_mapping_key and self._cached_gpu_encoded_per_pod is not None:
+                gpu_encoded_per_pod = self._cached_gpu_encoded_per_pod
+            else:
+                self._cached_gpu_mapping_key = gpu_key
+                self._cached_gpu_encoded_per_pod = dict(gpu_encoded_per_pod)
+        if debug_timers:
+            overhead_summary['batch_gpu_mapping'] = time.time() - gpu_mapping_start_time
+
         ## THIS IS WHERE THE BUG MANIFESTS:
         ## The all_pods order determines how features are arranged in tensors
         # Extract all features into single array
+        batch_extract_start_time = time.time()
         for pod_idx, pod_id in enumerate(self.sorted_all_pod_ids):
             if pod_id in pod_data:
                 pod_features = pod_data[pod_id]
@@ -590,7 +682,7 @@ class DataEncoder:
                 # This correctly handles feature exclusion by adjusting indices
                 for feat_index, feat_name in enumerate(ALL_NUMERIC_FEATURES):
                     if feat_name in pod_features:
-                        all_features_array[:, pod_idx, feat_index] = pod_features[feat_name].fillna(0)
+                        all_features_array[:, pod_idx, feat_index] = self._get_feature_values(pod_features[feat_name])
                 
                 # GPU one-hot encoding (conditional)
                 if gpu_onehot_dim > 0:
@@ -598,6 +690,8 @@ class DataEncoder:
                     gpu_onehot = np.zeros(gpu_onehot_dim)
                     gpu_onehot[gpu_model_id] = 1
                     all_features_array[:, pod_idx, n_numeric:] = gpu_onehot
+        if debug_timers:
+            overhead_summary['batch_numeric_extract'] = time.time() - batch_extract_start_time
 
         vectorized_extraction_overhead = time.time() - vectorized_extraction_start_time
         
@@ -608,7 +702,7 @@ class DataEncoder:
         gpu_features_only = all_features_array[:, :, n_numeric:]      # Last gpu_onehot_dim features
         
         # Apply masking to numeric features only
-        original_features = ALL_NUMERIC_FEATURES.copy()
+        original_features = list(ALL_NUMERIC_FEATURES)  # Convert tuple to list
         filtered_numeric_features, kept_numeric_features = self._filter_identity_features(
             numeric_features_only, original_features
         )
@@ -655,6 +749,8 @@ class DataEncoder:
             logger.warning("Using fallback: zero KV ratios and all filtered features as pod features")
         
         kv_extraction_overhead = time.time() - kv_extraction_start_time
+        if debug_timers:
+            overhead_summary['batch_kv_extract'] = kv_extraction_overhead
         
         # APPLY POD RANDOMIZATION HERE
         randomization_start_time = time.time()
@@ -678,6 +774,8 @@ class DataEncoder:
         pod_kv_hit_array = kv_hit_norm.copy()
         
         randomization_overhead = time.time() - randomization_start_time
+        if debug_timers:
+            overhead_summary['batch_randomization'] = randomization_overhead
         
         # logger.info(f"✅ Pod randomization applied - each sample has different pod order")
         # logger.info(f"   This prevents model from learning pod identity based on tensor positions")
@@ -710,6 +808,10 @@ class DataEncoder:
         logger.info(f"prepare_for_encoding received request_features_train: {request_features_train}")
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
+        pod_ids_key = tuple(sorted_all_pod_ids)
+        if pod_ids_key != self._cached_pod_ids_key:
+            self._cached_pod_ids_key = pod_ids_key
+            self._cached_pod_id_set = set(sorted_all_pod_ids)
         
         # CRITICAL: Extract RAW input_tokens BEFORE any normalization for plotting
         raw_input_tokens = None
@@ -727,20 +829,29 @@ class DataEncoder:
         else:
             self.num_gpu_types = 0
             logger.debug(f"⚠️  GPU one-hot encoding DISABLED (INCLUDE_GPU_FEATURES=0)")
-        extract_pod_columns_start = time.time()
-        pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids)
-        overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
         self.numeric_request_features = request_features_train  # Assume all numeric
         self.categorical_request_features = []
         self.pod_encoder = None
         self.selected_pod_encoder = None
         
         classify_feature_timing_start = time.time()
-        pod_feature_columns = [col for col in processed_df.columns if col.startswith('pod_')]
-        unique_features = list(set(col.split('-')[1] for col in pod_feature_columns if '-' in col))
-        self.pod_features = sorted(unique_features)
+        columns_key = tuple(processed_df.columns)
+        if columns_key == self._cached_pod_feature_columns_key:
+            pod_feature_columns = self._cached_pod_feature_columns
+            self.pod_features = self._cached_pod_features_list
+        else:
+            pod_feature_columns = [col for col in processed_df.columns if col.startswith('pod_')]
+            unique_features = list(set(col.split('-')[1] for col in pod_feature_columns if '-' in col))
+            self.pod_features = sorted(unique_features)
+            self._cached_pod_feature_columns_key = columns_key
+            self._cached_pod_feature_columns = pod_feature_columns
+            self._cached_pod_features_list = self.pod_features
         feature_timing = {f: 'historical' if 'last_second' in f else 'current' for f in self.pod_features}
         overhead_summary['classify_feature_timing'] = time.time() - classify_feature_timing_start
+        
+        extract_pod_columns_start = time.time()
+        pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids, pod_feature_columns=pod_feature_columns)
+        overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
         
         # STEP 5: FAST request feature
         n_samples = len(processed_df)
@@ -823,16 +934,23 @@ class DataEncoder:
         return processed_data, overhead_summary
 
 
-    def _extract_pod_columns(self, processed_df, sorted_all_pod_ids):
+    def _extract_pod_columns(self, processed_df, sorted_all_pod_ids, pod_feature_columns=None):
         pod_data = {}
-        for col in processed_df.columns:
+        is_single_row = len(processed_df) == 1
+        pod_id_set = self._cached_pod_id_set if self._cached_pod_id_set is not None else set(sorted_all_pod_ids)
+        columns = pod_feature_columns if pod_feature_columns is not None else processed_df.columns
+        single_row = processed_df.iloc[0] if is_single_row else None
+        for col in columns:
             if col.startswith('pod_') and '-' in col:
                 pod_id, feature = col.split('-', 1)
                 # pod_id = pod_id.replace('pod_', '')
-                if pod_id in sorted_all_pod_ids:
+                if pod_id in pod_id_set:
                     if pod_id not in pod_data:
                         pod_data[pod_id] = {}
-                    pod_data[pod_id][feature] = processed_df[col]
+                    if is_single_row:
+                        pod_data[pod_id][feature] = single_row[col]
+                    else:
+                        pod_data[pod_id][feature] = processed_df[col].values
                 else:
                     logger.error(f"Pod ID {pod_id} not found in sorted_all_pod_ids: {sorted_all_pod_ids}, column: {col}")
                     exit()

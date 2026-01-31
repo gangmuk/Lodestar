@@ -698,14 +698,9 @@ _cached_metadata = None
 _model_mtime = None  # Track model file modification time for cross-worker updates
 
 def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids):
-    """
-    Inference function compatible with existing routing service
-    """
     global _cached_agent, _cached_metadata, _model_mtime
-    
     infer_start_time = time.time()
     overhead_summary = {}
-    
     # Extract tensors
     tensor_transfer_start = time.time()
     pod_features = tensor_data['pod_features_with_staleness'].to(device)
@@ -713,6 +708,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     request_features = tensor_data['request_features'].to(device)
     overhead_summary['tensor_transfer'] = time.time() - tensor_transfer_start
     
+    batch_format_start = time.time()
     # Ensure batch format
     if len(pod_features.shape) == 2:
         pod_features = pod_features.unsqueeze(0)
@@ -720,7 +716,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         kv_hit_ratios = kv_hit_ratios.unsqueeze(0)
     if len(request_features.shape) == 1:
         request_features = request_features.unsqueeze(0)
-    
+    overhead_summary['batch_format'] = time.time() - batch_format_start
     # Get or create agent
     get_agent_start = time.time()
     current_config = {
@@ -729,7 +725,6 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         'request_features': request_features.shape[1],
         'num_pods': pod_features.shape[1]
     }
-    
     # Check if model file has been updated (for cross-worker synchronization)
     model_file_updated = False
     model_path = os.path.join(final_model_dir, 'reward_net.pth')
@@ -738,7 +733,6 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         if _model_mtime is None or current_mtime > _model_mtime:
             model_file_updated = True
             _model_mtime = current_mtime
-    
     # Recreate if: dimensions changed, agent doesn't exist, model flag set, or file updated
     if _cached_agent is None or _cached_metadata != current_config or model_updated or model_file_updated:
         logger.info(f"Creating/reloading Neural Contextual Bandit agent (first_time={_cached_agent is None}, "
@@ -750,14 +744,12 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
             'kv_hit_ratios': current_config['kv_hit_ratios'],
             'request_features': current_config['request_features']
         }
-        
         _cached_agent = NeuralContextualBandit(
             state_dim=state_dim,
             action_dim=current_config['num_pods'],
             hyperparameters=HYPERPARAMETERS,
             final_model_dir=final_model_dir
         )
-        
         # Try to load existing model
         if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
             _cached_agent.load_model(final_model_dir)
@@ -766,9 +758,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     else:
         # Agent reused - this is expected for most requests
         pass
-    
     overhead_summary['get_agent'] = time.time() - get_agent_start
-    
     # Inference
     inference_start = time.time()
     action, predicted_rewards, explored = _cached_agent.choose_action(
@@ -777,12 +767,11 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     )
     overhead_summary['inference'] = time.time() - inference_start
     
+    result_formatting_start = time.time()
     logger.info(f"Neural CB request {request_id}: action={action}, explored={explored}, total_steps={_cached_agent.total_steps}, buffer_size={len(_cached_agent.replay_buffer)}, epsilon={_cached_agent.epsilon:.3f}")
-    
     # Format predicted_rewards as dict (same format as predicted_latencies)
     predicted_rewards_formatted = {sorted_all_pod_ids[i]: float(predicted_rewards[i]) for i in range(len(sorted_all_pod_ids))}
     chosen_pod_predicted_reward = float(predicted_rewards[action])
-    
     # Prepare result
     result = {
         'selected_pod_index': int(action),
@@ -793,9 +782,8 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         'total_steps': _cached_agent.total_steps,
         'explored': explored  # Add exploration flag
     }
-    
+    overhead_summary['result_formating'] = time.time() - result_formatting_start
     overhead_summary['total_inference'] = time.time() - infer_start_time
-    
     return result, overhead_summary
 
 

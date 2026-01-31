@@ -47,6 +47,7 @@ from distribution_shift_detector import PerSampleOODDetector, OODAction
 
 # GPU features are now always included as one-hot encoded features
 INIT_DONE=False
+CONTEXTUAL_BANDIT_PRELOADED = False
 ## colors for logging
 BLUE_COLOR = "\033[94m"
 RED_COLOR = "\033[91m"
@@ -72,6 +73,9 @@ hyperparameter_file_path = None
 offline_csv_path = None
 ROUTING_STRATEGY = os.getenv("ROUTING_STRATEGY", "latency_predictor")
 MAX_TOTAL_DATA = int(os.getenv("MAX_TOTAL_DATA", 20000))
+RETURN_POD_PROBABILITIES = int(os.getenv("RETURN_POD_PROBABILITIES", "0"))
+RETURN_PREDICTED_REWARDS = int(os.getenv("RETURN_PREDICTED_REWARDS", "0"))
+RETURN_ARRAY_OUTPUTS = int(os.getenv("RETURN_ARRAY_OUTPUTS", "0"))
 NUM_TRAINS = 0
 MODEL_UPDATED = True
 LOCK_TRAINING_DATA = threading.Lock()
@@ -81,10 +85,12 @@ TOTAL_NUM_DATA = 0
 NUM_NEW_DATA = 0
 TOTAL_NUM_NEW_DATA = 0
 TRAINING_RIGHT_NOW = False
-# Training data accumulation (offline + online)
-TRAINING_DF = None  # Holds all training data (offline CSV + online appended data)
+# Training data accumulation (offline + online) kept separate
+OFFLINE_DF = None  # Offline CSV data (older, static)
+ONLINE_DF = None  # Online appended data (newer, time-ordered)
 TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
-OFFLINE_DATA_SIZE = 0  # Tracks the size of offline data portion in TRAINING_DF (shrinks as we remove overflow)
+OFFLINE_DATA_SIZE = 0  # Tracks offline data size (shrinks as we remove overflow)
+ONLINE_SEQ = 0  # Monotonic sequence for online data ordering when timestamps missing
 PRINT_ONCE_AT_THE_FIRST_REQUEST = True
 # RL agent globals
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
@@ -121,6 +127,7 @@ if POD_LABEL_SELECTOR == "":
     logger.error(f"POD_LABEL_SELECTOR is empty")
     assert False
 ENABLE_ONLINE_LEARNING = int(os.getenv("ENABLE_ONLINE_LEARNING", 0))
+WORKLOAD_CATEGORY = os.getenv("WORKLOAD_CATEGORY", "Unknown")
 WORKLOAD_NAME = os.getenv("WORKLOAD_NAME", "Unknown")
 OUTPUT_WRK_NAME = os.getenv("OUTPUT_WRK_NAME", "Unknown")
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
@@ -144,7 +151,7 @@ request_features_train = None
 # Fixed handle_flush function
 @app.route("/flush", methods=["POST"])
 def handle_flush():
-    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, feature_normalization_stats_file, stats_instance, TRAINING_DF
+    global NUM_FLUSH, ENCODED_DATA_DIR, TOTAL_NUM_DATA, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, feature_normalization_stats_file, stats_instance, ONLINE_DF, ONLINE_SEQ
     NUM_FLUSH += 1
     flush_start_time = time.time()
     log_data = request.json
@@ -170,16 +177,18 @@ def handle_flush():
         ##################################################
         logger.info(f"Successfully parsed data, took {time.time() - ts_preprocess} seconds")
 
-        # Append preprocessed data to TRAINING_DF for online learning
+        # Append preprocessed data to ONLINE_DF for online learning
         if ENABLE_ONLINE_LEARNING:
             with TRAINING_DF_LOCK:
-                if TRAINING_DF is None:
-                    TRAINING_DF = processed_df.copy()
-                    logger.info(f"Initialized TRAINING_DF with {len(processed_df)} samples")
-                else:
-                    old_size = len(TRAINING_DF)
-                    TRAINING_DF = pd.concat([TRAINING_DF, processed_df], ignore_index=True)
-                    logger.info(f"Appended {len(processed_df)} samples to TRAINING_DF (total: {old_size} → {len(TRAINING_DF)})")
+                if ONLINE_DF is None:
+                    ONLINE_DF = pd.DataFrame()
+                online_batch = processed_df.copy()
+                if '_online_seq' not in online_batch.columns:
+                    online_batch['_online_seq'] = np.arange(ONLINE_SEQ, ONLINE_SEQ + len(online_batch))
+                    ONLINE_SEQ += len(online_batch)
+                old_size = len(ONLINE_DF)
+                ONLINE_DF = pd.concat([ONLINE_DF, online_batch], ignore_index=True)
+                logger.info(f"Appended {len(online_batch)} samples to ONLINE_DF (total: {old_size} → {len(ONLINE_DF)})")
 
         logger.info(f"Successfully flushed {len(log_data)} log messages, took {time.time() - flush_start_time} seconds")
         TOTAL_NUM_DATA += len(log_data)
@@ -197,10 +206,13 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE
+    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE, CONTEXTUAL_BANDIT_PRELOADED
     if not INIT_DONE:
         logger.error(f"init() was not done yet. return 503")
         return jsonify({"error": "init() was not done yet. return 503"}), 503
+    if 'contextual_bandit' in ROUTING_STRATEGY and not CONTEXTUAL_BANDIT_PRELOADED:
+        logger.error("Contextual bandit model not ready yet. return 503")
+        return jsonify({"error": "contextual bandit model not ready yet"}), 503
     handle_infer_overhead_summary = {}
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
@@ -261,8 +273,8 @@ def handle_infer():
                 if sorted_all_pod_ids:
                     representative_pod = sorted_all_pod_ids[0]
                     pod_features = [
-                        'cpu_kv_cache', 'decode_tokens', 'gpu_kv_cache', 'inflight_requests',
-                        'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests'
+                        'decode_tokens', 'gpu_kv_cache', 'inflight_requests',
+                        'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
                     ]
                     pod_dict = {}
                     for feat in pod_features:
@@ -284,10 +296,10 @@ def handle_infer():
                         # Take action on high severity shifts
                         summary = distribution_shift_monitor.get_summary_stats()
                         if summary['high_severity_count'] > 0:
-                            logger.error("⛔ CRITICAL: High severity distribution shift detected!")
-                            logger.error(f"   Shifted features: {summary['shifted_features']}")
-                            logger.error("   RECOMMENDED ACTION: Retrain model with current workload data")
-                            logger.error("   Model predictions may be unreliable with out-of-distribution inputs")
+                            logger.warning("⛔ CRITICAL: High severity distribution shift detected!")
+                            logger.warning(f"   Shifted features: {summary['shifted_features']}")
+                            logger.warning("   RECOMMENDED ACTION: Retrain model with current workload data")
+                            logger.warning("   Model predictions may be unreliable with out-of-distribution inputs")
 
             except Exception as e:
                 logger.warning(f"⚠️  Distribution monitoring failed: {e}")
@@ -297,7 +309,7 @@ def handle_infer():
         # If any feature is outside training [min, max], the NN is extrapolating → unreliable
         ood_check_start = time.time()
         ood_result = None
-        use_fallback_routing = False
+        use_fallback_routing = 0
 
         if per_sample_ood_detector is not None:
             try:
@@ -306,7 +318,8 @@ def handle_infer():
 
                 # Extract request features
                 request_ood_features = {}
-                for feat in ['input_tokens', 'output_tokens', 'total_tokens']:
+                # for feat in ['input_tokens', 'output_tokens', 'total_tokens']:
+                for feat in ['input_tokens']:
                     if feat in row_dict:
                         request_ood_features[feat] = float(row_dict[feat])
 
@@ -314,8 +327,7 @@ def handle_infer():
                 pod_ood_features = {}
                 if sorted_all_pod_ids:
                     representative_pod = sorted_all_pod_ids[0]
-                    for feat in ['cpu_kv_cache', 'decode_tokens', 'gpu_kv_cache', 'inflight_requests',
-                                 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests']:
+                    for feat in ['decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests']:
                         col_name = f"{representative_pod}-{feat}"
                         if col_name in row_dict:
                             pod_ood_features[feat] = float(row_dict[col_name])
@@ -328,7 +340,7 @@ def handle_infer():
                 )
 
                 if ood_result['action'] == OODAction.FALLBACK:
-                    use_fallback_routing = True
+                    use_fallback_routing = 1
                     # Logging already done in check_combined()
 
             except Exception as e:
@@ -365,20 +377,11 @@ def handle_infer():
                 logger.error(f"Available stats features: {list(stats_instance.feature_stats.keys())}")
                 assert False
                 
-        # Normalize features (with special handling for pooled pod features)
-        for feature in normalizable_features:
-            ##################################################
-            # Check if this is a pooled pod feature type (not a column name)
-            if feature in pod_feature_types:
-                # Find all pod columns for this feature type and normalize each
-                matching_columns = [col for col in processed_df.columns 
-                                  if data_normalizer._extract_pod_feature_type(col) == feature]
-                for col in matching_columns:
-                    data_normalizer._normalize_single_feature(processed_df, col, stats_instance, update_statistics=False, request_id=request_id)
-            else:
-                # Regular feature - normalize directly
-                data_normalizer._normalize_single_feature(processed_df, feature, stats_instance, update_statistics=False, request_id=request_id)
-            ##################################################
+        # Normalize features using optimized batch function
+        # OPTIMIZATION: Uses cached lookups and vectorized operations instead of per-feature loops
+        data_normalizer.normalize_features_batch_inference(
+            processed_df, stats_instance, normalizable_features, pod_feature_types, request_id=request_id
+        )
         handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
         
         # 🔍 CHECKPOINT 2: Log NORMALIZED values (for request_id % 10 == 0)
@@ -396,62 +399,25 @@ def handle_infer():
         tensor_data, encode_for_inference_overhead_summary = encoding.encode_for_inference(sorted_all_pod_ids, processed_df, request_features_train, HYPERPARAMETERS)
         handle_infer_overhead_summary["encode"] = time.time() - encode_start_time
         
-        # 🔍 CHECKPOINT 3: Log TENSOR values after encoding (for request_id % 10 == 0)
-        if int(request_id) % 10 == 0:
-            logger.info(f"🔍 CHECKPOINT 3 - AFTER ENCODING TO TENSORS (requestID {request_id}):")
-            logger.info(f"   request_features shape: {tensor_data['request_features'].shape}, values: {tensor_data['request_features'][0].numpy()}")
-            logger.info(f"   pod_features_with_staleness shape: {tensor_data['pod_features_with_staleness'].shape}")
-            logger.info(f"   pod_0000 features: {tensor_data['pod_features_with_staleness'][0, 0, :].numpy()}")
-            logger.info(f"   kv_hit_ratios shape: {tensor_data['kv_hit_ratios'].shape}")
-            logger.info(f"   pod_0000 kv: {tensor_data['kv_hit_ratios'][0, 0, :].numpy()}")
+        # # 🔍 CHECKPOINT 3: Log TENSOR values after encoding (for request_id % 10 == 0)
+        # if int(request_id) % 100 == 0:
+        #     logger.info(f"🔍 CHECKPOINT 3 - AFTER ENCODING TO TENSORS (requestID {request_id}):")
+        #     logger.info(f"   request_features shape: {tensor_data['request_features'].shape}, values: {tensor_data['request_features'][0].numpy()}")
+        #     logger.info(f"   pod_features_with_staleness shape: {tensor_data['pod_features_with_staleness'].shape}")
+        #     logger.info(f"   pod_0000 features: {tensor_data['pod_features_with_staleness'][0, 0, :].numpy()}")
+        #     logger.info(f"   kv_hit_ratios shape: {tensor_data['kv_hit_ratios'].shape}")
+        #     logger.info(f"   pod_0000 kv: {tensor_data['kv_hit_ratios'][0, 0, :].numpy()}")
 
         infer_from_tensor_start_time = time.time()
 
-        get_subAlgorithm_start_time = time.time()
         subAlgorithm = processed_df['subAlgorithm'].iloc[0]
         logger.debug(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
-        handle_infer_overhead_summary["get_subAlgorithm"] = time.time() - get_subAlgorithm_start_time
-
-        # OOD Fallback: Use simple heuristic instead of neural network when OOD detected
-        # This is critical - NN predictions are unreliable for out-of-distribution inputs
-        if use_fallback_routing:
-            fallback_start = time.time()
-            logger.warning(f"⚠️  Request {request_id}: Using FALLBACK routing (least-inflight) due to OOD input")
-
-            # Simple heuristic: select pod with least inflight requests
-            best_pod_idx = 0
-            min_inflight = float('inf')
-            for i, pod_id in enumerate(sorted_all_pod_ids):
-                inflight_col = f"{pod_id}-inflight_requests"
-                if inflight_col in processed_df.columns:
-                    inflight = processed_df[inflight_col].iloc[0]
-                    if inflight < min_inflight:
-                        min_inflight = inflight
-                        best_pod_idx = i
-
-            # Build result with fallback indicator
-            result = {
-                'selected_pod_index': best_pod_idx,
-                'pod_probabilities': {sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids)
-                                     for i in range(len(sorted_all_pod_ids))},
-                'confidence': 0.1,  # Low confidence for fallback
-                'explore_mask': 0,
-                'ood_fallback': True,
-                'ood_details': {
-                    'extreme_count': ood_result['extreme_count'] if ood_result else 0,
-                    'tail_count': ood_result['tail_count'] if ood_result else 0,
-                    'max_zscore': ood_result['max_zscore'] if ood_result else 0,
-                }
-            }
-            infer_from_tensor_overhead_summary = {'fallback_routing': time.time() - fallback_start}
-            handle_infer_overhead_summary["calling_infer_from_tensor"] = time.time() - infer_from_tensor_start_time
-
-        # Normal routing: Use neural network model
+        
         # "random"
         # "least-latency"
         # "least-request"
         # "least-kv-cache"
-        elif subAlgorithm == 'latency_predictor' or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2'}:
+        if subAlgorithm == 'latency_predictor':
             global LATENCY_PREDICTOR, LOAD_PRETRAINED_MODEL
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             # Only acquire expensive write lock if truly uninitialized
@@ -519,18 +485,15 @@ def handle_infer():
                     smoothing_threshold=SMOOTHING_THRESHOLD,
                     generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
-        elif 'contextual_bandit' in subAlgorithm:
+        elif 'contextual_bandit' in subAlgorithm or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2'}:
             # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
             logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
-            
             global CONTEXTUAL_BANDIT_AGENT
-            
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             if CONTEXTUAL_BANDIT_AGENT is None:
                 contextual_bandit_write_lock_start = time.time()
                 with LATENCY_PREDICTOR_LOCK.write():  # Reuse existing lock infrastructure
                     handle_infer_overhead_summary['contextual_bandit_write_lock'] = time.time() - contextual_bandit_write_lock_start
-                    
                     # Double-check after acquiring lock
                     if CONTEXTUAL_BANDIT_AGENT is None:
                         contextual_bandit_create_start = time.time()
@@ -540,15 +503,11 @@ def handle_infer():
                             'request_features': tensor_data['request_features'].shape[1],
                             'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
                         }
-                        
                         logger.info(f"🔄 One-time initialization of CONTEXTUAL_BANDIT_AGENT with state_dims={state_dims}")
-                        
                         # NOTE: We don't create the agent here - neural_contextual_bandit.infer_from_tensor() 
                         # handles lazy initialization and caching internally
                         CONTEXTUAL_BANDIT_AGENT = "initialized"  # Marker to prevent re-initialization
-                        
                         handle_infer_overhead_summary["contextual_bandit_create"] = time.time() - contextual_bandit_create_start
-            
             # Inference with the neural contextual bandit
             contextual_bandit_infer_start = time.time()
             if 'perpodmodel_advanced' in subAlgorithm:
@@ -569,7 +528,7 @@ def handle_infer():
                     final_model_dir=final_model_dir,
                     sorted_all_pod_ids=sorted_all_pod_ids
                 )
-            elif 'perpodmodel_checkpoint' in subAlgorithm:
+            elif 'perpodmodel_checkpoint' in subAlgorithm or subAlgorithm in {'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'random'}:
                 result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_checkpoint.infer_from_tensor(
                     tensor_data=tensor_data,
                     request_id=request_id,
@@ -591,15 +550,17 @@ def handle_infer():
             # We need to add the missing fields that routing service expects
             # IMPORTANT: Don't override pod_probabilities if already provided by the model
             # Policy gradient returns learned softmax probabilities - don't replace with uniform!
-            if 'pod_probabilities' not in result or result['pod_probabilities'] is None:
-                result['pod_probabilities'] = {
-                    sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids)
-                    for i in range(len(sorted_all_pod_ids))
-                }
+            # Allow skipping probabilities entirely for performance.
+            if HYPERPARAMETERS.get('RETURN_POD_PROBABILITIES', True):
+                if 'pod_probabilities' not in result or result['pod_probabilities'] is None:
+                    result['pod_probabilities'] = {
+                        sorted_all_pod_ids[i]: 1.0 / len(sorted_all_pod_ids)
+                        for i in range(len(sorted_all_pod_ids))
+                    }
             # Use the actual exploration flag from the agent, not just whether epsilon > 0
             result['explore_mask'] = 1 if result.get('explored', False) else 0
             
-            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['confidence']}, epsilon={result.get('epsilon', 0):.3f}")
+            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result.get('predicted_rewards')}, chosen_pod_predicted_reward={result['confidence']}, epsilon={result.get('epsilon', 0):.3f}")
             
         elif subAlgorithm == 'rl_agent':
             from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
@@ -808,6 +769,20 @@ def handle_infer():
             
         logger.info(f"overhead_log: {overhead_log}")
         
+        return_predicted_rewards = HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True)
+        predicted_rewards_output = result.get('predicted_rewards', None)
+        if not return_predicted_rewards:
+            predicted_rewards_output = {}
+            pod_order = None
+        elif isinstance(predicted_rewards_output, (list, tuple, np.ndarray)):
+            predicted_rewards_output = list(predicted_rewards_output)
+            pod_order = result.get('pod_order', sorted_all_pod_ids)
+        elif predicted_rewards_output is None:
+            predicted_rewards_output = {pod_id: -99 for pod_id in sorted_all_pod_ids}
+            pod_order = None
+        else:
+            pod_order = None
+        
         response = {
             "num_trains": NUM_TRAINS,
             "num_flush": NUM_FLUSH,
@@ -819,14 +794,20 @@ def handle_infer():
             "exploration": result['explore_mask'],
             "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
-            "overhead_log": overhead_log,
+            # "overhead_log": overhead_log,
+            "tensor_transfer_overhead": infer_from_tensor_overhead_summary.get('tensor_transfer', -1),
+            "infer_overhead": infer_from_tensor_overhead_summary.get('inference', -1),
+            "other_overhead": endtoendoverhead - infer_from_tensor_overhead_summary.get('total_inference', -1),
+            "end_to_end_overhead": endtoendoverhead,
             "predicted_latencies": result.get('predicted_latencies', {pod_id: -99 for pod_id in sorted_all_pod_ids}),
             "chosen_pod_predicted_latency": result.get('chosen_pod_predicted_latency', -99),
-            "predicted_rewards": result.get('predicted_rewards', {pod_id: -99 for pod_id in sorted_all_pod_ids}),
+            "predicted_rewards": predicted_rewards_output,
             "chosen_pod_predicted_reward": result.get('chosen_pod_predicted_reward', -99),
             "smoothing": result.get('smoothing_mask', 0),  # Include smoothing indicator
-            "ood_fallback": result.get('ood_fallback', False),  # True if extrapolation detected → used heuristic
+            "ood_fallback": use_fallback_routing,  # True if extrapolation detected → used heuristic
         }
+        if pod_order is not None:
+            response["predicted_rewards_pod_order"] = pod_order
         
         # Return 503 if using random weights (LOAD_PRETRAINED_MODEL=0 and no training yet)
         # Pipeline still runs (for verification/warmup) but client gets proper "not ready" signal
@@ -851,7 +832,7 @@ def handle_infer():
 
 
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, TRAINING_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, OFFLINE_DF, ONLINE_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -868,40 +849,60 @@ def online_train_routine():
         # Route to appropriate training function based on model type
         model_type = HYPERPARAMETERS['MODEL_TYPE']
         if model_type == 'latency_predictor':
-            logger.info(f"Training with latency predictor model on entire dataset (offline({len(TRAINING_DF)}) + online({NUM_NEW_DATA}))")
-
-            # Get a copy of TRAINING_DF for training (thread-safe)
+            # Get a copy of offline + online data for training (thread-safe)
             with TRAINING_DF_LOCK:
-                if TRAINING_DF is None or len(TRAINING_DF) == 0:
-                    logger.error("TRAINING_DF is empty, cannot train")
+                if (OFFLINE_DF is None or len(OFFLINE_DF) == 0) and (ONLINE_DF is None or len(ONLINE_DF) == 0):
+                    logger.error("OFFLINE_DF and ONLINE_DF are empty, cannot train")
                     TRAINING_RIGHT_NOW = False
                     return
-                training_df_copy = TRAINING_DF.copy()
-                total_samples = len(training_df_copy)
-                current_offline_size = OFFLINE_DATA_SIZE
+                offline_df_copy = OFFLINE_DF.copy() if OFFLINE_DF is not None else pd.DataFrame()
+                online_df_copy = ONLINE_DF.copy() if ONLINE_DF is not None else pd.DataFrame()
+                total_samples = len(offline_df_copy) + len(online_df_copy)
+                current_offline_size = len(offline_df_copy)
 
             # logger.info(f"Training on (offline data: {ENCODED_DATA_DIR}, online data: {ENCODED_DATA_DIR}, total data: {total_samples}")
-            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {total_samples - current_offline_size})")
+            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {len(online_df_copy)})")
 
-            # Remove overflow from offline data if total exceeds 20,000
-            if total_samples > MAX_TOTAL_DATA and current_offline_size > 0:
+            # Remove overflow from offline data first, then oldest online data
+            if total_samples > MAX_TOTAL_DATA:
                 overflow = total_samples - MAX_TOTAL_DATA
                 
-                # Calculate how much to remove from offline portion
-                to_remove = min(overflow, current_offline_size)
+                # Remove from offline portion first (treat offline as oldest)
+                offline_remove = min(overflow, current_offline_size)
+                if offline_remove > 0:
+                    offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
+                    overflow -= offline_remove
+                    logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). Removed {offline_remove} oldest offline samples")
                 
-                # Remove from the beginning of dataframe (where offline data resides)
-                training_df_copy = training_df_copy.iloc[to_remove:].reset_index(drop=True)
-                logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). Removed {to_remove} oldest offline samples (overflow={overflow}, offline_size={current_offline_size})")
+                # If still overflow, remove oldest online samples by time/sequence
+                if overflow > 0 and len(online_df_copy) > 0:
+                    if 'request_start_time' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('request_start_time')
+                    elif 'request_end_time' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('request_end_time')
+                    elif '_online_seq' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('_online_seq')
+                    online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
+                    logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
                 
-                # Update the global TRAINING_DF and OFFLINE_DATA_SIZE
+                # Update the global OFFLINE_DF and ONLINE_DF after trimming
                 with TRAINING_DF_LOCK:
-                    TRAINING_DF = training_df_copy.copy()
-                    OFFLINE_DATA_SIZE = max(0, current_offline_size - to_remove)
-                    logger.info(f"✅ Updated TRAINING_DF: new size={len(TRAINING_DF)} (offline: {OFFLINE_DATA_SIZE}, online: {len(TRAINING_DF) - OFFLINE_DATA_SIZE})")
+                    OFFLINE_DF = offline_df_copy.copy()
+                    ONLINE_DF = online_df_copy.copy()
+                    OFFLINE_DATA_SIZE = len(OFFLINE_DF)
+                    logger.info(f"✅ Updated datasets: offline={len(OFFLINE_DF)}, online={len(ONLINE_DF)}")
                 
                 # Update total_samples for the rest of the function
-                total_samples = len(training_df_copy)
+                total_samples = len(offline_df_copy) + len(online_df_copy)
+
+            # Combine offline + online for training and shuffle only for training
+            training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
+            if len(training_df_copy) == 0:
+                logger.error("Combined training dataset is empty after trimming")
+                TRAINING_RIGHT_NOW = False
+                return
+            training_seed = HYPERPARAMETERS.get('training_seed', 42)
+            training_df_copy = training_df_copy.sample(frac=1, random_state=training_seed).reset_index(drop=True)
 
             # Drop non-numeric metadata columns from offline CSV that are absent online
             metadata_cols_to_drop = ['source_file', 'reward_function_used']
@@ -981,9 +982,8 @@ def online_train_routine():
             for feature in normalizable_features:
                 # Check if this is a pooled pod feature type (not a column name)
                 if feature in pod_feature_types:
-                    # Find all pod columns for this feature type and normalize each
-                    matching_columns = [col for col in training_df_copy.columns
-                                      if data_normalizer._extract_pod_feature_type(col) == feature]
+                    # OPTIMIZATION: Use cached matching columns lookup
+                    matching_columns = data_normalizer._get_matching_columns_cached(training_df_copy.columns, feature)
                     for col in matching_columns:
                         # Pod features: stats already updated via _compute_pooled_pod_statistics above
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
@@ -1067,30 +1067,52 @@ def online_train_routine():
         elif 'contextual_bandit' in model_type:
             logger.info(f"Training Neural Contextual Bandit on entire dataset (offline + online: {NUM_NEW_DATA} new)")
             
-            # Get a copy of TRAINING_DF for training (same as latency predictor)
+            # Get a copy of offline + online data for training (same as latency predictor)
             with TRAINING_DF_LOCK:
-                if TRAINING_DF is None or len(TRAINING_DF) == 0:
-                    logger.error("TRAINING_DF is empty, cannot train")
+                if (OFFLINE_DF is None or len(OFFLINE_DF) == 0) and (ONLINE_DF is None or len(ONLINE_DF) == 0):
+                    logger.error("OFFLINE_DF and ONLINE_DF are empty, cannot train")
                     TRAINING_RIGHT_NOW = False
                     return
-                training_df_copy = TRAINING_DF.copy()
-                total_samples = len(training_df_copy)
-                current_offline_size = OFFLINE_DATA_SIZE
+                offline_df_copy = OFFLINE_DF.copy() if OFFLINE_DF is not None else pd.DataFrame()
+                online_df_copy = ONLINE_DF.copy() if ONLINE_DF is not None else pd.DataFrame()
+                total_samples = len(offline_df_copy) + len(online_df_copy)
+                current_offline_size = len(offline_df_copy)
             
-            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {total_samples - current_offline_size})")
+            logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {len(online_df_copy)})")
             
             # Remove overflow if needed (same logic as latency predictor)
-            if total_samples > MAX_TOTAL_DATA and current_offline_size > 0:
+            if total_samples > MAX_TOTAL_DATA:
                 overflow = total_samples - MAX_TOTAL_DATA
-                to_remove = min(overflow, current_offline_size)
-                training_df_copy = training_df_copy.iloc[to_remove:].reset_index(drop=True)
-                logger.info(f"⚠️  Removed {to_remove} oldest offline samples")
+                offline_remove = min(overflow, current_offline_size)
+                if offline_remove > 0:
+                    offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
+                    overflow -= offline_remove
+                    logger.info(f"⚠️  Removed {offline_remove} oldest offline samples")
+                if overflow > 0 and len(online_df_copy) > 0:
+                    if 'request_start_time' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('request_start_time')
+                    elif 'request_end_time' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('request_end_time')
+                    elif '_online_seq' in online_df_copy.columns:
+                        online_df_copy = online_df_copy.sort_values('_online_seq')
+                    online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
+                    logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
                 
                 with TRAINING_DF_LOCK:
-                    TRAINING_DF = training_df_copy.copy()
-                    OFFLINE_DATA_SIZE = max(0, current_offline_size - to_remove)
+                    OFFLINE_DF = offline_df_copy.copy()
+                    ONLINE_DF = online_df_copy.copy()
+                    OFFLINE_DATA_SIZE = len(OFFLINE_DF)
                 
-                total_samples = len(training_df_copy)
+                total_samples = len(offline_df_copy) + len(online_df_copy)
+
+            # Combine offline + online for training and shuffle only for training
+            training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
+            if len(training_df_copy) == 0:
+                logger.error("Combined training dataset is empty after trimming")
+                TRAINING_RIGHT_NOW = False
+                return
+            training_seed = HYPERPARAMETERS.get('training_seed', 42)
+            training_df_copy = training_df_copy.sample(frac=1, random_state=training_seed).reset_index(drop=True)
             
             # Drop metadata columns
             metadata_cols_to_drop = ['source_file', 'reward_function_used']
@@ -1109,10 +1131,11 @@ def online_train_routine():
             normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
                 training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
             
-            # Normalize features
+            # Normalize features using cached matching columns
             for feature in normalizable_features:
                 if feature in pod_feature_types:
-                    matching_columns = [col for col in training_df_copy.columns if data_normalizer._extract_pod_feature_type(col) == feature]
+                    # OPTIMIZATION: Use cached matching columns lookup
+                    matching_columns = data_normalizer._get_matching_columns_cached(training_df_copy.columns, feature)
                     for col in matching_columns:
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
@@ -1510,7 +1533,7 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, CONTEXTUAL_BANDIT_PRELOADED
     
     # Model directory and offline data are GPU-specific
     if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
@@ -1533,31 +1556,46 @@ def initialize():
         
         ## some default model for non learning based routing startegies
         if TARGET_GPU_MODEL == "NVIDIA-A10":
-            final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-            offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
-            offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+            if 'latency_predictor' in ROUTING_STRATEGY:
+                final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
+                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+            elif 'contextual_bandit' in ROUTING_STRATEGY:
+                final_model_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                offline_csv_path = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/offline_training_data.csv"
+                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         elif TARGET_GPU_MODEL == "NVIDIA-A30":
-            base_dir = f"/app/NVIDIA-A30/{OUTPUT_WRK_NAME}/{WORKLOAD_NAME}"
-            offline_csv_path = f"{base_dir}/offline_training_data.csv"
-            final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
-            hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-            feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-            offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+            if 'contextual_bandit' in ROUTING_STRATEGY or 'latency_predictor' in ROUTING_STRATEGY:
+                base_dir = f"/app/NVIDIA-A30/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}"
+                final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
+                offline_csv_path = f"{base_dir}/offline_training_data.csv"
+                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+            else:
+                base_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix"
+                final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                offline_csv_path = f"{base_dir}/offline_training_data.csv"
+                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         else:
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
     else:
-        # base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
-        base_dir = f"/app/{TARGET_GPU_MODEL}/maxTokens_1-maxTokensStd_0"
-        final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
-        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+        base_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0"
+        final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
         offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
+    logger.info(f"WORKLOAD_CATEGORY: {WORKLOAD_CATEGORY}")
     logger.info(f"WORKLOAD_NAME: {WORKLOAD_NAME}")
     logger.info(f"final_model_dir: {final_model_dir}")
     logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
@@ -1586,6 +1624,10 @@ def initialize():
         HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
+        # Output formatting flags (default to 0/off unless explicitly enabled)
+        HYPERPARAMETERS['RETURN_POD_PROBABILITIES'] = RETURN_POD_PROBABILITIES
+        HYPERPARAMETERS['RETURN_PREDICTED_REWARDS'] = RETURN_PREDICTED_REWARDS
+        HYPERPARAMETERS['RETURN_ARRAY_OUTPUTS'] = RETURN_ARRAY_OUTPUTS
         
         # 🔧 CRITICAL: Apply EXCLUDED_REQUEST_FEATURES to match offline trained model architecture
         global request_features_train
@@ -1678,6 +1720,24 @@ def initialize():
     
     logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
     logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
+    if 'contextual_bandit' in ROUTING_STRATEGY:
+        preload_start = time.time()
+        try:
+            num_pods = len(sorted_running_pod_ips)
+            CONTEXTUAL_BANDIT_PRELOADED = neural_contextual_bandit_perpodmodel_checkpoint.preload_agent_from_metadata(
+                final_model_dir=final_model_dir,
+                HYPERPARAMETERS=HYPERPARAMETERS,
+                num_pods=num_pods
+            )
+            if CONTEXTUAL_BANDIT_PRELOADED:
+                logger.info(f"Contextual bandit preload completed in {time.time() - preload_start:.3f}s (num_pods={num_pods})")
+            else:
+                logger.error("Contextual bandit preload failed; /infer will return 503 until ready")
+        except Exception:
+            logger.exception("Contextual bandit preload failed; /infer will return 503 until ready")
+            CONTEXTUAL_BANDIT_PRELOADED = False
+    else:
+        CONTEXTUAL_BANDIT_PRELOADED = True
     logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
     logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
     logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
@@ -1758,7 +1818,7 @@ def initialize():
     logger.info(f"Checkpointing every {HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS']} steps")
 
     # Load offline training data for online learning
-    global TRAINING_DF, OFFLINE_DATA_SIZE
+    global OFFLINE_DF, ONLINE_DF, OFFLINE_DATA_SIZE, ONLINE_SEQ
     if ENABLE_ONLINE_LEARNING:
         # Skip loading offline data if LOAD_PRETRAINED_MODEL=0 (pure online learning from scratch)
         if LOAD_PRETRAINED_MODEL == 0:
@@ -1766,29 +1826,35 @@ def initialize():
             logger.warning(f"⚠️  Will train from scratch using ONLY online data")
             logger.warning(f"⚠️  Inference will use RANDOM WEIGHTS until first training completes ({MIN_NUM_TRAINING_DATA} samples)")
             logger.info(f"ℹ️  Normalization stats are still loaded to maintain consistent feature space")
-            TRAINING_DF = pd.DataFrame()
+            OFFLINE_DF = pd.DataFrame()
+            ONLINE_DF = pd.DataFrame()
             OFFLINE_DATA_SIZE = 0
+            ONLINE_SEQ = 0
         elif os.path.exists(offline_csv_path):
             try:
                 with TRAINING_DF_LOCK:
-                    TRAINING_DF = pd.read_csv(offline_csv_path)
-                    # shuffle the training data
-                    TRAINING_DF = TRAINING_DF.sample(frac=1).reset_index(drop=True)
-                    OFFLINE_DATA_SIZE = len(TRAINING_DF)
-                    logger.info(f"✅ Loaded offline training data: {len(TRAINING_DF)} samples from {offline_csv_path}")
-                    logger.info(f"   Columns: {list(TRAINING_DF.columns[:10])}...")  # Show first 10 columns
+                    OFFLINE_DF = pd.read_csv(offline_csv_path)
+                    ONLINE_DF = pd.DataFrame()
+                    OFFLINE_DATA_SIZE = len(OFFLINE_DF)
+                    ONLINE_SEQ = 0
+                    logger.info(f"✅ Loaded offline training data: {len(OFFLINE_DF)} samples from {offline_csv_path}")
+                    logger.info(f"   Columns: {list(OFFLINE_DF.columns[:10])}...")  # Show first 10 columns
             except Exception as e:
                 logger.error(f"Failed to load offline training data: {e}")
-                TRAINING_DF = pd.DataFrame()
+                OFFLINE_DF = pd.DataFrame()
+                ONLINE_DF = pd.DataFrame()
                 OFFLINE_DATA_SIZE = 0
+                ONLINE_SEQ = 0
                 logger.warning("Starting with empty training dataframe")
         else:
             logger.warning(f"Offline training data not found at {offline_csv_path}")
             logger.warning("Online learning will start from scratch with only new data")
-            TRAINING_DF = pd.DataFrame()
+            OFFLINE_DF = pd.DataFrame()
+            ONLINE_DF = pd.DataFrame()
             OFFLINE_DATA_SIZE = 0
+            ONLINE_SEQ = 0
         # Initialize scalable RL agent if configured
-        TOTAL_NUM_NEW_DATA = len(TRAINING_DF)
+        TOTAL_NUM_NEW_DATA = (len(OFFLINE_DF) if OFFLINE_DF is not None else 0) + (len(ONLINE_DF) if ONLINE_DF is not None else 0)
     else:
         logger.info("Online learning disabled, skipping offline data load")
     

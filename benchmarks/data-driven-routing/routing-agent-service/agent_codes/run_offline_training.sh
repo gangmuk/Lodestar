@@ -3,7 +3,11 @@
 set -e
 
 # data_file=../workload-and-experiment_results/NVIDIA-A10/data.csv
-data_file=$1
+data_dir=$1
+
+./merge-filtered-gateway-log.sh ${data_dir}
+
+data_file="${data_dir}/data.csv"
 data_dir=$(dirname "${data_file}")
 if [ ! -f "${data_file}" ]; then
     echo "❌ Data file not found: ${data_file}"
@@ -18,10 +22,12 @@ ttft_threshold=30000
 buffer_size=10000
 model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
 REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
-lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 hidden_dim=128
 batch_size=256
 training_epochs=5
+learning_rate=0.0001
+lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
+lr_scheduler_gamma=0.95
 excluded_pod_features="none" # waiting_requests,cpu_kv_cache,running_requests" # still working
 excluded_request_features=""
 include_gpu_features=0
@@ -31,9 +37,7 @@ reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
-learning_rate=0.0001
 time_stamp=$(date +%Y%m%d_%H%M%S)
-lr_scheduler_gamma=0.95
 data_basename=$(basename -- "${data_file}")
 data_name="${data_basename%.*}"
 processed_csv="${data_dir}/${data_name}-processed.csv"
