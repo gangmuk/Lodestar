@@ -134,6 +134,99 @@ def truncate_text_to_tokens(text: str, max_tokens: int, use_word_count: bool = T
                 return text
             return ' '.join(words[:max_words])
 
+def expand_text_to_tokens(text: str, target_tokens: int) -> str:
+    """
+    Expand text to reach an approximate token count by appending random words.
+    Uses the same word-count approximation as estimate_tokens_from_text.
+    """
+    if target_tokens <= 0:
+        return text
+    current_words = len(text.split())
+    target_words = int(math.ceil(target_tokens / 1.33))
+    words_to_add = max(0, target_words - current_words)
+    if words_to_add == 0:
+        return text
+    random_words = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+        "golf", "hotel", "india", "juliet", "kilo", "lima",
+        "mike", "november", "oscar", "papa", "quebec", "romeo",
+        "sierra", "tango", "uniform", "victor", "whiskey",
+        "xray", "yankee", "zulu", "amber", "apex", "atlas", "aurora",
+        "ember", "fable", "forge", "glacier", "harbor", "horizon",
+        "ivory", "jigsaw", "keystone", "lantern", "meadow", "nebula",
+        "oasis", "opal", "prairie", "quartz", "ripple", "saffron",
+        "timber", "verdan", "wander", "zephyr", "arch", "arrow",
+        "breeze", "canyon", "cipher", "cobalt", "comet", "coral",
+        "cypress", "dawn", "dusk", "ember", "frost", "glow",
+        "granite", "grove", "harvest", "hazel", "island", "jade",
+        "lagoon", "lunar", "marble", "meadow", "mint", "mirage",
+        "mist", "north", "orbit", "pebble", "pearl", "pine",
+        "plains", "polar", "quiver", "raven", "river", "sage",
+        "sky", "spring", "stone", "summer", "terra", "thistle",
+        "topaz", "trail", "valley", "verdant", "violet", "wave",
+        "willow", "winter", "zenith", "bay", "birch", "blossom",
+        "brook", "cedar", "cliff", "cloud", "creek", "crown",
+        "drift", "flare", "fjord", "glade", "glimmer", "grail",
+        "hearth", "hollow", "iris", "islet", "knoll", "loam",
+        "lumen", "mesa", "moss", "morrow", "nexus", "oak",
+        "onyx", "pebble", "reef", "ridge", "roost", "sable",
+        "shoal", "shore", "silk", "slate", "smoke", "snow",
+        "solstice", "sparrow", "spire", "spruce", "stream",
+        "summit", "tide", "tor", "tundra", "vale", "vapor",
+        "vista", "whisper", "wild", "wren", "zone"
+    ]
+    padding = " ".join(random.choice(random_words) for _ in range(words_to_add))
+    return f"{text} {padding}" if text else padding
+
+def scale_prompt_tokens(prompt: Union[str, List, Dict[str, Any]], scale_factor: float) -> Union[str, List, Dict[str, Any]]:
+    """Scale prompt length by the given factor (approximate tokens)."""
+    if scale_factor is None or abs(scale_factor - 1.0) < 1e-9:
+        return prompt
+    if scale_factor <= 0:
+        logger.warning(f"Invalid scale_factor={scale_factor}; leaving prompt unchanged.")
+        return prompt
+
+    # Helper to adjust text to target tokens
+    def adjust_text(text: str, target_tokens: int) -> str:
+        if target_tokens <= 0:
+            return text
+        current_est = estimate_tokens_from_text(text, use_word_count=True)
+        if target_tokens == current_est:
+            return text
+        if target_tokens < current_est:
+            return truncate_text_to_tokens(text, target_tokens, use_word_count=True)
+        return expand_text_to_tokens(text, target_tokens)
+
+    if isinstance(prompt, str):
+        current_tokens = estimate_tokens_from_text(prompt, use_word_count=True)
+        target_tokens = max(1, int(round(current_tokens * scale_factor)))
+        return adjust_text(prompt, target_tokens)
+
+    if isinstance(prompt, list):
+        # Modify the last user message if possible
+        current_tokens = _estimate_input_tokens_from_prompt(prompt)
+        target_tokens = max(1, int(round(current_tokens * scale_factor)))
+        if target_tokens == current_tokens:
+            return prompt
+        updated_prompt = [msg.copy() if isinstance(msg, dict) else msg for msg in prompt]
+        for i in range(len(updated_prompt) - 1, -1, -1):
+            msg = updated_prompt[i]
+            if isinstance(msg, dict) and msg.get("role") == "user" and "content" in msg:
+                msg["content"] = adjust_text(str(msg["content"]), target_tokens)
+                return updated_prompt
+        # Fallback: append a user message if none exists
+        updated_prompt.append({"role": "user", "content": adjust_text("", target_tokens)})
+        return updated_prompt
+
+    if isinstance(prompt, dict) and "content" in prompt:
+        current_tokens = estimate_tokens_from_text(str(prompt["content"]), use_word_count=True)
+        target_tokens = max(1, int(round(current_tokens * scale_factor)))
+        updated_prompt = prompt.copy()
+        updated_prompt["content"] = adjust_text(str(prompt["content"]), target_tokens)
+        return updated_prompt
+
+    return prompt
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1881,6 +1974,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
                        shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
+                       input_token_length_scaling=1.0, output_token_length_scaling=1.0,
                        workload_path=None):
     """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
     # Determine workload mode from CLI args (benchmark vs profiling)
@@ -1997,6 +2091,22 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     token_ids = None
                     prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
 
+                # Apply input token length scaling before any further sampling/truncation
+                if input_token_length_scaling != 1.0:
+                    if args.prompt_type == "token-ids":
+                        if token_ids is not None:
+                            current_len = len(token_ids)
+                            target_len = max(1, int(round(current_len * input_token_length_scaling)))
+                            if target_len < current_len:
+                                token_ids = token_ids[:target_len]
+                            elif target_len > current_len:
+                                pad_count = target_len - current_len
+                                pad_token = random.choice(token_ids) if token_ids else 0
+                                token_ids = token_ids + [pad_token] * pad_count
+                            prompt = f"token_ids:{len(token_ids)}"
+                    else:
+                        prompt = scale_prompt_tokens(prompt, input_token_length_scaling)
+
                 # Apply input token sampling if input_tokens_std > 0
                 if input_tokens_std > 0:
                     if args.prompt_type == "token-ids":
@@ -2104,6 +2214,13 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 else:
                     base_max_tokens = request.get("Output Length", max_tokens)
                 
+                # Apply output token length scaling
+                if output_token_length_scaling != 1.0:
+                    if output_token_length_scaling <= 0:
+                        logger.warning(f"Invalid output_token_length_scaling={output_token_length_scaling}; using base max_tokens.")
+                    else:
+                        base_max_tokens = max(1, int(round(base_max_tokens * output_token_length_scaling)))
+
                 
                 # Sample from normal distribution to make it more realistic
                 if max_tokens_std > 0:
@@ -2300,6 +2417,8 @@ async def main(args):
             input_tokens_std=args.input_tokens_std,
             max_tokens_std=args.max_tokens_std,
             force_exact_output_tokens=args.force_exact_output_tokens,
+            input_token_length_scaling=args.input_token_length_scaling,
+            output_token_length_scaling=args.output_token_length_scaling,
             workload_path=args.workload_path,
         )
         end_time = time.time()
@@ -2332,6 +2451,10 @@ if __name__ == "__main__":
     parser.add_argument("--max_tokens", type=int, default=2048, help="Max tokens for the request (used as mean for sampling).")
     parser.add_argument("--max_tokens_std", type=float, default=10.0, help="Standard deviation for sampling output tokens from normal distribution. Set to 0 to disable sampling (use fixed max_tokens).")
     parser.add_argument("--force_exact_output_tokens", type=int, default=0, help="Force generation of exactly max_tokens tokens by setting min_tokens=max_tokens and ignore_eos=True. Useful for consistent benchmarking.")
+    parser.add_argument("--input_token_length_scaling", type=float, default=1.0,
+                       help="Scale input length by this factor. <1 trims; >1 appends random words.")
+    parser.add_argument("--output_token_length_scaling", type=float, default=1.0,
+                       help="Scale output length (max_tokens) by this factor.")
     parser.add_argument("--override_workload_output_length", type=int, default=1,
                        help="Override workload output length with --max_tokens value")
     parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for the request.")

@@ -2104,6 +2104,291 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     
     return fig
 
+def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_policy):
+    """Create a simplified plot with TTFT and TPOT time series, CDFs, and bar plots"""
+    # Convert to DataFrame
+    df = pd.DataFrame(data)
+    if len(df) == 0:
+        print("Error: No valid data to plot.")
+        return None
+    
+    # Filter out negative values (same as main plot)
+    original_count = len(df)
+    if 'iteration' in df.columns:
+        df['iteration'] = pd.to_numeric(df['iteration'], errors='coerce')
+        df = df[(df['iteration'] >= 0) | (df['iteration'] == -99) | (df['iteration'].isna())]
+    if 'num_trains' in df.columns:
+        df['num_trains'] = pd.to_numeric(df['num_trains'], errors='coerce')
+        df = df[(df['num_trains'] >= 0) | (df['num_trains'] == -99) | (df['num_trains'].isna())]
+    
+    if len(df) == 0:
+        print("Error: No valid data remaining after filtering.")
+        return None
+    
+    # Get transitions
+    filtered_data = df.to_dict('records')
+    train_transitions = get_numtrains_transitions(filtered_data)
+    iteration_transitions = get_iteration_transitions(filtered_data)
+    
+    # Calculate 1-second sliding window averages
+    df['time_bin'] = np.floor(df['relative_time']).astype(int)
+    ttft_avg_per_sec = df.groupby('time_bin')['ttft'].mean().reset_index()
+    tpot_avg_per_sec = df.groupby('time_bin')['avg_tpot'].mean().reset_index()
+    
+    # Get unique pods and create color map
+    unique_pods = list(df['selectedpod'].unique())
+    colors = plt.cm.viridis(np.linspace(0, 0.9, len(unique_pods)))
+    pod_colors = dict(zip(unique_pods, colors))
+    pod_counts = df.groupby('selectedpod').size()
+    
+    # Determine layout based on routing policy
+    if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
+        # With numTrains analysis: 8 rows
+        n_rows = 8
+        height_ratios = [1.2, 1.2, 1.5, 1.5, 1.2, 1.2, 1.2, 1.2]  # time series, bar plots, CDFs for both TTFT and TPOT
+        fig_height = 28
+    else:
+        # Without numTrains analysis: 6 rows
+        n_rows = 6
+        height_ratios = [1.2, 1.2, 1.5, 1.5, 1.2, 1.2]  # time series, bar plots, CDFs by iteration only
+        fig_height = 22
+    
+    # Create figure with GridSpec
+    fig = plt.figure(figsize=(15, fig_height))
+    gs = GridSpec(n_rows, 3, figure=fig, height_ratios=height_ratios, hspace=0.4, wspace=0.3)
+    
+    # Row 0: TTFT Time Series (full width)
+    ax_ttft = fig.add_subplot(gs[0, :])
+    ax_ttft.plot(ttft_avg_per_sec['time_bin'], ttft_avg_per_sec['ttft'], 
+                 color='red', linewidth=linewidth, alpha=alpha, label='Avg TTFT (per sec)', zorder=10)
+    
+    # Add transition lines
+    for transition in train_transitions:
+        ax_ttft.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth, 
+                       linestyle='--', zorder=5)
+    if iteration_transitions:
+        for transition in iteration_transitions:
+            ax_ttft.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth, 
+                          linestyle='-.', zorder=5)
+    
+    ax_ttft.set_ylabel('TTFT (ms)', fontsize=14, fontweight='bold')
+    ax_ttft.set_title('Time to First Token (TTFT) - 1-Second Sliding Window Average', 
+                      fontsize=16, fontweight='bold', pad=10)
+    ax_ttft.grid(True, alpha=alpha)
+    
+    # Create legend
+    legend_elements = [
+        Line2D([0], [0], color='red', linewidth=linewidth, label='Avg TTFT (per sec)'),
+        Line2D([0], [0], color='red', linewidth=linewidth, linestyle='--', label='numTrains transition'),
+        Line2D([0], [0], color='blue', linewidth=linewidth, linestyle='-.', label='Iteration transition')
+    ]
+    ax_ttft.legend(handles=legend_elements, fontsize=10, loc='upper right', ncol=3)
+    ax_ttft.tick_params(axis='both', which='major', labelsize=11)
+    
+    # Row 1: TPOT Time Series (full width)
+    ax_tpot = fig.add_subplot(gs[1, :], sharex=ax_ttft)
+    ax_tpot.plot(tpot_avg_per_sec['time_bin'], tpot_avg_per_sec['avg_tpot'], 
+                 color='red', linewidth=linewidth, alpha=alpha, label='Avg TPOT (per sec)', zorder=10)
+    
+    # Add transition lines
+    for transition in train_transitions:
+        ax_tpot.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth, 
+                       linestyle='--', zorder=5)
+    if iteration_transitions:
+        for transition in iteration_transitions:
+            ax_tpot.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth, 
+                          linestyle='-.', zorder=5)
+    
+    ax_tpot.set_xlabel('Relative Time (seconds)', fontsize=14, fontweight='bold')
+    ax_tpot.set_ylabel('TPOT (ms)', fontsize=14, fontweight='bold')
+    ax_tpot.set_title('Time Per Output Token (TPOT) - 1-Second Sliding Window Average', 
+                      fontsize=16, fontweight='bold', pad=10)
+    ax_tpot.grid(True, alpha=alpha)
+    
+    legend_elements = [
+        Line2D([0], [0], color='red', linewidth=linewidth, label='Avg TPOT (per sec)')
+    ]
+    ax_tpot.legend(handles=legend_elements, fontsize=10, loc='upper right')
+    ax_tpot.tick_params(axis='both', which='major', labelsize=11)
+    
+    # Row 2: Bar plots - TTFT by Pod | TPOT by Pod | empty
+    ax_ttft_bar = fig.add_subplot(gs[2, 0])
+    ax_tpot_bar = fig.add_subplot(gs[2, 1])
+    
+    # TTFT by Pod
+    pod_avg_ttft = df.groupby('selectedpod')['ttft'].mean().sort_values(ascending=False)
+    bars = ax_ttft_bar.bar(range(len(pod_avg_ttft)), pod_avg_ttft.values,
+                           color=[pod_colors[pod] for pod in pod_avg_ttft.index],
+                           edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, width=0.7)
+    for i, (pod, ttft) in enumerate(pod_avg_ttft.items()):
+        ax_ttft_bar.text(i, ttft + ttft*0.02, f'{ttft:.0f}', ha='center', fontsize=9, fontweight='bold')
+        ax_ttft_bar.text(i, ttft*0.05, f'n={pod_counts[pod]}', ha='center', fontsize=8)
+    ax_ttft_bar.set_xticks(range(len(pod_avg_ttft)))
+    ax_ttft_bar.set_xticklabels([f'Pod {pod}' for pod in pod_avg_ttft.index], rotation=45, ha='right', fontsize=10)
+    ax_ttft_bar.set_ylabel('Average TTFT (ms)', fontsize=12, fontweight='bold')
+    ax_ttft_bar.set_title('Average TTFT by Pod', fontsize=14, fontweight='bold', pad=10)
+    ax_ttft_bar.grid(axis='y', alpha=alpha)
+    
+    # TPOT by Pod
+    pod_avg_tpot = df.groupby('selectedpod')['avg_tpot'].mean().sort_values(ascending=False)
+    bars = ax_tpot_bar.bar(range(len(pod_avg_tpot)), pod_avg_tpot.values,
+                           color=[pod_colors[pod] for pod in pod_avg_tpot.index],
+                           edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, width=0.7)
+    for i, (pod, tpot) in enumerate(pod_avg_tpot.items()):
+        ax_tpot_bar.text(i, tpot + tpot*0.02, f'{tpot:.0f}', ha='center', fontsize=9, fontweight='bold')
+        ax_tpot_bar.text(i, tpot*0.05, f'n={pod_counts[pod]}', ha='center', fontsize=8)
+    ax_tpot_bar.set_xticks(range(len(pod_avg_tpot)))
+    ax_tpot_bar.set_xticklabels([f'Pod {pod}' for pod in pod_avg_tpot.index], rotation=45, ha='right', fontsize=10)
+    ax_tpot_bar.set_ylabel('Average TPOT (ms)', fontsize=12, fontweight='bold')
+    ax_tpot_bar.set_title('Average TPOT by Pod', fontsize=14, fontweight='bold', pad=10)
+    ax_tpot_bar.grid(axis='y', alpha=alpha)
+    
+    # Row 3: CDFs - TTFT CDF | TPOT CDF | empty
+    ax_ttft_cdf = fig.add_subplot(gs[3, 0])
+    ax_tpot_cdf = fig.add_subplot(gs[3, 1])
+    
+    # TTFT CDF
+    sorted_ttft = np.sort(df['ttft'])
+    y_ttft = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
+    ax_ttft_cdf.plot(sorted_ttft, y_ttft, color='blue', linewidth=linewidth, alpha=alpha)
+    p50_ttft = np.percentile(df['ttft'], 50)
+    p95_ttft = np.percentile(df['ttft'], 95)
+    p99_ttft = np.percentile(df['ttft'], 99)
+    avg_ttft = df['ttft'].mean()
+    ax_ttft_cdf.axvline(p50_ttft, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_ttft:.1f}ms')
+    ax_ttft_cdf.axvline(p95_ttft, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_ttft:.1f}ms')
+    ax_ttft_cdf.axvline(p99_ttft, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_ttft:.1f}ms')
+    ax_ttft_cdf.axvline(avg_ttft, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_ttft:.1f}ms')
+    ax_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
+    ax_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_ttft_cdf.set_title('TTFT CDF', fontsize=12, fontweight='bold', pad=10)
+    ax_ttft_cdf.grid(True, alpha=alpha)
+    ax_ttft_cdf.legend(fontsize=8)
+    
+    # TPOT CDF
+    sorted_tpot = np.sort(df['avg_tpot'])
+    y_tpot = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
+    ax_tpot_cdf.plot(sorted_tpot, y_tpot, color='green', linewidth=linewidth, alpha=alpha)
+    p50_tpot = np.percentile(df['avg_tpot'], 50)
+    p95_tpot = np.percentile(df['avg_tpot'], 95)
+    p99_tpot = np.percentile(df['avg_tpot'], 99)
+    avg_tpot = df['avg_tpot'].mean()
+    ax_tpot_cdf.axvline(p50_tpot, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_tpot:.1f}ms')
+    ax_tpot_cdf.axvline(p95_tpot, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_tpot:.1f}ms')
+    ax_tpot_cdf.axvline(p99_tpot, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_tpot:.1f}ms')
+    ax_tpot_cdf.axvline(avg_tpot, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_tpot:.1f}ms')
+    ax_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
+    ax_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_tpot_cdf.set_title('TPOT CDF', fontsize=12, fontweight='bold', pad=10)
+    ax_tpot_cdf.grid(True, alpha=alpha)
+    ax_tpot_cdf.legend(fontsize=8)
+    
+    current_row = 4
+    
+    # Add numTrains analysis if applicable
+    if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
+        unique_num_trains = sorted(df['num_trains'].unique())
+        num_trains_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
+        num_trains_color_map = dict(zip(unique_num_trains, num_trains_colors))
+        
+        # Row 4: TTFT by numTrains | TPOT by numTrains | empty
+        ax_nt_ttft_cdf = fig.add_subplot(gs[current_row, 0])
+        ax_nt_tpot_cdf = fig.add_subplot(gs[current_row, 1])
+        
+        # TTFT CDF by numTrains
+        for num_trains in unique_num_trains:
+            subset = df[df['num_trains'] == num_trains]
+            if len(subset) > 0:
+                sorted_ttft = np.sort(subset['ttft'])
+                cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
+                avg_ttft = subset['ttft'].mean()
+                p99_ttft = np.percentile(subset['ttft'], 99)
+                ax_nt_ttft_cdf.plot(sorted_ttft, cdf, label=f'numTrains={num_trains}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
+                                    color=num_trains_color_map[num_trains], linewidth=1.5, alpha=0.7)
+        ax_nt_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
+        ax_nt_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+        ax_nt_ttft_cdf.set_title('TTFT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
+        ax_nt_ttft_cdf.grid(True, alpha=0.3)
+        ax_nt_ttft_cdf.legend(fontsize=6, loc='lower right')
+        
+        # TPOT CDF by numTrains
+        for num_trains in unique_num_trains:
+            subset = df[df['num_trains'] == num_trains]
+            if len(subset) > 0:
+                sorted_tpot = np.sort(subset['avg_tpot'])
+                cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
+                avg_tpot = subset['avg_tpot'].mean()
+                p99_tpot = np.percentile(subset['avg_tpot'], 99)
+                ax_nt_tpot_cdf.plot(sorted_tpot, cdf, label=f'numTrains={num_trains}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
+                                    color=num_trains_color_map[num_trains], linewidth=1.5, alpha=0.7)
+        ax_nt_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
+        ax_nt_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+        ax_nt_tpot_cdf.set_title('TPOT CDF by numTrains', fontsize=12, fontweight='bold', pad=10)
+        ax_nt_tpot_cdf.grid(True, alpha=0.3)
+        ax_nt_tpot_cdf.legend(fontsize=6, loc='lower right')
+        
+        current_row += 1
+    
+    # Iteration analysis CDFs
+    unique_iterations = sorted(df['iteration'].unique())
+    iteration_colors = plt.cm.tab20(np.linspace(0, 1, len(unique_iterations)))
+    iteration_color_map = dict(zip(unique_iterations, iteration_colors))
+    
+    # Row 5 (or current_row): TTFT by Iteration | TPOT by Iteration | empty
+    ax_iter_ttft_cdf = fig.add_subplot(gs[current_row, 0])
+    ax_iter_tpot_cdf = fig.add_subplot(gs[current_row, 1])
+    
+    # TTFT CDF by Iterations
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            sorted_ttft = np.sort(subset['ttft'])
+            cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
+            avg_ttft = subset['ttft'].mean()
+            p99_ttft = np.percentile(subset['ttft'], 99)
+            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
+                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
+    ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
+    ax_iter_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_iter_ttft_cdf.set_title('TTFT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
+    ax_iter_ttft_cdf.grid(True, alpha=0.3)
+    ax_iter_ttft_cdf.legend(fontsize=7, loc='lower right', ncol=2)
+    
+    # TPOT CDF by Iterations
+    for iteration in unique_iterations:
+        subset = df[df['iteration'] == iteration]
+        if len(subset) > 0:
+            sorted_tpot = np.sort(subset['avg_tpot'])
+            cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
+            avg_tpot = subset['avg_tpot'].mean()
+            p99_tpot = np.percentile(subset['avg_tpot'], 99)
+            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
+                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
+    ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
+    ax_iter_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
+    ax_iter_tpot_cdf.set_title('TPOT CDF by Iterations', fontsize=12, fontweight='bold', pad=10)
+    ax_iter_tpot_cdf.grid(True, alpha=0.3)
+    ax_iter_tpot_cdf.legend(fontsize=7, loc='lower right', ncol=2)
+    
+    # Add super title
+    fig.suptitle(f'Latency Metrics Summary (Total Requests: {len(data)})', 
+                 fontsize=18, fontweight='bold', y=0.995)
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0, 1, 0.99])
+    
+    # Save files
+    plt_pdf_fn = f"{log_dir}/latency_timeseries_simple.pdf"
+    plt_png_fn = f"{log_dir}/latency_timeseries_simple.png"
+    plt.savefig(plt_pdf_fn, bbox_inches='tight')
+    plt.savefig(plt_png_fn, bbox_inches='tight', dpi=200)
+    print(f"*****************************")
+    print(f"** Saving simple timeseries plot to: {plt_pdf_fn}")
+    print(f"** Saving simple timeseries plot to: {plt_png_fn}")
+    print(f"*****************************")
+    
+    return fig
+
 import argparse
 
 parser = argparse.ArgumentParser(description='Plot latency metrics analysis')
@@ -2164,6 +2449,9 @@ if __name__ == "__main__":
     
     # Create and save the enhanced plot
     fig = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy)
+    
+    # Create and save the simple timeseries plot
+    fig_simple = create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_policy)
     
     # Print summary statistics
     df = pd.DataFrame(data)
