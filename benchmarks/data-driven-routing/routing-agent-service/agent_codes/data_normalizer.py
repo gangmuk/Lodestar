@@ -24,8 +24,35 @@ import argparse
 import pickle
 import preprocess
 from logger import logger
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Set, List, FrozenSet
 import json
+
+# ============================================================================
+# MODULE-LEVEL CACHES FOR PERFORMANCE OPTIMIZATION
+# ============================================================================
+# These caches avoid recomputing the same values on every request.
+# They are keyed by immutable signatures (frozensets) of DataFrame columns.
+
+# Cache for _get_normalizable_features: (columns_key, no_normalize_key) -> result
+_NORMALIZABLE_FEATURES_CACHE: Dict[tuple, tuple] = {}
+
+# Cache for matching_columns per feature_type: (columns_key, feature_type) -> list
+_MATCHING_COLUMNS_CACHE: Dict[tuple, List[str]] = {}
+
+# Cache for pod feature type extraction: column_name -> feature_type (or None)
+_POD_FEATURE_TYPE_CACHE: Dict[str, str] = {}
+
+def _get_columns_cache_key(df_columns) -> FrozenSet[str]:
+    """Generate a cache key from DataFrame columns."""
+    return frozenset(df_columns)
+
+def clear_normalizer_caches():
+    """Clear all module-level caches. Call when schema changes."""
+    global _NORMALIZABLE_FEATURES_CACHE, _MATCHING_COLUMNS_CACHE, _POD_FEATURE_TYPE_CACHE
+    _NORMALIZABLE_FEATURES_CACHE.clear()
+    _MATCHING_COLUMNS_CACHE.clear()
+    _POD_FEATURE_TYPE_CACHE.clear()
+    logger.info("Cleared all normalizer caches")
 
 
 class RunningStats:
@@ -252,7 +279,7 @@ class FeatureStats:
                         stats_dict[row['stats_type']] = row['value']
                     
                     old_format_pod_features[feature_type].append((pod_id, stats_dict))
-                elif not feature_name.startswith('pod_') and any(kw in feature_name for kw in ['kv_hit_ratio', 'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 'waiting_requests', 'prefill_tokens', 'decode_tokens']):
+                elif not feature_name.startswith('pod_') and any(kw in feature_name for kw in ['kv_hit_ratio', 'inflight_requests', 'gpu_kv_cache', 'cpu_kv_cache', 'running_requests', 'waiting_requests', 'prefill_tokens', 'decode_tokens', 'inflight_prefill_requests', 'inflight_decode_requests']):
                     # NEW FORMAT: pooled statistics (e.g., "kv_hit_ratio")
                     feature_df = df[df['feature_name'] == feature_name]
                     stats_dict = {}
@@ -388,38 +415,58 @@ class FeatureStats:
             return None
 
 
-def _extract_pod_feature_type(column_name):
+def _extract_pod_feature_type(column_name: str) -> str:
     """
-    Extract feature type from pod column name.
-    
+    Extract feature type from pod column name (cached).
+
     Args:
         column_name: e.g., "pod_0000-kv_hit_ratio"
-        
+
     Returns:
         str: Feature type (e.g., "kv_hit_ratio") or None if not a pod feature
     """
+    # Check cache first
+    if column_name in _POD_FEATURE_TYPE_CACHE:
+        return _POD_FEATURE_TYPE_CACHE[column_name]
+
+    # Compute and cache
+    result = None
     if column_name.startswith('pod_') and '-' in column_name:
         parts = column_name.split('-', 1)
         if len(parts) == 2:
-            return parts[1]  # Return the feature type
-    return None
+            result = parts[1]  # Return the feature type
+
+    _POD_FEATURE_TYPE_CACHE[column_name] = result
+    return result
 
 
-def _get_normalizable_features(processed_df, no_normalize_features: list[str]):
+def _get_normalizable_features(processed_df, no_normalize_features: list):
     """
-    Automatically detect which features can be normalized.
-    
+    Automatically detect which features can be normalized (cached).
+
     Returns:
         tuple: (normalizable_features, non_normalizable_features, pod_feature_types)
-        
+
     NOTE: normalizable_features now includes POOLED feature types (e.g., "kv_hit_ratio")
           instead of individual pod features (e.g., "pod_0000-kv_hit_ratio") to avoid
           creating duplicate statistics entries.
+
+    OPTIMIZATION: Results are cached based on column signature + no_normalize_features.
     """
+    # Create cache key from columns and exclusion list
+    columns_key = _get_columns_cache_key(processed_df.columns)
+    no_normalize_key = frozenset(no_normalize_features) if no_normalize_features else frozenset()
+    cache_key = (columns_key, no_normalize_key)
+
+    # Check cache
+    if cache_key in _NORMALIZABLE_FEATURES_CACHE:
+        return _NORMALIZABLE_FEATURES_CACHE[cache_key]
+
+    # Compute (same logic as before)
     normalizable_features = ['input_tokens', 'output_tokens', 'total_tokens']
     pod_feature_types = set()  # Track unique pod feature types (e.g., "kv_hit_ratio")
     all_pod_columns = []  # Track all pod columns for validation
-    
+
     for col in processed_df.columns:
         if col.startswith('pod_') and 'gpu_model' not in col and 'GPU' not in col:
             feature_type = _extract_pod_feature_type(col)
@@ -430,43 +477,70 @@ def _get_normalizable_features(processed_df, no_normalize_features: list[str]):
                 all_pod_columns.append(col)
             else:
                 logger.debug(f"Excluding {col} from normalization. Feature type: {feature_type}, no_normalize_features: {no_normalize_features}")
-    
+
     # Add pooled feature types to normalizable_features (instead of individual pod features)
     normalizable_features.extend(sorted(pod_feature_types))
-    
+
     # Find non-normalizable features
-    non_normalizable_features = []
-    for col in processed_df.columns:
-        # Check if it's a pod column that should be normalized
-        if col in all_pod_columns:
-            continue  # Pod columns will be normalized via pooled stats
-        if col not in normalizable_features:
-            non_normalizable_features.append(col)
-    
-    logger.info(f"Found {len(pod_feature_types)} unique pod feature types: {sorted(pod_feature_types)}")
-    logger.info(f"Normalizable features: {len(normalizable_features)} (including {len(pod_feature_types)} pooled pod types)")
-    return normalizable_features, non_normalizable_features, pod_feature_types
+    all_pod_columns_set = set(all_pod_columns)
+    normalizable_set = set(normalizable_features)
+    non_normalizable_features = [
+        col for col in processed_df.columns
+        if col not in all_pod_columns_set and col not in normalizable_set
+    ]
+
+    logger.debug(f"Found {len(pod_feature_types)} unique pod feature types: {sorted(pod_feature_types)}")
+    logger.debug(f"Normalizable features: {len(normalizable_features)} (including {len(pod_feature_types)} pooled pod types)")
+
+    # Cache the result (convert pod_feature_types to frozenset for immutability)
+    result = (normalizable_features, non_normalizable_features, pod_feature_types)
+    _NORMALIZABLE_FEATURES_CACHE[cache_key] = result
+
+    return result
+
+
+def _get_matching_columns_cached(df_columns, feature_type: str) -> List[str]:
+    """
+    Get all pod columns matching a feature type (cached).
+
+    Args:
+        df_columns: DataFrame columns (used for cache key)
+        feature_type: e.g., "kv_hit_ratio"
+
+    Returns:
+        List of column names matching the feature type
+    """
+    columns_key = _get_columns_cache_key(df_columns)
+    cache_key = (columns_key, feature_type)
+
+    if cache_key in _MATCHING_COLUMNS_CACHE:
+        return _MATCHING_COLUMNS_CACHE[cache_key]
+
+    # Compute matching columns
+    matching = [col for col in df_columns if _extract_pod_feature_type(col) == feature_type]
+    _MATCHING_COLUMNS_CACHE[cache_key] = matching
+
+    return matching
 
 
 def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instance, update_statistics=True):
     """
     Compute pooled statistics for pod features by aggregating across all pods.
-    
+
     Args:
         processed_df: DataFrame with pod features
         pod_feature_types: Set of unique pod feature types (e.g., {"kv_hit_ratio", "inflight_requests"})
         stats_instance: FeatureStats instance to store the pooled statistics
         update_statistics: If False, skip updating stats (used during online training to prevent distribution shift)
-        
+
     Returns:
         dict: Mapping from feature_type to pooled stats
     """
     pooled_stats = {}
-    
+
     for feature_type in pod_feature_types:
-        # Find all columns for this feature type across all pods
-        matching_columns = [col for col in processed_df.columns 
-                          if _extract_pod_feature_type(col) == feature_type]
+        # OPTIMIZATION: Use cached matching columns lookup
+        matching_columns = _get_matching_columns_cached(processed_df.columns, feature_type)
         
         if not matching_columns:
             continue
@@ -648,6 +722,116 @@ def _normalize_single_feature(processed_df, feature, stats_instance, update_stat
             logger.debug(f"{log_prefix}✅ {feature} → POOLED '{stats_key}'")
         else:
             logger.debug(f"{log_prefix}✅ {feature}, Normalized using stored stats")
+
+
+def normalize_features_batch_inference(processed_df, stats_instance, normalizable_features, pod_feature_types, request_id=None):
+    """
+    Batch normalize all features for inference (optimized).
+
+    This function avoids the overhead of calling _normalize_single_feature in a loop by:
+    1. Pre-computing all stats lookups once
+    2. Using vectorized operations where possible
+    3. Leveraging cached matching columns
+
+    Args:
+        processed_df: DataFrame to normalize (modified in place)
+        stats_instance: FeatureStats instance with normalization statistics
+        normalizable_features: List of features to normalize (from _get_normalizable_features)
+        pod_feature_types: Set of pod feature types (from _get_normalizable_features)
+        request_id: Optional request ID for logging
+
+    Returns:
+        None (modifies processed_df in place)
+    """
+    log_prefix = f"request_id,{request_id}," if request_id else ""
+
+    # Pre-fetch all needed stats objects to avoid repeated dict lookups
+    stats_cache = {}
+    for feature_type in pod_feature_types:
+        if feature_type in stats_instance.feature_stats:
+            stats_cache[feature_type] = stats_instance.feature_stats[feature_type]
+    for feature in normalizable_features:
+        if feature not in pod_feature_types and feature in stats_instance.feature_stats:
+            stats_cache[feature] = stats_instance.feature_stats[feature]
+
+    # Process pod features by type (batch all columns of same type together)
+    for feature_type in pod_feature_types:
+        if feature_type not in stats_cache:
+            logger.error(f"{log_prefix}Stats for pod feature type '{feature_type}' not found")
+            logger.error(f"{log_prefix}This indicates a training/inference feature mismatch")
+            assert False  # Fail fast - same as original _normalize_single_feature
+
+        stats = stats_cache[feature_type]
+
+        # Skip constant features (same check as original)
+        if hasattr(stats, 'std') and np.allclose(stats.std, 0):
+            logger.debug(f"{log_prefix}Skipping constant pod feature type '{feature_type}'")
+            continue
+
+        # Get all columns for this feature type (cached)
+        matching_columns = _get_matching_columns_cached(processed_df.columns, feature_type)
+
+        if not matching_columns:
+            continue
+
+        # Pre-fetch stats values for vectorized normalization
+        mean_val = stats.mean[0] if hasattr(stats.mean, '__len__') else stats.mean
+        std_val = stats.std[0] if hasattr(stats.std, '__len__') else stats.std
+
+        if std_val == 0 or np.isnan(std_val):
+            logger.debug(f"{log_prefix}Skipping pod feature type '{feature_type}' (std=0 or NaN)")
+            continue
+
+        # Normalize all matching columns
+        for col in matching_columns:
+            if col in processed_df.columns:
+                raw_val = processed_df[col].values
+                normalized_val = (raw_val - mean_val) / std_val
+                # NaN check - same as original _normalize_single_feature
+                if np.any(np.isnan(normalized_val)):
+                    logger.error(f"{log_prefix}❌ {col}: Normalization produced NaN values, skipping")
+                    continue
+                processed_df[col] = normalized_val
+
+    # Process non-pod features
+    for feature in normalizable_features:
+        if feature in pod_feature_types:
+            continue  # Already processed above
+
+        if feature not in stats_cache:
+            logger.error(f"{log_prefix}Stats for feature '{feature}' not found")
+            logger.error(f"{log_prefix}This indicates a training/inference feature mismatch")
+            assert False  # Fail fast - same as original _normalize_single_feature
+
+        if feature not in processed_df.columns:
+            logger.warning(f"{log_prefix}Feature '{feature}' not in DataFrame")
+            continue
+
+        stats = stats_cache[feature]
+
+        # Skip constant features (same check as original)
+        if hasattr(stats, 'std') and np.allclose(stats.std, 0):
+            logger.debug(f"{log_prefix}Skipping constant feature '{feature}'")
+            continue
+
+        # Pre-fetch stats values
+        mean_val = stats.mean[0] if hasattr(stats.mean, '__len__') else stats.mean
+        std_val = stats.std[0] if hasattr(stats.std, '__len__') else stats.std
+
+        if std_val == 0 or np.isnan(std_val):
+            logger.debug(f"{log_prefix}Skipping feature '{feature}' (std=0 or NaN)")
+            continue
+
+        # Normalize
+        raw_val = processed_df[feature].values
+        normalized_val = (raw_val - mean_val) / std_val
+        # NaN check - same as original _normalize_single_feature
+        if np.any(np.isnan(normalized_val)):
+            logger.error(f"{log_prefix}❌ {feature}: Normalization produced NaN values, skipping")
+            continue
+        processed_df[feature] = normalized_val
+
+    logger.debug(f"{log_prefix}Batch normalized {len(normalizable_features)} features + {len(pod_feature_types)} pod types")
 
 
 def normalize_processed_data(processed_csv_file, output_csv_file=None, 
@@ -883,9 +1067,8 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         try:
             # Check if this is a pooled pod feature type (not a column name)
             if feature in pod_feature_types:
-                # Find all pod columns for this feature type and normalize each
-                matching_columns = [col for col in df.columns 
-                                  if _extract_pod_feature_type(col) == feature]
+                # OPTIMIZATION: Use cached matching columns lookup
+                matching_columns = _get_matching_columns_cached(df.columns, feature)
                 for col in matching_columns:
                     _normalize_single_feature(df, col, stats_instance, update_statistics=True)
             else:

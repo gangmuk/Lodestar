@@ -15,6 +15,15 @@ import time
 from logger import logger
 import utils as utils
 
+# ============================================================================
+# MODULE-LEVEL CONSTANTS FOR PERFORMANCE OPTIMIZATION
+# ============================================================================
+# Pre-computed constants to avoid repeated string operations in hot paths
+
+# Constants for parse_log_message
+_LATENCY_METRICS_PREFIX = "latency_metrics@"
+_LATENCY_METRICS_PREFIX_LEN = 16  # len("latency_metrics@")
+
 # NOTE: GPU feature inclusion is now controlled by INCLUDE_GPU_FEATURES 
 # environment variable in routing_agent_service.py, not here.
 # GPU column extraction here just parses raw data - actual one-hot 
@@ -348,11 +357,10 @@ def calculate_rewards_latency_optimization(ttft_values, tpot_values, ttft_slo, a
     return {
         'ttft_rewards': ttft_rewards,
         'tpot_rewards': tpot_rewards, 
-        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
-    }
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
-def calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight=0.7):
+def calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft_reward_weight):
     """
     Simple global latency minimization - NO normalization tricks!
     
@@ -402,11 +410,10 @@ def calculate_rewards_simple_latency_minimization(ttft_values, tpot_values, ttft
     return {
         'ttft_rewards': ttft_rewards,
         'tpot_rewards': tpot_rewards,
-        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
-    }
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
-def calculate_rewards_negative_reciprocal(ttft_values, tpot_values, ttft_reward_weight=0.7):
+def calculate_rewards_negative_reciprocal(ttft_values, tpot_values, ttft_reward_weight):
     """
     Negative reciprocal reward: reward = -K / latency
     
@@ -448,7 +455,7 @@ def calculate_rewards_negative_reciprocal(ttft_values, tpot_values, ttft_reward_
     }
 
 
-def calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight=0.7):
+def calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight):
     """
     Negative linear reward: reward = -latency / K
     
@@ -490,11 +497,10 @@ def calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weig
     return {
         'ttft_rewards': ttft_rewards,
         'tpot_rewards': tpot_rewards,
-        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
-    }
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
-def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_weight=0.7):
+def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_weight):
     """
     Negative squared reward: reward = -(latency / K)^2
     
@@ -544,8 +550,8 @@ def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_wei
     }
 
 
-def calculate_rewards_quantile_based(ttft_values, tpot_values, input_tokens, output_tokens,
-                                      ttft_reward_weight=0.7):
+def calculate_rewards_quantile_based(ttft_values,ot_values, input_tokens, output_tokens,
+                                      ttft_reward_weight):
     """
     Data-driven Z-score normalized reward function - NO hard-coded SLOs!
     
@@ -637,8 +643,8 @@ def calculate_rewards_quantile_based(ttft_values, tpot_values, input_tokens, out
 
 
 def calculate_rewards_absolute_latency(ttft_values, tpot_values, 
-                                       ttft_slo=15000, tpot_slo=100,
-                                       ttft_reward_weight=0.7):
+                                       ttft_slo, tpot_slo,
+                                       ttft_reward_weight):
     """
     Absolute latency-based reward that TRANSFERS across distributions.
     
@@ -675,11 +681,10 @@ def calculate_rewards_absolute_latency(ttft_values, tpot_values,
     return {
         'ttft_rewards': ttft_rewards,
         'tpot_rewards': tpot_rewards,
-        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
-    }
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
-def calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, ttft_reward_weight=0.7):
+def calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, ttft_reward_weight):
     """
     OPTION A: Throughput-based reward for LLM inference (context-aware, transferable).
     
@@ -731,11 +736,10 @@ def calculate_rewards_throughput_based(ttft_values, tpot_values, input_tokens, t
     return {
         'ttft_rewards': ttft_rewards,
         'tpot_rewards': tpot_rewards,
-        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight),
-    }
+        'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
-def calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p99, ttft_reward_weight=0.7):
+def calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p99, ttft_reward_weight):
     """
     OPTION B: Variance-normalized log reward for policy gradient.
     
@@ -743,8 +747,8 @@ def calculate_rewards_log_normalized(ttft_values, tpot_values, ttft_p99, tpot_p9
     we minimize gradient variance while preserving interpretability of weights.
     
     This approach:
-    1. Uses training data statistics (p99) for normalization
-    2. Gives proper meaning to weights: ttft_weight=0.7 means "70% of reward from TTFT"
+    1. Uses training data statistics (p99)normalization
+    2. Gives proper meaning to weights: ttft_weight means "70% of reward from TTFT"
     3. Ensures equal gradient contribution from TTFT and TPOT
     4. Context-awareness comes from model features (input_tokens), not reward function
     
@@ -1109,8 +1113,69 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     # Helper function to extract pod values from list of dicts efficiently
     def extract_pod_features_fast(data_array, pod_ids, default_val=0):
         """Extract features for all pods from array of dicts in one pass."""
+        # Fast path for single-row inference to avoid DataFrame creation
+        if num_rows == 1:
+            entry = data_array[0] if len(data_array) > 0 else {}
+            if isinstance(entry, dict):
+                pod_map = entry
+            elif entry is None or (isinstance(entry, float) and np.isnan(entry)):
+                pod_map = {}
+            elif isinstance(entry, str):
+                stripped = entry.strip()
+                if not stripped or stripped.lower() in ("null", "none"):
+                    pod_map = {}
+                else:
+                    try:
+                        pod_map = json.loads(stripped)
+                    except Exception:
+                        try:
+                            pod_map = ast.literal_eval(stripped)
+                        except Exception:
+                            pod_map = {}
+            else:
+                pod_map = {}
+
+            result = {}
+            for pod_id in pod_ids:
+                value = pod_map.get(pod_id, default_val)
+                # Preserve non-numeric values (e.g., GPU model strings)
+                if isinstance(value, (str, bytes)):
+                    result[pod_id] = np.array([value], dtype=object)
+                else:
+                    result[pod_id] = np.array([value], dtype=np.float32)
+            return result
+
+        parse_failures = 0
+        normalized_rows = []
+        for entry in data_array:
+            if isinstance(entry, dict):
+                normalized_rows.append(entry)
+                continue
+            if entry is None or (isinstance(entry, float) and np.isnan(entry)):
+                normalized_rows.append({})
+                continue
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if not stripped or stripped.lower() in ("null", "none"):
+                    normalized_rows.append({})
+                    continue
+                try:
+                    normalized_rows.append(json.loads(stripped))
+                    continue
+                except Exception:
+                    try:
+                        normalized_rows.append(ast.literal_eval(stripped))
+                        continue
+                    except Exception:
+                        parse_failures += 1
+                        normalized_rows.append({})
+                        continue
+            parse_failures += 1
+            normalized_rows.append({})
+        if parse_failures > 0:
+            logger.warning(f"extract_pod_features_fast: {parse_failures} non-dict entries replaced with empty dicts")
         # Convert to DataFrame - this is O(n) but done once per feature type
-        df = pd.DataFrame(list(data_array))
+        df = pd.DataFrame(normalized_rows)
         result = {}
         for pod_id in pod_ids:
             if pod_id in df.columns:
@@ -1120,63 +1185,53 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         return result
 
     # Extract all features at once per feature type (much faster than per-pod list comprehensions)
+    sorted_pods = sorted_all_pod_ids
     if 'kv_hit_ratio' not in excluded_pod_features:
-        kv_cache_features = extract_pod_features_fast(all_kv_cache, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-kv_hit_ratio"] = kv_cache_features[pod_id]
+        kv_cache_features = extract_pod_features_fast(all_kv_cache, sorted_pods, 0)
+        base_data.update({f"{pod_id}-kv_hit_ratio": kv_cache_features[pod_id] for pod_id in sorted_pods})
 
     if 'inflight_requests' not in excluded_pod_features:
-        inflight_features = extract_pod_features_fast(all_inflight, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-inflight_requests"] = inflight_features[pod_id]
+        inflight_features = extract_pod_features_fast(all_inflight, sorted_pods, 0)
+        base_data.update({f"{pod_id}-inflight_requests": inflight_features[pod_id] for pod_id in sorted_pods})
 
     # NEW: Extract per-pod inflight prefill requests
     if 'inflight_prefill_requests' not in excluded_pod_features:
-        inflight_prefill_features = extract_pod_features_fast(all_inflight_prefill, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-inflight_prefill_requests"] = inflight_prefill_features[pod_id]
+        inflight_prefill_features = extract_pod_features_fast(all_inflight_prefill, sorted_pods, 0)
+        base_data.update({f"{pod_id}-inflight_prefill_requests": inflight_prefill_features[pod_id] for pod_id in sorted_pods})
 
     # NEW: Extract per-pod inflight decode requests
     if 'inflight_decode_requests' not in excluded_pod_features:
-        inflight_decode_features = extract_pod_features_fast(all_inflight_decode, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-inflight_decode_requests"] = inflight_decode_features[pod_id]
+        inflight_decode_features = extract_pod_features_fast(all_inflight_decode, sorted_pods, 0)
+        base_data.update({f"{pod_id}-inflight_decode_requests": inflight_decode_features[pod_id] for pod_id in sorted_pods})
 
     if 'gpu_kv_cache' not in excluded_pod_features:
-        gpu_cache_features = extract_pod_features_fast(all_gpu_cache, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-gpu_kv_cache"] = gpu_cache_features[pod_id]
+        gpu_cache_features = extract_pod_features_fast(all_gpu_cache, sorted_pods, 0)
+        base_data.update({f"{pod_id}-gpu_kv_cache": gpu_cache_features[pod_id] for pod_id in sorted_pods})
 
     if 'cpu_kv_cache' not in excluded_pod_features:
-        cpu_cache_features = extract_pod_features_fast(all_cpu_cache, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-cpu_kv_cache"] = cpu_cache_features[pod_id]
+        cpu_cache_features = extract_pod_features_fast(all_cpu_cache, sorted_pods, 0)
+        base_data.update({f"{pod_id}-cpu_kv_cache": cpu_cache_features[pod_id] for pod_id in sorted_pods})
 
     if 'running_requests' not in excluded_pod_features:
-        running_features = extract_pod_features_fast(all_running, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-running_requests"] = running_features[pod_id]
+        running_features = extract_pod_features_fast(all_running, sorted_pods, 0)
+        base_data.update({f"{pod_id}-running_requests": running_features[pod_id] for pod_id in sorted_pods})
 
     if 'waiting_requests' not in excluded_pod_features:
-        waiting_features = extract_pod_features_fast(all_waiting, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-waiting_requests"] = waiting_features[pod_id]
+        waiting_features = extract_pod_features_fast(all_waiting, sorted_pods, 0)
+        base_data.update({f"{pod_id}-waiting_requests": waiting_features[pod_id] for pod_id in sorted_pods})
 
     if 'prefill_tokens' not in excluded_pod_features:
-        prefill_features = extract_pod_features_fast(all_prefill, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-prefill_tokens"] = prefill_features[pod_id]
+        prefill_features = extract_pod_features_fast(all_prefill, sorted_pods, 0)
+        base_data.update({f"{pod_id}-prefill_tokens": prefill_features[pod_id] for pod_id in sorted_pods})
 
     if 'decode_tokens' not in excluded_pod_features:
-        decode_features = extract_pod_features_fast(all_decode, sorted_all_pod_ids, 0)
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-decode_tokens"] = decode_features[pod_id]
+        decode_features = extract_pod_features_fast(all_decode, sorted_pods, 0)
+        base_data.update({f"{pod_id}-decode_tokens": decode_features[pod_id] for pod_id in sorted_pods})
 
     # GPU model is a string, use different default
     if 'GPU' not in excluded_pod_features:
-        gpu_model_features = extract_pod_features_fast(all_gpu_models, sorted_all_pod_ids, 'GPU-L3c')
-        for pod_id in sorted_all_pod_ids:
-            base_data[f"{pod_id}-GPU"] = gpu_model_features[pod_id]
+        gpu_model_features = extract_pod_features_fast(all_gpu_models, sorted_pods, 'GPU-L3c')
+        base_data.update({f"{pod_id}-GPU": gpu_model_features[pod_id] for pod_id in sorted_pods})
     get_value_overhead = time.time() - get_value_start_time # 0ms
     num_rows = len(base_data['request_id'])
     pod_index_start_time = time.time()
@@ -1211,6 +1266,13 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
             avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
             ttft_reward_weight = hyperparameters['TTFT_REWARD_WEIGHT']
             reward_function = hyperparameters['REWARD_FUNCTION']
+            logger.info(
+                "Online training reward config: REWARD_FUNCTION=%s, TTFT_SLO=%s, AVG_TPOT_SLO=%s, TTFT_REWARD_WEIGHT=%s",
+                reward_function,
+                ttft_slo,
+                avg_tpot_slo,
+                ttft_reward_weight,
+            )
 
             if reward_function == "linear_simple":
                 reward = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
@@ -1327,7 +1389,17 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 missing_keys = reward_keys - set(hyperparameters.keys())
                 logger.info(f"Reward calculation skipped: missing hyperparameter keys: {missing_keys}")
     create_df_start_time = time.time()
-    processed_df = pd.DataFrame(base_data)
+    if num_rows == 1:
+        # Reduce per-column object overhead for single-row inference
+        single_row_data = {}
+        for key, value in base_data.items():
+            if isinstance(value, np.ndarray) and value.shape[0] == 1:
+                single_row_data[key] = value[0]
+            else:
+                single_row_data[key] = value
+        processed_df = pd.DataFrame(single_row_data, index=[0])
+    else:
+        processed_df = pd.DataFrame(base_data)
     create_df_overhead = time.time() - create_df_start_time
 
     # Replace fillna(0) with a more targeted approach since most values should already be handled
@@ -1361,24 +1433,71 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         return processed_df, sorted_all_pod_ids, preprocess_overhead_summary
 
 
+def _fast_parse_value(value: str):
+    """
+    Fast type conversion for log message values.
+    Matches original behavior exactly:
+    - Positive integers: "123" → int
+    - Floats (including negative): "-1.5", "1.5" → float
+    - Everything else: string
+
+    NOTE: Original did NOT convert negative integers like "-123" to int.
+    This is preserved for backward compatibility.
+    """
+    # Empty value
+    if not value:
+        return value
+
+    # Fast path for positive integers (most common case)
+    # isdigit() only returns True for strings of digits (no sign, no decimal)
+    if value.isdigit():
+        return int(value)
+
+    # Float detection: matches original logic exactly
+    # Original: value.replace('.', '').replace('-', '').isdigit() and value.count('.') == 1
+    # This handles: "1.5", "-1.5", "0.123", etc.
+    if value.count('.') == 1:
+        stripped = value.replace('.', '').replace('-', '')
+        if stripped.isdigit():
+            try:
+                return float(value)
+            except ValueError:
+                return value
+
+    return value
+
+
 def parse_log_message(log_message):
-    # logger.info(f"log_message: {log_message}")
+    """
+    Parse a single log message into a DataFrame (optimized for inference).
+
+    Optimizations:
+    - Uses module-level constants for prefix detection
+    - Fast type conversion with try/except (faster for valid numbers)
+    - Minimal string operations
+    """
+    # Fast prefix check using 'in' (optimized by Python)
     if "latency_metrics" not in log_message:
         logger.error(f"Invalid line. {log_message}")
         return pd.DataFrame(), []
-    # Find start position more efficiently
-    start_idx = log_message.find("latency_metrics@") + 16
-    if start_idx == 15:  # find returned -1
+
+    # Find start position using pre-computed constant
+    start_idx = log_message.find(_LATENCY_METRICS_PREFIX)
+    if start_idx == -1:
         return pd.DataFrame(), []
+    start_idx += _LATENCY_METRICS_PREFIX_LEN
+
     # Split only the relevant part
     parts = log_message[start_idx:].split('@')
     row = {}
     json_columns = []
-    # Process pairs directly
-    i = 0
-    while i < len(parts) - 1:
+
+    # Process pairs directly using range (slightly faster than while)
+    num_parts = len(parts)
+    for i in range(0, num_parts - 1, 2):
         key = parts[i]
         value = parts[i + 1]
+
         # Fast JSON detection and parsing
         if value and value[0] == '{' and value[-1] == '}':
             try:
@@ -1392,19 +1511,12 @@ def parse_log_message(log_message):
                 logger.error(f"Error: {e}")
                 row[key] = value
         else:
-            # Fast type conversion with better float detection
-            if value.isdigit():
-                row[key] = int(value)
-            elif value.replace('.', '').replace('-', '').isdigit() and value.count('.') == 1:
-                # Only convert to float if there's exactly one decimal point
-                row[key] = float(value)
-            else:
-                row[key] = value
-        i += 2
+            # Fast type conversion
+            row[key] = _fast_parse_value(value)
+
     # Create DataFrame only if we have data
     if row:
         df = pd.DataFrame([row])
-        # logger.info(f"df: {df.to_csv(index=False)}")
         return df, json_columns
     else:
         return pd.DataFrame(), []

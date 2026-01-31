@@ -276,7 +276,7 @@ class DistributionShiftMonitor:
         logger.warning(f"   High severity: {len(high_severity)}, Medium severity: {len(medium_severity)}")
 
         for warning in high_severity:
-            logger.error(f"   ❌ {warning['message']}")
+            logger.warning(f"   ❌ {warning['message']}")
 
         for warning in medium_severity:
             logger.warning(f"   ⚠️  {warning['message']}")

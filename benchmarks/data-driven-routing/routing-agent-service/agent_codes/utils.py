@@ -77,14 +77,29 @@ def get_sorted_all_pod_ids(source_type, data=None):
     if source_type == 'batch_dataframe':
         # Extract from batch dataframe for training (parsed_df)
         all_pods_set = set()
+        warned_non_dict = False
         for col in ['allPodsKvCacheHitRatios', 'numInflightRequestsAllPods', 'vllmGPUKVCacheUsage', 'vllmCPUKVCacheUsage', 'vllmNumRequestsRunning', 'vllmNumRequestsWaiting']:
             if col in data.columns:
                 for row_data in data[col]:
-                    if row_data:
-                        if type(row_data) is not dict:
-                            logger.error(f"Expected dict but got {type(row_data)}: {row_data}")
-                            assert False
-                        all_pods_set.update(row_data.keys())
+                    if row_data is None:
+                        continue
+                    if isinstance(row_data, float) and np.isnan(row_data):
+                        continue
+                    if type(row_data) is not dict:
+                        if isinstance(row_data, str):
+                            try:
+                                row_data = json.loads(row_data)
+                            except Exception:
+                                if not warned_non_dict:
+                                    logger.error(f"Expected dict but got {type(row_data)}: {row_data}")
+                                    warned_non_dict = True
+                                continue
+                        else:
+                            if not warned_non_dict:
+                                logger.error(f"Expected dict but got {type(row_data)}: {row_data}")
+                                warned_non_dict = True
+                            continue
+                    all_pods_set.update(row_data.keys())
         sorted_all_pod_ids = sorted(list(all_pods_set))
         logger.debug(f"Extracted {len(sorted_all_pod_ids)} pod IDs from batch dataframe: {sorted_all_pod_ids}")
         return sorted_all_pod_ids

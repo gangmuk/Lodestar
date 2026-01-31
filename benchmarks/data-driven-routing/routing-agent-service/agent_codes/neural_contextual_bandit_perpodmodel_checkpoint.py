@@ -5,6 +5,7 @@ Correct formulation for latency-optimal pod selection
 """
 
 import os
+import threading
 import numpy as np
 import torch
 import torch.nn as nn
@@ -17,6 +18,12 @@ matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Inference/runtime tuning flags (env overrides)
+CB_LOAD_METADATA_ON_INFER = int(os.getenv("CB_LOAD_METADATA_ON_INFER", "0"))
+CB_RETURN_ARRAY_OUTPUTS = int(os.getenv("CB_RETURN_ARRAY_OUTPUTS", "0"))
+CB_RETURN_POD_PROBABILITIES = int(os.getenv("CB_RETURN_POD_PROBABILITIES", "0"))
+CB_RETURN_PREDICTED_REWARDS = int(os.getenv("CB_RETURN_PREDICTED_REWARDS", "0"))
 
 
 class RewardNetwork(nn.Module):
@@ -87,7 +94,7 @@ class NeuralContextualBandit:
         # Optimizer
         self.optimizer = torch.optim.Adam(
             self.reward_net.parameters(),
-            lr=hyperparameters.get('learning_rate', 3e-4),
+            lr=hyperparameters.get('learning_rate', 0.0001),
             weight_decay=hyperparameters.get('weight_decay', 1e-5)
         )
 
@@ -366,8 +373,8 @@ class NeuralContextualBandit:
         
         logger.info(f"Model saved to {final_model_dir}")
     
-    def load_model(self, final_model_dir):
-        """Load model and metadata"""
+    def load_model(self, final_model_dir, load_metadata=True):
+        """Load model and metadata (metadata optional for fast inference reloads)."""
         # Load network weights
         reward_net_path = os.path.join(final_model_dir, 'reward_net.pth')
         if os.path.exists(reward_net_path):
@@ -382,46 +389,126 @@ class NeuralContextualBandit:
             except:
                 logger.warning("Could not load optimizer state")
         
-        # Load metadata
-        metadata_path = os.path.join(final_model_dir, 'metadata.pkl')
-        if os.path.exists(metadata_path):
-            with open(metadata_path, 'rb') as f:
-                metadata = pickle.load(f)
-            
-            self.epsilon = metadata.get('epsilon', self.epsilon)
-            self.action_counts = np.array(metadata.get('action_counts', self.action_counts))
-            self.total_steps = metadata.get('total_steps', 0)
-            
-            # Merge loaded training_metrics with current template to ensure new fields exist
-            loaded_metrics = metadata.get('training_metrics', {})
-            for key in self.training_metrics:
-                if key in loaded_metrics:
-                    self.training_metrics[key] = loaded_metrics[key]
-                # else: keep the freshly initialized default value
-            
-            # CRITICAL: Validate off-policy metrics have matching lengths
-            # If loading old model with partial metrics, clear them to avoid dimension mismatches
-            off_policy_keys = ['counterfactual_gains', 'greedy_actions', 'training_actions', 'input_tokens_per_sample']
-            lengths = [len(self.training_metrics.get(k, [])) for k in off_policy_keys]
-            if len(set(lengths)) > 1:  # Different lengths detected
-                logger.warning(f"Detected mismatched off-policy metric lengths {dict(zip(off_policy_keys, lengths))}. "
-                             f"Clearing off-policy metrics to avoid plotting errors.")
-                for key in off_policy_keys:
-                    self.training_metrics[key] = []
-            
-            logger.info(f"Loaded metadata: epsilon={self.epsilon:.4f}, total_steps={self.total_steps}")
+        # Load metadata (optional - can be heavy for inference hot path)
+        if load_metadata:
+            metadata_path = os.path.join(final_model_dir, 'metadata.pkl')
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'rb') as f:
+                    metadata = pickle.load(f)
+                
+                self.epsilon = metadata.get('epsilon', self.epsilon)
+                self.action_counts = np.array(metadata.get('action_counts', self.action_counts))
+                self.total_steps = metadata.get('total_steps', 0)
+                
+                # Merge loaded training_metrics with current template to ensure new fields exist
+                loaded_metrics = metadata.get('training_metrics', {})
+                for key in self.training_metrics:
+                    if key in loaded_metrics:
+                        self.training_metrics[key] = loaded_metrics[key]
+                    # else: keep the freshly initialized default value
+                
+                # CRITICAL: Validate off-policy metrics have matching lengths
+                # If loading old model with partial metrics, clear them to avoid dimension mismatches
+                off_policy_keys = ['counterfactual_gains', 'greedy_actions', 'training_actions', 'input_tokens_per_sample']
+                lengths = [len(self.training_metrics.get(k, [])) for k in off_policy_keys]
+                if len(set(lengths)) > 1:  # Different lengths detected
+                    logger.warning(f"Detected mismatched off-policy metric lengths {dict(zip(off_policy_keys, lengths))}. "
+                                 f"Clearing off-policy metrics to avoid plotting errors.")
+                    for key in off_policy_keys:
+                        self.training_metrics[key] = []
+                
+                logger.info(f"Loaded metadata: epsilon={self.epsilon:.4f}, total_steps={self.total_steps}")
+        else:
+            logger.info("Skipped metadata.pkl load for faster inference reload")
 
 
 # Inference function (compatible with existing code)
 _cached_agent = None
 _cached_metadata = None
-_model_mtime = None  # Track model file modification time for cross-worker updates
+_cached_config_key = None
+_model_updated_consumed = False
+_reload_in_progress = False
+_agent_lock = threading.Lock()
+
+def preload_agent_from_metadata(final_model_dir, HYPERPARAMETERS, num_pods=None):
+    """Preload agent on startup using metadata.pkl for dimensions."""
+    global _cached_agent, _cached_metadata, _cached_config_key, _model_updated_consumed, _reload_in_progress
+
+    metadata_path = os.path.join(final_model_dir, 'metadata.pkl')
+    if not os.path.exists(metadata_path):
+        logger.error(f"Preload failed: metadata.pkl not found at {metadata_path}")
+        return False
+
+    try:
+        with open(metadata_path, 'rb') as f:
+            metadata = pickle.load(f)
+    except Exception as e:
+        logger.error(f"Preload failed: error reading metadata.pkl: {e}")
+        return False
+
+    state_dim = metadata.get('state_dim')
+    if not state_dim:
+        logger.error("Preload failed: metadata.pkl missing state_dim")
+        return False
+
+    action_dim = int(num_pods) if num_pods is not None else int(metadata.get('action_dim', 0))
+    if action_dim <= 0:
+        logger.error(f"Preload failed: invalid action_dim={action_dim}")
+        return False
+
+    config_snapshot = {
+        'pod_features': int(state_dim.get('pod_features', 0)),
+        'kv_hit_ratios': int(state_dim.get('kv_hit_ratios', 0)),
+        'request_features': int(state_dim.get('request_features', 0)),
+        'num_pods': int(action_dim)
+    }
+    if config_snapshot['pod_features'] <= 0 or config_snapshot['kv_hit_ratios'] <= 0 or config_snapshot['request_features'] <= 0:
+        logger.error(f"Preload failed: invalid state_dim={state_dim}")
+        return False
+
+    config_key = (
+        config_snapshot['pod_features'],
+        config_snapshot['kv_hit_ratios'],
+        config_snapshot['request_features'],
+        config_snapshot['num_pods']
+    )
+
+    with _agent_lock:
+        if _cached_agent is not None and _cached_config_key == config_key:
+            logger.info("Preload skipped: agent already initialized with matching config")
+            return True
+
+        new_agent = NeuralContextualBandit(
+            state_dim={
+                'pod_features': config_snapshot['pod_features'],
+                'kv_hit_ratios': config_snapshot['kv_hit_ratios'],
+                'request_features': config_snapshot['request_features']
+            },
+            action_dim=config_snapshot['num_pods'],
+            hyperparameters=HYPERPARAMETERS,
+            final_model_dir=final_model_dir
+        )
+
+        if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
+            new_agent.load_model(final_model_dir, load_metadata=True)
+        else:
+            logger.error(f"Preload failed: reward_net.pth not found in {final_model_dir}")
+            return False
+
+        _cached_agent = new_agent
+        _cached_metadata = config_snapshot
+        _cached_config_key = config_key
+        _model_updated_consumed = True
+        _reload_in_progress = False
+
+    logger.info(f"Preloaded Neural Contextual Bandit agent with config={config_snapshot}")
+    return True
 
 def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, final_model_dir, sorted_all_pod_ids):
     """
     Inference function compatible with existing routing service
     """
-    global _cached_agent, _cached_metadata, _model_mtime
+    global _cached_agent, _cached_metadata, _cached_config_key, _model_updated_consumed, _reload_in_progress
     
     infer_start_time = time.time()
     overhead_summary = {}
@@ -433,6 +520,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     request_features = tensor_data['request_features'].to(device)
     overhead_summary['tensor_transfer'] = time.time() - tensor_transfer_start
     
+    batch_format_start = time.time()
     # Ensure batch format
     if len(pod_features.shape) == 2:
         pod_features = pod_features.unsqueeze(0)
@@ -440,52 +528,133 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         kv_hit_ratios = kv_hit_ratios.unsqueeze(0)
     if len(request_features.shape) == 1:
         request_features = request_features.unsqueeze(0)
-    
+    overhead_summary['batch_format'] = time.time() - batch_format_start
     # Get or create agent
     get_agent_start = time.time()
     current_config = {
-        'pod_features': pod_features.shape[2],
-        'kv_hit_ratios': kv_hit_ratios.shape[2],
-        'request_features': request_features.shape[1],
-        'num_pods': pod_features.shape[1]
+        'pod_features': int(pod_features.shape[2]),
+        'kv_hit_ratios': int(kv_hit_ratios.shape[2]),
+        'request_features': int(request_features.shape[1]),
+        'num_pods': int(pod_features.shape[1])
     }
+    current_config_key = (
+        current_config['pod_features'],
+        current_config['kv_hit_ratios'],
+        current_config['request_features'],
+        current_config['num_pods']
+    )
     
-    # Check if model file has been updated (for cross-worker synchronization)
-    model_file_updated = False
-    model_path = os.path.join(final_model_dir, 'reward_net.pth')
-    if os.path.exists(model_path):
-        current_mtime = os.path.getmtime(model_path)
-        if _model_mtime is None or current_mtime > _model_mtime:
-            model_file_updated = True
-            _model_mtime = current_mtime
-    
-    # Recreate if: dimensions changed, agent doesn't exist, model flag set, or file updated
-    if _cached_agent is None or _cached_metadata != current_config or model_updated or model_file_updated:
-        logger.info(f"Creating/reloading Neural Contextual Bandit agent (first_time={_cached_agent is None}, "
-                   f"config_changed={_cached_metadata != current_config}, model_updated={model_updated}, "
-                   f"file_updated={model_file_updated})")
-        
-        state_dim = {
-            'pod_features': current_config['pod_features'],
-            'kv_hit_ratios': current_config['kv_hit_ratios'],
-            'request_features': current_config['request_features']
-        }
-        
-        _cached_agent = NeuralContextualBandit(
-            state_dim=state_dim,
-            action_dim=current_config['num_pods'],
-            hyperparameters=HYPERPARAMETERS,
-            final_model_dir=final_model_dir
-        )
-        
-        # Try to load existing model
-        if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
-            _cached_agent.load_model(final_model_dir)
-        
-        _cached_metadata = current_config
+    # Recreate if: dimensions changed, agent doesn't exist, or model_updated flag is set.
+    # Fast path: check without lock; only block for missing agent or config changes.
+    # For model_updated, start async reload and never block requests.
+    # Consume model_updated once per True->False cycle to avoid repeated reloads under concurrency.
+    if not model_updated:
+        _model_updated_consumed = False
+    model_updated_effective = bool(model_updated) and not _model_updated_consumed
+
+    lock_wait_start = time.time()
+    needs_sync_reload = (_cached_agent is None) or (_cached_config_key != current_config_key)
+    if needs_sync_reload:
+        lock_acquire_start = time.time()
+        with _agent_lock:
+            overhead_summary['get_agent_lock_wait'] = time.time() - lock_acquire_start
+            # Double-check under lock
+            needs_sync_reload = (_cached_agent is None) or (_cached_config_key != current_config_key)
+            if needs_sync_reload:
+                reload_start = time.time()
+                reload_reasons = []
+                if _cached_agent is None:
+                    reload_reasons.append("missing_agent")
+                if _cached_config_key != current_config_key:
+                    reload_reasons.append("config_changed")
+                logger.info(
+                    "Creating/reloading Neural Contextual Bandit agent "
+                    f"(reasons={reload_reasons}, prev_config={_cached_metadata}, new_config={current_config}, "
+                    f"model_updated={model_updated}, request_id={request_id})"
+                )
+                
+                state_dim = {
+                    'pod_features': current_config['pod_features'],
+                    'kv_hit_ratios': current_config['kv_hit_ratios'],
+                    'request_features': current_config['request_features']
+                }
+                
+                new_agent = NeuralContextualBandit(
+                    state_dim=state_dim,
+                    action_dim=current_config['num_pods'],
+                    hyperparameters=HYPERPARAMETERS,
+                    final_model_dir=final_model_dir
+                )
+                
+                # Try to load existing model
+                if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
+                    load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
+                    new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+                
+                _cached_agent = new_agent
+                _cached_metadata = current_config
+                _cached_config_key = current_config_key
+                if model_updated_effective:
+                    _model_updated_consumed = True
+                overhead_summary['get_agent_reload'] = time.time() - reload_start
+        overhead_summary.setdefault('get_agent_lock_wait', time.time() - lock_wait_start)
     else:
-        # Agent reused - this is expected for most requests
-        pass
+        overhead_summary['get_agent_lock_wait'] = 0.0
+
+    # Async reload for model updates: never block requests.
+    if model_updated_effective and _cached_agent is not None:
+        def _async_reload(state_dim, action_dim, config_snapshot):
+            global _cached_agent, _cached_metadata, _cached_config_key, _reload_in_progress, _model_updated_consumed
+            try:
+                new_agent = NeuralContextualBandit(
+                    state_dim=state_dim,
+                    action_dim=action_dim,
+                    hyperparameters=HYPERPARAMETERS,
+                    final_model_dir=final_model_dir
+                )
+                if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
+                    load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
+                    new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+                # Swap under lock (very short critical section)
+                with _agent_lock:
+                    _cached_agent = new_agent
+                    _cached_metadata = config_snapshot
+                    _cached_config_key = (
+                        config_snapshot['pod_features'],
+                        config_snapshot['kv_hit_ratios'],
+                        config_snapshot['request_features'],
+                        config_snapshot['num_pods']
+                    )
+            except Exception:
+                logger.exception("Async reload failed")
+                _model_updated_consumed = False
+            finally:
+                _reload_in_progress = False
+
+        acquired = _agent_lock.acquire(blocking=False)
+        if acquired:
+            try:
+                if not _reload_in_progress:
+                    _reload_in_progress = True
+                    _model_updated_consumed = True
+                    overhead_summary['get_agent_async_reload_started'] = 1.0
+                    state_dim = {
+                        'pod_features': current_config['pod_features'],
+                        'kv_hit_ratios': current_config['kv_hit_ratios'],
+                        'request_features': current_config['request_features']
+                    }
+                    t = threading.Thread(
+                        target=_async_reload,
+                        args=(state_dim, current_config['num_pods'], current_config),
+                        daemon=True
+                    )
+                    t.start()
+                else:
+                    overhead_summary['get_agent_async_reload_started'] = 0.0
+            finally:
+                _agent_lock.release()
+        else:
+            overhead_summary['get_agent_lock_skipped'] = 1.0
     
     overhead_summary['get_agent'] = time.time() - get_agent_start
     
@@ -497,23 +666,59 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     )
     overhead_summary['inference'] = time.time() - inference_start
     
+    result_formatting_start = time.time()
     logger.info(f"Neural CB request {request_id}: action={action}, explored={explored}, total_steps={_cached_agent.total_steps}, epsilon={_cached_agent.epsilon:.3f}")
     
-    # Format predicted_rewards as dict (same format as predicted_latencies)
-    predicted_rewards_formatted = {sorted_all_pod_ids[i]: float(predicted_rewards[i]) for i in range(len(sorted_all_pod_ids))}
+    return_arrays = bool(HYPERPARAMETERS.get('RETURN_ARRAY_OUTPUTS', False) or CB_RETURN_ARRAY_OUTPUTS)
+    return_probabilities = bool(HYPERPARAMETERS.get('RETURN_POD_PROBABILITIES', True) and CB_RETURN_POD_PROBABILITIES)
+    return_predicted_rewards = bool(HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True) and CB_RETURN_PREDICTED_REWARDS)
+    
+    # Format predicted rewards (optional)
+    if return_predicted_rewards:
+        if return_arrays:
+            predicted_rewards_formatted = predicted_rewards.tolist()
+        else:
+            predicted_rewards_formatted = {
+                sorted_all_pod_ids[i]: float(predicted_rewards[i])
+                for i in range(len(sorted_all_pod_ids))
+            }
+    else:
+        predicted_rewards_formatted = None
     chosen_pod_predicted_reward = float(predicted_rewards[action])
     
-    # Prepare result
+    # Prepare probabilities (optional)
+    pod_probabilities = None
+    if return_probabilities:
+        # Use numerically stable softmax; vectorized for speed
+        rewards_array = np.asarray(predicted_rewards, dtype=np.float64)
+        max_reward = np.max(rewards_array)
+        exp_rewards = np.exp(rewards_array - max_reward)
+        sum_exp_rewards = np.sum(exp_rewards)
+        if sum_exp_rewards == 0.0 or not np.isfinite(sum_exp_rewards):
+            if return_arrays:
+                pod_probabilities = (np.ones(len(sorted_all_pod_ids)) / len(sorted_all_pod_ids)).tolist()
+            else:
+                pod_probabilities = {pod_id: 1.0 / len(sorted_all_pod_ids) for pod_id in sorted_all_pod_ids}
+        else:
+            probs = exp_rewards / sum_exp_rewards
+            if return_arrays:
+                pod_probabilities = probs.tolist()
+            else:
+                pod_probabilities = {sorted_all_pod_ids[i]: float(probs[i]) for i in range(len(sorted_all_pod_ids))}
+    
     result = {
         'selected_pod_index': int(action),
         'predicted_rewards': predicted_rewards_formatted,
         'chosen_pod_predicted_reward': chosen_pod_predicted_reward,
+        'pod_probabilities': pod_probabilities,
         'confidence': chosen_pod_predicted_reward,  # Keep for backward compatibility
         'epsilon': _cached_agent.epsilon,
         'total_steps': _cached_agent.total_steps,
-        'explored': explored  # Add exploration flag
+        'explored': explored
     }
-    
+    if return_arrays:
+        result['pod_order'] = sorted_all_pod_ids
+    overhead_summary['result_formatting'] = time.time() - result_formatting_start
     overhead_summary['total_inference'] = time.time() - infer_start_time
     
     return result, overhead_summary
@@ -2035,27 +2240,27 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
 
 
 
-if __name__ == "__main__":
-    # Test the neural contextual bandit
-    logger.info("Testing Neural Contextual Bandit...")
+# if __name__ == "__main__":
+#     # Test the neural contextual bandit
+#     logger.info("Testing Neural Contextual Bandit...")
     
-    state_dim = {'pod_features': 8, 'kv_hit_ratios': 1, 'request_features': 3}
-    action_dim = 7
-    hyperparameters = {
-        'hidden_dim': 128,
-        'learning_rate': 3e-4,
-        'buffer_size': 1000,
-        'exploration_method': 'epsilon_greedy',
-        'initial_epsilon': 0.3,
-        'batch_size': 32,
-        'update_frequency': 10
-    }
+#     state_dim = {'pod_features': 8, 'kv_hit_ratios': 1, 'request_features': 3}
+#     action_dim = 7
+#     hyperparameters = {
+#         'hidden_dim': 128,
+#         'learning_rate': 3e-4,
+#         'buffer_size': 1000,
+#         'exploration_method': 'epsilon_greedy',
+#         'initial_epsilon': 0.3,
+#         'batch_size': 32,
+#         'update_frequency': 10
+#     }
     
-    agent = NeuralContextualBandit(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hyperparameters=hyperparameters,
-        final_model_dir='/tmp/test_neural_cb'
-    )
-    logger.info("Neural Contextual Bandit initialized successfully!")
+#     agent = NeuralContextualBandit(
+#         state_dim=state_dim,
+#         action_dim=action_dim,
+#         hyperparameters=hyperparameters,
+#         final_model_dir='/tmp/test_neural_cb'
+#     )
+#     logger.info("Neural Contextual Bandit initialized successfully!")
     

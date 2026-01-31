@@ -52,7 +52,7 @@ def main():
     RL_MODEL_HYPERPARAMETERS['hidden_dim'] = int(args.hidden_dim) if args.hidden_dim is not None else 64
     RL_MODEL_HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = float(args.ttft_reward_weight) if args.ttft_reward_weight is not None else 1.0
     RL_MODEL_HYPERPARAMETERS['REWARD_FUNCTION'] = args.reward_function or 'linear_simple'
-    RL_MODEL_HYPERPARAMETERS['learning_rate'] = float(args.learning_rate) if args.learning_rate is not None else 0.001
+    RL_MODEL_HYPERPARAMETERS['learning_rate'] = float(args.learning_rate) if args.learning_rate is not None else 0.0001
     RL_MODEL_HYPERPARAMETERS['EXCLUDED_POD_FEATURES'] = excluded
     RL_MODEL_HYPERPARAMETERS['EXCLUDED_REQUEST_FEATURES'] = excluded_request_features
     RL_MODEL_HYPERPARAMETERS['lr_scheduler_type'] = args.lr_scheduler_type or 'constant'
