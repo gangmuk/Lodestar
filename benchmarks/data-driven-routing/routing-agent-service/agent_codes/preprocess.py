@@ -1099,7 +1099,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     logger.debug(f"** hyperparameters: {hyperparameters}")
     # If hyperparameters is None or doesn't have EXCLUDED_POD_FEATURES, don't exclude any features
     if hyperparameters is None or 'EXCLUDED_POD_FEATURES' not in hyperparameters:
-        logger.info("No feature exclusion applied (hyperparameters not provided or EXCLUDED_POD_FEATURES not specified)")
+        logger.debug("No feature exclusion applied (hyperparameters not provided or EXCLUDED_POD_FEATURES not specified)")
         excluded_pod_features = set()
     else:
         excluded_pod_features = set(hyperparameters['EXCLUDED_POD_FEATURES'])
@@ -1389,8 +1389,19 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                 missing_keys = reward_keys - set(hyperparameters.keys())
                 logger.info(f"Reward calculation skipped: missing hyperparameter keys: {missing_keys}")
     create_df_start_time = time.time()
-    if num_rows == 1:
-        # Reduce per-column object overhead for single-row inference
+    if num_rows == 1 and not is_training:
+        # OPTIMIZATION: Skip DataFrame creation for single-row inference
+        # Return dict directly - encoding.py will handle it
+        single_row_data = {}
+        for key, value in base_data.items():
+            if isinstance(value, np.ndarray) and value.shape[0] == 1:
+                single_row_data[key] = value[0]
+            else:
+                single_row_data[key] = value
+        processed_df = single_row_data  # Return dict, not DataFrame
+        create_df_overhead = time.time() - create_df_start_time
+    elif num_rows == 1:
+        # Single-row training still needs DataFrame
         single_row_data = {}
         for key, value in base_data.items():
             if isinstance(value, np.ndarray) and value.shape[0] == 1:
@@ -1398,18 +1409,25 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
             else:
                 single_row_data[key] = value
         processed_df = pd.DataFrame(single_row_data, index=[0])
+        create_df_overhead = time.time() - create_df_start_time
     else:
         processed_df = pd.DataFrame(base_data)
-    create_df_overhead = time.time() - create_df_start_time
+        create_df_overhead = time.time() - create_df_start_time
 
     # Replace fillna(0) with a more targeted approach since most values should already be handled
     # Only fill NaN values in specific columns that might have them
-    nan_columns = processed_df.columns[processed_df.isnull().any()].tolist()
-    if nan_columns:
-        processed_df[nan_columns] = processed_df[nan_columns].fillna(0)
-
-    logger.debug(f"Processed dataset shape: {processed_df.shape}")
-    logger.debug(f"Processed columns: {processed_df.columns[:10].tolist()}...")
+    if isinstance(processed_df, dict):
+        # Dict input (single-row inference): fill NaN values directly
+        for key, value in processed_df.items():
+            if pd.isna(value) if not isinstance(value, (list, np.ndarray)) else False:
+                processed_df[key] = 0
+        logger.debug(f"Processed dict with {len(processed_df)} keys")
+    else:
+        nan_columns = processed_df.columns[processed_df.isnull().any()].tolist()
+        if nan_columns:
+            processed_df[nan_columns] = processed_df[nan_columns].fillna(0)
+        logger.debug(f"Processed dataset shape: {processed_df.shape}")
+        logger.debug(f"Processed columns: {list(processed_df.columns)[:10]}...")
 
     # Prepare overhead summary
     preprocess_overhead_summary = {
