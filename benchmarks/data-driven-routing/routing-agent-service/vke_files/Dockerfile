@@ -14,11 +14,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy client script and utilities (before workloads for better caching)
-COPY vke_files/async-client.py .
-COPY vke_files/utils.py .
-COPY vke_files/logger.py .
-
 # # Create directories
 # RUN mkdir -p /app/output \
 #     /app/workload/hundred_request \
@@ -92,6 +87,11 @@ COPY workload-and-experiment_results/mooncake/conversation-1/workload.jsonl /app
 COPY workload-and-experiment_results/mooncake/toolagent-1/workload.jsonl /app/workload/mooncake/toolagent-1/
 COPY workload-and-experiment_results/mooncake/conversation-2/workload.jsonl /app/workload/mooncake/conversation-2/
 COPY workload-and-experiment_results/mooncake/toolagent-2/workload.jsonl /app/workload/mooncake/toolagent-2/
+
+# Copy client script and utilities (before workloads for better caching)
+COPY vke_files/async-client.py .
+COPY vke_files/utils.py .
+COPY vke_files/logger.py .
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

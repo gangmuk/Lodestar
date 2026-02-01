@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -28,25 +27,24 @@ var (
 	flushed                    = false
 	received_the_first_request = false
 	allPodIPs                  = []string{}
-	fake_request_id            = 0
 	numFlush                   = 0
 )
 
 var (
 	httpClientForRLAgent = &http.Client{
-		Timeout: 30000 * time.Millisecond,
+		Timeout: 500 * time.Millisecond,
 		Transport: &http.Transport{
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 100,
 			IdleConnTimeout:     180 * time.Second,
 			DisableCompression:  false,
 			DialContext: (&net.Dialer{
-				Timeout:   5000 * time.Millisecond,
+				Timeout:   500 * time.Millisecond,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			TLSHandshakeTimeout:   5000 * time.Millisecond,
+			TLSHandshakeTimeout:   500 * time.Millisecond,
 			ForceAttemptHTTP2:     true, // Enable HTTP/2
-			ResponseHeaderTimeout: 5 * time.Second,
+			ResponseHeaderTimeout: 500 * time.Millisecond,
 		},
 	}
 	routingAgentURL = "http://routing-agent-service.default.svc.cluster.local:8080"
@@ -213,19 +211,24 @@ func init() {
 
 // RouteResponse is received from the routing agent
 type RouteResponse struct {
-	RequestID                 string             `json:"request_id"`
-	SelectedPod               string             `json:"selected_pod"`
-	SelectedPodGeneralPodId   string             `json:"selected_pod_generalpodid"`
-	Confidence                float64            `json:"confidence"`
-	NumTrains                 int                `json:"num_trains"`
-	NumFlush                  int                `json:"num_flush"`
-	Exploration               int                `json:"exploration"`
-	ExplorationEnabled        int                `json:"exploration_enabled"`
-	OverheadLog               string             `json:"overhead_log"`
+	RequestID               string  `json:"request_id"`
+	SelectedPod             string  `json:"selected_pod"`
+	SelectedPodGeneralPodId string  `json:"selected_pod_generalpodid"`
+	Confidence              float64 `json:"confidence"`
+	NumTrains               int     `json:"num_trains"`
+	NumFlush                int     `json:"num_flush"`
+	Exploration             int     `json:"exploration"`
+	ExplorationEnabled      int     `json:"exploration_enabled"`
+	// OverheadLog               string             `json:"overhead_log"`
+	TensorTransferOverhead    float64            `json:"tensor_transfer_overhead"`
+	InferOverhead             float64            `json:"infer_overhead"`
+	OtherOverhead             float64            `json:"other_overhead"`
+	EndToEndOverhead          float64            `json:"end_to_end_overhead"`
 	PredictedLatencies        map[string]float64 `json:"predicted_latencies"`
 	PredictedRewards          map[string]float64 `json:"predicted_rewards"`
 	ChosenPodPredictedLatency float64            `json:"chosen_pod_predicted_latency"`
 	ChosenPodPredictedReward  float64            `json:"chosen_pod_predicted_reward"`
+	OODFallback               int                `json:"ood_fallback"`
 }
 
 func jsonStringify(data interface{}, lock *sync.RWMutex) string {
@@ -245,6 +248,7 @@ func GetPod(podIP string, pods []*v1.Pod) *v1.Pod {
 			return pod
 		}
 	}
+	klog.Errorf("Getpod, No pod found for podIP: %s", podIP)
 	return nil
 }
 
@@ -293,12 +297,11 @@ func extractGPUModelFromPod(pod *v1.Pod) string {
 // Route selects the optimal pod based on latency predictions
 func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	route_start_time := time.Now()
-	// Get all ready pods
 	readyPods := pods.All()
 	var targetPod *v1.Pod = nil
 	if !received_the_first_request {
 		klog.Infof("This is the first request, using fallback routing and return right away. Give some time for the RL agent to warm up.")
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 		received_the_first_request = true
 		allPodIPs = utils.GetAllPodIPsFromRegistry()
 		ctx.SetTargetPod(targetPod)
@@ -338,9 +341,9 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
 	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
 	expectedNumOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
-	expectedNumOutputTokens = 100
+	expectedNumOutputTokens = 1
 	if !exist {
-		klog.Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, expectedNumOutputTokens)
+		klog.V(5).Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, expectedNumOutputTokens)
 	}
 
 	numTotalTokens := numInputTokens + expectedNumOutputTokens
@@ -505,23 +508,13 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		klog.V(5).Infof("calculate_prev_reward, requestID: %s, total_prev_reward: %f", ctx.RequestID, prev_reward)
 		utils.SetPrevRewardForRequest(ctx.RequestID, prev_reward)
 	}
-
-	// Get exploration values
 	exploration, explorationEnabled := utils.GetExploration(ctx.RequestID)
-
-	// Get predicted latencies and rewards
 	predictedLatencies := utils.GetPredictedLatencies(ctx.RequestID)
 	predictedRewards := utils.GetPredictedRewards(ctx.RequestID)
 	jsonStrings["predictedLatencies"] = jsonStringify(predictedLatencies, utils.GetPredictedLatenciesMutex())
 	jsonStrings["predictedRewards"] = jsonStringify(predictedRewards, utils.GetPredictedRewardsMutex())
-
-	// Get end-to-end overhead
-	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(ctx.RequestID)
-
-	// Normalize request start time
 	normalized_request_start_time := time.Now().UnixMicro() - utils.FirstRequestStartTime
-
-	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s@selectedPodGPU@%s`
+	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s`
 	logMessage = fmt.Sprintf(
 		logFormat,
 		ctx.RequestID,
@@ -550,7 +543,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		ctx.Iteration,
 		ctx.SubAlgorithm,
 		prev_reward,
-		endToEndOverhead,
 		jsonStrings["GPU"],
 		"NotDecidedYet",
 	)
@@ -559,14 +551,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	reqBody, err := json.Marshal(logMessage)
 	if err != nil {
 		klog.Errorf("Failed to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 	}
 	request_prepare_overhead := time.Since(route_start_time).Milliseconds()
 	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
 	http_req_to_routing_agent, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 	if reqErr != nil {
 		klog.Errorf("Failed to create request: %v, requestID: %s", reqErr, ctx.RequestID)
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 	}
 	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
 	/////////////////////////////////////////////////
@@ -576,7 +568,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
 	if sendErr != nil {
 		klog.Errorf("Request failed!!: %v, requestID: %s", sendErr, ctx.RequestID)
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 	} else {
 		if resp.StatusCode != http.StatusOK {
 			klog.Errorf("Failed, Received non-200 response: %s, requestID: %s", resp.Status, ctx.RequestID)
@@ -584,15 +576,25 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		responseBody, readErr := ioutil.ReadAll(resp.Body) // body: {"confidence":0.4398832619190216,"request_id":"10","selected_pod":"10.0.1.30"}
 		if readErr != nil {
 			klog.Errorf("Failed to read response body: %v, requestID: %s", readErr, ctx.RequestID)
-			targetPod, _ = r.fallbackRouting(ctx, readyPods)
+			targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 		} else {
 			var routeResponse RouteResponse
 			unmarshal_start := time.Now()
 			if err := json.Unmarshal(responseBody, &routeResponse); err != nil {
 				klog.Errorf("Failed to unmarshal responseBody: %v, requestID: %s", err, ctx.RequestID)
-				targetPod, _ = r.fallbackRouting(ctx, readyPods)
+				targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 			}
 			resp.Body.Close()
+
+			EndToEndOverhead := routeResponse.EndToEndOverhead
+			TensorTransferOverhead := routeResponse.TensorTransferOverhead
+			InferOverhead := routeResponse.InferOverhead
+			OtherOverhead := routeResponse.OtherOverhead
+			utils.SetEndToEndOverheadForRequest(float64(EndToEndOverhead), ctx.RequestID)
+			utils.SetTensorTransferOverheadForRequest(float64(TensorTransferOverhead), ctx.RequestID)
+			utils.SetInferOverheadForRequest(float64(InferOverhead), ctx.RequestID)
+			utils.SetOtherOverheadForRequest(float64(OtherOverhead), ctx.RequestID)
+
 			unmarshal_overhead := time.Since(unmarshal_start).Milliseconds()
 			if targetPod == nil { // This means that routing-agent-service infer http request was successful
 				getpod_start := time.Now()
@@ -601,7 +603,12 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
 				if targetPod == nil {
 					klog.Errorf("Failed, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
-					targetPod, _ = r.fallbackRouting(ctx, readyPods)
+					targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
+				}
+				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
+				if routeResponse.OODFallback == 1 {
+					klog.Infof("subAlgorithm, ood_fallback routing, request_id: %s", ctx.RequestID)
+					targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 				}
 
 				//////////////////////////////////////////////////////////////////
@@ -643,7 +650,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
 				if targetPod == nil {
 					klog.Warningf("targetPod is nil after routing algorithm execution, using fallback routing for requestID: %s", ctx.RequestID)
-					targetPod, _ = r.fallbackRouting(ctx, readyPods)
+					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				}
 
 				set_shared_var_start := time.Now()
@@ -668,12 +675,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
-				end_to_end_overhead := time.Since(route_start_time).Milliseconds()
-				utils.SetEndToEndOverheadForRequest(float64(end_to_end_overhead), ctx.RequestID)
 				if targetPod != nil {
-					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route EndToEndOverhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, EndToEndOverhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead)
 				} else {
-					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: nil, SelectedPodGeneralPodId: %s, Route end_to_end_overhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms, OverheadLog: %s", ctx.RequestID, routeResponse.SelectedPodGeneralPodId, end_to_end_overhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead, routeResponse.OverheadLog)
+					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: nil, SelectedPodGeneralPodId: %s, Route EndToEndOverhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms", ctx.RequestID, routeResponse.SelectedPodGeneralPodId, EndToEndOverhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead)
 				}
 			}
 		}
@@ -692,25 +697,25 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	if targetPod == nil {
 		klog.Errorf("CRITICAL: targetPod is still nil before setting context, requestID: %s. Using fallback routing.", ctx.RequestID)
-		targetPod, _ = r.fallbackRouting(ctx, readyPods)
+		targetPod, _ = r.fallbackRouting_prefix_cache_1(ctx, readyPods)
 	}
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }
 
-func formatJSONResponse(RequestID string, jsonBytes []byte) string {
-	var data map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &data); err != nil {
-		return string(jsonBytes) // Return original if parsing fails
-	}
+// func formatJSONResponse(RequestID string, jsonBytes []byte) string {
+// 	var data map[string]interface{}
+// 	if err := json.Unmarshal(jsonBytes, &data); err != nil {
+// 		return string(jsonBytes) // Return original if parsing fails
+// 	}
 
-	var result strings.Builder
-	for key, value := range data {
-		result.WriteString(fmt.Sprintf("requestID: %s, %s:%v\n", RequestID, key, value))
-	}
-	return strings.TrimSuffix(result.String(), "\n")
-}
+// 	var result strings.Builder
+// 	for key, value := range data {
+// 		result.WriteString(fmt.Sprintf("requestID: %s, %s:%v\n", RequestID, key, value))
+// 	}
+// 	return strings.TrimSuffix(result.String(), "\n")
+// }
 
 // routeWithPrefixCache1 implements the prefix_cache_1 routing algorithm
 // 1. if the load is imbalanced, use routePrefixRatioAndLoad (prefix_cache.go) which has another load balance and prefix routing logic
@@ -745,7 +750,7 @@ func (r *rlOnlineRouter) routeWithPrefixCache1(ctx *types.RoutingContext, readyP
 	return targetPod
 }
 
-func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
+func (r *rlOnlineRouter) fallbackRouting_prefix_cache_1(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
 	klog.Infof("Using fallback routing (prefix_cache_1) for request %s", ctx.RequestID)
 
 	// Try to calculate prefix matches for prefix_cache_1 routing
@@ -798,17 +803,38 @@ func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []
 	return targetPod, nil
 }
 
-func (r *rlOnlineRouter) fallbackRouting_with_random(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
-	klog.Infof("Using fallback routing (random) for request %s", ctx.RequestID)
-	var err error
-	targetPod, err := selectRandomPod(readyPods, rand.Intn)
-	if err != nil {
-		klog.Errorf("Failed to select random pod: %v", err)
-		return nil, err
-	}
-	if targetPod == nil {
-		klog.Errorf("No suitable pod found for fallback routing")
-		return nil, fmt.Errorf("no suitable pod found for fallback routing")
-	}
-	return targetPod, nil
-}
+// func (r *rlOnlineRouter) fallbackRouting_with_least_latency(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
+// 	klog.Infof("Using fallback routing (least_latency) for request %s", ctx.RequestID)
+
+// 	targetPod := selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
+// 	if targetPod == nil {
+// 		klog.Errorf("least_latency fallback failed, using random routing for request %s", ctx.RequestID)
+// 		var err error
+// 		targetPod, err = selectRandomPod(readyPods, rand.Intn)
+// 		if err != nil {
+// 			klog.Errorf("Failed to select random pod: %v", err)
+// 			return nil, err
+// 		}
+// 	}
+
+// 	if targetPod == nil {
+// 		klog.Errorf("No suitable pod found for fallback routing")
+// 		return nil, fmt.Errorf("no suitable pod found for fallback routing")
+// 	}
+// 	return targetPod, nil
+// }
+
+// func (r *rlOnlineRouter) fallbackRouting_with_random(ctx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, error) {
+// 	klog.Infof("Using fallback routing (random) for request %s", ctx.RequestID)
+// 	var err error
+// 	targetPod, err := selectRandomPod(readyPods, rand.Intn)
+// 	if err != nil {
+// 		klog.Errorf("Failed to select random pod: %v", err)
+// 		return nil, err
+// 	}
+// 	if targetPod == nil {
+// 		klog.Errorf("No suitable pod found for fallback routing")
+// 		return nil, fmt.Errorf("no suitable pod found for fallback routing")
+// 	}
+// 	return targetPod, nil
+// }

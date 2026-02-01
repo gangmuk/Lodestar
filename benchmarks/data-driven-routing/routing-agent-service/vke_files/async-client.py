@@ -1970,13 +1970,371 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 
     return result
 
+
+async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tokens_std,
+                                    input_tokens_std, max_input_tokens,
+                                    input_token_length_scaling, output_token_length_scaling,
+                                    shuffle_requests, prompt_type, override_workload_output_length):
+    """
+    Prepare all requests for a single iteration.
+
+    This extracts the request preparation logic (prompt formatting, sampling, trimming)
+    into a reusable function for use with blended scheduling.
+
+    Returns:
+        List of prepared request dictionaries with keys:
+        - prompt: The prepared prompt (with hash prefix)
+        - session_id: Session ID if any
+        - max_tokens: Sampled output token count
+        - token_ids: Token IDs if using token-ids mode
+        - original_timestamp_ms: Original timestamp from workload
+    """
+    temp_requests = []
+
+    for requests_dict in load_struct:
+        ts = int(requests_dict["timestamp"])
+        requests = requests_dict["requests"]
+
+        for request in requests:
+            session_id = request.get("session_id", None)
+
+            if prompt_type == "token-ids":
+                # Parse token IDs from workload file
+                try:
+                    if isinstance(request["prompt"], str):
+                        try:
+                            token_ids = json.loads(request["prompt"])
+                        except json.JSONDecodeError:
+                            token_ids_str = request["prompt"].strip()
+                            if not token_ids_str:
+                                raise ValueError("Empty token IDs string")
+                            token_ids = [int(x) for x in token_ids_str.split()]
+                    elif isinstance(request["prompt"], list):
+                        token_ids = request["prompt"]
+                    else:
+                        raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+                    prompt = f"token_ids:{len(token_ids)}"
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    logger.error(f"Failed to parse token IDs from workload: {e}")
+                    raise
+            else:
+                token_ids = None
+                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+
+            # Apply input token length scaling
+            if input_token_length_scaling != 1.0:
+                if prompt_type == "token-ids":
+                    if token_ids is not None:
+                        current_len = len(token_ids)
+                        target_len = max(1, int(round(current_len * input_token_length_scaling)))
+                        if target_len < current_len:
+                            token_ids = token_ids[:target_len]
+                        elif target_len > current_len:
+                            pad_count = target_len - current_len
+                            pad_token = random.choice(token_ids) if token_ids else 0
+                            token_ids = token_ids + [pad_token] * pad_count
+                        prompt = f"token_ids:{len(token_ids)}"
+                else:
+                    prompt = scale_prompt_tokens(prompt, input_token_length_scaling)
+
+            # Apply input token sampling if input_tokens_std > 0
+            if input_tokens_std > 0:
+                if prompt_type == "token-ids":
+                    current_length = len(token_ids)
+                    target_length = sample_input_tokens(current_length, input_tokens_std)
+
+                    if target_length < current_length:
+                        token_ids = token_ids[:target_length]
+                        prompt = f"token_ids:{len(token_ids)}"
+                    elif target_length > current_length:
+                        padding_needed = target_length - current_length
+                        token_ids = token_ids + [0] * padding_needed
+                        prompt = f"token_ids:{len(token_ids)}"
+                else:
+                    original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                    current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+                    target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
+
+                    if target_tokens < current_estimated_tokens:
+                        truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
+                        if isinstance(request["prompt"], str):
+                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                        else:
+                            truncated_prompt = request["prompt"].copy()
+                            if isinstance(truncated_prompt, list) and truncated_prompt:
+                                for i in range(len(truncated_prompt) - 1, -1, -1):
+                                    if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                        truncated_prompt[i]["content"] = truncated_text
+                                        break
+                            prompt = truncated_prompt
+                    elif target_tokens > current_estimated_tokens:
+                        current_words = len(original_prompt_text.split())
+                        target_words = int(target_tokens / 1.33)
+                        words_to_add = max(0, target_words - current_words)
+                        padding_text = " padding" * words_to_add
+                        expanded_text = original_prompt_text + padding_text
+
+                        if isinstance(request["prompt"], str):
+                            prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
+                        else:
+                            expanded_prompt = request["prompt"].copy()
+                            if isinstance(expanded_prompt, list) and expanded_prompt:
+                                for i in range(len(expanded_prompt) - 1, -1, -1):
+                                    if isinstance(expanded_prompt[i], dict) and expanded_prompt[i].get("role") == "user":
+                                        expanded_prompt[i]["content"] = expanded_text
+                                        break
+                            prompt = expanded_prompt
+
+            # Filter or truncate by max_input_tokens if specified
+            if max_input_tokens:
+                if prompt_type == "token-ids":
+                    if len(token_ids) > max_input_tokens:
+                        token_ids = token_ids[:max_input_tokens]
+                        prompt = f"token_ids:{len(token_ids)}"
+                else:
+                    original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                    estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+
+                    if estimated_tokens > max_input_tokens:
+                        truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
+                        if isinstance(request["prompt"], str):
+                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                        else:
+                            truncated_prompt = request["prompt"].copy()
+                            if isinstance(truncated_prompt, list) and truncated_prompt:
+                                for i in range(len(truncated_prompt) - 1, -1, -1):
+                                    if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                        truncated_prompt[i]["content"] = truncated_text
+                                        break
+                            prompt = truncated_prompt
+
+            # Get base max_tokens value (from workload or default)
+            if override_workload_output_length:
+                base_max_tokens = max_tokens
+            else:
+                base_max_tokens = request.get("Output Length", max_tokens)
+
+            # Apply output token length scaling
+            if output_token_length_scaling != 1.0:
+                if output_token_length_scaling <= 0:
+                    logger.warning(f"Invalid output_token_length_scaling={output_token_length_scaling}; using base max_tokens.")
+                else:
+                    base_max_tokens = max(1, int(round(base_max_tokens * output_token_length_scaling)))
+
+            # Sample from normal distribution to make it more realistic
+            if max_tokens_std > 0:
+                sampled_max_tokens = sample_output_tokens(base_max_tokens, max_tokens_std)
+            else:
+                sampled_max_tokens = base_max_tokens
+
+            temp_request = {
+                "prompt": prompt,
+                "session_id": session_id,
+                "max_tokens": sampled_max_tokens,
+                "token_ids": token_ids,
+                "original_timestamp_ms": ts
+            }
+            temp_requests.append(temp_request)
+
+    # Shuffle requests if enabled
+    if shuffle_requests:
+        random.shuffle(temp_requests)
+        logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+
+    return temp_requests
+
+
+def calculate_ramp_target_times(num_requests: int, base_time: float, target_rps: float,
+                                ramp_duration: float, start_fraction: float) -> List[float]:
+    """
+    Calculate target times for requests with linear RPS ramp-up at the start.
+
+    For the first ramp_duration seconds, RPS increases linearly from
+    (start_fraction * target_rps) to target_rps. After that, RPS stays at target_rps.
+
+    Args:
+        num_requests: Total number of requests to schedule
+        base_time: Base timestamp (iteration start time)
+        target_rps: Target requests per second (reached after ramp)
+        ramp_duration: Duration of ramp-up in seconds
+        start_fraction: Starting RPS as fraction of target (0.0-1.0)
+
+    Returns:
+        List of target_times for each request
+    """
+    if ramp_duration <= 0 or start_fraction >= 1.0:
+        # No ramp, use fixed inter-arrival
+        inter_arrival = 1.0 / target_rps
+        return [base_time + i * inter_arrival for i in range(num_requests)]
+
+    target_times = []
+
+    # Calculate ramp parameters
+    r0 = start_fraction * target_rps  # Initial RPS
+    r1 = target_rps  # Final RPS
+    slope = (r1 - r0) / ramp_duration
+
+    # Number of requests that fit in ramp period
+    # Integral of RPS(t) from 0 to ramp_duration = r0*T + slope*T^2/2
+    requests_in_ramp = r0 * ramp_duration + slope * ramp_duration * ramp_duration / 2
+
+    cumulative_requests = 0.0
+
+    for i in range(num_requests):
+        if cumulative_requests < requests_in_ramp:
+            # During ramp-up: solve r0*t + slope*t^2/2 = cumulative_requests for t
+            # This is a quadratic: (slope/2)*t^2 + r0*t - cumulative_requests = 0
+            # t = (-r0 + sqrt(r0^2 + 2*slope*cumulative_requests)) / slope
+            if slope > 0:
+                discriminant = r0 * r0 + 2 * slope * cumulative_requests
+                t = (-r0 + np.sqrt(discriminant)) / slope
+            else:
+                # slope == 0 means r0 == r1, so fixed rate
+                t = cumulative_requests / r0 if r0 > 0 else 0
+
+            # Clamp to ramp_duration (shouldn't exceed due to math, but safety)
+            t = min(t, ramp_duration)
+        else:
+            # After ramp: fixed inter-arrival at target_rps
+            requests_after_ramp = cumulative_requests - requests_in_ramp
+            t = ramp_duration + requests_after_ramp / target_rps
+
+        target_times.append(base_time + t)
+        cumulative_requests += 1.0
+
+    return target_times
+
+
+def create_blended_schedule(all_iteration_requests: List[List[Dict]], rps: float,
+                           overlap_ratio: float, base_time: float,
+                           poisson_arrivals: bool = False,
+                           ramp_duration: float = 0.0,
+                           ramp_start_fraction: float = 0.1) -> List[Dict]:
+    """
+    Create a unified schedule with smooth transitions between iterations.
+
+    Args:
+        all_iteration_requests: List of request lists, one per iteration
+        rps: Requests per second
+        overlap_ratio: Fraction of each iteration to blend (0.0-0.5)
+        base_time: Base timestamp for scheduling
+        poisson_arrivals: Whether to use Poisson process for arrivals
+        ramp_duration: Duration in seconds to ramp up RPS at start of each iteration
+        ramp_start_fraction: Starting RPS as fraction of target during ramp (0.0-1.0)
+
+    Returns:
+        List of tasks with target_time assigned, sorted by target_time
+    """
+    all_tasks = []
+    inter_arrival = 1.0 / rps
+
+    num_iterations = len(all_iteration_requests)
+    if num_iterations == 0:
+        return all_tasks
+
+    num_requests_per_iter = len(all_iteration_requests[0])
+
+    # Calculate iteration duration accounting for ramp-up
+    # During ramp, fewer requests are sent, so iteration takes longer
+    if ramp_duration > 0 and ramp_start_fraction < 1.0:
+        # Requests during ramp period (using average RPS during ramp)
+        avg_rps_during_ramp = rps * (1 + ramp_start_fraction) / 2
+        requests_in_ramp = avg_rps_during_ramp * ramp_duration
+        if requests_in_ramp >= num_requests_per_iter:
+            # All requests fit in ramp period
+            iter_duration = ramp_duration * num_requests_per_iter / requests_in_ramp
+        else:
+            # Some requests after ramp at full RPS
+            requests_after_ramp = num_requests_per_iter - requests_in_ramp
+            iter_duration = ramp_duration + requests_after_ramp / rps
+    else:
+        iter_duration = num_requests_per_iter * inter_arrival
+
+    overlap_duration = iter_duration * overlap_ratio
+
+    request_id = 0
+
+    for iter_idx, iter_requests in enumerate(all_iteration_requests):
+        # Calculate the start offset for this iteration
+        if iter_idx == 0:
+            iter_start = 0
+        else:
+            # Start this iteration earlier to create overlap with previous
+            # Each subsequent iteration starts (iter_duration - overlap_duration) after the previous
+            iter_start = iter_idx * (iter_duration - overlap_duration)
+
+        # Pre-calculate ramp target times for this iteration if ramp is enabled
+        if ramp_duration > 0 and ramp_start_fraction < 1.0:
+            # Calculate target times relative to iteration start (base_time=0)
+            ramp_times = calculate_ramp_target_times(
+                num_requests=len(iter_requests),
+                base_time=0,  # We'll add iter_start later
+                target_rps=rps,
+                ramp_duration=ramp_duration,
+                start_fraction=ramp_start_fraction
+            )
+
+        for req_idx, req in enumerate(iter_requests):
+            if ramp_duration > 0 and ramp_start_fraction < 1.0:
+                # Use pre-calculated ramp times
+                relative_time = ramp_times[req_idx]
+                if poisson_arrivals:
+                    # Add Poisson jitter on top of ramp schedule
+                    # Scale jitter based on current instantaneous RPS
+                    if relative_time < ramp_duration:
+                        # During ramp, interpolate RPS
+                        progress = relative_time / ramp_duration
+                        current_rps = rps * (ramp_start_fraction + progress * (1 - ramp_start_fraction))
+                    else:
+                        current_rps = rps
+                    jitter = np.random.exponential(1.0 / current_rps) - (1.0 / current_rps)
+                    relative_time += jitter
+                target_time = base_time + iter_start + relative_time
+            elif poisson_arrivals:
+                # Poisson without ramp (original behavior)
+                if req_idx == 0:
+                    cumulative_time = 0.0
+                inter_arrival_sample = np.random.exponential(inter_arrival)
+                cumulative_time += inter_arrival_sample
+                target_time = base_time + iter_start + cumulative_time
+            else:
+                # Fixed inter-arrival time (original behavior)
+                target_time = base_time + iter_start + (req_idx * inter_arrival)
+
+            task = {
+                "prompt": req["prompt"],
+                "request_id": request_id,
+                "session_id": req["session_id"],
+                "target_time": target_time,
+                "max_tokens": req["max_tokens"],
+                "iteration": iter_idx,
+                "token_ids": req["token_ids"]
+            }
+            all_tasks.append(task)
+            request_id += 1
+
+    # Sort all tasks by target_time to interleave requests from different iterations
+    all_tasks.sort(key=lambda t: t["target_time"])
+
+    logger.info(f"Created blended schedule with {len(all_tasks)} tasks across {num_iterations} iterations")
+    logger.info(f"Overlap ratio: {overlap_ratio:.1%}, overlap duration: {overlap_duration:.2f}s")
+    if ramp_duration > 0:
+        logger.info(f"Ramp-up: {ramp_duration:.1f}s from {ramp_start_fraction:.0%} to 100% of target RPS")
+
+    return all_tasks
+
+
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
                        shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
                        input_token_length_scaling=1.0, output_token_length_scaling=1.0,
-                       workload_path=None):
-    """Main benchmark function that runs all requests asynchronously, one iteration at a time"""
+                       workload_path=None, iteration_overlap_ratio=0.0):
+    """Main benchmark function that runs all requests asynchronously.
+
+    When iteration_overlap_ratio > 0, uses blended scheduling for smooth transitions
+    between iterations. Otherwise, runs one iteration at a time (original behavior).
+    """
     # Determine workload mode from CLI args (benchmark vs profiling)
     workload_mode = getattr(args, "workload_mode", "benchmark")
     profiling_mode = workload_mode == "profiling"
@@ -1997,329 +2355,59 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
     total_failures = 0
     request_id = 0
     overall_start_time = time.time()
-    
-    # For each iteration
-    for iteration in range(iterations):
-        logger.info(f"Starting iteration {iteration+1}/{iterations}")
-        
-        # Calculate base time for this iteration
-        # For first iteration, use current time
-        # For subsequent iterations, wait until previous iteration is completely done
-        iteration_base_time = time.time()
-        
-        # Prepare tasks for this iteration only
-        iteration_tasks = []
-        
-        # Calculate inter-arrival time if RPS is specified
-        mean_inter_arrival_time = 1.0 / rps if rps else None
-        if rps:
-            if getattr(args, "tweak_workload", None) == "gradual_increase":
-                logger.info(f"Using gradual_increase workload: RPS ramps from 1 to {rps} (step +0.5 RPS every 10 seconds).")
-            elif poisson_arrivals:
-                logger.info(f"Using RPS-based scheduling with Poisson arrivals: {rps} requests/second (mean inter-arrival: {mean_inter_arrival_time:.4f}s)")
-            else:
-                logger.info(f"Using RPS-based scheduling: {rps} requests/second (inter-arrival time: {mean_inter_arrival_time:.4f}s)")
-        else:
-            logger.info(f"Using timestamp-based scheduling from workload file")
-        
-        if profiling_mode:
-            if not rps:
-                raise ValueError("Profiling mode requires --rps (used as the maximum target RPS).")
-            if shuffle_requests:
-                logger.warning("Profiling mode ignores --shuffle_requests to preserve load pattern ordering.")
-                shuffle_requests = False
-            if poisson_arrivals:
-                logger.warning("Profiling mode ignores --poisson_arrivals; profiling schedule already includes variability.")
-                poisson_arrivals = False
-        
-        if shuffle_requests:
-            logger.info(f"Request shuffling enabled for iteration {iteration+1}")
-        
-        if max_input_tokens:
-            logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration+1}")
-        
-        if input_tokens_std > 0:
-            logger.info(f"Sampling input tokens from Normal distribution with std={input_tokens_std} (mean from workload)")
-        else:
-            logger.info(f"Using input token lengths from workload file (no sampling)")
-        
-        if max_tokens_std > 0:
-            logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
-        else:
-            logger.info(f"Using fixed output tokens: {max_tokens}")
-        
-        # First, collect all requests for this iteration (without target times yet)
-        temp_requests = []
-        
-        # Process the load structure and create tasks for this iteration only
-        for requests_dict in load_struct:
-            ts = int(requests_dict["timestamp"])
-            requests = requests_dict["requests"]
-            
-            for request in requests:
-                session_id = request.get("session_id", None)
 
-                if args.prompt_type == "token-ids":
-                    # Parse token IDs from workload file
-                    try:
-                        # Support multiple formats:
-                        # 1. JSON list format: "[123, 456, 789]"
-                        # 2. Space-separated format: "123 456 789"
-                        # 3. Already a list: [123, 456, 789]
-                        if isinstance(request["prompt"], str):
-                            # Try JSON format first (backward compatible)
-                            try:
-                                token_ids = json.loads(request["prompt"])
-                            except json.JSONDecodeError:
-                                # If JSON parsing fails, try space-separated format
-                                # Split by whitespace and convert to integers
-                                token_ids_str = request["prompt"].strip()
-                                if not token_ids_str:
-                                    raise ValueError("Empty token IDs string")
-                                token_ids = [int(x) for x in token_ids_str.split()]
-                        elif isinstance(request["prompt"], list):
-                            # Already a list
-                            token_ids = request["prompt"]
-                        else:
-                            raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+    # Check if blended scheduling should be used
+    use_blended_scheduling = (iteration_overlap_ratio > 0 and iterations > 1 and rps is not None and not profiling_mode)
 
-                        prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
-                    except (json.JSONDecodeError, KeyError, ValueError) as e:
-                        logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
-                        raise
-                else:
-                    token_ids = None
-                    prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+    if use_blended_scheduling:
+        # ============================================================
+        # BLENDED SCHEDULING: Prepare all iterations upfront, then execute
+        # with overlapping target times for smooth transitions
+        # ============================================================
+        logger.info(f"Using blended scheduling with {iteration_overlap_ratio:.1%} overlap between {iterations} iterations")
 
-                # Apply input token length scaling before any further sampling/truncation
-                if input_token_length_scaling != 1.0:
-                    if args.prompt_type == "token-ids":
-                        if token_ids is not None:
-                            current_len = len(token_ids)
-                            target_len = max(1, int(round(current_len * input_token_length_scaling)))
-                            if target_len < current_len:
-                                token_ids = token_ids[:target_len]
-                            elif target_len > current_len:
-                                pad_count = target_len - current_len
-                                pad_token = random.choice(token_ids) if token_ids else 0
-                                token_ids = token_ids + [pad_token] * pad_count
-                            prompt = f"token_ids:{len(token_ids)}"
-                    else:
-                        prompt = scale_prompt_tokens(prompt, input_token_length_scaling)
-
-                # Apply input token sampling if input_tokens_std > 0
-                if input_tokens_std > 0:
-                    if args.prompt_type == "token-ids":
-                        # For token-ids mode, sample the length and adjust the token_ids list
-                        current_length = len(token_ids)
-                        target_length = sample_input_tokens(current_length, input_tokens_std)
-                        
-                        if target_length < current_length:
-                            # Truncate token_ids
-                            token_ids = token_ids[:target_length]
-                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
-                            logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (truncated)")
-                        elif target_length > current_length:
-                            # Pad token_ids (repeat the last token or use a padding token)
-                            # Using 0 as padding token (common padding token ID)
-                            padding_needed = target_length - current_length
-                            token_ids = token_ids + [0] * padding_needed
-                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
-                            logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (padded)")
-                        # else: target_length == current_length, no change needed
-                    else:
-                        # For chat mode, estimate tokens, sample target, then adjust text
-                        original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
-                        current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
-                        target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
-                        
-                        if target_tokens < current_estimated_tokens:
-                            # Truncate text to match target tokens
-                            truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
-                            if isinstance(request["prompt"], str):
-                                prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
-                            else:
-                                # For list format, replace the content
-                                truncated_prompt = request["prompt"].copy()
-                                if isinstance(truncated_prompt, list) and truncated_prompt:
-                                    # Find the last user message and truncate it
-                                    for i in range(len(truncated_prompt) - 1, -1, -1):
-                                        if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
-                                            truncated_prompt[i]["content"] = truncated_text
-                                            break
-                                prompt = truncated_prompt
-                            logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (truncated)")
-                        elif target_tokens > current_estimated_tokens:
-                            # Expand text to match target tokens (append padding text)
-                            # Estimate how many words we need to add
-                            current_words = len(original_prompt_text.split())
-                            target_words = int(target_tokens / 1.33)  # Reverse of 1 word ≈ 1.33 tokens
-                            words_to_add = max(0, target_words - current_words)
-                            
-                            # Add padding words (using a simple pattern)
-                            padding_text = " padding" * words_to_add
-                            expanded_text = original_prompt_text + padding_text
-                            
-                            if isinstance(request["prompt"], str):
-                                prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
-                            else:
-                                # For list format, append to the last user message
-                                expanded_prompt = request["prompt"].copy()
-                                if isinstance(expanded_prompt, list) and expanded_prompt:
-                                    # Find the last user message and append padding
-                                    for i in range(len(expanded_prompt) - 1, -1, -1):
-                                        if isinstance(expanded_prompt[i], dict) and expanded_prompt[i].get("role") == "user":
-                                            expanded_prompt[i]["content"] = expanded_text
-                                            break
-                                prompt = expanded_prompt
-                            logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (expanded)")
-                        # else: target_tokens == current_estimated_tokens, no change needed
-
-                # Filter or truncate by max_input_tokens if specified
-                if max_input_tokens:
-                    if args.prompt_type == "token-ids":
-                        # For token-ids mode, truncate the token list directly
-                        if len(token_ids) > max_input_tokens:
-                            original_length = len(token_ids)
-                            token_ids = token_ids[:max_input_tokens]
-                            logger.info(f"[Iteration {iteration+1}] Truncated token-ids from {original_length} to {len(token_ids)} tokens")
-                            prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
-                    else:
-                        # For chat mode, estimate and truncate text
-                        original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
-                        estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
-
-                        if estimated_tokens > max_input_tokens:
-                            # Truncate the text to fit within token limit
-                            truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
-                            logger.info(f"[Iteration {iteration+1}] Truncated prompt from ~{estimated_tokens} to ~{max_input_tokens} tokens")
-
-                            # Update the prompt with truncated text
-                            if isinstance(request["prompt"], str):
-                                prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
-                            else:
-                                # For list format, replace the content
-                                truncated_prompt = request["prompt"].copy()
-                                if isinstance(truncated_prompt, list) and truncated_prompt:
-                                    # Find the last user message and truncate it
-                                    for i in range(len(truncated_prompt) - 1, -1, -1):
-                                        if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
-                                            truncated_prompt[i]["content"] = truncated_text
-                                            break
-                                prompt = truncated_prompt
-
-                # Get base max_tokens value (from workload or default)
-                if args.override_workload_output_length:
-                    base_max_tokens = max_tokens
-                else:
-                    base_max_tokens = request.get("Output Length", max_tokens)
-                
-                # Apply output token length scaling
-                if output_token_length_scaling != 1.0:
-                    if output_token_length_scaling <= 0:
-                        logger.warning(f"Invalid output_token_length_scaling={output_token_length_scaling}; using base max_tokens.")
-                    else:
-                        base_max_tokens = max(1, int(round(base_max_tokens * output_token_length_scaling)))
-
-                
-                # Sample from normal distribution to make it more realistic
-                if max_tokens_std > 0:
-                    sampled_max_tokens = sample_output_tokens(base_max_tokens, max_tokens_std)
-                else:
-                    sampled_max_tokens = base_max_tokens
-                
-                # Store request info with original timestamp (for non-RPS mode)
-                temp_request = {
-                    "prompt": prompt,
-                    "session_id": session_id,
-                    "max_tokens": sampled_max_tokens,
-                    "token_ids": token_ids,
-                    "original_timestamp_ms": ts  # Store original timestamp
-                }
-                temp_requests.append(temp_request)
-        
-        
-        # Shuffle requests if enabled
-        if shuffle_requests:
-            random.shuffle(temp_requests)
-            logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
-        
-        # Calculate metrics for logging
-        total_num_requests_per_iter = len(temp_requests)
-        total_num_requests_overall = total_num_requests_per_iter * iterations
-        
-        profiling_target_times = None
-        if profiling_mode:
-            profiling_target_times = build_profiling_target_times(
-                num_requests=total_num_requests_per_iter,
-                base_time=iteration_base_time,
-                max_rps=rps,
-            )
-            logger.info(f"Profiling mode: scheduled {len(profiling_target_times)} target times across ramp, burst, and steady phases.")
-
-        gradual_increase_target_times = None
-        if (not profiling_mode) and rps and getattr(args, "tweak_workload", None) == "gradual_increase":
-            gradual_increase_target_times = build_gradual_increase_target_times(
-                num_requests=total_num_requests_per_iter,
-                base_time=iteration_base_time,
-                max_rps=rps,
-            )
-            logger.info(f"gradual_increase workload: scheduled {len(gradual_increase_target_times)} target times.")
-
-        # Now assign target times and create final tasks
-        cumulative_time = 0.0  # For Poisson arrivals
-        for idx, req in enumerate(temp_requests):
-            # Calculate target_time based on mode
-            if profiling_target_times is not None:
-                # Profiling mode: use precomputed profiling schedule
-                target_time = profiling_target_times[idx]
-            elif gradual_increase_target_times is not None:
-                target_time = gradual_increase_target_times[idx]
-            elif rps:
-                if poisson_arrivals:
-                    # Use exponential distribution for Poisson process
-                    # Sample inter-arrival time from exponential distribution
-                    inter_arrival = np.random.exponential(mean_inter_arrival_time)
-                    cumulative_time += inter_arrival
-                    target_time = iteration_base_time + cumulative_time
-                else:
-                    # Fixed inter-arrival time
-                    target_time = iteration_base_time + (idx * mean_inter_arrival_time)
-            else:
-                # Use timestamp from workload file
-                target_time = iteration_base_time + req["original_timestamp_ms"] / 1000.0
-            
-            task = {
-                "prompt": req["prompt"],
-                "request_id": request_id,
-                "session_id": req["session_id"],
-                "target_time": target_time,
-                "max_tokens": req["max_tokens"],
-                "iteration": iteration,
-                "token_ids": req["token_ids"]
-            }
-            iteration_tasks.append(task)
-            request_id += 1
-        
-        logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
-        print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
-
-        # In profiling mode, also persist the generated profiling schedule as a workload-style JSONL
-        if profiling_mode and profiling_dump_path:
-            logger.info("Profiling mode: dumping generated profiling workload (will also execute requests).")
-            dump_profiling_workload(
-                profiling_dump_path,
-                iteration_tasks,
-                iteration_base_time,
-                args.prompt_type,
+        # Prepare all iterations' requests upfront
+        all_iteration_requests = []
+        for iteration in range(iterations):
+            logger.info(f"Preparing iteration {iteration+1}/{iterations} requests...")
+            iter_requests = await prepare_iteration_requests(
+                load_struct=load_struct,
                 iteration=iteration,
-                total_iterations=iterations,
+                max_tokens=max_tokens,
+                max_tokens_std=max_tokens_std,
+                input_tokens_std=input_tokens_std,
+                max_input_tokens=max_input_tokens,
+                input_token_length_scaling=input_token_length_scaling,
+                output_token_length_scaling=output_token_length_scaling,
+                shuffle_requests=shuffle_requests,
+                prompt_type=args.prompt_type,
+                override_workload_output_length=args.override_workload_output_length,
             )
+            all_iteration_requests.append(iter_requests)
+            logger.info(f"Prepared {len(iter_requests)} requests for iteration {iteration+1}")
 
-        # Execute only this iteration's tasks (benchmark mode)
+        # Create blended schedule with overlapping target times
+        base_time = time.time()
+        blended_tasks = create_blended_schedule(
+            all_iteration_requests=all_iteration_requests,
+            rps=rps,
+            overlap_ratio=iteration_overlap_ratio,
+            base_time=base_time,
+            poisson_arrivals=poisson_arrivals,
+            ramp_duration=args.iteration_ramp_duration,
+            ramp_start_fraction=args.iteration_ramp_start_fraction,
+        )
+
+        total_num_requests = len(blended_tasks)
+        total_num_requests_per_iter = len(all_iteration_requests[0]) if all_iteration_requests else 0
+
+        logger.info(f"Executing blended schedule with {total_num_requests} total requests")
+        print(f"Executing blended schedule with {total_num_requests} total requests across {iterations} iterations")
+
+        # Execute the blended schedule as a single run
         start_time = time.time()
         results = await schedule_and_execute_tasks(
-            tasks=iteration_tasks,
+            tasks=blended_tasks,
             client=client,
             model=model,
             is_streaming=is_streaming,
@@ -2328,36 +2416,412 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             routing_strategy=routing_strategy,
             results_lock=results_lock,
             history_lock=history_lock,
-            iteration=iteration,
-            total_num_requests=total_num_requests_overall,
+            iteration=0,  # Not used in blended mode, each task has its own iteration
+            total_num_requests=total_num_requests,
             total_num_requests_per_iter=total_num_requests_per_iter,
             total_num_episodes=iterations,
             prompt_type=args.prompt_type,
             force_exact_output_tokens=force_exact_output_tokens,
         )
         end_time = time.time()
-        
-        # Count successes and failures for this iteration
-        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-        error_count = len(iteration_tasks) - success_count
-        
-        logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
-        logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
-        
-        # Update totals
-        total_requests += len(iteration_tasks)
-        total_success += success_count
-        total_failures += error_count
-        
-        # Free up memory
-        iteration_tasks = None
-        results = None
 
-        # # Add a small buffer before next iteration if not the last iteration
-        # if iteration < iterations - 1:
-        #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
-        #     await asyncio.sleep(2.0)
-    
+        # Count successes and failures
+        total_success = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        total_failures = total_num_requests - total_success
+        total_requests = total_num_requests
+
+        logger.info(f"Blended schedule completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Results: {total_success} successful, {total_failures} failed")
+
+    else:
+        # ============================================================
+        # SEQUENTIAL SCHEDULING: Original behavior, one iteration at a time
+        # ============================================================
+
+        # For each iteration
+        for iteration in range(iterations):
+            logger.info(f"Starting iteration {iteration+1}/{iterations}")
+
+            # Calculate base time for this iteration
+            # For first iteration, use current time
+            # For subsequent iterations, wait until previous iteration is completely done
+            iteration_base_time = time.time()
+
+            # Prepare tasks for this iteration only
+            iteration_tasks = []
+
+            # Calculate inter-arrival time if RPS is specified
+            mean_inter_arrival_time = 1.0 / rps if rps else None
+            if rps:
+                if getattr(args, "tweak_workload", None) == "gradual_increase":
+                    logger.info(f"Using gradual_increase workload: RPS ramps from 1 to {rps} (step +0.5 RPS every 10 seconds).")
+                elif poisson_arrivals:
+                    logger.info(f"Using RPS-based scheduling with Poisson arrivals: {rps} requests/second (mean inter-arrival: {mean_inter_arrival_time:.4f}s)")
+                else:
+                    logger.info(f"Using RPS-based scheduling: {rps} requests/second (inter-arrival time: {mean_inter_arrival_time:.4f}s)")
+            else:
+                logger.info(f"Using timestamp-based scheduling from workload file")
+
+            if profiling_mode:
+                if not rps:
+                    raise ValueError("Profiling mode requires --rps (used as the maximum target RPS).")
+                if shuffle_requests:
+                    logger.warning("Profiling mode ignores --shuffle_requests to preserve load pattern ordering.")
+                    shuffle_requests = False
+                if poisson_arrivals:
+                    logger.warning("Profiling mode ignores --poisson_arrivals; profiling schedule already includes variability.")
+                    poisson_arrivals = False
+
+            if shuffle_requests:
+                logger.info(f"Request shuffling enabled for iteration {iteration+1}")
+
+            if max_input_tokens:
+                logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration+1}")
+
+            if input_tokens_std > 0:
+                logger.info(f"Sampling input tokens from Normal distribution with std={input_tokens_std} (mean from workload)")
+            else:
+                logger.info(f"Using input token lengths from workload file (no sampling)")
+
+            if max_tokens_std > 0:
+                logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
+            else:
+                logger.info(f"Using fixed output tokens: {max_tokens}")
+
+            # First, collect all requests for this iteration (without target times yet)
+            temp_requests = []
+
+            # Process the load structure and create tasks for this iteration only
+            for requests_dict in load_struct:
+                ts = int(requests_dict["timestamp"])
+                requests = requests_dict["requests"]
+
+                for request in requests:
+                    session_id = request.get("session_id", None)
+
+                    if args.prompt_type == "token-ids":
+                        # Parse token IDs from workload file
+                        try:
+                            # Support multiple formats:
+                            # 1. JSON list format: "[123, 456, 789]"
+                            # 2. Space-separated format: "123 456 789"
+                            # 3. Already a list: [123, 456, 789]
+                            if isinstance(request["prompt"], str):
+                                # Try JSON format first (backward compatible)
+                                try:
+                                    token_ids = json.loads(request["prompt"])
+                                except json.JSONDecodeError:
+                                    # If JSON parsing fails, try space-separated format
+                                    # Split by whitespace and convert to integers
+                                    token_ids_str = request["prompt"].strip()
+                                    if not token_ids_str:
+                                        raise ValueError("Empty token IDs string")
+                                    token_ids = [int(x) for x in token_ids_str.split()]
+                            elif isinstance(request["prompt"], list):
+                                # Already a list
+                                token_ids = request["prompt"]
+                            else:
+                                raise ValueError(f"Invalid token_ids format: {request['prompt']}")
+
+                            prompt = f"token_ids:{len(token_ids)}"  # Placeholder for logging
+                        except (json.JSONDecodeError, KeyError, ValueError) as e:
+                            logger.error(f"Request {request_id}: Failed to parse token IDs from workload: {e}")
+                            raise
+                    else:
+                        token_ids = None
+                        prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+
+                    # Apply input token length scaling before any further sampling/truncation
+                    if input_token_length_scaling != 1.0:
+                        if args.prompt_type == "token-ids":
+                            if token_ids is not None:
+                                current_len = len(token_ids)
+                                target_len = max(1, int(round(current_len * input_token_length_scaling)))
+                                if target_len < current_len:
+                                    token_ids = token_ids[:target_len]
+                                elif target_len > current_len:
+                                    pad_count = target_len - current_len
+                                    pad_token = random.choice(token_ids) if token_ids else 0
+                                    token_ids = token_ids + [pad_token] * pad_count
+                                prompt = f"token_ids:{len(token_ids)}"
+                        else:
+                            prompt = scale_prompt_tokens(prompt, input_token_length_scaling)
+
+                    # Apply input token sampling if input_tokens_std > 0
+                    if input_tokens_std > 0:
+                        if args.prompt_type == "token-ids":
+                            # For token-ids mode, sample the length and adjust the token_ids list
+                            current_length = len(token_ids)
+                            target_length = sample_input_tokens(current_length, input_tokens_std)
+
+                            if target_length < current_length:
+                                # Truncate token_ids
+                                token_ids = token_ids[:target_length]
+                                prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                                logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (truncated)")
+                            elif target_length > current_length:
+                                # Pad token_ids (repeat the last token or use a padding token)
+                                # Using 0 as padding token (common padding token ID)
+                                padding_needed = target_length - current_length
+                                token_ids = token_ids + [0] * padding_needed
+                                prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                                logger.debug(f"Request {request_id}: Sampled input tokens from {current_length} to {target_length} (padded)")
+                            # else: target_length == current_length, no change needed
+                        else:
+                            # For chat mode, estimate tokens, sample target, then adjust text
+                            original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                            current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+                            target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
+
+                            if target_tokens < current_estimated_tokens:
+                                # Truncate text to match target tokens
+                                truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
+                                if isinstance(request["prompt"], str):
+                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                                else:
+                                    # For list format, replace the content
+                                    truncated_prompt = request["prompt"].copy()
+                                    if isinstance(truncated_prompt, list) and truncated_prompt:
+                                        # Find the last user message and truncate it
+                                        for i in range(len(truncated_prompt) - 1, -1, -1):
+                                            if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                                truncated_prompt[i]["content"] = truncated_text
+                                                break
+                                    prompt = truncated_prompt
+                                logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (truncated)")
+                            elif target_tokens > current_estimated_tokens:
+                                # Expand text to match target tokens (append padding text)
+                                # Estimate how many words we need to add
+                                current_words = len(original_prompt_text.split())
+                                target_words = int(target_tokens / 1.33)  # Reverse of 1 word ≈ 1.33 tokens
+                                words_to_add = max(0, target_words - current_words)
+
+                                # Add padding words (using a simple pattern)
+                                padding_text = " padding" * words_to_add
+                                expanded_text = original_prompt_text + padding_text
+
+                                if isinstance(request["prompt"], str):
+                                    prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
+                                else:
+                                    # For list format, append to the last user message
+                                    expanded_prompt = request["prompt"].copy()
+                                    if isinstance(expanded_prompt, list) and expanded_prompt:
+                                        # Find the last user message and append padding
+                                        for i in range(len(expanded_prompt) - 1, -1, -1):
+                                            if isinstance(expanded_prompt[i], dict) and expanded_prompt[i].get("role") == "user":
+                                                expanded_prompt[i]["content"] = expanded_text
+                                                break
+                                    prompt = expanded_prompt
+                                logger.debug(f"Request {request_id}: Sampled input tokens from ~{current_estimated_tokens} to ~{target_tokens} (expanded)")
+                            # else: target_tokens == current_estimated_tokens, no change needed
+
+                    # Filter or truncate by max_input_tokens if specified
+                    if max_input_tokens:
+                        if args.prompt_type == "token-ids":
+                            # For token-ids mode, truncate the token list directly
+                            if len(token_ids) > max_input_tokens:
+                                original_length = len(token_ids)
+                                token_ids = token_ids[:max_input_tokens]
+                                logger.info(f"[Iteration {iteration+1}] Truncated token-ids from {original_length} to {len(token_ids)} tokens")
+                                prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
+                        else:
+                            # For chat mode, estimate and truncate text
+                            original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
+                            estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
+
+                            if estimated_tokens > max_input_tokens:
+                                # Truncate the text to fit within token limit
+                                truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
+                                logger.info(f"[Iteration {iteration+1}] Truncated prompt from ~{estimated_tokens} to ~{max_input_tokens} tokens")
+
+                                # Update the prompt with truncated text
+                                if isinstance(request["prompt"], str):
+                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                                else:
+                                    # For list format, replace the content
+                                    truncated_prompt = request["prompt"].copy()
+                                    if isinstance(truncated_prompt, list) and truncated_prompt:
+                                        # Find the last user message and truncate it
+                                        for i in range(len(truncated_prompt) - 1, -1, -1):
+                                            if isinstance(truncated_prompt[i], dict) and truncated_prompt[i].get("role") == "user":
+                                                truncated_prompt[i]["content"] = truncated_text
+                                                break
+                                    prompt = truncated_prompt
+
+                    # Get base max_tokens value (from workload or default)
+                    if args.override_workload_output_length:
+                        base_max_tokens = max_tokens
+                    else:
+                        base_max_tokens = request.get("Output Length", max_tokens)
+
+                    # Apply output token length scaling
+                    if output_token_length_scaling != 1.0:
+                        if output_token_length_scaling <= 0:
+                            logger.warning(f"Invalid output_token_length_scaling={output_token_length_scaling}; using base max_tokens.")
+                        else:
+                            base_max_tokens = max(1, int(round(base_max_tokens * output_token_length_scaling)))
+
+                    # Sample from normal distribution to make it more realistic
+                    if max_tokens_std > 0:
+                        sampled_max_tokens = sample_output_tokens(base_max_tokens, max_tokens_std)
+                    else:
+                        sampled_max_tokens = base_max_tokens
+
+                    # Store request info with original timestamp (for non-RPS mode)
+                    temp_request = {
+                        "prompt": prompt,
+                        "session_id": session_id,
+                        "max_tokens": sampled_max_tokens,
+                        "token_ids": token_ids,
+                        "original_timestamp_ms": ts  # Store original timestamp
+                    }
+                    temp_requests.append(temp_request)
+
+            # Shuffle requests if enabled
+            if shuffle_requests:
+                random.shuffle(temp_requests)
+                logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+
+            # Calculate metrics for logging
+            total_num_requests_per_iter = len(temp_requests)
+            total_num_requests_overall = total_num_requests_per_iter * iterations
+
+            profiling_target_times = None
+            if profiling_mode:
+                profiling_target_times = build_profiling_target_times(
+                    num_requests=total_num_requests_per_iter,
+                    base_time=iteration_base_time,
+                    max_rps=rps,
+                )
+                logger.info(f"Profiling mode: scheduled {len(profiling_target_times)} target times across ramp, burst, and steady phases.")
+
+            gradual_increase_target_times = None
+            if (not profiling_mode) and rps and getattr(args, "tweak_workload", None) == "gradual_increase":
+                gradual_increase_target_times = build_gradual_increase_target_times(
+                    num_requests=total_num_requests_per_iter,
+                    base_time=iteration_base_time,
+                    max_rps=rps,
+                )
+                logger.info(f"gradual_increase workload: scheduled {len(gradual_increase_target_times)} target times.")
+
+            # Pre-calculate ramp target times if ramp is enabled
+            ramp_target_times = None
+            if (not profiling_mode) and rps and args.iteration_ramp_duration > 0:
+                ramp_target_times = calculate_ramp_target_times(
+                    num_requests=total_num_requests_per_iter,
+                    base_time=iteration_base_time,
+                    target_rps=rps,
+                    ramp_duration=args.iteration_ramp_duration,
+                    start_fraction=args.iteration_ramp_start_fraction,
+                )
+                logger.info(f"Iteration {iteration+1}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS)")
+
+            # Now assign target times and create final tasks
+            cumulative_time = 0.0  # For Poisson arrivals
+            for idx, req in enumerate(temp_requests):
+                # Calculate target_time based on mode
+                if profiling_target_times is not None:
+                    # Profiling mode: use precomputed profiling schedule
+                    target_time = profiling_target_times[idx]
+                elif gradual_increase_target_times is not None:
+                    target_time = gradual_increase_target_times[idx]
+                elif ramp_target_times is not None:
+                    # Ramp-up mode: use precomputed ramp schedule
+                    target_time = ramp_target_times[idx]
+                    if poisson_arrivals:
+                        # Add Poisson jitter on top of ramp schedule
+                        relative_time = target_time - iteration_base_time
+                        if relative_time < args.iteration_ramp_duration:
+                            # During ramp, interpolate RPS for jitter scaling
+                            progress = relative_time / args.iteration_ramp_duration
+                            current_rps = rps * (args.iteration_ramp_start_fraction + progress * (1 - args.iteration_ramp_start_fraction))
+                        else:
+                            current_rps = rps
+                        jitter = np.random.exponential(1.0 / current_rps) - (1.0 / current_rps)
+                        target_time += jitter
+                elif rps:
+                    if poisson_arrivals:
+                        # Use exponential distribution for Poisson process
+                        # Sample inter-arrival time from exponential distribution
+                        inter_arrival = np.random.exponential(mean_inter_arrival_time)
+                        cumulative_time += inter_arrival
+                        target_time = iteration_base_time + cumulative_time
+                    else:
+                        # Fixed inter-arrival time
+                        target_time = iteration_base_time + (idx * mean_inter_arrival_time)
+                else:
+                    # Use timestamp from workload file
+                    target_time = iteration_base_time + req["original_timestamp_ms"] / 1000.0
+
+                task = {
+                    "prompt": req["prompt"],
+                    "request_id": request_id,
+                    "session_id": req["session_id"],
+                    "target_time": target_time,
+                    "max_tokens": req["max_tokens"],
+                    "iteration": iteration,
+                    "token_ids": req["token_ids"]
+                }
+                iteration_tasks.append(task)
+                request_id += 1
+
+            logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+            print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+
+            # In profiling mode, also persist the generated profiling schedule as a workload-style JSONL
+            if profiling_mode and profiling_dump_path:
+                logger.info("Profiling mode: dumping generated profiling workload (will also execute requests).")
+                dump_profiling_workload(
+                    profiling_dump_path,
+                    iteration_tasks,
+                    iteration_base_time,
+                    args.prompt_type,
+                    iteration=iteration,
+                    total_iterations=iterations,
+                )
+
+            # Execute only this iteration's tasks (benchmark mode)
+            start_time = time.time()
+            results = await schedule_and_execute_tasks(
+                tasks=iteration_tasks,
+                client=client,
+                model=model,
+                is_streaming=is_streaming,
+                output_file=output_file,
+                temperature=temperature,
+                routing_strategy=routing_strategy,
+                results_lock=results_lock,
+                history_lock=history_lock,
+                iteration=iteration,
+                total_num_requests=total_num_requests_overall,
+                total_num_requests_per_iter=total_num_requests_per_iter,
+                total_num_episodes=iterations,
+                prompt_type=args.prompt_type,
+                force_exact_output_tokens=force_exact_output_tokens,
+            )
+            end_time = time.time()
+
+            # Count successes and failures for this iteration
+            success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+            error_count = len(iteration_tasks) - success_count
+
+            logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
+            logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
+
+            # Update totals
+            total_requests += len(iteration_tasks)
+            total_success += success_count
+            total_failures += error_count
+
+            # Free up memory
+            iteration_tasks = None
+            results = None
+
+            # # Add a small buffer before next iteration if not the last iteration
+            # if iteration < iterations - 1:
+            #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
+            #     await asyncio.sleep(2.0)
+
     # Log overall benchmark completion
     overall_end_time = time.time()
     logger.info(f"All {iterations} iterations completed in {overall_end_time - overall_start_time:.2f} seconds")
@@ -2420,6 +2884,7 @@ async def main(args):
             input_token_length_scaling=args.input_token_length_scaling,
             output_token_length_scaling=args.output_token_length_scaling,
             workload_path=args.workload_path,
+            iteration_overlap_ratio=args.iteration_overlap_ratio,
         )
         end_time = time.time()
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
@@ -2483,6 +2948,17 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tweak_workload", type=str, default=None,
                        help="Optional workload tweak. 'gradual_increase' ramps RPS from 1 to --rps by +1 RPS every 10 seconds in benchmark mode.")
+    parser.add_argument("--iteration_overlap_ratio", type=float, default=0.0,
+                       help="Fraction of requests to overlap between consecutive iterations (0.0-0.5). "
+                            "Creates smooth transitions between iteration boundaries instead of abrupt changes. "
+                            "E.g., 0.1 means last 10%% of iter N overlaps with first 10%% of iter N+1.")
+    parser.add_argument("--iteration_ramp_duration", type=float, default=0.0,
+                       help="Duration in seconds to ramp up RPS at the start of each iteration. "
+                            "E.g., 10.0 means RPS gradually increases from initial to target over first 10 seconds. "
+                            "Set to 0 to disable (default).")
+    parser.add_argument("--iteration_ramp_start_fraction", type=float, default=0.1,
+                       help="Starting RPS as a fraction of target RPS during ramp-up (0.0-1.0). "
+                            "E.g., 0.1 means start at 10%% of target RPS. Default: 0.1")
 
     args = parser.parse_args()
     
@@ -2499,6 +2975,29 @@ if __name__ == "__main__":
     if args.tweak_workload == "gradual_increase" and not args.rps:
         logger.warning("--tweak_workload=gradual_increase requires --rps to be specified. Ignoring tweak_workload.")
         args.tweak_workload = None
+
+    # Validation: iteration_overlap_ratio must be in valid range
+    if args.iteration_overlap_ratio < 0.0 or args.iteration_overlap_ratio > 0.5:
+        raise ValueError("--iteration_overlap_ratio must be between 0.0 and 0.5")
+
+    # Validation: iteration_overlap_ratio requires iterations > 1 and RPS
+    if args.iteration_overlap_ratio > 0:
+        if args.iterations <= 1:
+            logger.warning("--iteration_overlap_ratio requires --iterations > 1. Ignoring overlap.")
+            args.iteration_overlap_ratio = 0.0
+        if not args.rps:
+            logger.warning("--iteration_overlap_ratio requires --rps to be specified. Ignoring overlap.")
+            args.iteration_overlap_ratio = 0.0
+
+    # Validation: iteration_ramp_start_fraction must be in valid range
+    if args.iteration_ramp_start_fraction < 0.0 or args.iteration_ramp_start_fraction > 1.0:
+        raise ValueError("--iteration_ramp_start_fraction must be between 0.0 and 1.0")
+
+    # Validation: iteration_ramp_duration requires RPS
+    if args.iteration_ramp_duration > 0:
+        if not args.rps:
+            logger.warning("--iteration_ramp_duration requires --rps to be specified. Ignoring ramp.")
+            args.iteration_ramp_duration = 0.0
 
     asyncio.run(main(args))
     if not os.path.exists(args.output_dir):

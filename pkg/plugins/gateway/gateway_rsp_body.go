@@ -445,6 +445,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupChosenPodPredictedReward(routerCtx.RequestID)
 			utils.CleanupEndToEndOverheadForRequest(routerCtx.RequestID)
 			utils.CleanupSelectedPodGPU(routerCtx.RequestID)
+			utils.CleanupOODFallbackForRequest(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
@@ -850,7 +851,11 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 	headers, jsonStrings["predictedRewards"] = addMetricToHeaders(headers, HeaderPredictedRewards, predictedRewards, utils.GetPredictedRewardsMutex())
 	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@endToEndOverhead@%f@GPU@%s@selectedPodGPU@%s",
+	TensorTransferOverhead, _ := utils.GetTensorTransferOverheadForRequest(routerCtx.RequestID)
+	InferOverhead, _ := utils.GetInferOverheadForRequest(routerCtx.RequestID)
+	OtherOverhead, _ := utils.GetOtherOverheadForRequest(routerCtx.RequestID)
+	oodFallback := utils.GetOODFallbackForRequest(routerCtx.RequestID)
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@EndToEndOverhead@%f@TensorTransferOverhead@%f@InferOverhead@%f@OtherOverhead@%f@GPU@%s@selectedPodGPU@%s@oodFallback@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -884,8 +889,12 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		routerCtx.SubAlgorithm,
 		prev_reward,
 		endToEndOverhead,
+		TensorTransferOverhead,
+		InferOverhead,
+		OtherOverhead,
 		jsonStrings["GPU"],
 		selectedPodGPU,
+		oodFallback,
 	)
 	klog.Infof("%s", logMessage)
 
