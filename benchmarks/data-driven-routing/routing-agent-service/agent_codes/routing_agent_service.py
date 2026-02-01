@@ -252,8 +252,11 @@ def handle_infer():
         # Use the existing preprocessing function to parse the log
         preprocess_start_time = time.time()
         processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess.main(None, log_message, HYPERPARAMETERS)
+        # OPTIMIZATION: Handle both dict (optimized single-row) and DataFrame inputs
+        is_dict_input = isinstance(processed_df, dict)
+        processed_columns = list(processed_df.keys()) if is_dict_input else processed_df.columns
         if PRINT_ONCE_AT_THE_FIRST_REQUEST:
-            logger.info(f"processed_df.columns: {list(processed_df.columns)}")
+            logger.info(f"processed_df.columns: {list(processed_columns)}")
             logger.info(f"sorted_all_pod_ids: {sorted_all_pod_ids}")
             PRINT_ONCE_AT_THE_FIRST_REQUEST = False
         handle_infer_overhead_summary["preprocess_overhead"] = time.time() - preprocess_start_time # quite slow 65ms
@@ -265,8 +268,8 @@ def handle_infer():
                 # Extract request features (unnormalized)
                 request_dict = {}
                 for feat in request_features_train:
-                    if feat in processed_df.columns:
-                        request_dict[feat] = processed_df[feat].iloc[0]
+                    if feat in processed_columns:
+                        request_dict[feat] = processed_df[feat] if is_dict_input else processed_df[feat].iloc[0]
 
                 # Extract pod features for the FIRST pod only (to avoid overwhelming the monitor)
                 # We track one representative pod per request
@@ -279,8 +282,8 @@ def handle_infer():
                     pod_dict = {}
                     for feat in pod_features:
                         col_name = f"{representative_pod}-{feat}"
-                        if col_name in processed_df.columns:
-                            pod_dict[feat] = processed_df[col_name].iloc[0]
+                        if col_name in processed_columns:
+                            pod_dict[feat] = processed_df[col_name] if is_dict_input else processed_df[col_name].iloc[0]
 
                     # Add sample to distribution monitor
                     distribution_shift_monitor.add_sample(
@@ -313,8 +316,8 @@ def handle_infer():
 
         if per_sample_ood_detector is not None:
             try:
-                # OPTIMIZATION: Convert DataFrame row to dict ONCE for O(1) access
-                row_dict = processed_df.iloc[0].to_dict()
+                # OPTIMIZATION: Use dict directly if available, otherwise convert DataFrame row
+                row_dict = processed_df if is_dict_input else processed_df.iloc[0].to_dict()
 
                 # Extract request features
                 request_ood_features = {}
@@ -387,11 +390,13 @@ def handle_infer():
         # 🔍 CHECKPOINT 2: Log NORMALIZED values (for request_id % 10 == 0)
         if int(request_id) % 10 == 0:
             logger.info(f"🔍 CHECKPOINT 2 - AFTER NORMALIZATION (requestID {request_id}):")
-            logger.info(f"   Request features: input_tokens={processed_df['input_tokens'].iloc[0]:.4f}, output_tokens={processed_df['output_tokens'].iloc[0]:.4f}")
+            input_tokens_val = processed_df['input_tokens'] if is_dict_input else processed_df['input_tokens'].iloc[0]
+            output_tokens_val = processed_df['output_tokens'] if is_dict_input else processed_df['output_tokens'].iloc[0]
+            logger.info(f"   Request features: input_tokens={input_tokens_val:.4f}, output_tokens={output_tokens_val:.4f}")
             for pod_id in sorted_all_pod_ids[:3]:
-                kv = processed_df[f'{pod_id}-kv_hit_ratio'].iloc[0]
-                inflight = processed_df[f'{pod_id}-inflight_requests'].iloc[0]
-                prefill = processed_df[f'{pod_id}-prefill_tokens'].iloc[0]
+                kv = processed_df[f'{pod_id}-kv_hit_ratio'] if is_dict_input else processed_df[f'{pod_id}-kv_hit_ratio'].iloc[0]
+                inflight = processed_df[f'{pod_id}-inflight_requests'] if is_dict_input else processed_df[f'{pod_id}-inflight_requests'].iloc[0]
+                prefill = processed_df[f'{pod_id}-prefill_tokens'] if is_dict_input else processed_df[f'{pod_id}-prefill_tokens'].iloc[0]
                 logger.info(f"   {pod_id}: kv_hit_ratio={kv:.4f}, inflight={inflight:.4f}, prefill={prefill:.4f}")
 
         ## Encode data (normalization already done)
@@ -410,7 +415,7 @@ def handle_infer():
 
         infer_from_tensor_start_time = time.time()
 
-        subAlgorithm = processed_df['subAlgorithm'].iloc[0]
+        subAlgorithm = processed_df['subAlgorithm'] if is_dict_input else processed_df['subAlgorithm'].iloc[0]
         logger.debug(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}")
         
         # "random"
@@ -642,8 +647,8 @@ def handle_infer():
             temporal_features = np.array([1], dtype=np.float32)  # Empty for now
             
             # Get previous reward from processed_df (gateway provides this)
-            if 'prev_reward' in processed_df.columns:
-                prev_reward = float(processed_df['prev_reward'].iloc[0])
+            if 'prev_reward' in processed_columns:
+                prev_reward = float(processed_df['prev_reward']) if is_dict_input else float(processed_df['prev_reward'].iloc[0])
             else:
                 logger.error(f"scalable_rl_routing_agent, prev_reward not found in processed_df for requestID: {request_id}")
                 assert False

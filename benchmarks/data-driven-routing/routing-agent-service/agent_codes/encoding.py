@@ -386,16 +386,16 @@ class DataEncoder:
                 kept_features.append(feature_name)
         
         if not keep_indices:
-            logger.warning("No current-state features found, keeping all features")
+            logger.debug("No current-state features found, keeping all features")
             return pod_features_array, feature_names
         
         # Filter the feature array
         filtered_features = pod_features_array[:, :, keep_indices]
         if len(kept_features) != len(feature_names):
-            logger.info(f"Feature masking applied:")
-            logger.info(f"  Original features: {len(feature_names)} -> Kept features: {len(kept_features)}")
-            logger.info(f"  Kept features: {kept_features}")
-            logger.info(f"  Original shape: {pod_features_array.shape} -> New shape: {filtered_features.shape}")
+            logger.debug(f"Feature masking applied:")
+            logger.debug(f"  Original features: {len(feature_names)} -> Kept features: {len(kept_features)}")
+            logger.debug(f"  Kept features: {kept_features}")
+            logger.debug(f"  Original shape: {pod_features_array.shape} -> New shape: {filtered_features.shape}")
         else:
             logger.debug("No feature masking applied, all features kept")
         
@@ -599,7 +599,7 @@ class DataEncoder:
             self._cached_feature_config_key = None
             self._cached_feature_config = None
             ALL_NUMERIC_FEATURES, _, n_numeric, _, gpu_onehot_dim, total_feature_dim = self._get_feature_config(HYPERPARAMETERS)
-            logger.info(f"After cache clear: len(ALL_NUMERIC_FEATURES)={len(ALL_NUMERIC_FEATURES)}, n_numeric={n_numeric}, total_feature_dim={total_feature_dim}")
+            logger.debug(f"After cache clear: len(ALL_NUMERIC_FEATURES)={len(ALL_NUMERIC_FEATURES)}, n_numeric={n_numeric}, total_feature_dim={total_feature_dim}")
 
         all_features_array = np.zeros((n_samples, n_pods, total_feature_dim), dtype=np.float32)
 
@@ -732,8 +732,8 @@ class DataEncoder:
                 pod_features_array = np.ones((n_samples, n_pods, 1), dtype=np.float32) * 0.5  # Neutral values
                 kept_pod_features = ['minimal_feature']
             
-            logger.info(f"Extracted KV ratios separately: {kv_hit_norm.shape}")
-            logger.info(f"Remaining pod features: {len(kept_pod_features)} features")
+            logger.debug(f"Extracted KV ratios separately: {kv_hit_norm.shape}")
+            logger.debug(f"Remaining pod features: {len(kept_pod_features)} features")
             
         else:
             # KV hit ratio was filtered out - this shouldn't happen with our CURRENT_STATE_FEATURES
@@ -805,18 +805,32 @@ class DataEncoder:
         return pod_features_array, pod_kv_hit_array, kv_hit_norm, {}
     
     def prepare_for_encoding(self, processed_df, sorted_all_pod_ids, request_features_train, HYPERPARAMETERS):
-        logger.info(f"prepare_for_encoding received request_features_train: {request_features_train}")
+        # Removed verbose logging for performance - use debug level for hot path
+        logger.debug(f"prepare_for_encoding received request_features_train: {request_features_train}")
         overhead_summary = {}
         self.sorted_all_pod_ids = sorted_all_pod_ids
         pod_ids_key = tuple(sorted_all_pod_ids)
         if pod_ids_key != self._cached_pod_ids_key:
             self._cached_pod_ids_key = pod_ids_key
             self._cached_pod_id_set = set(sorted_all_pod_ids)
-        
+
+        # OPTIMIZATION: Handle both dict (single-row inference) and DataFrame (training/batch)
+        is_dict_input = isinstance(processed_df, dict)
+        if is_dict_input:
+            n_samples = 1
+            columns = list(processed_df.keys())
+        else:
+            n_samples = len(processed_df)
+            columns = processed_df.columns
+
         # CRITICAL: Extract RAW input_tokens BEFORE any normalization for plotting
         raw_input_tokens = None
-        if 'input_tokens' in processed_df.columns:
-            raw_input_tokens = processed_df['input_tokens'].fillna(0).values.astype(np.float32)
+        if 'input_tokens' in columns:
+            if is_dict_input:
+                val = processed_df['input_tokens']
+                raw_input_tokens = np.array([val if not pd.isna(val) else 0], dtype=np.float32)
+            else:
+                raw_input_tokens = processed_df['input_tokens'].fillna(0).values.astype(np.float32)
             logger.debug(f"Extracted raw input_tokens: min={raw_input_tokens.min():.0f}, max={raw_input_tokens.max():.0f}, mean={raw_input_tokens.mean():.0f}")
         
         # Initialize GPU one-hot dimension based on INCLUDE_GPU_FEATURES flag
@@ -835,12 +849,12 @@ class DataEncoder:
         self.selected_pod_encoder = None
         
         classify_feature_timing_start = time.time()
-        columns_key = tuple(processed_df.columns)
+        columns_key = tuple(columns)
         if columns_key == self._cached_pod_feature_columns_key:
             pod_feature_columns = self._cached_pod_feature_columns
             self.pod_features = self._cached_pod_features_list
         else:
-            pod_feature_columns = [col for col in processed_df.columns if col.startswith('pod_')]
+            pod_feature_columns = [col for col in columns if col.startswith('pod_')]
             unique_features = list(set(col.split('-')[1] for col in pod_feature_columns if '-' in col))
             self.pod_features = sorted(unique_features)
             self._cached_pod_feature_columns_key = columns_key
@@ -848,15 +862,14 @@ class DataEncoder:
             self._cached_pod_features_list = self.pod_features
         feature_timing = {f: 'historical' if 'last_second' in f else 'current' for f in self.pod_features}
         overhead_summary['classify_feature_timing'] = time.time() - classify_feature_timing_start
-        
+
         extract_pod_columns_start = time.time()
-        pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids, pod_feature_columns=pod_feature_columns)
+        pod_data = self._extract_pod_columns(processed_df, sorted_all_pod_ids, pod_feature_columns=pod_feature_columns, is_dict_input=is_dict_input)
         overhead_summary['extract_pod_columns'] = time.time() - extract_pod_columns_start
-        
-        # STEP 5: FAST request feature
-        n_samples = len(processed_df)
+
+        # STEP 5: FAST request feature (n_samples already set above)
         extract_request_feature_start = time.time()
-        request_features, _ = self.extract_request_features(processed_df, request_features_train, n_samples)
+        request_features, _ = self.extract_request_features(processed_df, request_features_train, n_samples, is_dict_input=is_dict_input)
         overhead_summary['extract_request_feature'] = time.time() - extract_request_feature_start
 
         # STEP 7: ULTRA-OPTIMIZED pod processing
@@ -866,7 +879,7 @@ class DataEncoder:
 
         # STEP 8: actions/rewards (continues as normal)
         extract_actions_start = time.time()
-        actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency, input_tokens_normalized = self.extract_actions_rewards(processed_df, n_samples)
+        actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency, input_tokens_normalized = self.extract_actions_rewards(processed_df, n_samples, is_dict_input=is_dict_input)
         overhead_summary['extract_actions'] = time.time() - extract_actions_start
         
         # Use raw_input_tokens if available (extracted before normalization), otherwise use normalized version
@@ -874,7 +887,7 @@ class DataEncoder:
             input_tokens_for_plotting = raw_input_tokens
         else:
             input_tokens_for_plotting = input_tokens_normalized
-            logger.warning("raw_input_tokens not available, using potentially normalized values for plotting")
+            logger.debug("raw_input_tokens not available, using potentially normalized values for plotting")
 
         # STEP 10: MINIMAL positional encoding
         positional_encoding_start = time.time()
@@ -934,12 +947,15 @@ class DataEncoder:
         return processed_data, overhead_summary
 
 
-    def _extract_pod_columns(self, processed_df, sorted_all_pod_ids, pod_feature_columns=None):
+    def _extract_pod_columns(self, processed_df, sorted_all_pod_ids, pod_feature_columns=None, is_dict_input=False):
         pod_data = {}
-        is_single_row = len(processed_df) == 1
+        is_single_row = is_dict_input or len(processed_df) == 1
         pod_id_set = self._cached_pod_id_set if self._cached_pod_id_set is not None else set(sorted_all_pod_ids)
-        columns = pod_feature_columns if pod_feature_columns is not None else processed_df.columns
-        single_row = processed_df.iloc[0] if is_single_row else None
+        if is_dict_input:
+            columns = pod_feature_columns if pod_feature_columns is not None else list(processed_df.keys())
+        else:
+            columns = pod_feature_columns if pod_feature_columns is not None else processed_df.columns
+        single_row = processed_df if is_dict_input else (processed_df.iloc[0] if is_single_row else None)
         for col in columns:
             if col.startswith('pod_') and '-' in col:
                 pod_id, feature = col.split('-', 1)
@@ -959,33 +975,42 @@ class DataEncoder:
             logger.error(f"processed_df: {processed_df}")
             logger.error(f"Expected pod IDs: {sorted_all_pod_ids}")
             logger.error(f"Extracted pod data: {pod_data}")
-            processed_df.to_csv('debug_processed_df.csv', index=False)
+            if not is_dict_input:
+                processed_df.to_csv('debug_processed_df.csv', index=False)
             exit(1)
         return pod_data
 
     
-    def extract_request_features(self, processed_df, request_features_train, n_samples):
+    def extract_request_features(self, processed_df, request_features_train, n_samples, is_dict_input=False):
         request_features_start_time = time.time()
 
         if request_features_train:
             # Extract request features by column names (supports variable length)
             try:
-                request_features = processed_df[request_features_train].values.astype(np.float32, copy=False)
+                if is_dict_input:
+                    # Dict input: extract values directly
+                    values = [processed_df.get(f, 0) for f in request_features_train]
+                    request_features = np.array([values], dtype=np.float32)
+                else:
+                    request_features = processed_df[request_features_train].values.astype(np.float32, copy=False)
                 logger.debug(f"Extracted {len(request_features_train)} request features: {request_features_train}")
             except KeyError as e:
                 logger.error(f"Missing request feature column: {e}")
-                logger.error(f"Available columns: {list(processed_df.columns)}")
+                if is_dict_input:
+                    logger.error(f"Available columns: {list(processed_df.keys())}")
+                else:
+                    logger.error(f"Available columns: {list(processed_df.columns)}")
                 logger.error(f"Requested features: {request_features_train}")
                 assert False
         else:
-            logger.warning("No request features provided for inference, using empty array")
+            logger.debug("No request features provided for inference, using empty array")
             request_features = np.zeros((n_samples, 0), dtype=np.float32)
 
         request_features_overhead = time.time() - request_features_start_time
         return request_features, request_features_overhead
 
 
-    def extract_actions_rewards(self, df, n_samples):
+    def extract_actions_rewards(self, df, n_samples, is_dict_input=False):
         """Fast action/reward extraction - minimal validation."""
         actions = np.zeros(n_samples, dtype=np.int64)
         rewards = np.zeros(n_samples, dtype=np.float32)
@@ -995,31 +1020,50 @@ class DataEncoder:
         avg_tpot = np.zeros(n_samples, dtype=np.float32)
         e2e_latency = np.zeros(n_samples, dtype=np.float32)
         input_tokens = np.zeros(n_samples, dtype=np.float32)  # NEW: Add input_tokens
-        
-        # Direct extraction without validation
-        if 'selected_pod' in df.columns:
-            pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.sorted_all_pod_ids)}
-            selected_pods = df['selected_pod'].values
-            for i, pod in enumerate(selected_pods):
+
+        if is_dict_input:
+            # Dict input: direct value extraction
+            columns = df.keys()
+            if 'selected_pod' in columns:
+                pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.sorted_all_pod_ids)}
+                pod = df['selected_pod']
                 if pd.notna(pod):
                     idx = pod_to_idx.get(str(pod))
                     if idx is not None:
-                        actions[i] = idx
-        
-        # Direct column extraction (added input_tokens)
-        for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards), 
-                           ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency), 
-                           ('input_tokens', input_tokens)]:
-            if col in df.columns:
-                try:
-                    target[:] = df[col].fillna(0).values.astype(np.float32)
-                except Exception as e:
-                    the_first_row = df.iloc[0]
-                    logger.error(f"df.columns: {df.columns}")
-                    logger.error(f"the_first_row: {the_first_row}")
-                    logger.error(f"the_first_row[{col}]: {the_first_row[col]}")
-                    logger.error(f"Error processing column {col}: {e}")
-                    exit(1)
+                        actions[0] = idx
+
+            # Direct value extraction for dict
+            for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards),
+                               ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency),
+                               ('input_tokens', input_tokens)]:
+                if col in columns:
+                    val = df[col]
+                    target[0] = float(val) if pd.notna(val) else 0.0
+        else:
+            # DataFrame input: original logic
+            if 'selected_pod' in df.columns:
+                pod_to_idx = {pod_id: i for i, pod_id in enumerate(self.sorted_all_pod_ids)}
+                selected_pods = df['selected_pod'].values
+                for i, pod in enumerate(selected_pods):
+                    if pd.notna(pod):
+                        idx = pod_to_idx.get(str(pod))
+                        if idx is not None:
+                            actions[i] = idx
+
+            # Direct column extraction (added input_tokens)
+            for col, target in [('reward', rewards), ('ttft_reward', ttft_rewards), ('tpot_reward', tpot_rewards),
+                               ('ttft', ttft), ('avg_tpot', avg_tpot), ('e2e_latency', e2e_latency),
+                               ('input_tokens', input_tokens)]:
+                if col in df.columns:
+                    try:
+                        target[:] = df[col].fillna(0).values.astype(np.float32)
+                    except Exception as e:
+                        the_first_row = df.iloc[0]
+                        logger.error(f"df.columns: {df.columns}")
+                        logger.error(f"the_first_row: {the_first_row}")
+                        logger.error(f"the_first_row[{col}]: {the_first_row[col]}")
+                        logger.error(f"Error processing column {col}: {e}")
+                        exit(1)
 
         return actions, rewards, ttft_rewards, tpot_rewards, ttft, avg_tpot, e2e_latency, input_tokens
 

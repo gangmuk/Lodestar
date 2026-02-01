@@ -453,8 +453,12 @@ def _get_normalizable_features(processed_df, no_normalize_features: list):
 
     OPTIMIZATION: Results are cached based on column signature + no_normalize_features.
     """
+    # OPTIMIZATION: Handle both dict (single-row inference) and DataFrame inputs
+    is_dict_input = isinstance(processed_df, dict)
+    columns = list(processed_df.keys()) if is_dict_input else processed_df.columns
+
     # Create cache key from columns and exclusion list
-    columns_key = _get_columns_cache_key(processed_df.columns)
+    columns_key = _get_columns_cache_key(columns)
     no_normalize_key = frozenset(no_normalize_features) if no_normalize_features else frozenset()
     cache_key = (columns_key, no_normalize_key)
 
@@ -467,7 +471,7 @@ def _get_normalizable_features(processed_df, no_normalize_features: list):
     pod_feature_types = set()  # Track unique pod feature types (e.g., "kv_hit_ratio")
     all_pod_columns = []  # Track all pod columns for validation
 
-    for col in processed_df.columns:
+    for col in columns:
         if col.startswith('pod_') and 'gpu_model' not in col and 'GPU' not in col:
             feature_type = _extract_pod_feature_type(col)
             if feature_type and feature_type not in no_normalize_features:
@@ -485,7 +489,7 @@ def _get_normalizable_features(processed_df, no_normalize_features: list):
     all_pod_columns_set = set(all_pod_columns)
     normalizable_set = set(normalizable_features)
     non_normalizable_features = [
-        col for col in processed_df.columns
+        col for col in columns
         if col not in all_pod_columns_set and col not in normalizable_set
     ]
 
@@ -734,7 +738,7 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
     3. Leveraging cached matching columns
 
     Args:
-        processed_df: DataFrame to normalize (modified in place)
+        processed_df: DataFrame or dict to normalize (modified in place)
         stats_instance: FeatureStats instance with normalization statistics
         normalizable_features: List of features to normalize (from _get_normalizable_features)
         pod_feature_types: Set of pod feature types (from _get_normalizable_features)
@@ -744,6 +748,10 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
         None (modifies processed_df in place)
     """
     log_prefix = f"request_id,{request_id}," if request_id else ""
+
+    # OPTIMIZATION: Handle both dict (single-row inference) and DataFrame inputs
+    is_dict_input = isinstance(processed_df, dict)
+    columns = list(processed_df.keys()) if is_dict_input else processed_df.columns
 
     # Pre-fetch all needed stats objects to avoid repeated dict lookups
     stats_cache = {}
@@ -769,7 +777,7 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
             continue
 
         # Get all columns for this feature type (cached)
-        matching_columns = _get_matching_columns_cached(processed_df.columns, feature_type)
+        matching_columns = _get_matching_columns_cached(columns, feature_type)
 
         if not matching_columns:
             continue
@@ -784,14 +792,22 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
 
         # Normalize all matching columns
         for col in matching_columns:
-            if col in processed_df.columns:
-                raw_val = processed_df[col].values
-                normalized_val = (raw_val - mean_val) / std_val
-                # NaN check - same as original _normalize_single_feature
-                if np.any(np.isnan(normalized_val)):
-                    logger.error(f"{log_prefix}❌ {col}: Normalization produced NaN values, skipping")
-                    continue
-                processed_df[col] = normalized_val
+            if col in columns:
+                if is_dict_input:
+                    raw_val = processed_df[col]
+                    normalized_val = (raw_val - mean_val) / std_val
+                    if np.isnan(normalized_val):
+                        logger.error(f"{log_prefix}❌ {col}: Normalization produced NaN values, skipping")
+                        continue
+                    processed_df[col] = normalized_val
+                else:
+                    raw_val = processed_df[col].values
+                    normalized_val = (raw_val - mean_val) / std_val
+                    # NaN check - same as original _normalize_single_feature
+                    if np.any(np.isnan(normalized_val)):
+                        logger.error(f"{log_prefix}❌ {col}: Normalization produced NaN values, skipping")
+                        continue
+                    processed_df[col] = normalized_val
 
     # Process non-pod features
     for feature in normalizable_features:
@@ -803,8 +819,8 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
             logger.error(f"{log_prefix}This indicates a training/inference feature mismatch")
             assert False  # Fail fast - same as original _normalize_single_feature
 
-        if feature not in processed_df.columns:
-            logger.warning(f"{log_prefix}Feature '{feature}' not in DataFrame")
+        if feature not in columns:
+            logger.warning(f"{log_prefix}Feature '{feature}' not in DataFrame/dict")
             continue
 
         stats = stats_cache[feature]
@@ -823,13 +839,21 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
             continue
 
         # Normalize
-        raw_val = processed_df[feature].values
-        normalized_val = (raw_val - mean_val) / std_val
-        # NaN check - same as original _normalize_single_feature
-        if np.any(np.isnan(normalized_val)):
-            logger.error(f"{log_prefix}❌ {feature}: Normalization produced NaN values, skipping")
-            continue
-        processed_df[feature] = normalized_val
+        if is_dict_input:
+            raw_val = processed_df[feature]
+            normalized_val = (raw_val - mean_val) / std_val
+            if np.isnan(normalized_val):
+                logger.error(f"{log_prefix}❌ {feature}: Normalization produced NaN values, skipping")
+                continue
+            processed_df[feature] = normalized_val
+        else:
+            raw_val = processed_df[feature].values
+            normalized_val = (raw_val - mean_val) / std_val
+            # NaN check - same as original _normalize_single_feature
+            if np.any(np.isnan(normalized_val)):
+                logger.error(f"{log_prefix}❌ {feature}: Normalization produced NaN values, skipping")
+                continue
+            processed_df[feature] = normalized_val
 
     logger.debug(f"{log_prefix}Batch normalized {len(normalizable_features)} features + {len(pod_feature_types)} pod types")
 
