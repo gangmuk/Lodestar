@@ -2141,24 +2141,46 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     pod_colors = dict(zip(unique_pods, colors))
     pod_counts = df.groupby('selectedpod').size()
     
+    # Calculate RPS per second
+    total_requests_per_sec = df.groupby('time_bin').size().reset_index(name='total_requests')
+    
     # Determine layout based on routing policy
     if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
-        # With numTrains analysis: 8 rows
-        n_rows = 8
-        height_ratios = [1.2, 1.2, 1.5, 1.5, 1.2, 1.2, 1.2, 1.2]  # time series, bar plots, CDFs for both TTFT and TPOT
-        fig_height = 28
+        # With numTrains analysis: 9 rows (added RPS row)
+        n_rows = 9
+        height_ratios = [0.8, 1.2, 1.2, 1.5, 1.5, 1.2, 1.2, 1.2, 1.2]  # RPS, time series, bar plots, CDFs for both TTFT and TPOT
+        fig_height = 30
     else:
-        # Without numTrains analysis: 6 rows
-        n_rows = 6
-        height_ratios = [1.2, 1.2, 1.5, 1.5, 1.2, 1.2]  # time series, bar plots, CDFs by iteration only
-        fig_height = 22
+        # Without numTrains analysis: 7 rows (added RPS row)
+        n_rows = 7
+        height_ratios = [0.8, 1.2, 1.2, 1.5, 1.5, 1.2, 1.2]  # RPS, time series, bar plots, CDFs by iteration only
+        fig_height = 24
     
     # Create figure with GridSpec
     fig = plt.figure(figsize=(15, fig_height))
     gs = GridSpec(n_rows, 3, figure=fig, height_ratios=height_ratios, hspace=0.4, wspace=0.3)
     
-    # Row 0: TTFT Time Series (full width)
-    ax_ttft = fig.add_subplot(gs[0, :])
+    # Row 0: RPS Time Series (full width)
+    ax_rps = fig.add_subplot(gs[0, :])
+    ax_rps.plot(total_requests_per_sec['time_bin'], total_requests_per_sec['total_requests'], 
+                '-', color='blue', linewidth=linewidth, alpha=alpha, label='Total RPS')
+    
+    # Add transition lines
+    for transition in train_transitions:
+        ax_rps.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth, 
+                       linestyle='--', zorder=5)
+    if iteration_transitions:
+        for transition in iteration_transitions:
+            ax_rps.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth, 
+                          linestyle='-.', zorder=5)
+    
+    ax_rps.set_ylabel('Requests/sec', fontsize=14, fontweight='bold')
+    ax_rps.set_title('Requests Per Second (RPS)', fontsize=16, fontweight='bold', pad=10)
+    ax_rps.grid(True, alpha=alpha)
+    ax_rps.tick_params(axis='both', which='major', labelsize=11)
+    
+    # Row 1: TTFT Time Series (full width)
+    ax_ttft = fig.add_subplot(gs[1, :], sharex=ax_rps)
     ax_ttft.plot(ttft_avg_per_sec['time_bin'], ttft_avg_per_sec['ttft'], 
                  color='red', linewidth=linewidth, alpha=alpha, label='Avg TTFT (per sec)', zorder=10)
     
@@ -2185,8 +2207,8 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     ax_ttft.legend(handles=legend_elements, fontsize=10, loc='upper right', ncol=3)
     ax_ttft.tick_params(axis='both', which='major', labelsize=11)
     
-    # Row 1: TPOT Time Series (full width)
-    ax_tpot = fig.add_subplot(gs[1, :], sharex=ax_ttft)
+    # Row 2: TPOT Time Series (full width)
+    ax_tpot = fig.add_subplot(gs[2, :], sharex=ax_ttft)
     ax_tpot.plot(tpot_avg_per_sec['time_bin'], tpot_avg_per_sec['avg_tpot'], 
                  color='red', linewidth=linewidth, alpha=alpha, label='Avg TPOT (per sec)', zorder=10)
     
@@ -2211,9 +2233,9 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     ax_tpot.legend(handles=legend_elements, fontsize=10, loc='upper right')
     ax_tpot.tick_params(axis='both', which='major', labelsize=11)
     
-    # Row 2: Bar plots - TTFT by Pod | TPOT by Pod | empty
-    ax_ttft_bar = fig.add_subplot(gs[2, 0])
-    ax_tpot_bar = fig.add_subplot(gs[2, 1])
+    # Row 3: Bar plots - TTFT by Pod | TPOT by Pod | empty
+    ax_ttft_bar = fig.add_subplot(gs[3, 0])
+    ax_tpot_bar = fig.add_subplot(gs[3, 1])
     
     # TTFT by Pod
     pod_avg_ttft = df.groupby('selectedpod')['ttft'].mean().sort_values(ascending=False)
@@ -2243,9 +2265,9 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     ax_tpot_bar.set_title('Average TPOT by Pod', fontsize=14, fontweight='bold', pad=10)
     ax_tpot_bar.grid(axis='y', alpha=alpha)
     
-    # Row 3: CDFs - TTFT CDF | TPOT CDF | empty
-    ax_ttft_cdf = fig.add_subplot(gs[3, 0])
-    ax_tpot_cdf = fig.add_subplot(gs[3, 1])
+    # Row 4: CDFs - TTFT CDF | TPOT CDF | empty
+    ax_ttft_cdf = fig.add_subplot(gs[4, 0])
+    ax_tpot_cdf = fig.add_subplot(gs[4, 1])
     
     # TTFT CDF
     sorted_ttft = np.sort(df['ttft'])
@@ -2283,7 +2305,7 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     ax_tpot_cdf.grid(True, alpha=alpha)
     ax_tpot_cdf.legend(fontsize=8)
     
-    current_row = 4
+    current_row = 5
     
     # Add numTrains analysis if applicable
     if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
@@ -2291,7 +2313,7 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
         num_trains_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_num_trains)))
         num_trains_color_map = dict(zip(unique_num_trains, num_trains_colors))
         
-        # Row 4: TTFT by numTrains | TPOT by numTrains | empty
+        # Row 5: TTFT by numTrains | TPOT by numTrains | empty
         ax_nt_ttft_cdf = fig.add_subplot(gs[current_row, 0])
         ax_nt_tpot_cdf = fig.add_subplot(gs[current_row, 1])
         
@@ -2334,7 +2356,7 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     iteration_colors = plt.cm.tab20(np.linspace(0, 1, len(unique_iterations)))
     iteration_color_map = dict(zip(unique_iterations, iteration_colors))
     
-    # Row 5 (or current_row): TTFT by Iteration | TPOT by Iteration | empty
+    # Row 6 or current_row: TTFT by Iteration | TPOT by Iteration | empty
     ax_iter_ttft_cdf = fig.add_subplot(gs[current_row, 0])
     ax_iter_tpot_cdf = fig.add_subplot(gs[current_row, 1])
     

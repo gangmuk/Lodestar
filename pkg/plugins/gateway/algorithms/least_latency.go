@@ -161,7 +161,7 @@ func selectTargetPodWithLeastLatency(cache cache.Cache, readyPods []*v1.Pod, mod
 		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens.GetSimpleValue() * guessGenerationTokens
 
 		totalExpectedLatency := queuingLatency.GetSimpleValue() + prefillLatency + decodeLatency
-		klog.V(4).Infof("pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",
+		klog.Infof("least_latency routing, pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",
 			pod.Name, pod.Status.PodIP, queuingLatency.GetSimpleValue(), prefillLatency, decodeLatency, totalExpectedLatency)
 
 		if totalExpectedLatency <= minExpectedLatency {

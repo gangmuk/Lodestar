@@ -97,7 +97,7 @@ experiment_configs=(
     ## Mooncake conversation: 2674
     ## benchmark mode: A30, rps >= 14
     # "latency_predictor|mooncake|conversation-1|${target_gpu}|20|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-1|${target_gpu}|20|5"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-1|${target_gpu}|20|2"
     # "prefix_cache_1|mooncake|conversation-1|${target_gpu}|20|3"
     # "random|mooncake|conversation-1|${target_gpu}|20|3"
     # "least_request|mooncake|conversation-1|${target_gpu}|20|3"
@@ -106,16 +106,16 @@ experiment_configs=(
 
     # "latency_predictor|mooncake|conversation-2|${target_gpu}|20|3"
     "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-2|${target_gpu}|20|3"
-    # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|20|3"
-    # "random|mooncake|conversation-2|${target_gpu}|20|3"
-    # "least_request|mooncake|conversation-2|${target_gpu}|20|3"
+    "prefix_cache_1|mooncake|conversation-2|${target_gpu}|20|3"
+    "random|mooncake|conversation-2|${target_gpu}|20|3"
+    "least_request|mooncake|conversation-2|${target_gpu}|20|3"
     # "least_latency|mooncake|conversation-2|${target_gpu}|20|3"
     # "least_kv_cache|mooncake|conversation-2|${target_gpu}|20|3"
 
     ## Mooncake toolagent: 2713
     ## benchmark mode: A30, rps >= 10
     # "latency_predictor|mooncake|toolagent-2|${target_gpu}|20|3"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|toolagent-2|${target_gpu}|20|3"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|toolagent-2|${target_gpu}|20|3"
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|20|3"
     # "random|mooncake|toolagent-2|${target_gpu}|20|3"
     # "least_request|mooncake|toolagent-2|${target_gpu}|20|3"
@@ -589,6 +589,9 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --input_tokens_std ${input_tokens_std} \
             --input_token_length_scaling 2.0 \
             --output_token_length_scaling 1.0 \
+            --iteration_overlap_ratio 0.0 \
+            --iteration_ramp_duration 10.0 \
+            --iteration_ramp_start_fraction 0.1 \
             --workload_mode ${workload_mode} \
             2>&1 | tee ${experiment_result_output_dir}/client.log.txt
 

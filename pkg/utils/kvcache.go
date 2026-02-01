@@ -634,6 +634,18 @@ var (
 	EndToEndOverheadMutex sync.RWMutex
 	EndToEndOverhead      map[string]float64 // requestID -> end to end overhead
 
+	TensorTransferOverheadMutex sync.RWMutex
+	TensorTransferOverhead      map[string]float64 // requestID -> tensor transfer overhead
+
+	InferOverheadMutex sync.RWMutex
+	InferOverhead      map[string]float64 // requestID -> infer overhead
+
+	OtherOverheadMutex sync.RWMutex
+	OtherOverhead      map[string]float64 // requestID -> other overhead
+
+	OverheadMutex sync.RWMutex
+	Overhead      map[string]float64 // requestID -> overhead
+
 	FirstRequestStartTime   int64 = 0
 	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
@@ -762,6 +774,18 @@ func init() {
 	EndToEndOverheadMutex = sync.RWMutex{}
 	EndToEndOverhead = make(map[string]float64)
 
+	TensorTransferOverheadMutex = sync.RWMutex{}
+	TensorTransferOverhead = make(map[string]float64)
+
+	InferOverheadMutex = sync.RWMutex{}
+	InferOverhead = make(map[string]float64)
+
+	OtherOverheadMutex = sync.RWMutex{}
+	OtherOverhead = make(map[string]float64)
+
+	OverheadMutex = sync.RWMutex{}
+	Overhead = make(map[string]float64)
+
 	RequestToLogMessageMutex = sync.RWMutex{}
 	RequestToLogMessage = make(map[string]string)
 
@@ -849,6 +873,9 @@ func init() {
 	ChosenPodPredictedReward = make(map[string]float64)
 	ChosenPodPredictedRewardMutex = sync.RWMutex{}
 
+	OODFallbackForRequest = make(map[string]int)
+	OODFallbackForRequestMutex = sync.RWMutex{}
+
 	klog.Info("Initialized global variables for AIBRIX RL Router")
 }
 
@@ -860,6 +887,48 @@ var LiveRequestsMutex sync.RWMutex
 
 var RemainingLatencyInMicroseconds map[string]int64 // in microseconds
 var RemainingLatencyMutex sync.RWMutex
+
+var OODFallbackForRequest map[string]int
+var OODFallbackForRequestMutex sync.RWMutex
+
+func SetOODFallbackForRequest(oodFallback int, requestID string) {
+	OODFallbackForRequestMutex.Lock()
+	defer OODFallbackForRequestMutex.Unlock()
+	if OODFallbackForRequest == nil {
+		OODFallbackForRequest = make(map[string]int)
+	}
+	if _, exists := OODFallbackForRequest[requestID]; !exists {
+		OODFallbackForRequest[requestID] = oodFallback
+		klog.V(5).Infof("SetOODFallbackForRequest, requestID: %s, oodFallback: %d", requestID, oodFallback)
+	} else {
+		klog.Errorf("Error, Failed SetOODFallbackForRequest for request ID: %s, already exists", requestID)
+	}
+	klog.V(5).Infof("SetOODFallbackForRequest, requestID: %s, oodFallback: %d", requestID, oodFallback)
+}
+
+func GetOODFallbackForRequest(requestID string) int {
+	OODFallbackForRequestMutex.RLock()
+	defer OODFallbackForRequestMutex.RUnlock()
+	if OODFallbackForRequest == nil {
+		klog.Errorf("Error, Failed GetOODFallbackForRequest for request ID: %s, map is nil, returning 0", requestID)
+		return 0
+	}
+	if val, ok := OODFallbackForRequest[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetOODFallbackForRequest for request ID: %s, not found, returning 0", requestID)
+	return 0
+}
+
+func CleanupOODFallbackForRequest(requestID string) {
+	OODFallbackForRequestMutex.Lock()
+	defer OODFallbackForRequestMutex.Unlock()
+	if OODFallbackForRequest == nil {
+		return
+	}
+	delete(OODFallbackForRequest, requestID)
+	klog.V(5).Infof("CleanupOODFallbackForRequest, requestID: %s", requestID)
+}
 
 func SetPrevRewardForRequest(requestID string, prevReward float64) {
 	PrevRewardForRequestMutex.Lock()
@@ -1034,13 +1103,6 @@ func GetGPUModelFromNode(nodeName string) (string, error) {
 	return "", fmt.Errorf("node %s does not have GPU label", nodeName)
 }
 
-func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
-	EndToEndOverheadMutex.Lock()
-	defer EndToEndOverheadMutex.Unlock()
-	EndToEndOverhead[requestID] = endToEndOverhead
-	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
-}
-
 func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
 	EndToEndOverheadMutex.RLock()
 	defer EndToEndOverheadMutex.RUnlock()
@@ -1051,11 +1113,90 @@ func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
 	return 0, false
 }
 
+func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
+	EndToEndOverheadMutex.Lock()
+	defer EndToEndOverheadMutex.Unlock()
+	EndToEndOverhead[requestID] = endToEndOverhead
+	klog.Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
+}
+
 func CleanupEndToEndOverheadForRequest(requestID string) {
 	EndToEndOverheadMutex.Lock()
 	defer EndToEndOverheadMutex.Unlock()
 	delete(EndToEndOverhead, requestID)
 	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
+}
+
+func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, requestID string) {
+	TensorTransferOverheadMutex.Lock()
+	defer TensorTransferOverheadMutex.Unlock()
+	TensorTransferOverhead[requestID] = tensorTransferOverhead
+	klog.Infof("SetTensorTransferOverheadForRequest, requestID: %s, tensorTransferOverhead: %f", requestID, tensorTransferOverhead)
+}
+
+func GetTensorTransferOverheadForRequest(requestID string) (float64, bool) {
+	TensorTransferOverheadMutex.RLock()
+	defer TensorTransferOverheadMutex.RUnlock()
+	if val, ok := TensorTransferOverhead[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetTensorTransferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+	return 0, false
+}
+
+func CleanupTensorTransferOverheadForRequest(requestID string) {
+	TensorTransferOverheadMutex.Lock()
+	defer TensorTransferOverheadMutex.Unlock()
+	delete(TensorTransferOverhead, requestID)
+	klog.V(5).Infof("CleanupTensorTransferOverheadForRequest, requestID: %s", requestID)
+}
+
+func SetInferOverheadForRequest(inferOverhead float64, requestID string) {
+	InferOverheadMutex.Lock()
+	defer InferOverheadMutex.Unlock()
+	InferOverhead[requestID] = inferOverhead
+	klog.Infof("SetInferOverheadForRequest, requestID: %s, inferOverhead: %f", requestID, inferOverhead)
+}
+
+func GetInferOverheadForRequest(requestID string) (float64, bool) {
+	InferOverheadMutex.RLock()
+	defer InferOverheadMutex.RUnlock()
+	if val, ok := InferOverhead[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetInferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+	return 0, false
+}
+
+func CleanupInferOverheadForRequest(requestID string) {
+	InferOverheadMutex.Lock()
+	defer InferOverheadMutex.Unlock()
+	delete(InferOverhead, requestID)
+	klog.V(5).Infof("CleanupInferOverheadForRequest, requestID: %s", requestID)
+}
+
+func SetOtherOverheadForRequest(otherOverhead float64, requestID string) {
+	OtherOverheadMutex.Lock()
+	defer OtherOverheadMutex.Unlock()
+	OtherOverhead[requestID] = otherOverhead
+	klog.Infof("SetOtherOverheadForRequest, requestID: %s, otherOverhead: %f", requestID, otherOverhead)
+}
+
+func GetOtherOverheadForRequest(requestID string) (float64, bool) {
+	OtherOverheadMutex.RLock()
+	defer OtherOverheadMutex.RUnlock()
+	if val, ok := OtherOverhead[requestID]; ok {
+		return val, true
+	}
+	klog.Errorf("Error, Failed GetOtherOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+	return 0, false
+}
+
+func CleanupOtherOverheadForRequest(requestID string) {
+	OtherOverheadMutex.Lock()
+	defer OtherOverheadMutex.Unlock()
+	delete(OtherOverhead, requestID)
+	klog.V(5).Infof("CleanupOtherOverheadForRequest, requestID: %s", requestID)
 }
 
 func SetNumTrains(numTrains int) {
@@ -1160,7 +1301,7 @@ func GetChosenPodPredictedReward(requestID string) float64 {
 	if val, ok := ChosenPodPredictedReward[requestID]; ok {
 		return val
 	}
-	klog.Errorf("Error, Failed GetChosenPodPredictedReward for request ID: %s, not found, returning -99.0", requestID)
+	klog.V(5).Infof("Error, Failed GetChosenPodPredictedReward for request ID: %s, not found, returning -99.0", requestID)
 	return -99.0 // Sentinel value for missing data (matches routing_agent_service.py)
 }
 
@@ -1553,7 +1694,7 @@ func GetHashOfPrefixHashesForRequest(requestID string) (uint64, bool) {
 		klog.Errorf("Error, GetHashOfPrefixHashesForRequest, Request ID %s not found in requestToHashOfPrefixHashes", requestID)
 		return 0, false
 	}
-	klog.Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
+	klog.V(5).Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
 	return hash, true
 }
 
@@ -1588,10 +1729,10 @@ func SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes uint64, numOutputTok
 	hashToNumOutputTokensMutex.Lock()
 	defer hashToNumOutputTokensMutex.Unlock()
 	if val, exists := hashToNumOutputTokens[hash_of_prefixHashes]; exists {
-		klog.Infof("SetNumOutputTokensForHashOfPrefix, Hash %d already exists in hashToNumOutputTokens, overwrite numOutputTokens from %d to %d", hash_of_prefixHashes, val, numOutputTokens)
+		klog.V(5).Infof("SetNumOutputTokensForHashOfPrefix, Hash %d already exists in hashToNumOutputTokens, overwrite numOutputTokens from %d to %d", hash_of_prefixHashes, val, numOutputTokens)
 	}
 	hashToNumOutputTokens[hash_of_prefixHashes] = numOutputTokens
-	klog.Infof("SetNumOutputTokensForHashOfPrefix, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
+	klog.V(5).Infof("SetNumOutputTokensForHashOfPrefix, Set num output tokens for hash %d to %d", hash_of_prefixHashes, numOutputTokens)
 }
 
 func GetNumPrefillTokensForRequest(requestID string) int {
