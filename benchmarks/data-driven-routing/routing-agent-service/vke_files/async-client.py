@@ -407,7 +407,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         total_decode_time = (completion_time - first_token_time)*1000 if first_response_time else 0
         avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
-        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: request_send_time: {actual_start_time:.6f}, Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # # Log scheduling information
         # if scheduled_time:
@@ -2145,7 +2145,8 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
 
 
 def calculate_ramp_target_times(num_requests: int, base_time: float, target_rps: float,
-                                ramp_duration: float, start_fraction: float) -> List[float]:
+                                ramp_duration: float, start_fraction: float,
+                                poisson_arrivals: bool = False) -> List[float]:
     """
     Calculate target times for requests with linear RPS ramp-up at the start.
 
@@ -2158,49 +2159,97 @@ def calculate_ramp_target_times(num_requests: int, base_time: float, target_rps:
         target_rps: Target requests per second (reached after ramp)
         ramp_duration: Duration of ramp-up in seconds
         start_fraction: Starting RPS as fraction of target (0.0-1.0)
+        poisson_arrivals: If True, use non-homogeneous Poisson process
 
     Returns:
         List of target_times for each request
     """
     if ramp_duration <= 0 or start_fraction >= 1.0:
-        # No ramp, use fixed inter-arrival
-        inter_arrival = 1.0 / target_rps
-        return [base_time + i * inter_arrival for i in range(num_requests)]
-
-    target_times = []
+        # No ramp
+        if poisson_arrivals:
+            target_times = []
+            current_time = 0.0
+            for _ in range(num_requests):
+                target_times.append(base_time + current_time)
+                current_time += np.random.exponential(1.0 / target_rps)
+            return target_times
+        else:
+            inter_arrival = 1.0 / target_rps
+            return [base_time + i * inter_arrival for i in range(num_requests)]
 
     # Calculate ramp parameters
     r0 = start_fraction * target_rps  # Initial RPS
     r1 = target_rps  # Final RPS
     slope = (r1 - r0) / ramp_duration
 
-    # Number of requests that fit in ramp period
-    # Integral of RPS(t) from 0 to ramp_duration = r0*T + slope*T^2/2
-    requests_in_ramp = r0 * ramp_duration + slope * ramp_duration * ramp_duration / 2
+    target_times = []
 
-    cumulative_requests = 0.0
+    if poisson_arrivals:
+        # Non-homogeneous Poisson process with time-varying rate
+        # λ(t) = r0 + slope*t for t in [0, ramp_duration], then λ(t) = r1
+        #
+        # Use inverse transform method: find next arrival time by solving
+        # ∫_{t_curr}^{t_next} λ(s)ds = E, where E ~ Exponential(1)
 
-    for i in range(num_requests):
-        if cumulative_requests < requests_in_ramp:
-            # During ramp-up: solve r0*t + slope*t^2/2 = cumulative_requests for t
-            # This is a quadratic: (slope/2)*t^2 + r0*t - cumulative_requests = 0
-            # t = (-r0 + sqrt(r0^2 + 2*slope*cumulative_requests)) / slope
-            if slope > 0:
-                discriminant = r0 * r0 + 2 * slope * cumulative_requests
-                t = (-r0 + np.sqrt(discriminant)) / slope
+        current_time = 0.0
+
+        for _ in range(num_requests):
+            target_times.append(base_time + current_time)
+
+            # Sample exponential(1) for the "amount" of rate to consume
+            E = np.random.exponential(1.0)
+
+            if current_time >= ramp_duration:
+                # After ramp: constant rate r1
+                current_time += E / r1
             else:
-                # slope == 0 means r0 == r1, so fixed rate
-                t = cumulative_requests / r0 if r0 > 0 else 0
+                # During ramp: time-varying rate λ(t) = r0 + slope*t
+                # Current instantaneous rate
+                lambda_curr = r0 + slope * current_time
 
-            # Clamp to ramp_duration (shouldn't exceed due to math, but safety)
-            t = min(t, ramp_duration)
-        else:
-            # After ramp: fixed inter-arrival at target_rps
-            requests_after_ramp = cumulative_requests - requests_in_ramp
-            t = ramp_duration + requests_after_ramp / target_rps
+                # Solve: λ(τ)*Δ + slope*Δ²/2 = E for Δ (delta time)
+                # Quadratic: (slope/2)*Δ² + λ(τ)*Δ - E = 0
+                # Δ = (-λ(τ) + sqrt(λ(τ)² + 2*slope*E)) / slope
 
-        target_times.append(base_time + t)
-        cumulative_requests += 1.0
+                if slope > 0:
+                    discriminant = lambda_curr * lambda_curr + 2 * slope * E
+                    delta_t = (-lambda_curr + np.sqrt(discriminant)) / slope
+                else:
+                    delta_t = E / lambda_curr if lambda_curr > 0 else 0
+
+                next_time = current_time + delta_t
+
+                # Check if we cross the ramp boundary
+                if next_time > ramp_duration:
+                    # Consumed rate during remaining ramp period
+                    remaining_ramp = ramp_duration - current_time
+                    E_ramp = lambda_curr * remaining_ramp + slope * remaining_ramp * remaining_ramp / 2
+                    E_remaining = E - E_ramp
+                    # Continue at constant rate r1
+                    current_time = ramp_duration + E_remaining / r1
+                else:
+                    current_time = next_time
+    else:
+        # Deterministic scheduling
+        requests_in_ramp = r0 * ramp_duration + slope * ramp_duration * ramp_duration / 2
+        cumulative_requests = 0.0
+
+        for _ in range(num_requests):
+            if cumulative_requests < requests_in_ramp:
+                # During ramp: solve r0*t + slope*t²/2 = cumulative_requests
+                if slope > 0:
+                    discriminant = r0 * r0 + 2 * slope * cumulative_requests
+                    t = (-r0 + np.sqrt(discriminant)) / slope
+                else:
+                    t = cumulative_requests / r0 if r0 > 0 else 0
+                t = min(t, ramp_duration)
+            else:
+                # After ramp: fixed inter-arrival at target_rps
+                requests_after_ramp = cumulative_requests - requests_in_ramp
+                t = ramp_duration + requests_after_ramp / target_rps
+
+            target_times.append(base_time + t)
+            cumulative_requests += 1.0
 
     return target_times
 
@@ -2271,24 +2320,14 @@ def create_blended_schedule(all_iteration_requests: List[List[Dict]], rps: float
                 base_time=0,  # We'll add iter_start later
                 target_rps=rps,
                 ramp_duration=ramp_duration,
-                start_fraction=ramp_start_fraction
+                start_fraction=ramp_start_fraction,
+                poisson_arrivals=poisson_arrivals
             )
 
         for req_idx, req in enumerate(iter_requests):
             if ramp_duration > 0 and ramp_start_fraction < 1.0:
-                # Use pre-calculated ramp times
+                # Use pre-calculated ramp times (Poisson already applied inside if enabled)
                 relative_time = ramp_times[req_idx]
-                if poisson_arrivals:
-                    # Add Poisson jitter on top of ramp schedule
-                    # Scale jitter based on current instantaneous RPS
-                    if relative_time < ramp_duration:
-                        # During ramp, interpolate RPS
-                        progress = relative_time / ramp_duration
-                        current_rps = rps * (ramp_start_fraction + progress * (1 - ramp_start_fraction))
-                    else:
-                        current_rps = rps
-                    jitter = np.random.exponential(1.0 / current_rps) - (1.0 / current_rps)
-                    relative_time += jitter
                 target_time = base_time + iter_start + relative_time
             elif poisson_arrivals:
                 # Poisson without ramp (original behavior)
@@ -2713,8 +2752,9 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     target_rps=rps,
                     ramp_duration=args.iteration_ramp_duration,
                     start_fraction=args.iteration_ramp_start_fraction,
+                    poisson_arrivals=poisson_arrivals,
                 )
-                logger.info(f"Iteration {iteration+1}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS)")
+                logger.info(f"Iteration {iteration+1}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS, poisson={poisson_arrivals})")
 
             # Now assign target times and create final tasks
             cumulative_time = 0.0  # For Poisson arrivals
@@ -2726,19 +2766,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 elif gradual_increase_target_times is not None:
                     target_time = gradual_increase_target_times[idx]
                 elif ramp_target_times is not None:
-                    # Ramp-up mode: use precomputed ramp schedule
+                    # Ramp-up mode: use precomputed ramp schedule (Poisson already applied)
                     target_time = ramp_target_times[idx]
-                    if poisson_arrivals:
-                        # Add Poisson jitter on top of ramp schedule
-                        relative_time = target_time - iteration_base_time
-                        if relative_time < args.iteration_ramp_duration:
-                            # During ramp, interpolate RPS for jitter scaling
-                            progress = relative_time / args.iteration_ramp_duration
-                            current_rps = rps * (args.iteration_ramp_start_fraction + progress * (1 - args.iteration_ramp_start_fraction))
-                        else:
-                            current_rps = rps
-                        jitter = np.random.exponential(1.0 / current_rps) - (1.0 / current_rps)
-                        target_time += jitter
                 elif rps:
                     if poisson_arrivals:
                         # Use exponential distribution for Poisson process

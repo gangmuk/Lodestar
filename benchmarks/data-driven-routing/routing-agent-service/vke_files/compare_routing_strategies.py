@@ -421,6 +421,23 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
     print(f"Processing {file_path}...")
     df, json_columns = preprocess.parse_log_file(file_path)
     df = preprocess.parse_json_columns(df, json_columns)
+    
+    # Filter out anomalous timestamps (outliers) before normalization
+    if len(df) > 10 and 'request_start_time' in df.columns:
+        import statistics
+        valid_start_times = df['request_start_time'].dropna()
+        if len(valid_start_times) > 10:
+            median_time = statistics.median(valid_start_times)
+            # Filter out times that are more than 10x away from the median
+            outlier_threshold_low = median_time / 10
+            outlier_threshold_high = median_time * 10
+            before_count = len(df)
+            df = df[(df['request_start_time'] >= outlier_threshold_low) & 
+                    (df['request_start_time'] <= outlier_threshold_high)]
+            after_count = len(df)
+            if before_count > after_count:
+                print(f"  Warning: Filtered out {before_count - after_count} entries with anomalous timestamps (likely clock sync issues)")
+    
     df = normalize_time(df)
     df = analyze_llm_inference_logs(df)
     
