@@ -4,17 +4,20 @@ message=$(for i in $(seq 1 2000); do echo -n "hello "; done)
 
 routing_policy="rl-online-router"
 # subAlgorithm="least_latency"
-subAlgorithm="contextual_bandit_perpodmodel_checkpoint_quantile_based_new"
+subAlgorithm="contextual_bandit_perpodmodel_checkpoint_negative_linear"
 
 llm_model="llama-3-8b-instruct"
 random_request_id=$((RANDOM % 1000))
 # routing_policy="preble"
 
+envoy_gateway_external_ip=$(kubectl get svc -n envoy-gateway-system envoy-aibrix-system-aibrix-eg-903790dc -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "envoy_gateway_external_ip: ${envoy_gateway_external_ip}"
+
 for i in {1..1}; do
     prompt="${message} ${random_request_id}"
     echo "Sending request ${i}"
     sleep 0.5
-    curl -i http://115.190.203.81/v1/chat/completions \
+    curl -i http://${envoy_gateway_external_ip}/v1/chat/completions \
         -H "Content-Type: application/json" \
         -H "request-id: ${random_request_id}" \
         -H "Authorization: Bearer sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi" \
