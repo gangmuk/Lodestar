@@ -222,19 +222,34 @@ func notifyRLAgentRequestComplete(routerCtx *types.RoutingContext, ttftMs int64,
 func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) (openai.CompletionUsage, bool, *extProcPb.ProcessingResponse) {
 	lines := strings.Split(string(responseBody), "\n")
 	existingUsageRaw, _ := s.streamingUsageCache.LoadOrStore(requestID, openai.CompletionUsage{})
-	existingUsage := existingUsageRaw.(openai.CompletionUsage)
+	
+	// Safe type assertion
+	existingUsage, ok := existingUsageRaw.(openai.CompletionUsage)
+	if !ok {
+		klog.ErrorS(nil, "invalid type in streamingUsageCache", "requestID", requestID)
+		existingUsage = openai.CompletionUsage{}
+	}
+	
 	timingObj, exists := utils.RequestTimings.Load(requestID)
 	if !exists {
 		return existingUsage, false, nil
 	}
-	timing := timingObj.(*RequestTiming)
+	timing, ok := timingObj.(*RequestTiming)
+	if !ok || timing == nil {
+		klog.ErrorS(nil, "invalid timing object", "requestID", requestID)
+		return existingUsage, false, nil
+	}
 	prefill_token_count := int(timing.prefillTokenCount)
 	currentTime := time.Now()
 	routerCtxObj, exists := s.routingContexts.Load(requestID)
 	if !exists {
 		return existingUsage, false, nil
 	}
-	routerCtx := routerCtxObj.(*types.RoutingContext)
+	routerCtx, ok := routerCtxObj.(*types.RoutingContext)
+	if !ok || routerCtx == nil {
+		klog.ErrorS(nil, "invalid routing context", "requestID", requestID)
+		return existingUsage, false, nil
+	}
 	selectedPodIP := routerCtx.TargetAddressWithoutPort()
 	podIPWithoutPort := routerCtx.TargetAddressWithoutPort()
 	t := &http.Response{
@@ -269,7 +284,8 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 				utils.DecrementNumInflightPrefillRequestsForPod(podIPWithoutPort)
 				utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, prefill_token_count)
 				utils.IncrementNumInflightDecodeRequestsForPod(podIPWithoutPort)
-				utils.IncrementNumInflightDecodeTokensForPod(podIPWithoutPort, prefill_token_count+1)
+				// utils.IncrementNumInflightDecodeTokensForPod(podIPWithoutPort, prefill_token_count+1)
+				utils.IncrementNumInflightDecodeTokensForPod(podIPWithoutPort, 1)
 			} else { // From second token response
 				if timing.firstDecodeTokenTime.IsZero() {
 					// First decode token
@@ -301,7 +317,23 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 	if err := streaming.Err(); err != nil {
 		klog.ErrorS(err, "error processing streaming response", "requestID", requestID)
 
-		complete := true
+		// Clean up metrics if we had transitioned to decode phase
+		// Safety check: ensure routerCtx is valid before accessing
+		if routerCtx != nil {
+			podIPWithoutPort := routerCtx.TargetAddressWithoutPort()
+			if !timing.firstTokenTime.IsZero() {
+				utils.DecrementNumInflightDecodeRequestsForPod(podIPWithoutPort)
+				utils.DecrementNumInflightDecodeTokensForPod(podIPWithoutPort, int(timing.decodeTokenCount))
+			} else {
+				// Still in prefill phase
+				utils.DecrementNumInflightPrefillRequestsForPod(podIPWithoutPort)
+				utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, int(timing.prefillTokenCount))
+			}
+			utils.DecrementNumInflightRequestsForPod(podIPWithoutPort)
+		} else {
+			klog.ErrorS(nil, "routerCtx is nil in streaming error cleanup", "requestID", requestID)
+		}
+
 		errorResponse := generateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -309,7 +341,7 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 			}}},
 			err.Error())
 
-		return existingUsage, complete, errorResponse
+		return existingUsage, true, errorResponse
 	}
 
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -326,12 +358,20 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 			continue
 		}
 
-		if usageMap, ok := chunk["usage"].(map[string]interface{}); ok {
-			promptTokens := int64(usageMap["prompt_tokens"].(float64))
-			completionTokens := int64(usageMap["completion_tokens"].(float64))
-			totalTokens := int64(usageMap["total_tokens"].(float64))
+	if usageMap, ok := chunk["usage"].(map[string]interface{}); ok {
+		// Safely extract token counts with type checking to prevent panic
+		var promptTokens, completionTokens, totalTokens int64
+		if pt, ok := usageMap["prompt_tokens"].(float64); ok {
+			promptTokens = int64(pt)
+		}
+		if ct, ok := usageMap["completion_tokens"].(float64); ok {
+			completionTokens = int64(ct)
+		}
+		if tt, ok := usageMap["total_tokens"].(float64); ok {
+			totalTokens = int64(tt)
+		}
 
-			if promptTokens > 0 || completionTokens > 0 || totalTokens > 0 {
+		if promptTokens > 0 || completionTokens > 0 || totalTokens > 0 {
 				newUsage := openai.CompletionUsage{
 					PromptTokens:     promptTokens,
 					CompletionTokens: completionTokens,
@@ -355,7 +395,16 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	var promptTokens, completionTokens int64
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
-	routerCtx, _ := ctx.(*types.RoutingContext)
+	routerCtx, ok := ctx.(*types.RoutingContext)
+	if !ok || routerCtx == nil {
+		klog.ErrorS(nil, "invalid routing context in HandleResponseBody")
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "X-Error-InvalidContext", RawValue: []byte("true"),
+			}}},
+			"invalid routing context"), complete
+	}
 
 	timingObj, exists := utils.RequestTimings.Load(routerCtx.RequestID)
 	var timing *RequestTiming
@@ -372,7 +421,16 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			}
 		} else {
 			buf, _ := s.requestBuffers.LoadOrStore(routerCtx.RequestID, &bytes.Buffer{})
-			buffer := buf.(*bytes.Buffer)
+			buffer, ok := buf.(*bytes.Buffer)
+			if !ok || buffer == nil {
+				klog.ErrorS(nil, "invalid buffer in requestBuffers", "requestID", routerCtx.RequestID)
+				return generateErrorResponse(
+					envoyTypePb.StatusCode_InternalServerError,
+					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+						Key: "X-Error-InvalidBuffer", RawValue: []byte("true"),
+					}}},
+					"invalid request buffer"), complete
+			}
 			buffer.Write(b.ResponseBody.Body)
 			if timing.firstTokenTime.IsZero() && b.ResponseBody.EndOfStream {
 				timing.firstTokenTime = currentTime
@@ -525,6 +583,25 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 		}
 		if err := streaming.Err(); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", routerCtx.RequestID, "responseBody", string(b.ResponseBody.GetBody()))
+
+			// Clean up metrics if we had transitioned to decode phase
+			timingObj, exists := utils.RequestTimings.Load(routerCtx.RequestID)
+			if exists {
+				timing := timingObj.(*RequestTiming)
+				podIPWithoutPort := routerCtx.TargetAddressWithoutPort()
+
+				if !timing.firstTokenTime.IsZero() {
+					// Had transitioned to decode phase
+					utils.DecrementNumInflightDecodeRequestsForPod(podIPWithoutPort)
+					utils.DecrementNumInflightDecodeTokensForPod(podIPWithoutPort, int(timing.decodeTokenCount))
+				} else {
+					// Still in prefill phase
+					utils.DecrementNumInflightPrefillRequestsForPod(podIPWithoutPort)
+					utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, int(timing.prefillTokenCount))
+				}
+				utils.DecrementNumInflightRequestsForPod(podIPWithoutPort)
+			}
+
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
@@ -535,7 +612,17 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 		}
 	} else {
 		buf, _ := requestBuffers.LoadOrStore(routerCtx.RequestID, &bytes.Buffer{})
-		buffer := buf.(*bytes.Buffer)
+		buffer, ok := buf.(*bytes.Buffer)
+		if !ok || buffer == nil {
+			klog.ErrorS(nil, "invalid buffer in requestBuffers (second path)", "requestID", routerCtx.RequestID)
+			complete = true
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "X-Error-InvalidBuffer", RawValue: []byte("true"),
+				}}},
+				"invalid request buffer"), complete
+		}
 		buffer.Write(b.ResponseBody.Body)
 		if !b.ResponseBody.EndOfStream {
 			return &extProcPb.ProcessingResponse{
@@ -757,7 +844,9 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	headers, jsonStrings["numInflightDecodeRequestsAllPods"] = addMetricToHeaders(headers, HeaderNumInflightDecodeRequestsForAllPods, numInflightDecodeRequestsAllPods, utils.GetrequestInflightMutex())
 
 	utils.DecrementNumInflightRequestsForPod(routerCtx.TargetAddressWithoutPort())
-	utils.DecrementNumInflightDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
+	// Bug
+	// utils.DecrementNumInflightDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.totalTokenCount))
+	utils.DecrementNumInflightDecodeTokensForPod(routerCtx.TargetAddressWithoutPort(), int(timing.decodeTokenCount))
 	utils.DecrementNumInflightDecodeRequestsForPod(routerCtx.TargetAddressWithoutPort())
 
 	// 3. GPU KV cache usage

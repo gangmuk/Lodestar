@@ -1117,7 +1117,7 @@ func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
 	EndToEndOverheadMutex.Lock()
 	defer EndToEndOverheadMutex.Unlock()
 	EndToEndOverhead[requestID] = endToEndOverhead
-	klog.Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
+	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
 }
 
 func CleanupEndToEndOverheadForRequest(requestID string) {
@@ -1131,7 +1131,7 @@ func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, request
 	TensorTransferOverheadMutex.Lock()
 	defer TensorTransferOverheadMutex.Unlock()
 	TensorTransferOverhead[requestID] = tensorTransferOverhead
-	klog.Infof("SetTensorTransferOverheadForRequest, requestID: %s, tensorTransferOverhead: %f", requestID, tensorTransferOverhead)
+	klog.V(5).Infof("SetTensorTransferOverheadForRequest, requestID: %s, tensorTransferOverhead: %f", requestID, tensorTransferOverhead)
 }
 
 func GetTensorTransferOverheadForRequest(requestID string) (float64, bool) {
@@ -1155,7 +1155,7 @@ func SetInferOverheadForRequest(inferOverhead float64, requestID string) {
 	InferOverheadMutex.Lock()
 	defer InferOverheadMutex.Unlock()
 	InferOverhead[requestID] = inferOverhead
-	klog.Infof("SetInferOverheadForRequest, requestID: %s, inferOverhead: %f", requestID, inferOverhead)
+	klog.V(5).Infof("SetInferOverheadForRequest, requestID: %s, inferOverhead: %f", requestID, inferOverhead)
 }
 
 func GetInferOverheadForRequest(requestID string) (float64, bool) {
@@ -1179,7 +1179,7 @@ func SetOtherOverheadForRequest(otherOverhead float64, requestID string) {
 	OtherOverheadMutex.Lock()
 	defer OtherOverheadMutex.Unlock()
 	OtherOverhead[requestID] = otherOverhead
-	klog.Infof("SetOtherOverheadForRequest, requestID: %s, otherOverhead: %f", requestID, otherOverhead)
+	klog.V(5).Infof("SetOtherOverheadForRequest, requestID: %s, otherOverhead: %f", requestID, otherOverhead)
 }
 
 func GetOtherOverheadForRequest(requestID string) (float64, bool) {
