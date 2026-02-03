@@ -131,7 +131,7 @@ WORKLOAD_CATEGORY = os.getenv("WORKLOAD_CATEGORY", "Unknown")
 WORKLOAD_NAME = os.getenv("WORKLOAD_NAME", "Unknown")
 OUTPUT_WRK_NAME = os.getenv("OUTPUT_WRK_NAME", "Unknown")
 EXPLORATION_ENABLED = int(os.getenv("EXPLORATION_ENABLED", 0))
-TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 0.5))
+TTFT_REWARD_WEIGHT = float(os.getenv("TTFT_REWARD_WEIGHT", 1.0))
 EXPLORATION_RATE = float(os.getenv("EXPLORATION_RATE", 0.1))
 SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing for latency predictor
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
@@ -216,7 +216,19 @@ def handle_infer():
     handle_infer_overhead_summary = {}
     if first_request_starting_time == None:
         first_request_starting_time = time.time()
+        
         logger.info(f"First request starting time set to {first_request_starting_time}")
+        logger.info(f"ROUTING_STRATEGY: {ROUTING_STRATEGY}")
+        logger.info(f"OUTPUT_WRK_NAME: {OUTPUT_WRK_NAME}")
+        logger.info(f"WORKLOAD_CATEGORY: {WORKLOAD_CATEGORY}")
+        logger.info(f"WORKLOAD_NAME: {WORKLOAD_NAME}")
+        logger.info(f"final_model_dir: {final_model_dir}")
+        logger.info(f"hyperparameter_file_path: {hyperparameter_file_path}")
+        logger.info(f"feature_normalization_stats_file: {feature_normalization_stats_file}")
+        logger.info(f"offline_csv_path: {offline_csv_path}")
+        logger.info(f"offline_training_data_distribution: {offline_training_data_distribution}")
+        logger.info(f"ENABLE_ONLINE_LEARNING: {ENABLE_ONLINE_LEARNING}")
+        logger.info(f"MAX_TOTAL_DATA: {MAX_TOTAL_DATA}")
     handle_infer_start_time = time.time()
     try:
         # Get the log message as a string from the request body

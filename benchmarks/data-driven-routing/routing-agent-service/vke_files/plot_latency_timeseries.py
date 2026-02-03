@@ -147,7 +147,13 @@ def parse_metrics_string(metrics_str):
                 try:
                     parsed[key] = json.loads(json_value)
                 except json.JSONDecodeError:
-                    parsed[key] = json_value
+                    # If JSON parsing fails, try to parse as empty dict if it's "{}" or similar
+                    if json_value.strip() == '{}' or json_value.strip() == '':
+                        parsed[key] = {}
+                    else:
+                        parsed[key] = json_value
+            else:
+                parsed[key] = {}
             i += consumed_parts + 1
         else:
             # Handle regular value
@@ -451,7 +457,11 @@ def prepare_plot_data(df, unique_pods):
         if not bin_data.empty:
             last_entry = bin_data.iloc[-1]
             if last_entry['vllm_num_requests_waiting'] is not None:
-                total_waiting = sum(last_entry['vllm_num_requests_waiting'].values())
+                val = last_entry['vllm_num_requests_waiting']
+                if isinstance(val, dict):
+                    total_waiting = sum(val.values())
+                else:
+                    total_waiting = 0
                 waiting_requests_per_sec.append({'time_bin': time_bin, 'total_waiting': total_waiting})
     
     waiting_requests_df = pd.DataFrame(waiting_requests_per_sec)
@@ -464,7 +474,11 @@ def prepare_plot_data(df, unique_pods):
         if not bin_data.empty:
             last_entry = bin_data.iloc[-1]
             if last_entry['vllm_num_requests_running'] is not None:
-                total_running = sum(last_entry['vllm_num_requests_running'].values())
+                val = last_entry['vllm_num_requests_running']
+                if isinstance(val, dict):
+                    total_running = sum(val.values())
+                else:
+                    total_running = 0
                 running_requests_per_sec.append({'time_bin': time_bin, 'total_running': total_running})
     
     running_requests_df = pd.DataFrame(running_requests_per_sec)
@@ -476,7 +490,11 @@ def prepare_plot_data(df, unique_pods):
         if not bin_data.empty:
             last_entry = bin_data.iloc[-1]
             if last_entry['num_prefill_tokens_for_all_pods'] is not None:
-                total_prefill = sum(last_entry['num_prefill_tokens_for_all_pods'].values())
+                val = last_entry['num_prefill_tokens_for_all_pods']
+                if isinstance(val, dict):
+                    total_prefill = sum(val.values())
+                else:
+                    total_prefill = 0
                 prefill_tokens_per_sec.append({'time_bin': time_bin, 'total_prefill': total_prefill})
     
     prefill_tokens_df = pd.DataFrame(prefill_tokens_per_sec)
@@ -488,7 +506,11 @@ def prepare_plot_data(df, unique_pods):
         if not bin_data.empty:
             last_entry = bin_data.iloc[-1]
             if last_entry['num_decode_tokens_for_all_pods'] is not None:
-                total_decode = sum(last_entry['num_decode_tokens_for_all_pods'].values())
+                val = last_entry['num_decode_tokens_for_all_pods']
+                if isinstance(val, dict):
+                    total_decode = sum(val.values())
+                else:
+                    total_decode = 0
                 decode_tokens_per_sec.append({'time_bin': time_bin, 'total_decode': total_decode})
     
     decode_tokens_df = pd.DataFrame(decode_tokens_per_sec)
@@ -513,10 +535,13 @@ def extract_pod_specific_data(df, unique_pods):
     kv_cache_data = []
     for _, row in df.iterrows():
         if row['all_pods_kv_cache_hit_ratios'] is not None and row['selectedpod'] is not None:
+            val = row['all_pods_kv_cache_hit_ratios']
+            if not isinstance(val, dict):
+                continue
             # Extract the hit ratio for the selected pod
-            selected_pod_hit_ratio = row['all_pods_kv_cache_hit_ratios'].get(row['selectedpod'], 0)
+            selected_pod_hit_ratio = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['all_pods_kv_cache_hit_ratios'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
@@ -537,9 +562,12 @@ def extract_pod_specific_data(df, unique_pods):
     running_requests_data = []
     for _, row in df.iterrows():
         if row['vllm_num_requests_running'] is not None and row['selectedpod'] is not None:
-            selected_pod_running = row['vllm_num_requests_running'].get(row['selectedpod'], 0)
+            val = row['vllm_num_requests_running']
+            if not isinstance(val, dict):
+                continue
+            selected_pod_running = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['vllm_num_requests_running'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
@@ -559,9 +587,12 @@ def extract_pod_specific_data(df, unique_pods):
     prefill_tokens_data = []
     for _, row in df.iterrows():
         if row['num_prefill_tokens_for_all_pods'] is not None and row['selectedpod'] is not None:
-            selected_pod_prefill = row['num_prefill_tokens_for_all_pods'].get(row['selectedpod'], 0)
+            val = row['num_prefill_tokens_for_all_pods']
+            if not isinstance(val, dict):
+                continue
+            selected_pod_prefill = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['num_prefill_tokens_for_all_pods'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
@@ -581,9 +612,12 @@ def extract_pod_specific_data(df, unique_pods):
     decode_tokens_data = []
     for _, row in df.iterrows():
         if row['num_decode_tokens_for_all_pods'] is not None and row['selectedpod'] is not None:
-            selected_pod_decode = row['num_decode_tokens_for_all_pods'].get(row['selectedpod'], 0)
+            val = row['num_decode_tokens_for_all_pods']
+            if not isinstance(val, dict):
+                continue
+            selected_pod_decode = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['num_decode_tokens_for_all_pods'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
@@ -603,9 +637,12 @@ def extract_pod_specific_data(df, unique_pods):
     gpu_cache_usage_data = []
     for _, row in df.iterrows():
         if row['vllm_gpu_kv_cache_usage'] is not None and row['selectedpod'] is not None:
-            selected_pod_gpu_usage = row['vllm_gpu_kv_cache_usage'].get(row['selectedpod'], 0)
+            val = row['vllm_gpu_kv_cache_usage']
+            if not isinstance(val, dict):
+                continue
+            selected_pod_gpu_usage = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['vllm_gpu_kv_cache_usage'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
@@ -625,9 +662,12 @@ def extract_pod_specific_data(df, unique_pods):
     waiting_selected_pod_data = []
     for _, row in df.iterrows():
         if row['vllm_num_requests_waiting'] is not None and row['selectedpod'] is not None:
-            selected_pod_waiting = row['vllm_num_requests_waiting'].get(row['selectedpod'], 0)
+            val = row['vllm_num_requests_waiting']
+            if not isinstance(val, dict):
+                continue
+            selected_pod_waiting = val.get(row['selectedpod'], 0)
             # Calculate cluster-wide statistics
-            all_values = list(row['vllm_num_requests_waiting'].values())
+            all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None

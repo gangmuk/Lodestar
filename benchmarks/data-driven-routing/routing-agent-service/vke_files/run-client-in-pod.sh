@@ -32,7 +32,7 @@ experiment_configs=(
     # ## SharingRatio71%, total number of requests: 1500
     # ## benchmark mode: A30, rps >= 9
     # # "latency_predictor|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|6"
     # "prefix_cache_1|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
     # "least_request|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
     # "random|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
@@ -43,7 +43,7 @@ experiment_configs=(
     # ## SharingRatio47%, total number of requests: 2000
     # ## benchmark mode: A30, rps >= 7
     # # "latency_predictor|gangmuk-prefix|SharingRatio47%|${target_gpu}|6|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|6"
     # "prefix_cache_1|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
     # "least_request|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
     # "random|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
@@ -54,7 +54,7 @@ experiment_configs=(
     # ## SharingRatio28%, total number of requests: 2000
     # ## benchmark mode: A30, rps >= 5
     # # "latency_predictor|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|6"
     # "prefix_cache_1|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
     # "least_request|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
     # "random|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
@@ -65,7 +65,7 @@ experiment_configs=(
     # ## SharingRatio9%, total number of requests: 2000
     # ## benchmark mode: A30, rps >= 6
     # # "latency_predictor|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|6"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|6"
     # "prefix_cache_1|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
     # "least_request|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
     # "random|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
@@ -76,7 +76,7 @@ experiment_configs=(
     # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
     # ## benchmark mode: A30, rps >= 8
     # # "latency_predictor|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|3"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|3"
     # "prefix_cache_1|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|2"
     # "least_request|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|2"
     # "random|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|2"
@@ -84,7 +84,7 @@ experiment_configs=(
     # # "least_kv_cache|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
 
     # "latency_predictor|mooncake|conversation-2|${target_gpu}|20|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-2|${target_gpu}|20|3"
+    "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-2|${target_gpu}|20|3"
     # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|20|3"
     # "random|mooncake|conversation-2|${target_gpu}|20|3"
     # "least_request|mooncake|conversation-2|${target_gpu}|20|3"
@@ -95,9 +95,9 @@ experiment_configs=(
     ## benchmark mode: A30, rps >= 10
     # "latency_predictor|mooncake|toolagent-2|${target_gpu}|20|3"
     "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|toolagent-2|${target_gpu}|20|3"
-    "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|20|3"
-    "random|mooncake|toolagent-2|${target_gpu}|20|3"
-    "least_request|mooncake|toolagent-2|${target_gpu}|20|3"
+    # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|20|3"
+    # "random|mooncake|toolagent-2|${target_gpu}|20|3"
+    # "least_request|mooncake|toolagent-2|${target_gpu}|20|3"
     # "least_latency|mooncake|toolagent-2|${target_gpu}|20|3"
     # "least_kv_cache|mooncake|toolagent-2|${target_gpu}|20|3"
 
@@ -105,9 +105,9 @@ experiment_configs=(
     ## benchmark mode: A30, rps >= 16
     # "latency_predictor|azure|azure_code_poisson|${target_gpu}|25|3"
     "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure|azure_code_poisson|${target_gpu}|25|3"
-    "prefix_cache_1|azure|azure_code_poisson|${target_gpu}|25|3"
-    "least_request|azure|azure_code_poisson|${target_gpu}|25|3"
-    "random|azure|azure_code_poisson|${target_gpu}|25|3"
+    # "prefix_cache_1|azure|azure_code_poisson|${target_gpu}|25|3"
+    # "least_request|azure|azure_code_poisson|${target_gpu}|25|3"
+    # "random|azure|azure_code_poisson|${target_gpu}|25|3"
     # "least_latency|azure|azure_code_poisson|${target_gpu}|25|3"
     # "least_kv_cache|azure|azure_code_poisson|${target_gpu}|25|3"
 )
@@ -132,7 +132,7 @@ fi
 ENABLE_ONLINE_LEARNING=1
 INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
-MAX_TOTAL_DATA=100000
+MAX_TOTAL_DATA=1000000
 # MAX_TOTAL_DATA=50000
 MIN_NUM_TRAINING_DATA=10000
 MIN_NUM_UPDATE_DATA=2000
@@ -355,27 +355,26 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --batch_size ${batch_size}
     fi
 
-    # echo "Starting to update k8s env for routing-agent-service"
-    # python3 update_k8s_env.py \
-    #     --deployment routing-agent-service \
-    #     --namespace default \
-    #     --container routing-agent \
-    #     --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
-    #     --env MIN_NUM_TRAINING_DATA=${MIN_NUM_TRAINING_DATA} \
-    #     --env MIN_NUM_UPDATE_DATA=${MIN_NUM_UPDATE_DATA} \
-    #     --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
-    #     --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR} \
-    #     --env EXPLORATION_RATE=${EXPLORATION_RATE} \
-    #     --env TARGET_GPU_MODEL=${target_gpu} \
-    #     --env MAX_TOTAL_DATA=${MAX_TOTAL_DATA} \
-    #     --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
-    #     --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
-    #     --env ROUTING_STRATEGY=${routing_policy} \
-    #     --env OUTPUT_WRK_NAME=${output_wrk_name} \
-    #     --env WORKLOAD_CATEGORY=${workload_category} \
-    #     --env WORKLOAD_NAME=${workload_name}
-    #     # --env WORKLOAD_NAME="gangmuk-prefix"
-    #     # --env WORKLOAD_NAME="."
+    echo "Starting to update k8s env for routing-agent-service"
+    python3 update_k8s_env.py \
+        --deployment routing-agent-service \
+        --namespace default \
+        --container routing-agent \
+        --env EXPLORATION_ENABLED=${EXPLORATION_ENABLED} \
+        --env MIN_NUM_TRAINING_DATA=${MIN_NUM_TRAINING_DATA} \
+        --env MIN_NUM_UPDATE_DATA=${MIN_NUM_UPDATE_DATA} \
+        --env ENABLE_ONLINE_LEARNING=${ENABLE_ONLINE_LEARNING} \
+        --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR} \
+        --env EXPLORATION_RATE=${EXPLORATION_RATE} \
+        --env TARGET_GPU_MODEL=${target_gpu} \
+        --env MAX_TOTAL_DATA=${MAX_TOTAL_DATA} \
+        --env INCLUDE_GPU_FEATURES=${INCLUDE_GPU_FEATURES} \
+        --env LOAD_PRETRAINED_MODEL=${LOAD_PRETRAINED_MODEL} \
+        --env ROUTING_STRATEGY=${routing_policy} \
+        --env OUTPUT_WRK_NAME=${output_wrk_name} \
+        --env WORKLOAD_CATEGORY=${workload_category} \
+        --env WORKLOAD_NAME=${workload_name}
+    echo "Finished updating k8s env for routing-agent-service"
     
     # echo "Starting to update k8s env for aibrix-gateway-plugins"
     # python3 update_k8s_env.py \
@@ -403,7 +402,9 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     ###############
 
     ship_start_time=$(date +%s)
-    python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --source_final_model_dir ${source_final_model_dir} --ship_data ${ship_data} --k8s_cluster ${k8s_cluster}
+    if [ "${ship_code}" == "1" ] || [ "${ship_model}" == "1" ]; then
+        python ship_all.py --ship_code ${ship_code} --ship_model ${ship_model} --source_final_model_dir ${source_final_model_dir} --ship_data ${ship_data} --k8s_cluster ${k8s_cluster}
+    fi
     
     if [ "${routing_policy}" == "scalable_rl_agent" ]; then
         scalable_rl_agent_init_model_dir="../training_data/scalable_rl_agent/init_model"
@@ -589,7 +590,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     fi
 
     python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
-    python3 plot_latency_analysis.py --input ${experiment_result_output_dir}/client.log.txt
+    python3 plot_latency_analysis_with_client_log.py ${experiment_result_output_dir}/client.log.txt
 
     
     # Copy final model
