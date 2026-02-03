@@ -161,7 +161,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	klog.Infof("selectTargetPod starts. context state, requestID: %s, ctx.Err(): %v", ctx.RequestID, ctx.Err())
+	// klog.Infof("selectTargetPod starts. context state, requestID: %s, ctx.Err(): %v", ctx.RequestID, ctx.Err())
 	defer func() {
 		if ctx.Err() != nil {
 			klog.ErrorS(ctx.Err(), "Exiting selectTargetPod, Context error", "requestID", ctx.RequestID)
@@ -200,7 +200,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	ts := time.Now()
 	selectedPodAddress, err := router.Route(ctx, &utils.PodArray{Pods: readyPods})
 
-	klog.Infof("selectTargetPod, requestID: %s, Routing took %s, selectedPodAddress: %s", ctx.RequestID, time.Since(ts), selectedPodAddress)
+	klog.V(5).Infof("selectTargetPod, requestID: %s, Routing took %s, selectedPodAddress: %s", ctx.RequestID, time.Since(ts), selectedPodAddress)
 	if err != nil {
 		klog.ErrorS(err, "Routing failed", "requestID", ctx.RequestID)
 		return "", err

@@ -36,8 +36,6 @@ import (
 )
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	klog.Infof("HandleRequestBody context state, requestID: %s", requestID)
-
 	var model string
 	var subAlgorithm string
 	var iteration int
@@ -108,7 +106,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 		// Retrieve subAlgorithm and iteration from cached headers instead of JSON body
 		if cachedHeaders, ok := s.requestHeaders.Load(requestID); ok {
-			headerMap := cachedHeaders.(map[string]string)
+			headerMap, ok := cachedHeaders.(map[string]string)
+			if !ok {
+				klog.ErrorS(nil, "invalid type in requestHeaders cache", "requestID", requestID)
+				headerMap = make(map[string]string)
+			}
 
 			// Get subAlgorithm from headers
 			if subAlgValue, exists := headerMap["subAlgorithm"]; exists && subAlgValue != "" {
@@ -193,6 +195,19 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		utils.AddRequestPodMetrics(routingCtx.RequestID, detailedpodmetrics)
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		s.selectedPodIP.Store(requestID, targetPodIP)
+
+		// Check for routing errors BEFORE incrementing metrics
+		if targetPodIP == "" || err != nil {
+			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_ServiceUnavailable,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
+				"error on selecting target pod"), model, routingCtx, stream, term
+		}
+
+		// Now it's safe to increment metrics since we know routing succeeded
+		// targetPodIP contains the full address with port, so extract just the IP
 		targetPodIPWithPort := routingCtx.TargetAddressWithoutPort()
 		utils.SetSnapshotForRequestToPodIP(routingCtx.RequestID, targetPodIPWithPort)
 		utils.IncrementNumInflightForPod(targetPodIPWithPort)
@@ -204,14 +219,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		utils.SetSnapshotForNumInflightDecodeRequestsForTheRequest(routingCtx.RequestID)
 		utils.SetSnapshotForNumInflightPrefillTokensForTheRequest(routingCtx.RequestID)
 		utils.SetSnapshotForNumInflightDecodeTokensForTheRequest(routingCtx.RequestID)
-		if targetPodIP == "" || err != nil {
-			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_ServiceUnavailable,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
-				"error on selecting target pod"), model, routingCtx, stream, term
-		}
 
 		headers = append(headers,
 			&configPb.HeaderValueOption{
@@ -226,7 +233,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 					RawValue: []byte(targetPodIP),
 				},
 			})
-		klog.Infof("request start, requestID: %s, model: %s, routingAlgorithm: %s, targetPodIP: %s", requestID, model, routingAlgorithm, targetPodIP)
+		klog.V(5).Infof("request start, requestID: %s, model: %s, routingAlgorithm: %s, targetPodIP: %s", requestID, model, routingAlgorithm, targetPodIP)
 	}
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
