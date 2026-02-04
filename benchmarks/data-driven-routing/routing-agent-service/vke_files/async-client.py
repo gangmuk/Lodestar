@@ -1797,7 +1797,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
 async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, iteration, 
                                     total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
-                                    prompt_type="chat", force_exact_output_tokens=0):
+                                    prompt_type="chat", force_exact_output_tokens=0, base_time=None):
     """Schedule and execute tasks based on their target times with true concurrency"""
     # Sort tasks by target_time
     tasks.sort(key=lambda t: t["target_time"])
@@ -1813,7 +1813,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
     all_task_futures = []
     
     # Current time reference
-    base_time = time.time()
+    base_time = time.time() if base_time is None else base_time
     logger.info(f"Base time for scheduling: {time.strftime('%H:%M:%S.%f', time.localtime(base_time))[:-3]}")
     
     # Create a task for each request with its own scheduled execution time
@@ -2464,6 +2464,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             total_num_episodes=iterations,
             prompt_type=args.prompt_type,
             force_exact_output_tokens=force_exact_output_tokens,
+            base_time=base_time,
         )
         end_time = time.time()
 
@@ -2483,11 +2484,6 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         # For each iteration
         for iteration in range(iterations):
             logger.info(f"Starting iteration {iteration+1}/{iterations}")
-
-            # Calculate base time for this iteration
-            # For first iteration, use current time
-            # For subsequent iterations, wait until previous iteration is completely done
-            iteration_base_time = time.time()
 
             # Prepare tasks for this iteration only
             iteration_tasks = []
@@ -2728,6 +2724,10 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             total_num_requests_per_iter = len(temp_requests)
             total_num_requests_overall = total_num_requests_per_iter * iterations
 
+            # Calculate base time for this iteration after request prep to avoid
+            # immediate scheduling of early targets (which can spike RPS).
+            iteration_base_time = time.time()
+
             profiling_target_times = None
             if profiling_mode:
                 profiling_target_times = build_profiling_target_times(
@@ -2830,6 +2830,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 total_num_episodes=iterations,
                 prompt_type=args.prompt_type,
                 force_exact_output_tokens=force_exact_output_tokens,
+                base_time=iteration_base_time,
             )
             end_time = time.time()
 
