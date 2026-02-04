@@ -548,11 +548,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		"NotDecidedYet",
 	)
 
+	routing_agent_failed := 0
+
 	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
 	reqBody, err := json.Marshal(logMessage)
 	if err != nil {
 		klog.Errorf("failure to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
 		r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+		routing_agent_failed = 1
 	}
 	request_prepare_overhead := time.Since(route_start_time).Milliseconds()
 	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
@@ -560,6 +563,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	if reqErr != nil {
 		klog.Errorf("failure to create request: %v, requestID: %s", reqErr, ctx.RequestID)
 		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+		routing_agent_failed = 1
 	}
 	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
 	/////////////////////////////////////////////////
@@ -570,14 +574,17 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	if sendErr != nil {
 		klog.Errorf("Request failure!!: %v, requestID: %s", sendErr, ctx.RequestID)
 		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+		routing_agent_failed = 1
 	} else {
 		if resp.StatusCode != http.StatusOK {
 			klog.Errorf("failure, Received non-200 response: %s, requestID: %s", resp.Status, ctx.RequestID)
+			routing_agent_failed = 1
 		}
 		responseBody, readErr := ioutil.ReadAll(resp.Body) // body: {"confidence":0.4398832619190216,"request_id":"10","selected_pod":"10.0.1.30"}
 		if readErr != nil {
 			klog.Errorf("failure to read response body: %v, requestID: %s", readErr, ctx.RequestID)
 			targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+			routing_agent_failed = 1
 		} else {
 			var routeResponse RouteResponse
 			unmarshal_start := time.Now()
@@ -585,6 +592,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				klog.Errorf("failure to unmarshal responseBody: %v, requestID: %s", err, ctx.RequestID)
 				if strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+					routing_agent_failed = 1
 				}
 			}
 			resp.Body.Close()
@@ -607,12 +615,16 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				if targetPod == nil {
 					klog.Errorf("failure, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+					routing_agent_failed = 1
 				}
 				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
 				if routeResponse.OODFallback == 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					klog.Infof("subAlgorithm, ood_fallback routing, request_id: %s", ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+					routing_agent_failed = 1
 				}
+
+				utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
 
 				//////////////////////////////////////////////////////////////////
 				// Overwrite the targetPod if the subAlgorithm is heuristics!!! //

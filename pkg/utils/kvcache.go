@@ -876,6 +876,9 @@ func init() {
 	OODFallbackForRequest = make(map[string]int)
 	OODFallbackForRequestMutex = sync.RWMutex{}
 
+	FailureFallbackForRequest = make(map[string]int)
+	FailureFallbackForRequestMutex = sync.RWMutex{}
+
 	klog.Info("Initialized global variables for AIBRIX RL Router")
 }
 
@@ -890,6 +893,9 @@ var RemainingLatencyMutex sync.RWMutex
 
 var OODFallbackForRequest map[string]int
 var OODFallbackForRequestMutex sync.RWMutex
+
+var FailureFallbackForRequest map[string]int
+var FailureFallbackForRequestMutex sync.RWMutex
 
 func SetOODFallbackForRequest(oodFallback int, requestID string) {
 	OODFallbackForRequestMutex.Lock()
@@ -928,6 +934,32 @@ func CleanupOODFallbackForRequest(requestID string) {
 	}
 	delete(OODFallbackForRequest, requestID)
 	klog.V(5).Infof("CleanupOODFallbackForRequest, requestID: %s", requestID)
+}
+
+func SetFailureFallbackForRequest(failureFallback int, requestID string) {
+	FailureFallbackForRequestMutex.Lock()
+	defer FailureFallbackForRequestMutex.Unlock()
+	if _, exists := FailureFallbackForRequest[requestID]; !exists {
+		FailureFallbackForRequest[requestID] = failureFallback
+		klog.V(5).Infof("SetFailureFallbackForRequest, requestID: %s, failureFallback: %d", requestID, failureFallback)
+	}
+}
+
+func GetFailureFallbackForRequest(requestID string) int {
+	FailureFallbackForRequestMutex.RLock()
+	defer FailureFallbackForRequestMutex.RUnlock()
+	if val, ok := FailureFallbackForRequest[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetFailureFallbackForRequest for request ID: %s, not found, returning 0", requestID)
+	return 1
+}
+
+func CleanupFailureFallbackForRequest(requestID string) {
+	FailureFallbackForRequestMutex.Lock()
+	defer FailureFallbackForRequestMutex.Unlock()
+	delete(FailureFallbackForRequest, requestID)
+	klog.V(5).Infof("CleanupFailureFallbackForRequest, requestID: %s", requestID)
 }
 
 func SetPrevRewardForRequest(requestID string, prevReward float64) {
