@@ -151,9 +151,9 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
     plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
     
     # Create figure with gridspec for custom layout
-    fig = plt.figure(figsize=(18, 14))
-    # 6 rows, 3 columns: 3 rows for time series (full width), 1 row for CDF, 1 row for bar charts
-    gs = gridspec.GridSpec(7, 3, figure=fig, height_ratios=[0.6, 0.6, 0.6, 0.1, 0.7, 0.1, 0.7], 
+    fig = plt.figure(figsize=(18, 16))
+    # 9 rows, 3 columns: 3 rows for time series (full width), 1 row for CDF, 3 rows for bar charts (one per row)
+    gs = gridspec.GridSpec(9, 3, figure=fig, height_ratios=[0.6, 0.6, 0.6, 0.1, 0.7, 0.1, 0.5, 0.5, 0.5], 
                           hspace=0.4, wspace=0.3, left=0.06, right=0.98, top=0.96, bottom=0.04)
     
     # Color schemes
@@ -276,12 +276,12 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
         ax.axhline(y=99, color='gray', linestyle=':', linewidth=1, alpha=0.5)
     
     # ========================================================================
-    # BAR CHARTS (Bottom Row - 3 Columns)
+    # BAR CHARTS (3 Rows - One per row, full width)
     # ========================================================================
     
-    ax_bar_ttft = plt.subplot(gs[6, 0])
-    ax_bar_tpot = plt.subplot(gs[6, 1])
-    ax_bar_e2e = plt.subplot(gs[6, 2])
+    ax_bar_ttft = plt.subplot(gs[6, :])
+    ax_bar_tpot = plt.subplot(gs[7, :])
+    ax_bar_e2e = plt.subplot(gs[8, :])
     
     bar_axes = [ax_bar_ttft, ax_bar_tpot, ax_bar_e2e]
     bar_metrics = [
@@ -290,9 +290,9 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
         {'column': 'e2e', 'title': 'End-to-End Statistics', 'ylabel': 'E2E Latency (ms)'}
     ]
     
-    percentiles = ['Avg', 'P50', 'P75', 'P90', 'P99', 'P99.9']
+    percentiles = ['Avg', 'P50', 'P90', 'P99']
     x_pos = np.arange(len(percentiles))
-    bar_width = 0.2  # Narrower to fit 4 groups (3 iterations + All)
+    bar_width = 0.05  # Thin bars with space between metrics
     
     for ax, metric_config in zip(bar_axes, bar_metrics):
         metric = metric_config['column']
@@ -307,10 +307,8 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
                 stats = [
                     data.mean(),  # Avg
                     np.percentile(data, 50),  # P50
-                    np.percentile(data, 75),  # P75
                     np.percentile(data, 90),  # P90
-                    np.percentile(data, 99),  # P99
-                    np.percentile(data, 99.9)  # P99.9
+                    np.percentile(data, 99)  # P99
                 ]
                 iteration_stats.append(stats)
         
@@ -320,10 +318,8 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
             all_stats = [
                 all_data.mean(),  # Avg
                 np.percentile(all_data, 50),  # P50
-                np.percentile(all_data, 75),  # P75
                 np.percentile(all_data, 90),  # P90
-                np.percentile(all_data, 99),  # P99
-                np.percentile(all_data, 99.9)  # P99.9
+                np.percentile(all_data, 99)  # P99
             ]
         
         # Plot bars for each iteration
@@ -359,7 +355,7 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
                        fontweight='normal')
         
         # Formatting
-        ax.set_xlabel('Percentile', fontsize=10, fontweight='bold')
+        # ax.set_xlabel('Percentile', fontsize=10, fontweight='bold')
         ax.set_ylabel(metric_config['ylabel'], fontsize=10, fontweight='bold')
         ax.set_title(metric_config['title'], fontsize=11, fontweight='bold', pad=8)
         ax.set_xticks(x_pos)

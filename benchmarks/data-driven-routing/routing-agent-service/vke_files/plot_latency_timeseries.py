@@ -29,6 +29,7 @@ def parse_log_file(filename):
         content = file.read()
     data = []
     lines = content.split('\n')
+    invalid_count = 0
     for line_num, line in enumerate(lines, 1):
         line = line.strip()
         if not line or "**@latency_metrics@" not in line:
@@ -40,26 +41,83 @@ def parse_log_file(filename):
         except Exception as e:
             print(f"Error parsing line {line_num}: {e}")
             continue
+    
+    # Filter out entries with invalid start times
+    original_count = len(data)
+    filtered_data = []
+    for item in data:
+        start_time = item.get('start_time')
+        if start_time is None:
+            invalid_count += 1
+            continue
+        
+        # Filter out negative start times
+        if start_time < 0:
+            invalid_count += 1
+            continue
+        
+        # Filter out extremely large start times (likely in wrong units or corrupted)
+        # Typical timestamps in microseconds should be reasonable (e.g., < 1e15)
+        # If we see values > 1e15, they're likely corrupted or in wrong units
+        if start_time > 1e15:
+            invalid_count += 1
+            continue
+        
+        filtered_data.append(item)
+    
+    if invalid_count > 0:
+        print(f"Filtered out {invalid_count} entries with invalid start times ({original_count - invalid_count} entries remaining)")
+    
+    data = filtered_data
     data.sort(key=lambda x: x.get('start_time', 0) or 0)
+    
     if data:
         valid_start_times = [item['start_time'] for item in data if item.get('start_time')]
         if valid_start_times:
-            base_time = min(valid_start_times)
+            # Additional outlier detection: filter entries with start times that are too far from the median
+            # This helps catch cases where there are a few extremely large values mixed with normal ones
+            start_times_array = np.array(valid_start_times)
+            median_start_time = np.median(start_times_array)
+            mad = np.median(np.abs(start_times_array - median_start_time))  # Median Absolute Deviation
+            threshold = median_start_time + 10 * mad  # Allow up to 10 MADs from median
+            
+            # Filter outliers
+            outlier_count = 0
+            final_data = []
             for item in data:
                 if item.get('start_time') is not None:
-                    item['relative_time'] = (item['start_time'] - base_time) / 1000000
-                else:
-                    print(f"Error: Missing start_time in entry: {item}")
-                    print(f"Error: data: {data}")
-                    assert False
-                # if item.get('end_time'):
-                if item.get('end_time') is not None:
-                    item['relative_end_time'] = (item['end_time'] - base_time) / 1000000
-                    item['duration'] = (item['end_time'] - item['start_time']) / 1000000
-                else:
-                    print(f"Error: Missing end_time in entry: {item}")
-                    print(f"Error: data: {data}")
-                    assert False
+                    if item['start_time'] > threshold:
+                        outlier_count += 1
+                        continue
+                final_data.append(item)
+            
+            if outlier_count > 0:
+                print(f"Filtered out {outlier_count} entries with outlier start times ({len(final_data)} entries remaining)")
+            
+            data = final_data
+            valid_start_times = [item['start_time'] for item in data if item.get('start_time')]
+            
+            if valid_start_times:
+                base_time = min(valid_start_times)
+                for item in data:
+                    if item.get('start_time') is not None:
+                        item['relative_time'] = (item['start_time'] - base_time) / 1000000
+                    else:
+                        print(f"Error: Missing start_time in entry: {item}")
+                        print(f"Error: data: {data}")
+                        assert False
+                    # if item.get('end_time'):
+                    if item.get('end_time') is not None:
+                        item['relative_end_time'] = (item['end_time'] - base_time) / 1000000
+                        item['duration'] = (item['end_time'] - item['start_time']) / 1000000
+                    else:
+                        print(f"Error: Missing end_time in entry: {item}")
+                        print(f"Error: data: {data}")
+                        assert False
+            else:
+                print("Error: No valid start times found after outlier filtering.")
+                print(f"Error: data: {data}")
+                assert False
         else:
             print("Error: No valid start times found in the data.")
             print(f"Error: data: {data}")
