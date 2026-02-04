@@ -1193,8 +1193,8 @@ def online_train_routine():
                     num_trains=NUM_TRAINS
                 )
             else:
-                logger.error(f"Unknown contextual bandit ROUTING_STRATEGY: {ROUTING_STRATEGY}")
-                assert False
+                logger.error(f"Unknown contextual bandit ROUTING_STRATEGY: {ROUTING_STRATEGY}, skipping online training")
+                return
             logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
 
             # Save updated normalization statistics to file
