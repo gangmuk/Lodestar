@@ -1,0 +1,43 @@
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+/mnt/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+*.pkl
+*.pth
+*.csv
+*.png
+*.pdf
+*.tar.gz
+*.ipynb_checkpoints
+
+
+
