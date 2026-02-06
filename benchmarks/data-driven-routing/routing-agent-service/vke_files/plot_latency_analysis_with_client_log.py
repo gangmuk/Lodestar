@@ -604,18 +604,14 @@ def main():
     transitions = find_iteration_transitions(df)
     print(f"✓ Found {len(transitions)} iteration transitions at times: {[f'{t:.2f}' for t in transitions]}")
     
-    print("\nGenerating comprehensive plot...")
-    plot_comprehensive_analysis(df, window_df, transitions, output_path)
-    
     # Save CSV files with latency metrics
     print("\nSaving latency metrics to CSV files...")
     output_dir = Path(args.input).parent
     save_latency_metrics_csv(df, output_dir, args.input)
     
-    print("\n" + "="*80)
-    print("           ✅ SUCCESS! Analysis complete.")
-    print("="*80)
-
+    print("\nGenerating comprehensive plot...")
+    plot_comprehensive_analysis(df, window_df, transitions, output_path)
+    
 
 if __name__ == '__main__':
     main()

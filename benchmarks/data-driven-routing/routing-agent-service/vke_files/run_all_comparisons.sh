@@ -12,6 +12,11 @@ target_dir_list=(
     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps6-benchmark"
     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps9-benchmark"
     "${base_dir}/mooncake/conversation-2/rps20-benchmark"
+    "${base_dir}/mooncake/toolagent-2/rps20-benchmark"
+    "${base_dir}/azure/azure_code_poisson/rps25-benchmark"
+    "${base_dir}/azure/azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2/rps30-benchmark"
+    "${base_dir}/azure/azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10/rps30-benchmark"
+    "${base_dir}/azure/azure_code-access_sequential-sharingmean_0.3-sharingstd_0.1-numreqpergroup_10/rps30-benchmark"
 )
 
 # Verify all directories exist
@@ -23,18 +28,12 @@ for target_dir in "${target_dir_list[@]}"; do
 done
 
 echo "=== Step 1: Processing individual workloads ==="
-echo ""
-
-# Process each workload (in parallel)
 for target_dir in "${target_dir_list[@]}"; do
     echo "Processing ${target_dir}"
-    # python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)" &
-    python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)"
+    python compare_routing_strategies.py "${target_dir}" | grep -E "(Saved|metrics CSV)"
+    # python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)"
 done
 
-echo ""
-echo "=== Step 2: Merging and plotting all workloads ==="
-echo ""
-
 # Merge all metrics and create comparison plots
+echo "=== Step 2: Merging and plotting all workloads ==="
 python merge_and_plot_all_workloads.py "${base_dir}"
