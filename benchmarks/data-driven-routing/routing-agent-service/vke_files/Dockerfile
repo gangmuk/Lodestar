@@ -88,8 +88,9 @@ COPY workload-and-experiment_results/mooncake/toolagent-1/workload.jsonl /app/wo
 COPY workload-and-experiment_results/mooncake/conversation-2/workload.jsonl /app/workload/mooncake/conversation-2/
 COPY workload-and-experiment_results/mooncake/toolagent-2/workload.jsonl /app/workload/mooncake/toolagent-2/
 
-COPY workload-and-experiment_results/azure/azure_code-access_sequential-sharingmean_0.3-sharingstd_0.1-numreqpergroup_10 /app/workload/azure/azure_code-access_sequential-sharingmean_0.3-sharingstd_0.1-numreqpergroup_10/
-COPY workload-and-experiment_results/azure/azure_conv-access_sequential-sharingmean_0.3-sharingstd_0.1-numreqpergroup_10 /app/workload/azure/azure_conv-access_sequential-sharingmean_0.3-sharingstd_0.1-numreqpergroup_10/
+COPY workload-and-experiment_results/azure/azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10 /app/workload/azure/azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10/
+COPY workload-and-experiment_results/azure/azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2 /app/workload/azure/azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2/
+COPY workload-and-experiment_results/azure/azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10 /app/workload/azure/azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10/
 
 # Copy client script and utilities (before workloads for better caching)
 COPY vke_files/async-client.py .

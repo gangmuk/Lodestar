@@ -1703,7 +1703,7 @@ def main():
         azure_workload_category = "conv"
     else:
         raise ValueError(f"can't figure out the workload category by name {args.azure_csv}. Currently only assuming code and conv.")
-    output_dir = f"azure_{azure_workload_category}-rps_{args.rps_pattern}-access_{args.access_pattern}-sharingmean_{args.shared_proportion}-sharingstd_{args.shared_proportion_std}-numreqpergroup_{args.num_requests_per_prefix}"
+    output_dir = f"azure_{azure_workload_category}-access_{args.access_pattern}-sharingmean_{args.shared_proportion}-sharingstd_{args.shared_proportion_std}-numreqpergroup_{args.num_requests_per_prefix}"
     generator.save_workload(workload_data, output_dir)
     
     if args.generate_plots:
