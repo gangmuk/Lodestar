@@ -656,7 +656,3 @@ if __name__ == "__main__":
     print("\nGenerating comparison plot...")
     plot_routing_comparison(all_metrics, base_dir, csv_data_dict)
     
-    print("\n" + "="*80)
-    print("           ✅ SUCCESS! Comparison complete.")
-    print("="*80)
-

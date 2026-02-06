@@ -15,102 +15,93 @@ k8s_cluster="vke"
 # Format: "routing_policy|workload_name|target_gpu|rps|total_num_episodes"
 
 target_gpu="NVIDIA-A30"
-workload_mode="benchmark" # benchmark, profiling
+workload_mode="profiling" # benchmark, profiling
 experiment_configs=(
-    # # "least_request|ten_request|${target_gpu}|7|4"
-
-    # # "contextual_bandit_perpodmodel_policygradient_throughput_based|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_policygradient|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|4"
-    # # "contextual_bandit_quantile_based_perpodmodel_advanced|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|4"
-    # # "contextual_bandit_perpodmodel_advanced_negative_linear|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|2"
-    # # "contextual_bandit_perpodmodel_advanced_throughput_based|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|2"
-    # # "contextual_bandit_perpodmodel_advanced_quantile_based|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|2"
-    # # "contextual_bandit_perpodmodel_checkpoint_quantile_based_new|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|6"
-    # # "contextual_bandit_quantile_based_perpodmodel_checkpoint|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|4"
-    # # "contextual_bandit_negative_linear_perpodmodel|gangmuk-prefix|SharingRatio71%|${target_gpu}|7|4"
-
-    # ## SharingRatio71%, total number of requests: 1500
-    # ## benchmark mode: A30, rps >= 9
-    # # "latency_predictor|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear-before_latency_optimization|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
+    # # ## SharingRatio71%, total number of requests: 1500
+    # # ## benchmark mode: A30, rps >= 9
+    # # # "latency_predictor|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
+    # # "contextual_bandit_perpodmodel_checkpoint_negative_linear-before_latency_optimization|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
     # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "prefix_cache_1|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "least_request|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "random|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # "least_latency|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
-    # # # "least_kv_cache|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|3"
+    "prefix_cache_1|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|2"
+    "least_request|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|2"
+    "random|gangmuk-prefix|SharingRatio71%|${target_gpu}|10|2"
 
 
-    # # ## SharingRatio47%, total number of requests: 2000
-    # # ## benchmark mode: A30, rps >= 7
-    # # # "latency_predictor|gangmuk-prefix|SharingRatio47%|${target_gpu}|6|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|6"
-    # "prefix_cache_1|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
-    # "least_request|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
-    # "random|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
-    # # "least_latency|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
-    # # # "least_kv_cache|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
+    # # # ## SharingRatio47%, total number of requests: 2000
+    # # # ## benchmark mode: A30, rps >= 7
+    # # # # "latency_predictor|gangmuk-prefix|SharingRatio47%|${target_gpu}|6|3"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|3"
+    "prefix_cache_1|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|2"
+    "least_request|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|2"
+    "random|gangmuk-prefix|SharingRatio47%|${target_gpu}|9|2"
 
 
-    # # ## SharingRatio28%, total number of requests: 2000
-    # # ## benchmark mode: A30, rps >= 5
-    # # # "latency_predictor|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|6"
-    # "prefix_cache_1|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # "least_request|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # "random|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # # "least_latency|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
-    # # # "least_kv_cache|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
+    # # # ## SharingRatio28%, total number of requests: 2000
+    # # # ## benchmark mode: A30, rps >= 5
+    # # # # "latency_predictor|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|3"
+    "prefix_cache_1|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|2"
+    "least_request|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|2"
+    "random|gangmuk-prefix|SharingRatio28%|${target_gpu}|8|2"
 
 
-    # # ## SharingRatio9%, total number of requests: 2000
-    # # ## benchmark mode: A30, rps >= 6
-    # # # "latency_predictor|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|6"
-    # "prefix_cache_1|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # "least_request|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # "random|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # # "least_latency|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
-    # # # "least_kv_cache|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
+    # # # ## SharingRatio9%, total number of requests: 2000
+    # # # ## benchmark mode: A30, rps >= 6
+    # # # # "latency_predictor|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|3"
+    "prefix_cache_1|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|2"
+    "least_request|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|2"
+    "random|gangmuk-prefix|SharingRatio9%|${target_gpu}|6|2"
 
     
-    # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
-    # # ## benchmark mode: A30, rps >= 8
-    # # # "latency_predictor|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
-    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|3"
-    # "prefix_cache_1|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
-    # "least_request|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
-    # "random|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
-    # # "least_latency|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|3"
-    # # # "least_kv_cache|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
+    # # # # ## MixedSharingRatio10_30_50_70, total number of requests: 4000
+    # # # ## benchmark mode: A30, rps >= 8
+    # # # # "latency_predictor|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|2"
+    "prefix_cache_1|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
+    "least_request|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
+    "random|gangmuk-prefix|MixedSharingRatio10_30_50_70%|${target_gpu}|9|1"
 
-    # # "latency_predictor|mooncake|conversation-2|${target_gpu}|20|3"
+    # # # "latency_predictor|mooncake|conversation-2|${target_gpu}|20|3"
     # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|conversation-2|${target_gpu}|20|3"
-    # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|20|3"
-    # "random|mooncake|conversation-2|${target_gpu}|20|3"
-    # "least_request|mooncake|conversation-2|${target_gpu}|20|3"
-    # # "least_latency|mooncake|conversation-2|${target_gpu}|20|3"
-    # # "least_kv_cache|mooncake|conversation-2|${target_gpu}|20|3"
+    "prefix_cache_1|mooncake|conversation-2|${target_gpu}|20|2"
+    "random|mooncake|conversation-2|${target_gpu}|20|2"
+    "least_request|mooncake|conversation-2|${target_gpu}|20|2"
 
-    # ## Mooncake toolagent: 2713
-    # ## benchmark mode: A30, rps >= 10
-    # # "latency_predictor|mooncake|toolagent-2|${target_gpu}|20|3"
-    "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|toolagent-2|${target_gpu}|20|3"
-    # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|20|3"
-    # "random|mooncake|toolagent-2|${target_gpu}|20|3"
-    # "least_request|mooncake|toolagent-2|${target_gpu}|20|3"
-    # # "least_latency|mooncake|toolagent-2|${target_gpu}|20|3"
-    # # "least_kv_cache|mooncake|toolagent-2|${target_gpu}|20|3"
+    # # ## Mooncake toolagent: 2713
+    # # ## benchmark mode: A30, rps >= 10
+    # # # "latency_predictor|mooncake|toolagent-2|${target_gpu}|20|3"
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|mooncake|toolagent-2|${target_gpu}|20|3"
+    "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|20|2"
+    "random|mooncake|toolagent-2|${target_gpu}|20|2"
+    "least_request|mooncake|toolagent-2|${target_gpu}|20|2"
 
-    # ## Azure code: 2608
-    # ## benchmark mode: A30, rps >= 16
-    # # "latency_predictor|azure|azure_code_poisson|${target_gpu}|25|3"
+    # # ## Azure code: 2608
+    # # ## benchmark mode: A30, rps >= 16
+    # # # "latency_predictor|azure|azure_code_poisson|${target_gpu}|25|3"
     # "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure|azure_code_poisson|${target_gpu}|25|3"
-    # "prefix_cache_1|azure|azure_code_poisson|${target_gpu}|25|3"
-    # "least_request|azure|azure_code_poisson|${target_gpu}|25|3"
-    # "random|azure|azure_code_poisson|${target_gpu}|25|3"
-    # # "least_latency|azure|azure_code_poisson|${target_gpu}|25|3"
-    # # "least_kv_cache|azure|azure_code_poisson|${target_gpu}|25|3"
+    "prefix_cache_1|azure|azure_code_poisson|${target_gpu}|25|2"
+    "least_request|azure|azure_code_poisson|${target_gpu}|25|2"
+    "random|azure|azure_code_poisson|${target_gpu}|25|2"
+
+    # azure code: long input, short output, medium prefix sharing ratio
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure|azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10|${target_gpu}|20|1"
+    "prefix_cache_1|azure|azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10|${target_gpu}|20|1"
+    "least_request|azure|azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10|${target_gpu}|20|1"
+    "random|azure|azure_code-access_sequential-sharingmean_0.3-sharingstd_0.2-numreqpergroup_10|${target_gpu}|20|1"
+
+    # azure single-turn chat: short input, long output, small prefix sharing ratio
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure|azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2|${target_gpu}|20|1"
+    "prefix_cache_1|azure|azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2|${target_gpu}|30|1"
+    "least_request|azure|azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2|${target_gpu}|30|1"
+    "random|azure|azure_conv-access_sequential-sharingmean_0.1-sharingstd_0.2-numreqpergroup_2|${target_gpu}|30|1"
+
+    # azure multi-turn chat: short input, long output, large prefix sharing ratio
+    # "contextual_bandit_perpodmodel_checkpoint_negative_linear|azure|azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10|${target_gpu}|20|1"
+    "prefix_cache_1|azure|azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10|${target_gpu}|30|1"
+    "least_request|azure|azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10|${target_gpu}|30|1"
+    "random|azure|azure_conv-access_sequential-sharingmean_0.5-sharingstd_0.2-numreqpergroup_10|${target_gpu}|30|1"
+    
 )
 
 ship_model=0
@@ -118,7 +109,7 @@ ship_code=0
 ship_data=0
 
 force_exact_output_tokens=1
-override_workload_output_length=1
+override_workload_output_length=0
 max_tokens=1
 max_tokens_std=0
 max_input_tokens=10000
@@ -130,7 +121,7 @@ else
     output_wrk_name="use_given_output_length"
 fi
 
-ENABLE_ONLINE_LEARNING=0
+ENABLE_ONLINE_LEARNING=1
 INCLUDE_GPU_FEATURES=0
 LOAD_PRETRAINED_MODEL=1
 MAX_TOTAL_DATA=1000000
@@ -263,7 +254,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     #     echo "Exiting... 9"
     #     exit 1
     # fi
-    output_dir="/app/output/${workload_category}/${workload_name}-${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
+    output_dir="/app/output/${workload_category}/${workload_name}/${subAlgorithm}-$(date +%Y%m%d_%H%M%S)"
     output_jsonl_path="${output_dir}/output.jsonl"
 
     # Create local experiment result output directory
