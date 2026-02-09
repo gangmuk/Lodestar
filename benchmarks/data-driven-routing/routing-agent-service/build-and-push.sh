@@ -19,9 +19,13 @@ if [ "$build" == "vke" ]; then
     tag=latest-vke-gangmuk
     if [ "$USE_BUILDX" = true ]; then
         # sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
-        sudo docker buildx build --platform linux/amd64 -f Dockerfile.alternative -t aibrix/gangmuk-routing-agent:${tag} --load .
+        sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
     else
-        sudo docker build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+        # sudo docker build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} .
+        echo "error: docker buildx not available, using legacy docker build"
+        echo "Install buildx to avoid deprecation warnings: https://docs.docker.com/go/buildx/"
+        echo "exiting..."
+        exit 1
     fi
     sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
     sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
