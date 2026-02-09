@@ -935,9 +935,19 @@ def online_train_routine():
                 numeric_columns = training_df_copy.select_dtypes(include=[np.number]).columns
                 total_missing_numeric = int(training_df_copy[numeric_columns].isna().sum().sum()) if len(numeric_columns) > 0 else 0
                 if total_missing_numeric > 0:
-                    logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0 for training consistency")
+                    # Calculate missing values per column BEFORE filling
+                    missing_counts = training_df_copy[numeric_columns].isna().sum()
+                    columns_with_missing = missing_counts[missing_counts > 0]
+                    if len(columns_with_missing) > 0:
+                        missing_info = [(col, int(count), round(count/len(training_df_copy)*100, 1)) 
+                                       for col, count in columns_with_missing.items()]
+                        logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0 for training consistency. "
+                                     f"Columns with missing values: {[(col, f'{count} ({pct}%)') for col, count, pct in missing_info]}")
+                    else:
+                        logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0 for training consistency")
                     training_df_copy[numeric_columns] = training_df_copy[numeric_columns].fillna(0)
                 # Optional: warn about numeric columns with high missing rates (diagnostics only)
+                # Note: This will be 0% after filling, but kept for consistency with original code
                 missing_pct = training_df_copy[numeric_columns].isnull().mean() * 100 if len(numeric_columns) > 0 else pd.Series()
                 high_missing = missing_pct[missing_pct > 5].sort_values(ascending=False)
                 if len(high_missing) > 0:
