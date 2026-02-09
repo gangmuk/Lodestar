@@ -98,6 +98,35 @@ class NeuralContextualBandit:
             weight_decay=hyperparameters.get('weight_decay', 1e-5)
         )
 
+        # Learning rate scheduler - multiple options based on hyperparameters
+        self.scheduler_type = hyperparameters.get('lr_scheduler_type', 'constant')
+        self.gradient_norms = []  # Track gradient norms for gradient-based scheduling
+        self.min_grad_norm_threshold = 1e-4  # Minimum gradient norm threshold
+        self.max_grad_norm_threshold = 10.0  # Maximum gradient norm threshold
+        
+        if self.scheduler_type == 'constant':
+            # No scheduler - constant learning rate
+            self.scheduler = None
+            logger.info("🔧 Using constant learning rate (no scheduler)")
+            
+        elif self.scheduler_type == 'exponential':
+            # Fixed exponential decay - predictable and stable
+            gamma = hyperparameters.get('lr_scheduler_gamma', 0.95)
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
+            logger.info(f"🔧 Using ExponentialLR scheduler (gamma={gamma})")
+            
+        elif self.scheduler_type == 'gradient_adaptive':
+            # Gradient-based scheduling - reduce LR based on gradient norms
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.3, patience=2
+            )
+            logger.info("🔧 Using gradient-adaptive scheduler (gradient norm-based)")
+            
+        else:
+            logger.warning(f"Unknown scheduler type '{self.scheduler_type}', defaulting to constant")
+            self.scheduler = None
+            self.scheduler_type = 'constant'
+
         # Exploration parameters
         self.exploration_method = hyperparameters.get('exploration_method', 'epsilon_greedy')
         self.epsilon = hyperparameters.get('initial_epsilon', 0.3)
@@ -261,18 +290,10 @@ class NeuralContextualBandit:
             logger.debug("Empty batch, skipping learning")
             return {'loss': 0.0, 'reward': 0.0}
 
-        # Create per-pod contexts for all samples
-        # per_pod_contexts will be [batch_size, num_pods, per_pod_context_dim]
-        per_pod_contexts_list = []
-        for i in range(batch_size):
-            per_pod_ctx = self._create_per_pod_contexts(
-                pod_features[i:i+1],
-                kv_hit_ratios[i:i+1],
-                request_features[i:i+1]
-            )
-            per_pod_contexts_list.append(per_pod_ctx)
-
-        per_pod_contexts_batch = torch.stack(per_pod_contexts_list, dim=0).to(device)
+        # Create per-pod contexts for all samples in a single vectorized call
+        # _create_per_pod_contexts already handles full batch: [batch, num_pods, feat] -> [batch*num_pods, dim]
+        contexts_flat = self._create_per_pod_contexts(pod_features, kv_hit_ratios, request_features).to(device)
+        num_pods = pod_features.shape[1]
         actions = torch.tensor(actions, dtype=torch.long).to(device)
         rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
 
@@ -281,16 +302,12 @@ class NeuralContextualBandit:
         else:
             input_tokens_batch = [-1] * batch_size
         
-        # Reshape contexts: [batch_size * num_pods, per_pod_context_dim]
-        batch_size_actual, num_pods, per_pod_dim = per_pod_contexts_batch.shape
-        contexts_flat = per_pod_contexts_batch.reshape(batch_size_actual * num_pods, per_pod_dim)
-        
         # Forward pass: get reward for each pod independently
         # Output: [batch_size * num_pods, 1]
         predicted_rewards_flat = self.reward_net(contexts_flat)
         
         # Reshape back to [batch_size, num_pods]
-        predicted_rewards = predicted_rewards_flat.reshape(batch_size_actual, num_pods)
+        predicted_rewards = predicted_rewards_flat.reshape(batch_size, num_pods)
         
         # Get predicted rewards for the actions that were taken
         predicted_action_rewards = predicted_rewards.gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -301,8 +318,21 @@ class NeuralContextualBandit:
         # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
+        
+        # Track gradient norm for gradient_adaptive scheduler
+        if self.scheduler_type == 'gradient_adaptive':
+            total_norm = 0.0
+            for p in self.reward_net.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** (1. / 2)
+            self.gradient_norms.append(total_norm)
+        
         torch.nn.utils.clip_grad_norm_(self.reward_net.parameters(), max_norm=1.0)
         self.optimizer.step()
+        
+        # Note: exponential scheduler is stepped at epoch level (not batch level) for better stability
         
         # Update epsilon (decay exploration)
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
@@ -893,6 +923,39 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
         avg_reward = np.mean(epoch_rewards) if epoch_rewards else 0.0
         epoch_time = time.time() - epoch_start
+        
+        # Update learning rate scheduler at epoch level
+        if _cached_agent.scheduler is not None:
+            current_lr = _cached_agent.optimizer.param_groups[0]['lr']
+            
+            if _cached_agent.scheduler_type == 'exponential':
+                # Exponential decay - step once per epoch
+                _cached_agent.scheduler.step()
+                new_lr = _cached_agent.optimizer.param_groups[0]['lr']
+                logger.info(f"📉 LR Scheduler (exponential): LR={current_lr:.8f} → {new_lr:.8f}")
+                
+            elif _cached_agent.scheduler_type == 'gradient_adaptive':
+                if len(_cached_agent.gradient_norms) > 0:
+                    # Use recent gradient norms from this epoch
+                    recent_grad_norms = _cached_agent.gradient_norms[-len(epoch_losses):] if len(_cached_agent.gradient_norms) >= len(epoch_losses) else _cached_agent.gradient_norms
+                    avg_grad_norm = np.mean(recent_grad_norms) if len(recent_grad_norms) > 0 else 0.0
+                    
+                    # Check gradient norm conditions
+                    if avg_grad_norm < _cached_agent.min_grad_norm_threshold:
+                        # Gradients too small - might need LR reduction or training is done
+                        _cached_agent.scheduler.step(0.1)  # Trigger reduction
+                        new_lr = _cached_agent.optimizer.param_groups[0]['lr']
+                        logger.info(f"🔍 Gradient norm too small ({avg_grad_norm:.8f} < {_cached_agent.min_grad_norm_threshold:.8f}) - reducing LR: {current_lr:.8f} → {new_lr:.8f}")
+                    elif avg_grad_norm > _cached_agent.max_grad_norm_threshold:
+                        # Gradients too large - might be unstable
+                        _cached_agent.scheduler.step(0.1)  # Trigger reduction
+                        new_lr = _cached_agent.optimizer.param_groups[0]['lr']
+                        logger.info(f"⚡ Gradient norm too large ({avg_grad_norm:.8f} > {_cached_agent.max_grad_norm_threshold:.2f}) - reducing LR: {current_lr:.8f} → {new_lr:.8f}")
+                    else:
+                        # Gradients in good range - no change needed
+                        logger.info(f"✅ Gradient norm healthy ({avg_grad_norm:.6f}) - keeping LR: {current_lr:.8f}")
+                else:
+                    logger.warning("No gradient norms collected - skipping gradient-based scheduling")
         
         logger.info(f"Epoch {epoch+1}/{HYPERPARAMETERS.get('training_epochs', 10)}: loss={avg_loss:.4f}, avg_reward={avg_reward:.4f}, "
                    f"time={epoch_time:.2f}s")

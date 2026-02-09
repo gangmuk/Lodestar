@@ -923,13 +923,29 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
 
+    # Add num_requests annotation below each strategy group
+    has_num_requests = False
+    for i, strategy in enumerate(strategies):
+        if 'num_requests' in metrics_df.columns:
+            num_requests = metrics_indexed.loc[strategy, 'num_requests'] if 'num_requests' in metrics_indexed.columns else 0
+            if pd.notna(num_requests) and num_requests > 0:
+                has_num_requests = True
+                group_center = group_centers[i]
+                # Position text below x-axis
+                ax.text(group_center, -max_value * 0.15, f'n={int(num_requests)}',
+                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+
     # Styling
     ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize)
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='y', alpha=0.3)
-    ax.set_ylim(0, max(max_value * 1.4, 1.0))
+    # Adjust y-axis limits to accommodate num_requests text if present
+    if has_num_requests:
+        ax.set_ylim(-max_value * 0.2, max(max_value * 1.4, 1.0))
+    else:
+        ax.set_ylim(0, max(max_value * 1.4, 1.0))
 
 
 # New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99, p999
