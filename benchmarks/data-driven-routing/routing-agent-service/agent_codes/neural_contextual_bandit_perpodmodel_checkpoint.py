@@ -376,16 +376,23 @@ class NeuralContextualBandit:
             'epsilon': self.epsilon
         }
     
-    def save(self, final_model_dir):
+    def save(self, final_model_dir, num_trains=None):
         """Save model and metadata"""
         os.makedirs(final_model_dir, exist_ok=True)
-        
+
+        # Build suffix for checkpoint files
+        suffix = f"-{num_trains}" if num_trains is not None else ""
+
         # Save network weights
         torch.save(self.reward_net.state_dict(), os.path.join(final_model_dir, 'reward_net.pth'))
-        
+        if suffix:
+            torch.save(self.reward_net.state_dict(), os.path.join(final_model_dir, f'reward_net{suffix}.pth'))
+
         # Save optimizer state
         torch.save(self.optimizer.state_dict(), os.path.join(final_model_dir, 'optimizer.pth'))
-        
+        if suffix:
+            torch.save(self.optimizer.state_dict(), os.path.join(final_model_dir, f'optimizer{suffix}.pth'))
+
         # Save metadata
         metadata = {
             'state_dim': self.state_dim,
@@ -397,11 +404,14 @@ class NeuralContextualBandit:
             'total_steps': self.total_steps,
             'training_metrics': self.training_metrics
         }
-        
+
         with open(os.path.join(final_model_dir, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
-        
-        logger.info(f"Model saved to {final_model_dir}")
+        if suffix:
+            with open(os.path.join(final_model_dir, f'metadata{suffix}.pkl'), 'wb') as f:
+                pickle.dump(metadata, f)
+
+        logger.info(f"Model saved to {final_model_dir} (checkpoint: {num_trains})")
     
     def load_model(self, final_model_dir, load_metadata=True):
         """Load model and metadata (metadata optional for fast inference reloads)."""
@@ -961,7 +971,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                    f"time={epoch_time:.2f}s")
     
     # Save trained model
-    _cached_agent.save(final_model_dir)
+    _cached_agent.save(final_model_dir, num_trains=num_trains)
     logger.info(f"Neural CB batch training complete: {total_samples} samples processed, model saved to {final_model_dir}")
     
     # Generate comprehensive training plots (use total_steps as num_trains)
@@ -2295,7 +2305,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             'reward': metrics['rewards'] if len(metrics['rewards']) == len(metrics['losses']) else [None] * len(metrics['losses']),
             'epsilon': metrics['epsilons'] if len(metrics['epsilons']) == len(metrics['losses']) else [None] * len(metrics['losses'])
         })
-        csv_path = os.path.join(final_model_dir, 'training_metrics.csv')
+        csv_path = os.path.join(final_model_dir, f'training_metrics-{num_trains}.csv')
         metrics_df.to_csv(csv_path, index=False)
         logger.info(f"Saved training metrics CSV: {csv_path}")
     
