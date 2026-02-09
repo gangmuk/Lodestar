@@ -24,16 +24,15 @@ model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpo
 REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "simple_latency_minimization", "inverse_latency", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized", "context_aware"
 hidden_dim=128
 batch_size=256
-training_epochs=5
-learning_rate=0.0001
+training_epochs=10
+learning_rate=0.0003 # 0.0001, 0.0003
+lr_scheduler_gamma=0.98
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
-lr_scheduler_gamma=0.95
-excluded_pod_features="none" # 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
+excluded_pod_features="inflight_requests,cpu_kv_cache" # 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
 excluded_request_features=""
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
-reward_decay_factor=0.91
 ttft_slo=1000
 avg_tpot_slo=50
 ttft_reward_weight=1.0 # ttft_reward_weight*ttft_rewards + max(0, (1-ttft_reward_weight))*tpot_rewards (should be 0-1)
@@ -77,7 +76,6 @@ python3 write_hyperparameters.py \
 --training_epochs ${training_epochs} \
 --batch_size ${batch_size} \
 --lr_scheduler_gamma ${lr_scheduler_gamma} \
---reward_decay_factor ${reward_decay_factor} \
 --model_type ${model_type} \
 --latency_metric ${latency_metric} \
 --include_gpu_features ${include_gpu_features} \

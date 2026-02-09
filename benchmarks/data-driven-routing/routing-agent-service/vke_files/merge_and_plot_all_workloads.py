@@ -369,7 +369,7 @@ def plot_averaged_results(df, metric, ylabel, title, output_path):
 def plot_all_metrics_summary(df, output_dir, averaged=True):
     """Create a comprehensive summary plot with one workload per row.
 
-    Each row shows bar chart with avg, p99, p999 grouped by routing policy,
+    Each row shows two bar charts: TTFT and TPOT, each with avg, p99, p999 grouped by routing policy,
     similar to plot_single_metric_comparison in compare_routing_strategies.py.
     """
     from matplotlib.patches import Patch
@@ -384,23 +384,12 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
     # Generate colors for each policy
     policy_colors = generate_policy_colors(policies)
 
-    # Create figure with one row per workload
-    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 6 * n_workloads))
-    gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.6)
+    # Create figure with two rows per workload (TTFT and TPOT)
+    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 6 * n_workloads * 2))
+    gs = GridSpec(n_workloads * 2, 1, figure=fig, hspace=0.6)
 
-    for workload_idx, workload in enumerate(workloads):
-        ax = fig.add_subplot(gs[workload_idx, 0])
-
-        # Filter data for this workload
-        workload_df = df[df['workload'] == workload]
-
-        # Get policies that have data for this workload
-        available_policies = [p for p in policies if p in workload_df['routing_policy'].values]
-
-        if not available_policies:
-            ax.text(0.5, 0.5, f'No data for {workload}', ha='center', va='center')
-            continue
-
+    def plot_metric_bars(ax, workload_df, available_policies, metric_type, workload):
+        """Helper function to plot bars for a specific metric type (ttft or tpot)."""
         # Bar positioning: 3 bars (avg, p99, p999) per policy
         bar_width = 0.25
         group_width = 3 * bar_width + 0.3  # Space between groups
@@ -410,17 +399,30 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         avg_values = []
         p99_values = []
         p999_values = []
+        num_requests_list = []
 
         for policy in available_policies:
             policy_data = workload_df[workload_df['routing_policy'] == policy]
             if len(policy_data) > 0:
-                avg_values.append(policy_data['avg_ttft'].mean())
-                p99_values.append(policy_data['p99_ttft'].mean())
-                p999_values.append(policy_data['p999_ttft'].mean())
+                if metric_type == 'ttft':
+                    avg_values.append(policy_data['avg_ttft'].mean())
+                    p99_values.append(policy_data['p99_ttft'].mean())
+                    p999_values.append(policy_data['p999_ttft'].mean())
+                else:  # tpot
+                    avg_values.append(policy_data['avg_tpot'].mean())
+                    p99_values.append(policy_data['p99_tpot'].mean())
+                    p999_values.append(policy_data['p999_tpot'].mean())
+                
+                # Get num_requests (sum if multiple experiments)
+                if 'num_requests' in policy_data.columns:
+                    num_requests_list.append(int(policy_data['num_requests'].sum()))
+                else:
+                    num_requests_list.append(0)
             else:
                 avg_values.append(0)
                 p99_values.append(0)
                 p999_values.append(0)
+                num_requests_list.append(0)
 
         # Get max value for y-axis scaling
         max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
@@ -448,6 +450,15 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
                     ax.text(pos, value + max_value * 0.02,
                            f'{value:.0f}', rotation=90, ha='center', va='bottom',
                            fontsize=10, fontweight='bold')
+
+        # Add num_requests annotation below each policy group
+        has_num_requests = False
+        for i, policy in enumerate(available_policies):
+            if num_requests_list[i] > 0:
+                has_num_requests = True
+                group_center = group_centers[i]
+                ax.text(group_center, -max_value * 0.15, f'n={num_requests_list[i]}',
+                       ha='center', va='top', fontsize=9, style='italic', color='gray')
 
         # Set up x-axis with policy names (like original: "policy_name\n(timestamp)")
         ax.set_xticks(group_centers)
@@ -480,13 +491,44 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         ax.legend(handles=legend_elements, loc='upper right', fontsize=12, ncol=3)
 
         # Styling
-        ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize)
-        # Use workload name as title
-        ax.set_title(f'TTFT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
+        if metric_type == 'ttft':
+            ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize)
+            ax.set_title(f'TTFT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
+        else:  # tpot
+            ax.set_ylabel('Avg TPOT (ms)', fontsize=ylabel_fontsize)
+            ax.set_title(f'Avg TPOT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
+        
         ax.tick_params(axis='y', labelsize=tick_fontsize)
         ax.tick_params(axis='x', labelsize=10)
         ax.grid(axis='y', alpha=0.3)
-        ax.set_ylim(0, max_value * 1.4)
+        # Adjust y-axis limits to accommodate num_requests text if present
+        if has_num_requests:
+            ax.set_ylim(-max_value * 0.2, max_value * 1.4)
+        else:
+            ax.set_ylim(0, max_value * 1.4)
+
+    for workload_idx, workload in enumerate(workloads):
+        # Filter data for this workload
+        workload_df = df[df['workload'] == workload]
+
+        # Get policies that have data for this workload
+        available_policies = [p for p in policies if p in workload_df['routing_policy'].values]
+
+        if not available_policies:
+            # Create two empty subplots
+            ax1 = fig.add_subplot(gs[workload_idx * 2, 0])
+            ax1.text(0.5, 0.5, f'No data for {workload}', ha='center', va='center')
+            ax2 = fig.add_subplot(gs[workload_idx * 2 + 1, 0])
+            ax2.text(0.5, 0.5, f'No data for {workload}', ha='center', va='center')
+            continue
+
+        # Plot TTFT (first row for this workload)
+        ax1 = fig.add_subplot(gs[workload_idx * 2, 0])
+        plot_metric_bars(ax1, workload_df, available_policies, 'ttft', workload)
+
+        # Plot TPOT (second row for this workload)
+        ax2 = fig.add_subplot(gs[workload_idx * 2 + 1, 0])
+        plot_metric_bars(ax2, workload_df, available_policies, 'tpot', workload)
 
     suffix = "(Averaged)" if averaged else "(Individual)"
     plt.suptitle(f'Routing Strategy Performance Across All Workloads {suffix}', fontsize=maintitle_fontsize, y=0.99)

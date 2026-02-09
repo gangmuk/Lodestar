@@ -17,7 +17,6 @@ def main():
     parser.add_argument('--lr_scheduler_type', type=str, default=None, choices=['plateau', 'exponential', 'gradient_adaptive', 'constant'], help='Learning rate scheduler type')
     parser.add_argument('--lr_scheduler_gamma', type=float, default=None, help='Gamma for exponential scheduler')
     parser.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension')
-    parser.add_argument('--reward_decay_factor', type=float, default=0.9, help='reward_decay_factor (lambda)')
     parser.add_argument('--model_type', type=str, default=None, help='Model type to use')
     parser.add_argument('--test_size_ratio', type=float, default=0.2, help='Test size ratio')
     # RL (SB3 PPO) specific hyperparameters (optional)
@@ -67,7 +66,6 @@ def main():
     RL_MODEL_HYPERPARAMETERS['max_grad_norm'] = float(args.max_grad_norm)
     RL_MODEL_HYPERPARAMETERS['RL_CHECKPOINT_PATH'] = args.rl_checkpoint_path
     RL_MODEL_HYPERPARAMETERS['LATENCY_METRIC'] = args.latency_metric
-    RL_MODEL_HYPERPARAMETERS['reward_decay_factor'] = float(args.reward_decay_factor)
     RL_MODEL_HYPERPARAMETERS['training_epochs'] = int(args.training_epochs)
     RL_MODEL_HYPERPARAMETERS['batch_size'] = int(args.batch_size)
     RL_MODEL_HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = int(args.include_gpu_features)
