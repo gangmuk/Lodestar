@@ -630,7 +630,16 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
                 if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
                     load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
                     new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
-                
+
+                # Preserve epsilon and total_steps from previous agent to avoid
+                # resetting exploration state on model reload (e.g., after online training)
+                if _cached_agent is not None:
+                    prev_epsilon = _cached_agent.epsilon
+                    prev_total_steps = _cached_agent.total_steps
+                    new_agent.epsilon = prev_epsilon
+                    new_agent.total_steps = prev_total_steps
+                    logger.info(f"Preserved exploration state from previous agent: epsilon={prev_epsilon:.4f}, total_steps={prev_total_steps}")
+
                 _cached_agent = new_agent
                 _cached_metadata = current_config
                 _cached_config_key = current_config_key
@@ -643,6 +652,10 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
 
     # Async reload for model updates: never block requests.
     if model_updated_effective and _cached_agent is not None:
+        # Capture current exploration state BEFORE async thread starts
+        _prev_epsilon = _cached_agent.epsilon
+        _prev_total_steps = _cached_agent.total_steps
+
         def _async_reload(state_dim, action_dim, config_snapshot):
             global _cached_agent, _cached_metadata, _cached_config_key, _reload_in_progress, _model_updated_consumed
             try:
@@ -655,6 +668,12 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
                 if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
                     load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
                     new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+
+                # Preserve epsilon and total_steps from previous agent
+                new_agent.epsilon = _prev_epsilon
+                new_agent.total_steps = _prev_total_steps
+                logger.info(f"Async reload: preserved exploration state: epsilon={_prev_epsilon:.4f}, total_steps={_prev_total_steps}")
+
                 # Swap under lock (very short critical section)
                 with _agent_lock:
                     _cached_agent = new_agent

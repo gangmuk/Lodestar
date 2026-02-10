@@ -342,7 +342,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
 	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
 	expectedNumOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
-	expectedNumOutputTokens = 1
+	expectedNumOutputTokens = 100
+	// expectedNumOutputTokens = 1
 	if !exist {
 		klog.V(5).Infof("requestID: %s, No cached output token length found for hash_of_matchedprefix: %d. Using default value %d", ctx.RequestID, hash_of_matchedprefix, expectedNumOutputTokens)
 	}

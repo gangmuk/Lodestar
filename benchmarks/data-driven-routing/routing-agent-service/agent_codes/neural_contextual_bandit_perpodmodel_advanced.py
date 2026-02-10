@@ -744,6 +744,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
             'kv_hit_ratios': current_config['kv_hit_ratios'],
             'request_features': current_config['request_features']
         }
+        prev_agent = _cached_agent  # Save reference before overwrite
         _cached_agent = NeuralContextualBandit(
             state_dim=state_dim,
             action_dim=current_config['num_pods'],
@@ -753,7 +754,14 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         # Try to load existing model
         if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
             _cached_agent.load_model(final_model_dir)
-        
+
+        # Preserve epsilon and total_steps from previous agent to avoid
+        # resetting exploration state on model reload (e.g., after online training)
+        if prev_agent is not None:
+            _cached_agent.epsilon = prev_agent.epsilon
+            _cached_agent.total_steps = prev_agent.total_steps
+            logger.info(f"Preserved exploration state from previous agent: epsilon={prev_agent.epsilon:.4f}, total_steps={prev_agent.total_steps}")
+
         _cached_metadata = current_config
     else:
         # Agent reused - this is expected for most requests

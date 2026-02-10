@@ -836,8 +836,11 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     # TTFT Plot (ax1)
     for pod in unique_pods:
         pod_df = df[df['selectedpod'] == pod]
-        ax1.scatter(pod_df['relative_time'], pod_df['ttft'], s=marker_size, 
-                   color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
+        # Filter out NaN values to avoid matplotlib conversion errors
+        pod_df_clean = pod_df.dropna(subset=['relative_time', 'ttft'])
+        if not pod_df_clean.empty:
+            ax1.scatter(pod_df_clean['relative_time'], pod_df_clean['ttft'], s=marker_size, 
+                       color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
 
     # Note: Removed cluster-wise statistics as they are redundant with sliding window average
     # Each request belongs to one pod, so cluster min/max across requests per time bin is not meaningful
@@ -854,7 +857,10 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         for pod in unique_pods:
             pod_kv_data = pod_data['kv_cache_df'][pod_data['kv_cache_df']['selectedpod'] == pod]
             if not pod_kv_data.empty:
-                ax_kv_cache.scatter(pod_kv_data['relative_time'], pod_kv_data['selectedpod_kv_cache_hit_ratio'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha) #, label=f'Pod: {pod}')
+                # Filter out NaN values to avoid matplotlib conversion errors
+                pod_kv_data_clean = pod_kv_data.dropna(subset=['relative_time', 'selectedpod_kv_cache_hit_ratio'])
+                if not pod_kv_data_clean.empty:
+                    ax_kv_cache.scatter(pod_kv_data_clean['relative_time'], pod_kv_data_clean['selectedpod_kv_cache_hit_ratio'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha) #, label=f'Pod: {pod}')
         
         # Plot cluster-wide statistics
         ax_kv_cache.plot(pod_data['kv_cache_df']['relative_time'], pod_data['kv_cache_df']['cluster_avg_kv_cache'], label='Cluster Avg KV Cache', linewidth=linewidth, alpha=alpha, color='blue')
@@ -904,9 +910,12 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         for pod in unique_pods:
             pod_waiting_data = pod_data['waiting_selected_pod_df'][pod_data['waiting_selected_pod_df']['selectedpod'] == pod]
             if not pod_waiting_data.empty:
-                print(f"Plotting {len(pod_waiting_data)} points for pod {pod}")
-                ax_waiting_selected.scatter(pod_waiting_data['relative_time'], pod_waiting_data['waiting_requests_selected'], 
-                                          s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
+                # Filter out NaN values to avoid matplotlib conversion errors
+                pod_waiting_data_clean = pod_waiting_data.dropna(subset=['relative_time', 'waiting_requests_selected'])
+                if not pod_waiting_data_clean.empty:
+                    print(f"Plotting {len(pod_waiting_data_clean)} points for pod {pod}")
+                    ax_waiting_selected.scatter(pod_waiting_data_clean['relative_time'], pod_waiting_data_clean['waiting_requests_selected'], 
+                                              s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
         
         # Add average waiting requests for selected pod per second
         pod_data['waiting_selected_pod_df']['time_bin'] = np.floor(pod_data['waiting_selected_pod_df']['relative_time']).astype(int)
@@ -929,7 +938,10 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     # TPOT Plot (ax2)
     for pod in unique_pods:
         pod_df = df[df['selectedpod'] == pod]
-        ax2.scatter(pod_df['relative_time'], pod_df['avg_tpot'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+        # Filter out NaN values to avoid matplotlib conversion errors
+        pod_df_clean = pod_df.dropna(subset=['relative_time', 'avg_tpot'])
+        if not pod_df_clean.empty:
+            ax2.scatter(pod_df_clean['relative_time'], pod_df_clean['avg_tpot'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
 
     # Note: Removed cluster-wise statistics as they are redundant with sliding window average
     # Each request belongs to one pod, so cluster min/max across requests per time bin is not meaningful
@@ -943,7 +955,10 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     # E2E Duration Plot (ax3)
     for pod in unique_pods:
         pod_df = df[df['selectedpod'] == pod]
-        ax3.scatter(pod_df['relative_time'], pod_df['e2e'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+        # Filter out NaN values to avoid matplotlib conversion errors
+        pod_df_clean = pod_df.dropna(subset=['relative_time', 'e2e'])
+        if not pod_df_clean.empty:
+            ax3.scatter(pod_df_clean['relative_time'], pod_df_clean['e2e'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
     
     # Note: Removed cluster-wise statistics as they are redundant with sliding window average  
     # Each request belongs to one pod, so cluster min/max across requests per time bin is not meaningful
@@ -1093,8 +1108,11 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
         for pod in unique_pods:
             pod_data = data_df[data_df['selectedpod'] == pod]
             if not pod_data.empty:
-                ax.scatter(pod_data['relative_time'], pod_data[metric_col], 
-                         s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
+                # Filter out NaN values to avoid matplotlib conversion errors
+                pod_data_clean = pod_data.dropna(subset=['relative_time', metric_col])
+                if not pod_data_clean.empty:
+                    ax.scatter(pod_data_clean['relative_time'], pod_data_clean[metric_col], 
+                             s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
         
         # Plot cluster-wide statistics
         
@@ -1799,9 +1817,12 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         for num_trains in unique_num_trains:
             subset = valid_predictions[valid_predictions['num_trains'] == num_trains]
             if len(subset) > 0:
-                ax_pred_scatter.scatter(subset[actual_col], subset['chosen_pod_predicted_latency'],
-                                       s=10, color=num_trains_color_map[num_trains], alpha=0.4, marker='.',
-                                       label=f'{num_trains}')
+                # Filter out NaN values to avoid matplotlib conversion errors
+                subset_clean = subset.dropna(subset=[actual_col, 'chosen_pod_predicted_latency'])
+                if not subset_clean.empty:
+                    ax_pred_scatter.scatter(subset_clean[actual_col], subset_clean['chosen_pod_predicted_latency'],
+                                           s=10, color=num_trains_color_map[num_trains], alpha=0.4, marker='.',
+                                           label=f'{num_trains}')
 
         # Add diagonal line for perfect prediction
         max_val = max(valid_predictions[actual_col].max(), valid_predictions['chosen_pod_predicted_latency'].max())
@@ -1849,8 +1870,11 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     # Plot actual target latency metric for each pod (following same format as other time series)
     for pod in unique_pods:
         pod_df = df[df['selectedpod'] == pod]
-        ax_pred_timeseries.scatter(pod_df['relative_time'], pod_df[actual_col], s=marker_size,
-                                  color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+        # Filter out NaN values to avoid matplotlib conversion errors
+        pod_df_clean = pod_df.dropna(subset=['relative_time', actual_col])
+        if not pod_df_clean.empty:
+            ax_pred_timeseries.scatter(pod_df_clean['relative_time'], pod_df_clean[actual_col], s=marker_size,
+                                      color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
 
     # Plot predicted latency where available (as overlay)
     valid_pred_timeseries = df[(df['chosen_pod_predicted_latency'].notna()) &
@@ -1983,9 +2007,12 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
         for iteration in unique_iterations:
             subset = valid_predictions[valid_predictions['iteration'] == iteration]
             if len(subset) > 0:
-                ax_iter_pred_scatter.scatter(subset[actual_col], subset['chosen_pod_predicted_latency'],
-                                       s=10, color=iteration_color_map[iteration], alpha=0.4, marker='.',
-                                       label=f'{iteration}')
+                # Filter out NaN values to avoid matplotlib conversion errors
+                subset_clean = subset.dropna(subset=[actual_col, 'chosen_pod_predicted_latency'])
+                if not subset_clean.empty:
+                    ax_iter_pred_scatter.scatter(subset_clean[actual_col], subset_clean['chosen_pod_predicted_latency'],
+                                           s=10, color=iteration_color_map[iteration], alpha=0.4, marker='.',
+                                           label=f'{iteration}')
         
         # Add diagonal line for perfect prediction
         max_val = max(valid_predictions[actual_col].max(), valid_predictions['chosen_pod_predicted_latency'].max())

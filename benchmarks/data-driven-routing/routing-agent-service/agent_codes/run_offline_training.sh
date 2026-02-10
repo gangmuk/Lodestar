@@ -17,7 +17,7 @@ echo "✓ Found data file: ${data_file}"
 
 analyze_dataset=1
 analyze_behavior=0
-sampling_ratio=1.0
+sampling_ratio=0.3
 ttft_threshold=30000
 buffer_size=100000
 model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
@@ -29,7 +29,7 @@ learning_rate=0.0003 # 0.0001, 0.0003
 lr_scheduler_gamma=0.98
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 excluded_pod_features="none" # "inflight_requests,cpu_kv_cache" 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
-excluded_request_features=""
+excluded_request_features="output_tokens" # "none", "input_tokens", "output_tokens", "total_tokens"
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
