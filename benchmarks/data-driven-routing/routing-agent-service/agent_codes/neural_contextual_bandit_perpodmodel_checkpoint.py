@@ -498,6 +498,28 @@ class NeuralContextualBandit:
                                  f"Clearing off-policy metrics to avoid plotting errors.")
                     for key in off_policy_keys:
                         self.training_metrics[key] = []
+
+                # Ensure learning_rates aligns with losses length for CSV export/plots
+                losses_len = len(self.training_metrics.get('losses', []))
+                lr_list = self.training_metrics.get('learning_rates', [])
+                if losses_len > 0:
+                    if not isinstance(lr_list, list):
+                        lr_list = list(lr_list)
+                    if len(lr_list) == 0:
+                        # Old models without learning rate history: backfill with current optimizer LR
+                        current_lr = self.optimizer.param_groups[0]['lr']
+                        self.training_metrics['learning_rates'] = [current_lr] * losses_len
+                        logger.info(f"Backfilled learning_rates for {losses_len} steps with current LR={current_lr:.8f}")
+                    elif len(lr_list) < losses_len:
+                        # Partially missing history: pad the front with the earliest known LR
+                        pad_len = losses_len - len(lr_list)
+                        pad_value = lr_list[0]
+                        self.training_metrics['learning_rates'] = [pad_value] * pad_len + lr_list
+                        logger.info(f"Padded learning_rates from {len(lr_list)} to {losses_len} using initial LR={pad_value:.8f}")
+                    elif len(lr_list) > losses_len:
+                        # Extra entries (should not normally happen) – truncate to match
+                        self.training_metrics['learning_rates'] = lr_list[:losses_len]
+                        logger.warning(f"Truncated learning_rates from {len(lr_list)} to {losses_len} to match losses length")
                 
                 logger.info(f"Loaded metadata: epsilon={self.epsilon:.4f}, total_steps={self.total_steps}")
         else:
