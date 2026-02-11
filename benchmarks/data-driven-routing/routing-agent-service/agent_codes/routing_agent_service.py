@@ -188,6 +188,7 @@ def handle_flush():
                 if '_online_seq' not in online_batch.columns:
                     online_batch['_online_seq'] = np.arange(ONLINE_SEQ, ONLINE_SEQ + len(online_batch))
                     ONLINE_SEQ += len(online_batch)
+                online_batch['_collection_round'] = NUM_TRAINS
                 old_size = len(ONLINE_DF)
                 ONLINE_DF = pd.concat([ONLINE_DF, online_batch], ignore_index=True)
                 logger.info(f"Appended {len(online_batch)} samples to ONLINE_DF (total: {old_size} → {len(ONLINE_DF)})")
@@ -1140,10 +1141,30 @@ def online_train_routine():
                 logger.error("Combined training dataset is empty after trimming")
                 TRAINING_RIGHT_NOW = False
                 return
+
+            # Per-round recency weighting: assign weights BEFORE shuffling
+            # Offline data has NaN _collection_round (never went through flush), online data has integer round numbers
+            recency_decay = float(os.environ.get('RECENCY_WEIGHT_DECAY', '1.0'))
+            if recency_decay < 1.0 and '_collection_round' in training_df_copy.columns:
+                current_round = NUM_TRAINS
+                weights = np.ones(len(training_df_copy), dtype=np.float32)
+                offline_mask = training_df_copy['_collection_round'].isna()
+                weights[offline_mask.values] = recency_decay ** (current_round + 1)
+                online_mask = ~offline_mask
+                if online_mask.any():
+                    collection_rounds = training_df_copy.loc[online_mask, '_collection_round'].values.astype(float)
+                    weights[online_mask.values] = recency_decay ** (current_round - collection_rounds)
+                training_df_copy['_sample_weight'] = weights
+                logger.info(f"Per-round recency weighting: decay={recency_decay}, current_round={current_round}, "
+                            f"offline_weight={weights[offline_mask.values].mean():.4f} ({offline_mask.sum()} samples), "
+                            f"newest_online_weight={weights[online_mask.values].max():.4f if online_mask.any() else 'N/A'} ({online_mask.sum()} samples)")
+            else:
+                training_df_copy['_sample_weight'] = 1.0
+
             training_seed = HYPERPARAMETERS.get('training_seed', 42)
             training_df_copy = training_df_copy.sample(frac=1, random_state=training_seed).reset_index(drop=True)
-            
-            # Drop metadata columns
+
+            # Drop metadata columns (exclude _sample_weight and _collection_round from drop)
             metadata_cols_to_drop = ['source_file', 'reward_function_used']
             cols_present_to_drop = [c for c in metadata_cols_to_drop if c in training_df_copy.columns]
             if cols_present_to_drop:

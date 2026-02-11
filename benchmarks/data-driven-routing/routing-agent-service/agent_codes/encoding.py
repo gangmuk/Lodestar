@@ -943,7 +943,13 @@ class DataEncoder:
             'categorical_request_features': self.categorical_request_features,
             'encoders': {'pod_encoder': None, 'selected_pod_encoder': None, 'categorical_encoders': {}}
         }
-        
+
+        # Extract per-round recency weights if present
+        if not is_dict_input and '_sample_weight' in processed_df.columns:
+            processed_data['sample_weights'] = processed_df['_sample_weight'].values.astype(np.float32)
+        else:
+            processed_data['sample_weights'] = None
+
         return processed_data, overhead_summary
 
 
@@ -1151,6 +1157,11 @@ class DataEncoder:
         if 'tpot_rewards' in processed_data and processed_data['tpot_rewards'] is not None:
             tensor_data['tpot_rewards'] = torch.FloatTensor(
                 processed_data['tpot_rewards'][sample_indices] if sample_indices is not None else processed_data['tpot_rewards']
+            )
+        # Add per-round recency weights if available
+        if processed_data.get('sample_weights') is not None:
+            tensor_data['sample_weights'] = torch.FloatTensor(
+                processed_data['sample_weights'][sample_indices] if sample_indices is not None else processed_data['sample_weights']
             )
         # global_tensor_path = "global_tensor_dataset.pt"
         # self._append_to_global_tensor_dataset(tensor_data, global_tensor_path)
