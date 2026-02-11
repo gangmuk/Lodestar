@@ -31,7 +31,7 @@ class RewardNetwork(nn.Module):
     Per-Pod Reward Network: Scores a single (pod, request) pair independently.
     This architecture is scalable to any number of pods.
     """
-    def __init__(self, per_pod_context_dim, hidden_dim=128):
+    def __init__(self, per_pod_context_dim, hidden_dim=128, weight_initialization='xavier'):
         super().__init__()
         
         self.per_pod_context_dim = per_pod_context_dim
@@ -49,7 +49,42 @@ class RewardNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)  # Output: single reward score
         )
         
-        logger.info(f"RewardNetwork (Per-Pod): per_pod_context_dim={per_pod_context_dim}, hidden_dim={hidden_dim}")
+        # Initialize weights based on specified method
+        if weight_initialization == 'xavier':
+            self._xavier_initialize_weights()
+        elif weight_initialization == 'kaiming':
+            self._kaiming_initialize_weights()
+        elif weight_initialization == 'static':
+            self._static_weight_initialization()
+        else:
+            logger.warning(f"Unknown weight initialization: {weight_initialization}, using Xavier")
+            self._xavier_initialize_weights()
+        
+        logger.info(f"RewardNetwork (Per-Pod): per_pod_context_dim={per_pod_context_dim}, hidden_dim={hidden_dim}, weight_init={weight_initialization}")
+    
+    def _xavier_initialize_weights(self):
+        """Xavier/Glorot initialization for better gradient flow"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.constant_(module.bias, 0.01)
+    
+    def _kaiming_initialize_weights(self):
+        """He/Kaiming initialization for ReLU networks"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                torch.nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
+                if module.bias is not None:
+                    torch.nn.init.constant_(module.bias, 0.01)
+    
+    def _static_weight_initialization(self):
+        """Static initialization for testing determinism"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                torch.nn.init.constant_(module.weight, 0.1)
+                if module.bias is not None:
+                    torch.nn.init.constant_(module.bias, 0.01)
     
     def forward(self, context):
         """
@@ -86,9 +121,11 @@ class NeuralContextualBandit:
                    f"request={state_dim['request_features']})")
         
         # Create per-pod reward prediction network
+        weight_init = hyperparameters.get('weight_initialization', 'xavier')
         self.reward_net = RewardNetwork(
             self.per_pod_context_dim,
-            hidden_dim=hyperparameters.get('hidden_dim', 128)
+            hidden_dim=hyperparameters.get('hidden_dim', 128),
+            weight_initialization=weight_init
         ).to(device)
         
         # Optimizer
@@ -148,6 +185,7 @@ class NeuralContextualBandit:
             'losses': [],
             'rewards': [],
             'epsilons': [],
+            'learning_rates': [],  # Track learning rate over time
             # Reward function quality tracking
             'reward_latency_pairs': [],  # [(reward, latency), ...] for function analysis
             'reward_latency_input_tuples': [],  # [(reward, latency, input_tokens), ...] for stratified analysis
@@ -337,10 +375,14 @@ class NeuralContextualBandit:
         # Update epsilon (decay exploration)
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         
+        # Get current learning rate
+        current_lr = self.optimizer.param_groups[0]['lr']
+        
         # Track metrics
         self.training_metrics['losses'].append(loss.item())
         self.training_metrics['rewards'].append(rewards.mean().item())
         self.training_metrics['epsilons'].append(self.epsilon)
+        self.training_metrics['learning_rates'].append(current_lr)
         
         # Track predicted vs actual rewards (for reward prediction accuracy analysis)
         # Sample every 10th update to avoid memory issues
@@ -792,6 +834,9 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         encoded_training_dir: Directory containing encoded .pt files
         final_model_dir: Directory to save model
         HYPERPARAMETERS: Model hyperparameters
+            - ONLINE_TRAIN_FROM_SCRATCH (bool, default=False): If True, start training 
+              from random initialization (scratch). If False, load and continue from 
+              last trained weights (default behavior).
     """
     global _cached_agent
     
@@ -833,6 +878,10 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     # Load first file to get dimensions
     batch_data = torch.load(tensor_files[0])
     
+    # Check if we should start from scratch or load existing model
+    # Default behavior: load from last trained weights (backward compatible)
+    start_from_scratch = HYPERPARAMETERS.get('ONLINE_TRAIN_FROM_SCRATCH', False)
+    
     # Initialize agent if needed
     if _cached_agent is None:
         state_dim = {
@@ -851,14 +900,50 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             final_model_dir=final_model_dir
         )
         
-        # Try to load existing model
-        model_path = os.path.join(final_model_dir, 'reward_net.pth')
-        if os.path.exists(model_path):
-            try:
-                _cached_agent.load_model(final_model_dir)
-                logger.info(f"Loaded existing model from {final_model_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to load existing model: {e}, starting fresh")
+        if start_from_scratch:
+            logger.info("🔄 ONLINE_TRAIN_FROM_SCRATCH=True: Starting training from scratch (random initialization)")
+            # Agent is already initialized with random weights, no need to load
+        else:
+            # Try to load existing model (default behavior)
+            model_path = os.path.join(final_model_dir, 'reward_net.pth')
+            if os.path.exists(model_path):
+                try:
+                    _cached_agent.load_model(final_model_dir)
+                    logger.info(f"✅ Loaded existing model from {final_model_dir} (continuing from last trained weights)")
+                except Exception as e:
+                    logger.warning(f"Failed to load existing model: {e}, starting fresh")
+            else:
+                logger.info(f"ℹ️  No existing model found at {model_path}, starting from scratch (random initialization)")
+    else:
+        # Agent already exists - check if we need to reset it for from-scratch training
+        if start_from_scratch:
+            logger.info("🔄 ONLINE_TRAIN_FROM_SCRATCH=True: Reinitializing agent from scratch (random weights)")
+            # Reinitialize the agent with random weights
+            state_dim = {
+                'pod_features': batch_data['pod_features_with_staleness'].shape[2],
+                'kv_hit_ratios': batch_data['kv_hit_ratios'].shape[2],
+                'request_features': batch_data['request_features'].shape[1]
+            }
+            action_dim = batch_data['pod_features_with_staleness'].shape[1]
+            
+            _cached_agent = NeuralContextualBandit(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                hyperparameters=HYPERPARAMETERS,
+                final_model_dir=final_model_dir
+            )
+            # Don't load any weights - use random initialization
+        else:
+            # Agent exists and we want to continue from last weights
+            # Check if model was updated since agent was created
+            model_path = os.path.join(final_model_dir, 'reward_net.pth')
+            if os.path.exists(model_path):
+                try:
+                    # Reload to ensure we have the latest weights
+                    _cached_agent.load_model(final_model_dir)
+                    logger.info(f"✅ Reloaded existing model from {final_model_dir} (continuing from last trained weights)")
+                except Exception as e:
+                    logger.warning(f"Failed to reload existing model: {e}, using current agent state")
     
     # Training loop
     total_samples = 0
@@ -1076,9 +1161,37 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
     
-    # 3. Exploration Rate (Epsilon)
+    # 3. Exploration Rate (Epsilon) and Learning Rate (dual axis)
     plt.subplot(4, 6, 3)
-    if metrics['epsilons']:
+    if metrics['epsilons'] and metrics.get('learning_rates'):
+        ax1 = plt.gca()
+        color1 = 'orange'
+        ax1.set_xlabel('Update Step', fontsize=10)
+        ax1.set_ylabel('Epsilon', color=color1, fontsize=10)
+        line1 = ax1.plot(metrics['epsilons'], color=color1, linewidth=2, label='Epsilon')
+        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(0, max(metrics['epsilons']) * 1.1)
+        
+        # Add learning rate on secondary y-axis
+        ax2 = ax1.twinx()
+        color2 = 'blue'
+        ax2.set_ylabel('Learning Rate', color=color2, fontsize=10)
+        line2 = ax2.plot(metrics['learning_rates'], color=color2, linewidth=2, linestyle='--', alpha=0.7, label='LR')
+        ax2.tick_params(axis='y', labelcolor=color2)
+        
+        plt.title('3. Epsilon & Learning Rate', fontsize=11, fontweight='bold')
+        
+        # Add statistics
+        initial_eps = metrics['epsilons'][0]
+        final_eps = metrics['epsilons'][-1]
+        initial_lr = metrics['learning_rates'][0]
+        final_lr = metrics['learning_rates'][-1]
+        plt.text(0.02, 0.98, f'ε: {initial_eps:.4f}→{final_eps:.4f}\nLR: {initial_lr:.6f}→{final_lr:.6f}',
+                transform=ax1.transAxes, verticalalignment='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    elif metrics['epsilons']:
+        # Fallback if learning rates not available
         plt.plot(metrics['epsilons'], 'orange', linewidth=2)
         plt.title('3. Exploration Rate (Epsilon)')
         plt.xlabel('Update Step')
@@ -1092,14 +1205,29 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     
-    # 4. Training Samples (removed buffer size plot)
+    # 4. Learning Rate Over Time
     plt.subplot(4, 6, 4)
-    plt.plot(range(total_samples), 'purple', linewidth=2)
-    plt.title('4. Training Samples')
-    plt.xlabel('Sample')
-    plt.ylabel('Count')
-    plt.grid(True, alpha=0.3)
-    plt.grid(True, alpha=0.3)
+    if metrics.get('learning_rates') and len(metrics['learning_rates']) > 0:
+        plt.plot(metrics['learning_rates'], 'blue', linewidth=2, alpha=0.8)
+        plt.title('4. Learning Rate Schedule')
+        plt.xlabel('Update Step')
+        plt.ylabel('Learning Rate')
+        plt.grid(True, alpha=0.3)
+        plt.yscale('log')  # Log scale for better visualization of LR changes
+        
+        initial_lr = metrics['learning_rates'][0]
+        final_lr = metrics['learning_rates'][-1]
+        lr_change_pct = ((final_lr - initial_lr) / initial_lr * 100) if initial_lr > 0 else 0
+        plt.text(0.02, 0.98, f'Initial: {initial_lr:.6f}\nFinal: {final_lr:.6f}\nChange: {lr_change_pct:.1f}%',
+                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    else:
+        # Fallback: show training samples count
+        plt.plot(range(total_samples), 'purple', linewidth=2)
+        plt.title('4. Training Samples')
+        plt.xlabel('Sample')
+        plt.ylabel('Count')
+        plt.grid(True, alpha=0.3)
     
     # 5. Loss Distribution
     plt.subplot(4, 6, 5)
@@ -1172,62 +1300,6 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
         plt.text(0.98, 0.98, f'Batches: {len(metrics["rewards"])}\nMean: {mean_reward:.4f}\nStd: {std_reward:.4f}',
                 transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='orange', alpha=0.8))
-    
-    # 7. Learning Progress (Loss & Reward together, normalized)
-    plt.subplot(4, 6, 7)
-    if metrics['losses'] and metrics['rewards']:
-        # Normalize to 0-1 range for comparison
-        losses_norm = np.array(metrics['losses'])
-        losses_norm = (losses_norm - losses_norm.min()) / (losses_norm.max() - losses_norm.min() + 1e-8)
-        
-        rewards_norm = np.array(metrics['rewards'])
-        # Invert rewards (lower is better after normalization for visualization)
-        rewards_norm = (rewards_norm - rewards_norm.min()) / (rewards_norm.max() - rewards_norm.min() + 1e-8)
-        
-        plt.plot(losses_norm, 'b-', alpha=0.6, linewidth=1.5, label='Loss (norm)')
-        plt.plot(1 - rewards_norm, 'g-', alpha=0.6, linewidth=1.5, label='Inv. Reward (norm)')
-        plt.title('7. Learning Progress (Normalized)')
-        plt.xlabel('Update Step')
-        plt.ylabel('Normalized Value')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-    
-    # 8. Loss Improvement Over Time
-    plt.subplot(4, 6, 8)
-    if metrics['losses'] and len(metrics['losses']) > 10:
-        # Calculate improvement: difference from initial loss
-        initial_loss = np.mean(metrics['losses'][:10])
-        improvement = [(initial_loss - loss) / initial_loss * 100 for loss in metrics['losses']]
-        plt.plot(improvement, 'darkblue', linewidth=2)
-        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
-        plt.title('8. Loss Improvement from Initial')
-        plt.xlabel('Update Step')
-        plt.ylabel('Improvement (%)')
-        plt.grid(True, alpha=0.3)
-        
-        final_improvement = improvement[-1]
-        plt.text(0.02, 0.98, f'Final: {final_improvement:.1f}%',
-                transform=plt.gca().transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
-    
-    # 9. Reward Improvement Over Time
-    plt.subplot(4, 6, 9)
-    if metrics['rewards'] and len(metrics['rewards']) > 10:
-        # Calculate improvement: difference from initial reward
-        initial_reward = np.mean(metrics['rewards'][:10])
-        improvement = [(reward - initial_reward) / abs(initial_reward) * 100 if initial_reward != 0 else 0 
-                      for reward in metrics['rewards']]
-        plt.plot(improvement, 'darkgreen', linewidth=2)
-        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
-        plt.title('9. Reward Improvement from Initial')
-        plt.xlabel('Update Step')
-        plt.ylabel('Improvement (%)')
-        plt.grid(True, alpha=0.3)
-        
-        final_improvement = improvement[-1]
-        plt.text(0.02, 0.98, f'Final: {final_improvement:.1f}%',
-                transform=plt.gca().transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
     
     # 10. Model Architecture Info
     plt.subplot(4, 6, 10)
@@ -1843,65 +1915,6 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
     
     if rewards_array is not None and latencies_array is not None:
         
-        # 18. Per-Request Reward Spread by Input Length (using all_predicted_rewards)
-        plt.subplot(4, 6, 18)
-        if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0 and metrics.get('input_tokens_per_sample'):
-            # Stack all predictions [num_samples, num_actions]
-            all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
-            
-            # Per-request reward spread (max - min across pods for SAME request)
-            per_request_spreads = all_preds.max(axis=1) - all_preds.min(axis=1)
-            
-            # Match with input tokens
-            inp_tokens_for_spreads = np.array(metrics['input_tokens_per_sample'][:len(per_request_spreads)])
-            valid_mask = inp_tokens_for_spreads > 10
-            
-            if valid_mask.sum() > 10:
-                spreads_valid = per_request_spreads[valid_mask]
-                inp_tokens_valid = inp_tokens_for_spreads[valid_mask]
-                
-                # Calculate average per-request spread for each input bucket
-                inp_quantiles_18 = np.percentile(inp_tokens_valid, [0, 33, 67, 100])
-                bucket_spreads = []
-                bucket_labels_18 = []
-                
-                for i, (low, high) in enumerate([(inp_quantiles_18[0], inp_quantiles_18[1]), 
-                                                  (inp_quantiles_18[1], inp_quantiles_18[2]), 
-                                                  (inp_quantiles_18[2], inp_quantiles_18[3])]):
-                    mask = (inp_tokens_valid >= low) & (inp_tokens_valid < high) if i < 2 else (inp_tokens_valid >= low)
-                    if mask.sum() > 0:
-                        avg_spread = np.mean(spreads_valid[mask])
-                        bucket_spreads.append(avg_spread)
-                        bucket_labels_18.append(f'{int(low)}-{int(high)}\ntok')
-                
-                # Plot
-                x_pos = np.arange(len(bucket_spreads))
-                bars = plt.bar(x_pos, bucket_spreads, color=['green', 'orange', 'red'][:len(bucket_spreads)], 
-                              edgecolor='black', alpha=0.7)
-                plt.ylabel('Avg Per-Request\nReward Spread', fontsize=10)
-                plt.title('18. Per-Request Reward Spread', fontsize=11, fontweight='bold')
-                plt.xticks(x_pos, bucket_labels_18, fontsize=8)
-                plt.grid(True, alpha=0.3, axis='y')
-                
-                # Add values on bars
-                for bar, spread in zip(bars, bucket_spreads):
-                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                            f'{spread:.3f}', ha='center', va='bottom', fontsize=8)
-                
-                overall_avg = np.mean(bucket_spreads)
-                status = "✅ GOOD" if overall_avg > 0.3 else ("⚠️ MODERATE" if overall_avg > 0.1 else "❌ POOR")
-                plt.text(0.02, 0.98, f'Overall: {overall_avg:.3f}\n{status}',
-                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                        bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_avg > 0.3 else 'lightyellow', alpha=0.8))
-            else:
-                plt.text(0.5, 0.5, 'Insufficient\nvalid data', 
-                        ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
-                plt.axis('off')
-        else:
-            plt.text(0.5, 0.5, 'No all_predicted_rewards\ndata available', 
-                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=10)
-            plt.axis('off')
-        
         # 19. Reward Sensitivity (gradient)
         plt.subplot(4, 6, 19)
         sorted_idx = np.argsort(latencies_array)
@@ -2318,12 +2331,16 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
     
     # Also save CSV files for future analysis
     if metrics['losses']:
-        metrics_df = pd.DataFrame({
-            'update_step': list(range(len(metrics['losses']))),
+        # Prepare data with proper length matching
+        num_steps = len(metrics['losses'])
+        metrics_data = {
+            'update_step': list(range(num_steps)),
             'loss': metrics['losses'],
-            'reward': metrics['rewards'] if len(metrics['rewards']) == len(metrics['losses']) else [None] * len(metrics['losses']),
-            'epsilon': metrics['epsilons'] if len(metrics['epsilons']) == len(metrics['losses']) else [None] * len(metrics['losses'])
-        })
+            'reward': metrics['rewards'] if len(metrics['rewards']) == num_steps else [None] * num_steps,
+            'epsilon': metrics['epsilons'] if len(metrics['epsilons']) == num_steps else [None] * num_steps,
+            'learning_rate': metrics['learning_rates'] if len(metrics.get('learning_rates', [])) == num_steps else [None] * num_steps
+        }
+        metrics_df = pd.DataFrame(metrics_data)
         csv_path = os.path.join(final_model_dir, f'training_metrics-{num_trains}.csv')
         metrics_df.to_csv(csv_path, index=False)
         logger.info(f"Saved training metrics CSV: {csv_path}")
