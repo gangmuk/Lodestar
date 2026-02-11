@@ -24,6 +24,7 @@ CB_LOAD_METADATA_ON_INFER = int(os.getenv("CB_LOAD_METADATA_ON_INFER", "0"))
 CB_RETURN_ARRAY_OUTPUTS = int(os.getenv("CB_RETURN_ARRAY_OUTPUTS", "0"))
 CB_RETURN_POD_PROBABILITIES = int(os.getenv("CB_RETURN_POD_PROBABILITIES", "0"))
 CB_RETURN_PREDICTED_REWARDS = int(os.getenv("CB_RETURN_PREDICTED_REWARDS", "0"))
+CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
 
 
 class RewardNetwork(nn.Module):
@@ -309,7 +310,7 @@ class NeuralContextualBandit:
             
             return action, predicted_rewards, explored
     
-    def learn(self, pod_features, kv_hit_ratios, request_features, actions, rewards, input_tokens=None):
+    def learn(self, pod_features, kv_hit_ratios, request_features, actions, rewards, input_tokens=None, sample_weights=None):
         """
         Update the reward network using batch data directly.
         Per-pod architecture: trains on individual pod evaluations.
@@ -351,7 +352,12 @@ class NeuralContextualBandit:
         predicted_action_rewards = predicted_rewards.gather(1, actions.unsqueeze(1)).squeeze(1)
         
         # Compute loss (MSE between predicted and actual rewards)
-        loss = F.mse_loss(predicted_action_rewards, rewards)
+        if sample_weights is not None:
+            sample_weights_tensor = sample_weights.to(predicted_action_rewards.device) if isinstance(sample_weights, torch.Tensor) else torch.tensor(sample_weights, dtype=torch.float32).to(predicted_action_rewards.device)
+            per_sample_loss = (predicted_action_rewards - rewards) ** 2
+            loss = (per_sample_loss * sample_weights_tensor).sum() / sample_weights_tensor.sum()
+        else:
+            loss = F.mse_loss(predicted_action_rewards, rewards)
         
         # Backward pass
         self.optimizer.zero_grad()
@@ -967,6 +973,19 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                 except Exception as e:
                     logger.warning(f"Failed to reload existing model: {e}, using current agent state")
     
+    # Reset LR at the start of each online training round so the model isn't frozen by decayed LR
+    reset_lr = HYPERPARAMETERS.get('RESET_LR_PER_ROUND', bool(CB_RESET_LR_PER_ROUND))
+    if reset_lr and _cached_agent.scheduler is not None and num_trains is not None:
+        initial_lr = HYPERPARAMETERS.get('learning_rate', 0.0003)
+        for param_group in _cached_agent.optimizer.param_groups:
+            param_group['lr'] = initial_lr
+        # Recreate scheduler so it decays fresh within this round
+        if _cached_agent.scheduler_type == 'exponential':
+            gamma = HYPERPARAMETERS.get('lr_scheduler_gamma', 0.95)
+            _cached_agent.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                _cached_agent.optimizer, gamma=gamma)
+        logger.info(f"Reset LR to {initial_lr} for training round {num_trains}")
+
     # Training loop
     total_samples = 0
     for epoch in range(HYPERPARAMETERS.get('training_epochs', 10)):
@@ -997,6 +1016,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             ttft = batch_data.get('ttft', None)
             avg_tpot = batch_data.get('avg_tpot', None)
             input_tokens = batch_data.get('input_tokens', None)
+            sample_weights = batch_data.get('sample_weights', None)
 
             dataset_size = len(actions)
             train_batch_size = HYPERPARAMETERS.get('batch_size', 256)
@@ -1019,6 +1039,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                 batch_actions = actions[batch_indices]
                 batch_rewards = rewards[batch_indices]
                 batch_input_tokens = input_tokens[batch_indices] if input_tokens is not None else None
+                batch_weights = sample_weights[batch_indices] if sample_weights is not None else None
 
                 batch_size = len(batch_actions)
                 total_samples += batch_size
@@ -1050,7 +1071,8 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                     batch_request_features,
                     batch_actions,
                     batch_rewards,
-                    input_tokens=batch_input_tokens
+                    input_tokens=batch_input_tokens,
+                    sample_weights=batch_weights
                 )
                 epoch_losses.append(metrics['loss'])
                 epoch_rewards.append(metrics['reward'])
