@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--include_gpu_features', type=int, default=0, help='Include GPU features (0=False, 1=True)')
     parser.add_argument('--training_seed', type=int, default=42, help='Training seed')
     parser.add_argument('--buffer_size', type=int, default=50000, help='Buffer size')
+    parser.add_argument('--online_train_from_scratch', type=int, default=0, help='If 1, start online training from scratch (random weights). If 0, continue from last trained weights (default)')
     
     args = parser.parse_args()
 
@@ -70,6 +71,7 @@ def main():
     RL_MODEL_HYPERPARAMETERS['batch_size'] = int(args.batch_size)
     RL_MODEL_HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = int(args.include_gpu_features)
     RL_MODEL_HYPERPARAMETERS['buffer_size'] = int(args.buffer_size)
+    RL_MODEL_HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(int(args.online_train_from_scratch)) if args.online_train_from_scratch is not None else False
     print(f"args.output: {args.output}")
     print(f"RL_MODEL_HYPERPARAMETERS: {RL_MODEL_HYPERPARAMETERS}")
     print("="*50)

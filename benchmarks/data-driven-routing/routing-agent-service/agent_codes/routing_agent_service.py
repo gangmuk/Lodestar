@@ -137,9 +137,11 @@ SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing f
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
 LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model+offline data, 0=train from scratch (random weights, no offline data, but USE pretrained normalization stats)
 INCLUDE_GPU_FEATURES = int(os.getenv("INCLUDE_GPU_FEATURES", 1))  # 1=include GPU one-hot encoding, 0=exclude GPU features
+ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 0))  # 1=start online training from scratch (random weights), 0=continue from last trained weights (default)
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
-           f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}")
+           f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}, "
+           f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}")
 HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
@@ -1651,6 +1653,7 @@ def initialize():
         HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
+        HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)  # Convert to bool for consistency
         # Output formatting flags (default to 0/off unless explicitly enabled)
         HYPERPARAMETERS['RETURN_POD_PROBABILITIES'] = RETURN_POD_PROBABILITIES
         HYPERPARAMETERS['RETURN_PREDICTED_REWARDS'] = RETURN_PREDICTED_REWARDS
