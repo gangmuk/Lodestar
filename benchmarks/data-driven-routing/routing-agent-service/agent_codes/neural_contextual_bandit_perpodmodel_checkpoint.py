@@ -24,7 +24,6 @@ CB_LOAD_METADATA_ON_INFER = int(os.getenv("CB_LOAD_METADATA_ON_INFER", "0"))
 CB_RETURN_ARRAY_OUTPUTS = int(os.getenv("CB_RETURN_ARRAY_OUTPUTS", "0"))
 CB_RETURN_POD_PROBABILITIES = int(os.getenv("CB_RETURN_POD_PROBABILITIES", "0"))
 CB_RETURN_PREDICTED_REWARDS = int(os.getenv("CB_RETURN_PREDICTED_REWARDS", "0"))
-CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
 
 
 class RewardNetwork(nn.Module):
@@ -974,7 +973,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
                     logger.warning(f"Failed to reload existing model: {e}, using current agent state")
     
     # Reset LR at the start of each online training round so the model isn't frozen by decayed LR
-    reset_lr = HYPERPARAMETERS.get('RESET_LR_PER_ROUND', bool(CB_RESET_LR_PER_ROUND))
+    reset_lr = HYPERPARAMETERS.get('RESET_LR_PER_ROUND', bool(1))
     if reset_lr and _cached_agent.scheduler is not None and num_trains is not None:
         initial_lr = HYPERPARAMETERS.get('learning_rate', 0.0003)
         for param_group in _cached_agent.optimizer.param_groups:
@@ -985,6 +984,30 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             _cached_agent.scheduler = torch.optim.lr_scheduler.ExponentialLR(
                 _cached_agent.optimizer, gamma=gamma)
         logger.info(f"Reset LR to {initial_lr} for training round {num_trains}")
+
+    # Reset training_metrics so each round's CSV only contains that round's data
+    action_dim = _cached_agent.action_dim
+    _cached_agent.training_metrics = {
+        'losses': [],
+        'rewards': [],
+        'epsilons': [],
+        'learning_rates': [],
+        'reward_latency_pairs': [],
+        'reward_latency_input_tuples': [],
+        'ttft_values': [],
+        'tpot_values': [],
+        'action_distribution': np.zeros(action_dim),
+        'predicted_rewards': [],
+        'actual_rewards': [],
+        'selected_actions': [],
+        'exploration_count': 0,
+        'exploitation_count': 0,
+        'all_predicted_rewards': [],
+        'greedy_actions': [],
+        'training_actions': [],
+        'counterfactual_gains': [],
+        'input_tokens_per_sample': []
+    }
 
     # Training loop
     total_samples = 0

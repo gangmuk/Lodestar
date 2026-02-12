@@ -137,11 +137,13 @@ SMOOTHING_ENABLED = int(os.getenv("SMOOTHING_ENABLED", 1))  # Enable smoothing f
 SMOOTHING_THRESHOLD = float(os.getenv("SMOOTHING_THRESHOLD", 0.1))  # 10% threshold by default
 LOAD_PRETRAINED_MODEL = int(os.getenv("LOAD_PRETRAINED_MODEL", 1))  # 1=load pretrained model+offline data, 0=train from scratch (random weights, no offline data, but USE pretrained normalization stats)
 INCLUDE_GPU_FEATURES = int(os.getenv("INCLUDE_GPU_FEATURES", 1))  # 1=include GPU one-hot encoding, 0=exclude GPU features
-ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 0))  # 1=start online training from scratch (random weights), 0=continue from last trained weights (default)
+ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 1))  # 1=start online training from scratch (random weights), 0=continue from last trained weights (default)
+CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
+RECENCY_DECAY_WEIGHT_FACTOR = float(os.environ.get('RECENCY_DECAY_WEIGHT_FACTOR', '1.0'))
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
            f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}, "
-           f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}")
+           f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}, CB_RESET_LR_PER_ROUND={CB_RESET_LR_PER_ROUND}, RECENCY_DECAY_WEIGHT_FACTOR={RECENCY_DECAY_WEIGHT_FACTOR}")
 HYPERPARAMETERS = None
 
 BROKER_LOCK = RWLock()
@@ -1144,18 +1146,17 @@ def online_train_routine():
 
             # Per-round recency weighting: assign weights BEFORE shuffling
             # Offline data has NaN _collection_round (never went through flush), online data has integer round numbers
-            recency_decay = float(os.environ.get('RECENCY_WEIGHT_DECAY', '1.0'))
-            if recency_decay < 1.0 and '_collection_round' in training_df_copy.columns:
+            if RECENCY_DECAY_WEIGHT_FACTOR < 1.0 and '_collection_round' in training_df_copy.columns:
                 current_round = NUM_TRAINS
                 weights = np.ones(len(training_df_copy), dtype=np.float32)
                 offline_mask = training_df_copy['_collection_round'].isna()
-                weights[offline_mask.values] = recency_decay ** (current_round + 1)
+                weights[offline_mask.values] = RECENCY_DECAY_WEIGHT_FACTOR ** (current_round + 1)
                 online_mask = ~offline_mask
                 if online_mask.any():
                     collection_rounds = training_df_copy.loc[online_mask, '_collection_round'].values.astype(float)
-                    weights[online_mask.values] = recency_decay ** (current_round - collection_rounds)
+                    weights[online_mask.values] = RECENCY_DECAY_WEIGHT_FACTOR ** (current_round - collection_rounds)
                 training_df_copy['_sample_weight'] = weights
-                logger.info(f"Per-round recency weighting: decay={recency_decay}, current_round={current_round}, "
+                logger.info(f"Per-round recency weighting: decay={RECENCY_DECAY_WEIGHT_FACTOR}, current_round={current_round}, "
                             f"offline_weight={weights[offline_mask.values].mean():.4f} ({offline_mask.sum()} samples), "
                             f"newest_online_weight={weights[online_mask.values].max():.4f if online_mask.any() else 'N/A'} ({online_mask.sum()} samples)")
             else:
@@ -1675,6 +1676,7 @@ def initialize():
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
         HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)  # Convert to bool for consistency
+        HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = bool(CB_RESET_LR_PER_ROUND)  # Convert to bool for consistency
         # Output formatting flags (default to 0/off unless explicitly enabled)
         HYPERPARAMETERS['RETURN_POD_PROBABILITIES'] = RETURN_POD_PROBABILITIES
         HYPERPARAMETERS['RETURN_PREDICTED_REWARDS'] = RETURN_PREDICTED_REWARDS
