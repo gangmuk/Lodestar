@@ -183,6 +183,7 @@ class NeuralContextualBandit:
         # Metrics
         self.training_metrics = {
             'losses': [],
+            'eval_losses': [],  # Evaluation loss for validation
             'rewards': [],
             'epsilons': [],
             'learning_rates': [],  # Track learning rate over time
@@ -989,6 +990,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
     action_dim = _cached_agent.action_dim
     _cached_agent.training_metrics = {
         'losses': [],
+        'eval_losses': [],
         'rewards': [],
         'epsilons': [],
         'learning_rates': [],
@@ -1184,17 +1186,31 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                  f'Epochs: {training_epochs} | Total Samples: {total_samples:,} | Updates: {len(metrics["losses"]):,}',
                  fontsize=18, fontweight='bold', y=0.995)
     
-    # 1. Training Loss
+    # 1. Training & Evaluation Loss
     plt.subplot(4, 6, 1)
     if metrics['losses']:
-        plt.plot(metrics['losses'], 'b-', linewidth=1.5, alpha=0.7)
-        # Add moving average
+        plt.plot(metrics['losses'], 'b-', linewidth=1.5, alpha=0.7, label='Training Loss')
+        # Add moving average for training loss
         if len(metrics['losses']) > 10:
             window = min(50, len(metrics['losses']) // 10)
             moving_avg = pd.Series(metrics['losses']).rolling(window=window).mean()
-            plt.plot(moving_avg, 'r-', linewidth=2, label=f'{window}-step MA')
-            plt.legend()
-        plt.title('1. Training Loss')
+            plt.plot(moving_avg, 'b--', linewidth=2, alpha=0.5, label=f'Train MA ({window})')
+        
+        # Plot evaluation loss if available
+        if metrics.get('eval_losses') and len(metrics['eval_losses']) > 0:
+            # Interpolate eval losses to match training loss steps if needed
+            eval_losses = metrics['eval_losses']
+            if len(eval_losses) < len(metrics['losses']):
+                # If eval losses are sparse, interpolate
+                eval_indices = np.linspace(0, len(metrics['losses'])-1, len(eval_losses)).astype(int)
+                eval_losses_interp = np.full(len(metrics['losses']), np.nan)
+                eval_losses_interp[eval_indices] = eval_losses
+                plt.plot(eval_losses_interp, 'r-', linewidth=1.5, alpha=0.7, label='Eval Loss', marker='o', markersize=3)
+            else:
+                plt.plot(eval_losses[:len(metrics['losses'])], 'r-', linewidth=1.5, alpha=0.7, label='Eval Loss', marker='o', markersize=3)
+        
+        plt.legend(fontsize=8)
+        plt.title('1. Training & Evaluation Loss')
         plt.xlabel('Update Step')
         plt.ylabel('Loss')
         plt.grid(True, alpha=0.3)
@@ -1202,8 +1218,12 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
         # Add final loss annotation
         final_loss = metrics['losses'][-1]
         avg_loss = np.mean(metrics['losses'][-100:]) if len(metrics['losses']) >= 100 else np.mean(metrics['losses'])
-        plt.text(0.02, 0.98, f'Final: {final_loss:.4f}\nAvg (last 100): {avg_loss:.4f}',
-                transform=plt.gca().transAxes, verticalalignment='top',
+        annotation_text = f'Train Final: {final_loss:.4f}\nTrain Avg (last 100): {avg_loss:.4f}'
+        if metrics.get('eval_losses') and len(metrics['eval_losses']) > 0:
+            final_eval_loss = metrics['eval_losses'][-1]
+            annotation_text += f'\nEval Final: {final_eval_loss:.4f}'
+        plt.text(0.02, 0.98, annotation_text,
+                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
     # 2. Average Reward
@@ -1272,37 +1292,13 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     
-    # 4. Learning Rate Over Time
+    # 4. Loss Distribution (moved from 5)
     plt.subplot(4, 6, 4)
-    if metrics.get('learning_rates') and len(metrics['learning_rates']) > 0:
-        plt.plot(metrics['learning_rates'], 'blue', linewidth=2, alpha=0.8)
-        plt.title('4. Learning Rate Schedule')
-        plt.xlabel('Update Step')
-        plt.ylabel('Learning Rate')
-        plt.grid(True, alpha=0.3)
-        plt.yscale('log')  # Log scale for better visualization of LR changes
-        
-        initial_lr = metrics['learning_rates'][0]
-        final_lr = metrics['learning_rates'][-1]
-        lr_change_pct = ((final_lr - initial_lr) / initial_lr * 100) if initial_lr > 0 else 0
-        plt.text(0.02, 0.98, f'Initial: {initial_lr:.6f}\nFinal: {final_lr:.6f}\nChange: {lr_change_pct:.1f}%',
-                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-    else:
-        # Fallback: show training samples count
-        plt.plot(range(total_samples), 'purple', linewidth=2)
-        plt.title('4. Training Samples')
-        plt.xlabel('Sample')
-        plt.ylabel('Count')
-        plt.grid(True, alpha=0.3)
-    
-    # 5. Loss Distribution
-    plt.subplot(4, 6, 5)
     if metrics['losses']:
         plt.hist(metrics['losses'], bins=50, alpha=0.7, color='steelblue', edgecolor='black')
         plt.axvline(np.mean(metrics['losses']), color='r', linestyle='--', linewidth=2, label='Mean')
         plt.axvline(np.median(metrics['losses']), color='g', linestyle='--', linewidth=2, label='Median')
-        plt.title('5. Loss Distribution')
+        plt.title('4. Loss Distribution')
         plt.xlabel('Loss')
         plt.ylabel('Frequency')
         plt.legend()
@@ -1315,8 +1311,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
-    # 6. Reward Distribution (sample-level, not batch-level)
-    plt.subplot(4, 6, 6)
+    # 5. Reward Distribution (sample-level, not batch-level)
+    plt.subplot(4, 6, 5)
 
     # Load actual sample rewards from encoded data
     import torch
@@ -1339,7 +1335,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
         plt.hist(sample_rewards, bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
         plt.axvline(np.mean(sample_rewards), color='r', linestyle='--', linewidth=2, label='Mean')
         plt.axvline(np.median(sample_rewards), color='g', linestyle='--', linewidth=2, label='Median')
-        plt.title('6. Sample Reward Distribution')
+        plt.title('5. Sample Reward Distribution')
         plt.xlabel('Reward')
         plt.ylabel('Frequency')
         plt.legend()
@@ -1356,7 +1352,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
         plt.hist(metrics['rewards'], bins=50, alpha=0.7, color='orange', edgecolor='black')
         plt.axvline(np.mean(metrics['rewards']), color='r', linestyle='--', linewidth=2, label='Mean')
         plt.axvline(np.median(metrics['rewards']), color='g', linestyle='--', linewidth=2, label='Median')
-        plt.title('6. Batch Mean Reward Dist (fallback)')
+        plt.title('5. Batch Mean Reward Dist (fallback)')
         plt.xlabel('Batch Mean Reward')
         plt.ylabel('Frequency')
         plt.legend()
@@ -1368,10 +1364,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='orange', alpha=0.8))
     
-    # 10. Model Architecture Info
-    plt.subplot(4, 6, 10)
+    # 6. Model Architecture Info (moved from 10)
+    plt.subplot(4, 6, 6)
     plt.axis('off')
-    plt.title('10. Model Architecture Info', pad=10)
+    plt.title('6. Model Architecture Info', pad=10)
     
     arch_text = "NEURAL CONTEXTUAL BANDIT\n" + "="*25 + "\n"
     arch_text += f"Exploration: {getattr(agent, 'exploration_method', 'N/A')}\n"
@@ -1403,10 +1399,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             fontsize=10, verticalalignment='top', fontfamily='monospace',
             bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
     
-    # 11. Training Statistics
-    plt.subplot(4, 6, 11)
+    # 7. Training Statistics (moved from 11)
+    plt.subplot(4, 6, 7)
     plt.axis('off')
-    plt.title('11. Training Statistics', pad=10)
+    plt.title('7. Training Statistics', pad=10)
     
     stats_text = "TRAINING SUMMARY\n" + "="*20 + "\n"
     stats_text += f"Total Epochs: {training_epochs}\n"
@@ -1434,10 +1430,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             fontsize=10, verticalalignment='top', fontfamily='monospace',
             bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
     
-    # 12. Performance Assessment
-    plt.subplot(4, 6, 12)
+    # 8. Performance Assessment (moved from 12)
+    plt.subplot(4, 6, 8)
     plt.axis('off')
-    plt.title('12. Performance Assessment', pad=10)
+    plt.title('8. Performance Assessment', pad=10)
     
     assessment_text = "PERFORMANCE ASSESSMENT\n" + "="*22 + "\n"
     
@@ -1491,8 +1487,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
     # CONTEXTUAL BANDIT-SPECIFIC PLOTS
     # ==================================================================
     
-    # 13. OFF-POLICY: Counterfactual Gain Distribution (STRATIFIED by Input Length)
-    plt.subplot(4, 6, 13)
+    # 9. OFF-POLICY: Counterfactual Gain Distribution (STRATIFIED by Input Length) (moved from 13)
+    plt.subplot(4, 6, 9)
     if metrics.get('counterfactual_gains') and metrics.get('input_tokens_per_sample'):
         gains = np.array(metrics['counterfactual_gains'])
         inp_tokens_metric = np.array(metrics['input_tokens_per_sample'])
@@ -1537,7 +1533,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.8, label='Zero Gain', zorder=3)
             plt.xlabel('Counterfactual Gain', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('13. Gain by Input Length', fontsize=11, fontweight='bold')
+            plt.title('9. Gain by Input Length', fontsize=11, fontweight='bold')
             plt.legend(fontsize=7, loc='upper right')
             plt.grid(True, alpha=0.3)
             
@@ -1555,7 +1551,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axvline(np.mean(gains), color='g', linestyle='-', linewidth=2)
             plt.xlabel('Counterfactual Gain')
             plt.ylabel('Frequency')
-            plt.title('13. Expected Gain (Aggregated)')
+            plt.title('9. Expected Gain (Aggregated)')
             plt.grid(True, alpha=0.3)
             mean_gain = np.mean(gains)
             plt.text(0.02, 0.98, f'Mean: {mean_gain:.4f}',
@@ -1566,8 +1562,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
         plt.axis('off')
     
-    # 14. OFF-POLICY: Action Agreement Analysis (STRATIFIED by Input Length)
-    plt.subplot(4, 6, 14)
+    # 10. OFF-POLICY: Action Agreement Analysis (STRATIFIED by Input Length) (moved from 14)
+    plt.subplot(4, 6, 10)
     if metrics.get('greedy_actions') and metrics.get('training_actions') and metrics.get('input_tokens_per_sample'):
         greedy = np.array(metrics['greedy_actions'])
         training = np.array(metrics['training_actions'])
@@ -1620,7 +1616,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             bars = plt.bar(x_pos, disagree_rates, color=colors_14, 
                           alpha=0.7, edgecolor='black')
             plt.ylabel('Disagreement %', fontsize=10)
-            plt.title('14. Policy Divergence by Input Length', fontsize=11, fontweight='bold')
+            plt.title('10. Policy Divergence by Input Length', fontsize=11, fontweight='bold')
             plt.xticks(x_pos, bucket_labels_14, fontsize=8)
             plt.grid(True, alpha=0.3, axis='y')
             plt.ylim(0, 100)
@@ -1642,15 +1638,15 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             
             plt.bar(['Agree', 'Disagree'], [agree_pct, disagree_pct], color=['lightblue', 'lightcoral'], alpha=0.8)
             plt.ylabel('Percentage')
-            plt.title('14. Policy Agreement (Aggregated)')
+            plt.title('10. Policy Agreement (Aggregated)')
             plt.grid(True, alpha=0.3)
     else:
         plt.text(0.5, 0.5, 'No policy\ncomparison data', 
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
         plt.axis('off')
     
-    # 15. CRITICAL: Per-Context Action Differentiation (SHOW SNR BY INPUT LENGTH)
-    plt.subplot(4, 6, 15)
+    # 11. CRITICAL: Per-Context Action Differentiation (SHOW SNR BY INPUT LENGTH) (moved from 15)
+    plt.subplot(4, 6, 11)
     if metrics.get('all_predicted_rewards') and len(metrics['all_predicted_rewards']) > 0:
         # Stack all predictions [num_samples, num_actions]
         all_preds = np.concatenate(metrics['all_predicted_rewards'], axis=0)
@@ -1702,7 +1698,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                               alpha=0.7, edgecolor='black')
                 plt.axhline(y=1.0, color='blue', linestyle='--', linewidth=1.5, alpha=0.5, label='SNR=1.0')
                 plt.ylabel('SNR (Spread/RMSE)', fontsize=10)
-                plt.title('15. SNR by Input Length', fontsize=11, fontweight='bold')
+                plt.title('11. SNR by Input Length', fontsize=11, fontweight='bold')
                 plt.xticks(x_pos, bucket_labels_15, fontsize=8)
                 plt.legend(fontsize=7)
                 plt.grid(True, alpha=0.3, axis='y')
@@ -1721,7 +1717,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 # Fallback: aggregated histogram
                 plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
                 plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
-                plt.title('15. Action Spread (Aggregated)')
+                plt.title('11. Action Spread (Aggregated)')
                 plt.xlabel('Reward Spread')
                 plt.ylabel('Frequency')
                 plt.grid(True, alpha=0.3)
@@ -1733,7 +1729,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             # Fallback: aggregated histogram
             plt.hist(action_spreads, bins=50, alpha=0.7, color='orange', edgecolor='black')
             plt.axvline(np.mean(action_spreads), color='r', linestyle='--', linewidth=2)
-            plt.title('15. Per-Context Action Spread')
+            plt.title('11. Per-Context Action Spread')
             plt.xlabel('Reward Spread')
             plt.ylabel('Frequency')
             plt.grid(True, alpha=0.3)
@@ -1747,10 +1743,10 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                 ha='center', va='center', transform=plt.gca().transAxes, fontsize=12)
         plt.axis('off')
     
-    # 16. COMPREHENSIVE OFF-POLICY EVALUATION
-    plt.subplot(4, 6, 16)
+    # 12. COMPREHENSIVE OFF-POLICY EVALUATION (moved from 16)
+    plt.subplot(4, 6, 12)
     plt.axis('off')
-    plt.title('16. Off-Policy Evaluation Summary', pad=10)
+    plt.title('12. Off-Policy Evaluation Summary', pad=10)
     
     eval_text = "OFF-POLICY EVALUATION\n" + "="*25 + "\n"
     
@@ -1927,54 +1923,11 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
         ]
         bucket_colors = ['green', 'orange', 'red']
         
-        # 17. Reward vs Latency Scatter Plot (STRATIFIED BY INPUT LENGTH)
-        plt.subplot(4, 6, 17)
-        for i, (low, high) in enumerate([(input_quantiles[0], input_quantiles[1]), 
-                                          (input_quantiles[1], input_quantiles[2]), 
-                                          (input_quantiles[2], input_quantiles[3])]):
-            mask = (input_tokens_array >= low) & (input_tokens_array < high) if i < 2 else (input_tokens_array >= low)
-            if mask.sum() > 0:
-                plt.scatter(latencies_array[mask], rewards_array[mask], 
-                           alpha=0.4, s=15, c=bucket_colors[i], label=bucket_names[i].replace('\n', ' '))
-        
-        plt.xlabel('TTFT (ms)', fontsize=10)
-        plt.ylabel('Reward', fontsize=10)
-        plt.title('17. Reward Function by Input Length', fontsize=11, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        plt.legend(loc='best', fontsize=7)
-        
-        corr = np.corrcoef(latencies_array, rewards_array)[0,1]
-        plt.text(0.02, 0.98, f'Overall Corr: {corr:.3f}\nN: {len(latencies_array):,}',
-                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-        
     elif metrics.get('reward_latency_pairs') and len(metrics['reward_latency_pairs']) > 10:
         # FALLBACK: Aggregated analysis (no input length stratification)
         rewards_array = np.array([r for r, l in metrics['reward_latency_pairs']])
         latencies_array = np.array([l for r, l in metrics['reward_latency_pairs']])
         input_tokens_array = None
-        
-        # 17. Reward vs Latency Scatter Plot
-        plt.subplot(4, 6, 17)
-        plt.scatter(latencies_array, rewards_array, alpha=0.3, s=10, c='blue', label='Training data')
-        plt.xlabel('TTFT (ms)', fontsize=10)
-        plt.ylabel('Reward', fontsize=10)
-        plt.title('17. Reward Function Shape', fontsize=11, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        
-        # Fit and plot trend line
-        if len(latencies_array) > 2:
-            z = np.polyfit(latencies_array, rewards_array, 2)
-            p = np.poly1d(z)
-            x_trend = np.linspace(latencies_array.min(), latencies_array.max(), 100)
-            plt.plot(x_trend, p(x_trend), "r--", linewidth=2, alpha=0.7, label='Quadratic fit')
-        
-        plt.legend(loc='best', fontsize=8)
-        
-        corr = np.corrcoef(latencies_array, rewards_array)[0,1]
-        plt.text(0.02, 0.98, f'Corr: {corr:.3f}\nN: {len(latencies_array):,}',
-                transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     else:
         rewards_array = None
         latencies_array = None
@@ -1982,39 +1935,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
     
     if rewards_array is not None and latencies_array is not None:
         
-        # 19. Reward Sensitivity (gradient)
-        plt.subplot(4, 6, 19)
-        sorted_idx = np.argsort(latencies_array)
-        lat_sorted = latencies_array[sorted_idx]
-        rew_sorted = rewards_array[sorted_idx]
-        
-        window = max(10, len(lat_sorted) // 50)
-        if len(lat_sorted) > window * 2:
-            sensitivities = []
-            sensitivity_lats = []
-            for i in range(window, len(lat_sorted) - window):
-                d_reward = rew_sorted[i+window] - rew_sorted[i-window]
-                d_latency = lat_sorted[i+window] - lat_sorted[i-window]
-                if abs(d_latency) > 1e-6:
-                    sensitivities.append(d_reward / d_latency)
-                    sensitivity_lats.append(lat_sorted[i])
-            
-            if sensitivities:
-                plt.plot(sensitivity_lats, sensitivities, 'g-', linewidth=1.5, alpha=0.7)
-                plt.axhline(y=0, color='r', linestyle='--', linewidth=1.5)
-                plt.xlabel('Latency (ms)', fontsize=10)
-                plt.ylabel('d(Reward)/d(Latency)', fontsize=10)
-                plt.title('19. Reward Sensitivity', fontsize=11, fontweight='bold')
-                plt.grid(True, alpha=0.3)
-                
-                avg_sensitivity = np.mean(np.abs(sensitivities))
-                neg_slope = "✅" if np.mean(sensitivities) < 0 else "⚠️"
-                plt.text(0.02, 0.98, f'Avg |Sens|: {avg_sensitivity:.6f}\nNeg: {neg_slope}',
-                        transform=plt.gca().transAxes, verticalalignment='top', fontsize=8,
-                        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
-        
-        # 20. Latency Distribution STRATIFIED by Input Length
-        plt.subplot(4, 6, 20)
+        # 13. Latency Distribution STRATIFIED by Input Length (moved from 17)
+        plt.subplot(4, 6, 13)
         if input_tokens_array is not None:
             # Plot overall distribution first (all requests)
             plt.hist(latencies_array, bins=30, alpha=0.3, 
@@ -2032,7 +1954,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             
             plt.xlabel('TTFT (ms)', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('20. Latency Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.title('13. Latency Dist by Input Length', fontsize=11, fontweight='bold')
             plt.legend(fontsize=7, loc='best')
             plt.grid(True, alpha=0.3)
             
@@ -2046,7 +1968,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axvline(np.percentile(latencies_array, 95), color='purple', linestyle='--', linewidth=2)
             plt.xlabel('TTFT (ms)', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('20. Latency Distribution', fontsize=11, fontweight='bold')
+            plt.title('13. Latency Distribution', fontsize=11, fontweight='bold')
             plt.grid(True, alpha=0.3)
             
             plt.text(0.98, 0.98, f'Min: {latencies_array.min():.0f}\nMax: {latencies_array.max():.0f}\n'
@@ -2054,8 +1976,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                     transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
                     bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
         
-        # 21. Reward Distribution STRATIFIED by Input Length
-        plt.subplot(4, 6, 21)
+        # 14. Reward Distribution STRATIFIED by Input Length (moved from 18)
+        plt.subplot(4, 6, 14)
         if input_tokens_array is not None:
             # Plot overall distribution first (all requests)
             plt.hist(rewards_array, bins=30, alpha=0.3, 
@@ -2073,7 +1995,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             
             plt.xlabel('Reward', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('21. Reward Dist by Input Length', fontsize=11, fontweight='bold')
+            plt.title('14. Reward Dist by Input Length', fontsize=11, fontweight='bold')
             plt.legend(fontsize=7, loc='best')
             plt.grid(True, alpha=0.3)
             
@@ -2087,7 +2009,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axvline(np.median(rewards_array), color='r', linestyle='--', linewidth=2)
             plt.xlabel('Reward', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('21. Reward Distribution', fontsize=11, fontweight='bold')
+            plt.title('14. Reward Distribution', fontsize=11, fontweight='bold')
             plt.grid(True, alpha=0.3)
             
             reward_range = rewards_array.max() - rewards_array.min()
@@ -2095,8 +2017,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                     transform=plt.gca().transAxes, verticalalignment='top', horizontalalignment='right', fontsize=8,
                     bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
         
-        # 22. 🚨 CRITICAL: Reward Discrimination by Input Length AND Latency Category
-        plt.subplot(4, 6, 22)
+        # 15. 🚨 CRITICAL: Reward Discrimination by Input Length AND Latency Category (moved from 19)
+        plt.subplot(4, 6, 15)
         if input_tokens_array is not None:
             # Calculate overall discrimination first (all requests)
             p50_overall = np.percentile(latencies_array, 50)
@@ -2149,7 +2071,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axhline(y=0, color='r', linestyle='--', linewidth=1.5, alpha=0.5)
             plt.xlabel('Input Length Bucket', fontsize=10)
             plt.ylabel('Reward Spread\n(Good - Bad Latency)', fontsize=10)
-            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.title('15. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
             plt.xticks(x_pos, [bn.replace('\n', ' ') for bn in bucket_labels_22], 
                       rotation=15, ha='right', fontsize=7)
             plt.grid(True, alpha=0.3, axis='y')
@@ -2210,7 +2132,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                           edgecolor='black', alpha=0.7)
             plt.xlabel('Latency Category (ms)', fontsize=10)
             plt.ylabel('Avg Reward', fontsize=10)
-            plt.title('22. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
+            plt.title('15. Reward Spread (Good - Bad Latency)', fontsize=11, fontweight='bold')
             plt.xticks(x_pos, categories, fontsize=9)
             plt.grid(True, alpha=0.3, axis='y')
             
@@ -2248,8 +2170,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             # Define buckets
             inp_quantiles_val = np.percentile(input_tokens_valid, [0, 33, 67, 100])
             
-            # 23. Reward Function Validation: Correlation & Spread
-            plt.subplot(4, 6, 23)
+            # 16. Reward Function Validation: Correlation & Spread (moved from 20)
+            plt.subplot(4, 6, 16)
             
             correlations = []
             spreads = []
@@ -2297,7 +2219,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             ax2.axhline(y=0.5, color='orange', linestyle='--', linewidth=1, alpha=0.5, label='Target > 0.5')
             ax2.set_ylim(0, max(spreads) * 1.2)
             
-            plt.title('23. Reward Function Validation\n(Correlation & Spread)', fontsize=11, fontweight='bold')
+            plt.title('16. Reward Function Validation\n(Correlation & Spread)', fontsize=11, fontweight='bold')
             
             # Add values on bars
             for i, (bar, val) in enumerate(zip(bars1, correlations)):
@@ -2326,8 +2248,8 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
                     transform=ax1.transAxes, verticalalignment='top', fontsize=8,
                     bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.8))
             
-            # 24. Reward Distribution Quality Check
-            plt.subplot(4, 6, 24)
+            # 17. Reward Distribution Quality Check (moved from 21)
+            plt.subplot(4, 6, 17)
             
             # Plot overall reward distribution first (all requests)
             plt.hist(rewards_valid, bins=30, alpha=0.3, 
@@ -2352,7 +2274,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
             plt.axvline(0, color='black', linestyle='--', linewidth=2, alpha=0.5, label='Zero', zorder=3)
             plt.xlabel('Reward', fontsize=10)
             plt.ylabel('Frequency', fontsize=10)
-            plt.title('24. Reward Distribution Quality', fontsize=11, fontweight='bold')
+            plt.title('17. Reward Distribution Quality', fontsize=11, fontweight='bold')
             plt.legend(fontsize=7, loc='upper left')
             plt.grid(True, alpha=0.3)
             
