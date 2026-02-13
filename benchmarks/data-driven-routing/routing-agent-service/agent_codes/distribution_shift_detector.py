@@ -603,9 +603,8 @@ class PerSampleOODDetector:
         return {
             'total_checks': total,
             'extreme_count': self.ood_counts['extreme'],
-            'tail_count': self.ood_counts['tail'],
             'normal_count': self.ood_counts['normal'],
-            'ood_rate': (self.ood_counts['extreme'] + self.ood_counts['tail']) / total,
+            'ood_rate': self.ood_counts['extreme'] / total,
             'extreme_rate': self.ood_counts['extreme'] / total,
             'top_ood_features': sorted(
                 self.feature_ood_counts.items(),
@@ -668,5 +667,5 @@ class PerSampleOODDetector:
     def reset_diagnostics(self):
         """Reset diagnostic counters"""
         self.total_checks = 0
-        self.ood_counts = {'extreme': 0, 'tail': 0, 'normal': 0}
+        self.ood_counts = {'extreme': 0, 'normal': 0}
         self.feature_ood_counts = defaultdict(int)

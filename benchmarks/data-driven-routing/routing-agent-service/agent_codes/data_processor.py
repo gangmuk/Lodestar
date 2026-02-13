@@ -38,16 +38,14 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     """
     start_time = time.time()
     logger.info(f"Processing raw data file: {input_file}")
-    
+
     # Generate output filename automatically
     input_dir = os.path.dirname(input_file)
     input_basename = os.path.basename(input_file)
     input_name = os.path.splitext(input_basename)[0]  # Remove .csv extension
-    # output_file = os.path.join(input_dir, f"{input_name}-processed.csv")
     logger.info(f"Output will be saved to: {output_file}")
-    
-    # Step 1 & 2: Get pod IP mapping and parse with on-the-fly replacement (optimized)
-    # This avoids creating an intermediate replaced file, saving ~3.5s on 70MB files
+
+    # Step 1: Get pod IP mapping (fast - only samples first 10K lines)
     pod_ip_mapping = None
     if 'replaced' not in input_file:
         logger.info("Getting pod IP mapping for on-the-fly replacement during parsing")
@@ -60,37 +58,75 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     else:
         logger.info("File already has pod IPs replaced")
 
-    # Step 2: Use existing preprocessing logic but keep raw values
-    # Pass pod_ip_mapping for on-the-fly replacement during parsing
-    logger.info("Running preprocessing to extract features...")
-    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(input_file, "", hyperparameters, pod_ip_mapping=pod_ip_mapping)
+    # Step 2: Apply sampling FIRST (before expensive preprocessing)
+    # This dramatically reduces preprocessing time when sampling_ratio < 1.0
+    file_to_process = input_file
+    original_line_count = 0
+    sampled_count = 0
 
-    # Step 3: Ensure we preserve critical raw values for reward calculation
+    if sampling_ratio < 1.0:
+        logger.info(f"Applying early sampling with ratio: {sampling_ratio} (BEFORE preprocessing)")
+        sample_start = time.time()
+
+        # Use line-based sampling to preserve original data format
+        # (pandas read/write corrupts JSON fields with quote escaping)
+        import random
+        random.seed(42)
+
+        with open(input_file, 'r') as f:
+            header = f.readline()
+            data_lines = f.readlines()
+
+        original_line_count = len(data_lines)
+        sample_size = int(original_line_count * sampling_ratio)
+        sampled_lines = random.sample(data_lines, sample_size)
+        sampled_count = original_line_count - len(sampled_lines)
+
+        sampled_file = input_file.replace('.csv', '-sampled.csv')
+        with open(sampled_file, 'w') as f:
+            f.write(header)
+            f.writelines(sampled_lines)
+
+        file_to_process = sampled_file
+        sample_time = time.time() - sample_start
+        logger.info(f"  Sampled {len(sampled_lines)}/{original_line_count} rows ({sampling_ratio*100:.0f}%) in {sample_time:.2f}s")
+        logger.info(f"  Processing sampled file: {file_to_process}")
+
+    # Step 3: Run preprocessing on (potentially sampled) data
+    logger.info("Running preprocessing to extract features...")
+    processed_df, sorted_all_pod_ids, overhead_summary = preprocess.main(file_to_process, "", hyperparameters, pod_ip_mapping=pod_ip_mapping)
+
+    # Clean up temp sampled file
+    if sampling_ratio < 1.0 and os.path.exists(file_to_process) and file_to_process != input_file:
+        os.remove(file_to_process)
+        logger.info(f"Cleaned up temp sampled file: {file_to_process}")
+
+    # Step 4: Ensure we preserve critical raw values for reward calculation
     required_columns = ['ttft', 'avg_tpot', 'e2e_latency', 'selected_pod', 'request_id']
     missing_columns = [col for col in required_columns if col not in processed_df.columns]
     if missing_columns:
         logger.error(f"Missing required columns for reward calculation: {missing_columns}")
         raise ValueError(f"Processed data missing required columns: {missing_columns}")
-    
-    # Step 4: Filter samples based on latency thresholds
+
+    # Step 5: Filter samples based on latency thresholds
     original_count = len(processed_df)
     ttft_filtered_count = 0
     tpot_filtered_count = 0
-    
+
     if ttft_threshold is not None and ttft_threshold > 0:
         logger.info(f"Filtering samples with TTFT > {ttft_threshold}ms")
         before_filter = len(processed_df)
         processed_df = processed_df[processed_df['ttft'] <= ttft_threshold]
         ttft_filtered_count = before_filter - len(processed_df)
         logger.info(f"  Filtered out {ttft_filtered_count} samples by TTFT threshold")
-    
+
     if avg_tpot_threshold is not None and avg_tpot_threshold > 0:
         logger.info(f"Filtering samples with avg_tpot > {avg_tpot_threshold}ms")
         before_filter = len(processed_df)
         processed_df = processed_df[processed_df['avg_tpot'] <= avg_tpot_threshold]
         tpot_filtered_count = before_filter - len(processed_df)
         logger.info(f"  Filtered out {tpot_filtered_count} samples by avg_tpot threshold")
-    
+
     remaining_count = len(processed_df)
     total_filtered = original_count - remaining_count
     if total_filtered > 0:
@@ -98,18 +134,6 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
         logger.info(f"Remaining samples: {remaining_count}")
     else:
         logger.info("No filtering applied, keeping all samples")
-
-    # Step 5: Apply random sampling if requested
-    sampled_count = 0
-    if sampling_ratio < 1.0:
-        logger.info(f"Applying random sampling with ratio: {sampling_ratio}")
-        before_sample = len(processed_df)
-        # Random sampling with fixed seed for reproducibility
-        processed_df = processed_df.sample(frac=sampling_ratio, random_state=42)
-        after_sample = len(processed_df)
-        sampled_count = before_sample - after_sample
-        logger.info(f"  Sampled {after_sample}/{before_sample} samples ({sampled_count} removed)")
-        logger.info(f"  Sampling ratio applied: {after_sample/before_sample:.3f}")
 
     # Step 6: Add metadata columns for tracking
     processed_df['source_file'] = os.path.basename(input_file)
@@ -124,13 +148,20 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     summary = {
         'input_file': input_file,
         'output_file': output_file,
-        'original_num_samples': int(original_count),
-        'num_samples': int(len(processed_df)),
+        'raw_file_samples': int(original_line_count) if original_line_count > 0 else int(original_count),
+        'after_sampling_samples': int(original_count),
+        'final_num_samples': int(len(processed_df)),
         'num_columns': int(len(processed_df.columns)),
         'processing_time': processing_time,
         'sorted_all_pod_ids': sorted_all_pod_ids,
         'ttft_range': [float(processed_df['ttft'].min()), float(processed_df['ttft'].max())],
         'avg_tpot_range': [float(processed_df['avg_tpot'].min()), float(processed_df['avg_tpot'].max())],
+        'early_sampling': {
+            'sampling_ratio': sampling_ratio,
+            'sampled_count': sampled_count,
+            'sampling_applied': sampling_ratio < 1.0,
+            'note': 'Sampling applied BEFORE preprocessing for efficiency'
+        },
         'filtering': {
             'ttft_threshold': ttft_threshold,
             'avg_tpot_threshold': avg_tpot_threshold,
@@ -138,11 +169,6 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
             'tpot_filtered_count': tpot_filtered_count,
             'total_filtered': total_filtered,
             'filter_percentage': float(total_filtered/original_count*100) if original_count > 0 else 0.0
-        },
-        'sampling': {
-            'sampling_ratio': sampling_ratio,
-            'sampled_count': sampled_count,
-            'sampling_applied': sampling_ratio < 1.0
         }
     }
     
