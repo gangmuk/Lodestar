@@ -3,10 +3,11 @@
 Merge routing_strategy_metrics.csv files from multiple workloads and create comparison plots.
 
 Usage:
-    python merge_and_plot_all_workloads.py <base_dir> [--output-dir <output_dir>]
+    python merge_and_plot_all_workloads.py <dir1> [<dir2> ...] [--output-dir <output_dir>]
 
 Example:
-    python merge_and_plot_all_workloads.py /path/to/workload-and-experiment_results/NVIDIA-A10/maxTokens_1-maxTokensStd_0
+    python merge_and_plot_all_workloads.py /path/to/workload1 /path/to/workload2
+    python merge_and_plot_all_workloads.py /path/to/base_dir  # Still works with single directory
 """
 
 import os
@@ -201,11 +202,26 @@ def extract_routing_policy(strategy_full_name):
     return strategy_full_name
 
 
-def find_metrics_files(base_dir):
-    """Find all routing_strategy_metrics.csv files under base_dir."""
-    pattern = os.path.join(base_dir, "**", "routing_strategy_metrics.csv")
-    files = glob.glob(pattern, recursive=True)
-    return files
+def find_metrics_files(directories):
+    """Find all routing_strategy_metrics.csv files under the given directories.
+    
+    Args:
+        directories: A single directory path (str) or a list of directory paths
+        
+    Returns:
+        List of file paths
+    """
+    if isinstance(directories, str):
+        directories = [directories]
+    
+    all_files = []
+    for directory in directories:
+        # Search recursively in each directory
+        pattern = os.path.join(directory, "**", "routing_strategy_metrics.csv")
+        files = glob.glob(pattern, recursive=True)
+        all_files.extend(files)
+    
+    return all_files
 
 
 def merge_metrics_files(files):
@@ -386,7 +402,8 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
 
     # Create figure with two rows per workload (TTFT and TPOT)
     fig = plt.figure(figsize=(max(18, n_policies * 1.2), 6 * n_workloads * 2))
-    gs = GridSpec(n_workloads * 2, 1, figure=fig, hspace=0.6)
+    # Increase vertical spacing to prevent x-axis labels overlapping next subplot.
+    gs = GridSpec(n_workloads * 2, 1, figure=fig, hspace=1.2)
 
     def plot_metric_bars(ax, workload_df, available_policies, metric_type, workload):
         """Helper function to plot bars for a specific metric type (ttft or tpot)."""
@@ -531,7 +548,13 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         plot_metric_bars(ax2, workload_df, available_policies, 'tpot', workload)
 
     suffix = "(Averaged)" if averaged else "(Individual)"
-    plt.suptitle(f'Routing Strategy Performance Across All Workloads {suffix}', fontsize=maintitle_fontsize, y=0.99)
+    fig.suptitle(f'Routing Strategy Performance Across All Workloads {suffix}', 
+                 fontsize=maintitle_fontsize, y=0.995)
+    
+    # Root cause: the top margin was set too low (0.88/0.92), creating a large blank area.
+    # Keep subplots high and reserve only a small strip for the suptitle.
+    fig.tight_layout(rect=[0, 0, 1, 0.97], pad=0.4)
+    fig.subplots_adjust(top=0.965)
 
     filename = "all_workloads_summary_averaged.pdf" if averaged else "all_workloads_summary_individual.pdf"
     output_path = os.path.join(output_dir, filename)
@@ -542,21 +565,29 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
 
 def main():
     parser = argparse.ArgumentParser(description='Merge and plot routing metrics across workloads')
-    parser.add_argument('base_dir', help='Base directory to search for routing_strategy_metrics.csv files')
+    parser.add_argument('directories', nargs='+', 
+                        help='One or more directories to search for routing_strategy_metrics.csv files')
     parser.add_argument('--output-dir', '-o', default=None,
-                        help='Output directory for merged CSV and plots (default: base_dir)')
+                        help='Output directory for merged CSV and plots (default: first directory)')
 
     args = parser.parse_args()
 
-    base_dir = args.base_dir
-    output_dir = args.output_dir if args.output_dir else base_dir
+    directories = args.directories
+    output_dir = args.output_dir if args.output_dir else directories[0]
 
     # Find all metrics files
-    print(f"Searching for metrics files in {base_dir}...")
-    files = find_metrics_files(base_dir)
+    if len(directories) == 1:
+        print(f"Searching for metrics files in {directories[0]}...")
+    else:
+        print(f"Searching for metrics files in {len(directories)} directories...")
+        for d in directories:
+            print(f"  - {d}")
+    
+    files = find_metrics_files(directories)
 
     if not files:
-        print(f"No routing_strategy_metrics.csv files found in {base_dir}")
+        dirs_str = ', '.join(directories) if len(directories) <= 3 else f"{len(directories)} directories"
+        print(f"No routing_strategy_metrics.csv files found in {dirs_str}")
         sys.exit(1)
 
     print(f"Found {len(files)} metrics files")

@@ -140,6 +140,7 @@ INCLUDE_GPU_FEATURES = int(os.getenv("INCLUDE_GPU_FEATURES", 1))  # 1=include GP
 ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 1))  # 1=start online training from scratch (random weights), 0=continue from last trained weights (default)
 CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
 RECENCY_DECAY_WEIGHT_FACTOR = float(os.environ.get('RECENCY_DECAY_WEIGHT_FACTOR', '1.0'))
+ENABLE_FALLBACK = int(os.getenv("ENABLE_FALLBACK", 1))
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
            f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}, "
@@ -359,7 +360,7 @@ def handle_infer():
                     request_id=request_id
                 )
 
-                if ood_result['action'] == OODAction.FALLBACK:
+                if ENABLE_FALLBACK and ood_result['action'] == OODAction.FALLBACK:
                     use_fallback_routing = 1
                     # Logging already done in check_combined()
 
@@ -1675,9 +1676,10 @@ def initialize():
         HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
-        HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)  # Convert to bool for consistency
-        HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = bool(CB_RESET_LR_PER_ROUND)  # Convert to bool for consistency
-        # Output formatting flags (default to 0/off unless explicitly enabled)
+        HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)
+        HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = bool(CB_RESET_LR_PER_ROUND)
+        HYPERPARAMETERS['RECENCY_DECAY_WEIGHT_FACTOR'] = RECENCY_DECAY_WEIGHT_FACTOR
+        HYPERPARAMETERS['ENABLE_FALLBACK'] = bool(ENABLE_FALLBACK)
         HYPERPARAMETERS['RETURN_POD_PROBABILITIES'] = RETURN_POD_PROBABILITIES
         HYPERPARAMETERS['RETURN_PREDICTED_REWARDS'] = RETURN_PREDICTED_REWARDS
         HYPERPARAMETERS['RETURN_ARRAY_OUTPUTS'] = RETURN_ARRAY_OUTPUTS

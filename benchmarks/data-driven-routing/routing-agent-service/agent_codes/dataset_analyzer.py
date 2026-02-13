@@ -571,9 +571,16 @@ class RLDatasetAnalyzer:
         ]
         
         for col in self.df.columns:
-            # Skip pod-specific columns
+            # Skip pod-specific columns (both pod_XXXX-feature and IP-feature formats)
             if col.startswith('pod_') and '-' in col:
                 continue
+
+            # Skip IP-based pod columns (e.g., 10.0.152.72-kv_hit_ratio)
+            if '-' in col:
+                prefix = col.split('-')[0]
+                # Check if prefix looks like an IP address (contains dots and digits)
+                if '.' in prefix and all(part.isdigit() for part in prefix.split('.')):
+                    continue
             
             # Skip excluded columns
             if col in exclude_exact:
@@ -1502,8 +1509,7 @@ class RLDatasetAnalyzer:
             # 4. State-Performance Correlation Heatmap
             self._plot_correlation_heatmap(pdf, rewards)
             
-            # 5. NEW: Reward Variance & Confidence Prediction Analysis
-            self._plot_reward_variance_analysis(pdf, rewards)
+            # Removed: _plot_reward_variance_analysis - showed hardcoded benchmarks and fake confidence matrix
         
         print(f"✅ Visualizations saved to: {pdf_filename}")
         return pdf_filename
@@ -1917,9 +1923,10 @@ class RLDatasetAnalyzer:
         pod_labels = []
         feature_labels = []
         
+        min_samples_per_pod = 3  # Lowered from 10 to handle small datasets
         for pod_id in self.pod_ids:
             pod_mask = self.df['selected_pod'] == pod_id
-            if pod_mask.sum() < 10:
+            if pod_mask.sum() < min_samples_per_pod:
                 continue
                 
             pod_rewards = rewards[pod_mask]
@@ -1966,7 +1973,7 @@ class RLDatasetAnalyzer:
         
         if correlation_matrix:
             corr_array = np.array(correlation_matrix)
-            
+
             # Correlation heatmap
             im = axes[0].imshow(corr_array, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
             axes[0].set_xticks(range(len(feature_labels)))
@@ -1974,23 +1981,23 @@ class RLDatasetAnalyzer:
             axes[0].set_yticks(range(len(pod_labels)))
             axes[0].set_yticklabels(pod_labels)
             axes[0].set_title('Pod State-Performance Correlations')
-            
+
             # # Add correlation values as text
             # for i in range(len(pod_labels)):
             #     for j in range(len(feature_labels)):
             #         text = axes[0].text(j, i, f'{corr_array[i, j]:.2f}',
-            #                            ha="center", va="center", 
+            #                            ha="center", va="center",
             #                            color="white" if abs(corr_array[i, j]) > 0.5 else "black")
-            
+
             cbar = plt.colorbar(im, ax=axes[0])
             cbar.set_label('Correlation Coefficient')
-            
+
             # Feature importance across all pods
             feature_importance = np.abs(corr_array).mean(axis=0)
             sorted_indices = np.argsort(feature_importance)[::-1]
-            
-            bars = axes[1].bar(range(len(feature_labels)), 
-                             feature_importance[sorted_indices], 
+
+            bars = axes[1].bar(range(len(feature_labels)),
+                             feature_importance[sorted_indices],
                              color=sns.color_palette("viridis", len(feature_labels)))
             axes[1].set_xlabel('Pod State Features')
             axes[1].set_ylabel('Average |Correlation|')
@@ -1998,13 +2005,20 @@ class RLDatasetAnalyzer:
             axes[1].set_xticks(range(len(feature_labels)))
             axes[1].set_xticklabels([feature_labels[i] for i in sorted_indices], rotation=45, ha='right')
             axes[1].grid(True, alpha=0.3)
-            
+
             # Add value labels on bars
             for i, bar in enumerate(bars):
                 height = bar.get_height()
                 axes[1].text(bar.get_x() + bar.get_width()/2., height + 0.01,
                            f'{height:.3f}', ha='center', va='bottom')
-        
+        else:
+            # No pods have enough samples - show message
+            for ax in axes:
+                ax.text(0.5, 0.5, f'Insufficient data\n(Need >= {min_samples_per_pod} samples per pod)',
+                       ha='center', va='center', transform=ax.transAxes, fontsize=14,
+                       bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+                ax.set_title('Not enough samples per pod for correlation analysis')
+
         plt.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
@@ -2729,7 +2743,10 @@ def main():
     
     analyzer = RLDatasetAnalyzer(args.processed_csv)
 
-    # sampling for uniform reward distribution
+    # Generate report on FULL dataset first (before any sampling)
+    analyzer.generate_summary_report(args.ttft_slo, args.avg_tpot_slo, args.reward_function, args.ttft_reward_weight)
+
+    # sampling for uniform reward distribution (AFTER report generation)
     if args.save_sampled_dataset:
         ttft_values = analyzer.df['ttft'].values
         tpot_values = analyzer.df['avg_tpot'].values
@@ -2791,7 +2808,6 @@ def main():
         analyzer.df.to_csv(output_path, index=False)
         print(f"Dataset reduced from {len(rewards):,} to {len(sampled_indices):,} samples")
         print(f"Sampled dataset saved to: {output_path}")
-    analyzer.generate_summary_report(args.ttft_slo, args.avg_tpot_slo, args.reward_function, args.ttft_reward_weight)
 
 if __name__ == "__main__":
     main()

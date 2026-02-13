@@ -168,8 +168,9 @@ def parse_metrics_line(line):
         'predicted_latencies': parsed_data.get('predictedLatencies'),  # ADD THIS - predicted latencies for all pods
         'chosen_pod_predicted_latency': float(parsed_data.get('chosenPodPredictedLatency', 0)) if parsed_data.get('chosenPodPredictedLatency') else None,  # ADD THIS - predicted latency for chosen pod
         'iteration': parsed_data.get('iteration'),  # ADD THIS - iteration from the data
+        'ood_fallback': parsed_data.get('oodFallback'),  # OOD fallback flag (0 or 1)
     }
-    
+
     # Only require request_id and start_time as essential
     if final_entry.get('request_id') is not None and final_entry.get('start_time') is not None:
         return final_entry
@@ -852,6 +853,17 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     add_transition_lines(ax1, train_transitions, flush_transitions, iteration_transitions)
 
+    # Add vertical lines for OOD fallback events with different colors per value
+    if 'ood_fallback' in df.columns:
+        ood_fallback_df = df[df['ood_fallback'].notna()]
+        if not ood_fallback_df.empty:
+            # Define colors for different oodFallback values
+            ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
+            for _, row in ood_fallback_df.iterrows():
+                ood_val = int(row['ood_fallback'])
+                color = ood_colors.get(ood_val, 'gray')  # default to gray for unknown values
+                ax1.axvline(x=row['relative_time'], color=color, linestyle='-', linewidth=0.3, alpha=0.3, zorder=0)
+
     # NEW SUBPLOT: KV Cache Hit Ratio (ax_kv_cache)
     if not pod_data['kv_cache_df'].empty:
         for pod in unique_pods:
@@ -985,7 +997,16 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         Line2D([0], [0], color='orange', linewidth=linewidth, linestyle='--', label='Iteration transition')
     ])
     legend_labels_ttft.extend(['Avg TTFT (per sec)', 'numTrains transition', 'Iteration transition'])
-    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, loc='upper right', ncol=3)
+    # Add OOD fallback to legend if present in data (different colors per value)
+    if 'ood_fallback' in df.columns and df['ood_fallback'].notna().any():
+        ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
+        unique_ood_vals = sorted(df['ood_fallback'].dropna().unique())
+        for ood_val in unique_ood_vals:
+            ood_val_int = int(ood_val)
+            color = ood_colors.get(ood_val_int, 'gray')
+            legend_elements_ttft.append(Line2D([0], [0], color=color, linewidth=0.8, alpha=0.5, label=f'oodFallback={ood_val_int}'))
+            legend_labels_ttft.append(f'oodFallback={ood_val_int}')
+    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, loc='upper right', ncol=4)
     
     ax2.set_title('Average Time Per Output Token (TPOT) for Each Request', fontsize=16, fontweight='bold', pad=10)
     ax2.set_ylabel('Average TPOT (ms)', fontsize=14, fontweight='bold')
@@ -2311,25 +2332,43 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     
     # Add transition lines
     for transition in train_transitions:
-        ax_ttft.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth, 
+        ax_ttft.axvline(x=transition['relative_time'], color='red', linewidth=transition_linewidth,
                        linestyle='--', zorder=5)
     if iteration_transitions:
         for transition in iteration_transitions:
-            ax_ttft.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth, 
+            ax_ttft.axvline(x=transition['relative_time'], color='blue', linewidth=transition_linewidth,
                           linestyle='-.', zorder=5)
-    
+
+    # Add vertical lines for OOD fallback events with different colors per value
+    if 'ood_fallback' in df.columns:
+        ood_fallback_df = df[df['ood_fallback'].notna()]
+        if not ood_fallback_df.empty:
+            ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
+            for _, row in ood_fallback_df.iterrows():
+                ood_val = int(row['ood_fallback'])
+                color = ood_colors.get(ood_val, 'gray')
+                ax_ttft.axvline(x=row['relative_time'], color=color, linestyle='-', linewidth=0.3, alpha=0.3, zorder=0)
+
     ax_ttft.set_ylabel('TTFT (ms)', fontsize=14, fontweight='bold')
-    ax_ttft.set_title('Time to First Token (TTFT) - 1-Second Sliding Window Average', 
+    ax_ttft.set_title('Time to First Token (TTFT) - 1-Second Sliding Window Average',
                       fontsize=16, fontweight='bold', pad=10)
     ax_ttft.grid(True, alpha=alpha)
-    
+
     # Create legend
     legend_elements = [
         Line2D([0], [0], color='red', linewidth=linewidth, label='Avg TTFT (per sec)'),
         Line2D([0], [0], color='red', linewidth=linewidth, linestyle='--', label='numTrains transition'),
         Line2D([0], [0], color='blue', linewidth=linewidth, linestyle='-.', label='Iteration transition')
     ]
-    ax_ttft.legend(handles=legend_elements, fontsize=10, loc='upper right', ncol=3)
+    # Add OOD fallback to legend if present in data (different colors per value)
+    if 'ood_fallback' in df.columns and df['ood_fallback'].notna().any():
+        ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
+        unique_ood_vals = sorted(df['ood_fallback'].dropna().unique())
+        for ood_val in unique_ood_vals:
+            ood_val_int = int(ood_val)
+            color = ood_colors.get(ood_val_int, 'gray')
+            legend_elements.append(Line2D([0], [0], color=color, linewidth=0.8, alpha=0.5, label=f'oodFallback={ood_val_int}'))
+    ax_ttft.legend(handles=legend_elements, fontsize=10, loc='upper right', ncol=4)
     ax_ttft.tick_params(axis='both', which='major', labelsize=11)
     
     # Row 2: TPOT Time Series (full width)

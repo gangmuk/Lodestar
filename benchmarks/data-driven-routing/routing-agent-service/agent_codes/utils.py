@@ -190,9 +190,8 @@ def replace_pod_ip_with_generalpodid(data_input):
         # Handle file input (existing logic)
         all_pod_ips_from_training_data = get_all_pod_ips_from_data_file(data_input)
         if not all_pod_ips_from_training_data:
-            all_pod_ips_from_training_data = {"pod_0000":"pod_0000","pod_0001":"pod_0001","pod_0002":"pod_0002","pod_0003":"pod_0003","pod_0004":"pod_0004","pod_0005":"pod_0005","pod_0006":"pod_0006"}
-            # logger.error(f"No pod IPs found in data file {data_input}")
-            # assert False
+            logger.error(f"No pod IPs found in data file {data_input}")
+            raise ValueError(f"No pod IPs found in data file {data_input}. Cannot proceed without pod IP information.")
         logger.info(f"Deterministic pod IP order: {all_pod_ips_from_training_data}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_training_data)
         logger.info(f"Deterministic mapping: {pod_ip_to_generalpodid}")
@@ -220,16 +219,16 @@ def replace_pod_ip_with_generalpodid(data_input):
         if not pod_ips:
             logger.error(f"No pod IPs found in log message")
             assert False
-        
+
         all_pod_ips_from_log = sorted(list(pod_ips))
         logger.debug(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
         pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_log)
         logger.debug(f"Deterministic mapping: {pod_ip_to_generalpodid}")
-        
+
         content = data_input
         for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
             content = content.replace(pod_ip, generalpodid)
-        
+
         return content
 
 def get_all_pod_ips_from_data_file(data_file):
@@ -245,7 +244,7 @@ def get_all_pod_ips_from_data_file(data_file):
     except Exception as e:
         logger.error(f"Error reading data file {data_file}: {e}")
         return []
-    
+
     return sorted(list(pod_ips))
 
 
