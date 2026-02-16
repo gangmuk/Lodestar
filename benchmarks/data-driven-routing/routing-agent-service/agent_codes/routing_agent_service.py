@@ -778,7 +778,6 @@ def handle_infer():
         endtoendoverhead = time.time() - handle_infer_start_time
         handle_infer_overhead_summary["end_to_end"] = endtoendoverhead
         result['end_to_end_overhead'] = endtoendoverhead
-        logger.info(f"requestID: {request_id}, inference result: {result}")
         
         overhead_log = "oh"
         for key, value in handle_infer_overhead_summary.items():
@@ -790,7 +789,7 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
             
-        logger.info(f"overhead_log: {overhead_log}")
+        logger.debug(f"overhead_log: {overhead_log}")
         
         return_predicted_rewards = HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True)
         predicted_rewards_output = result.get('predicted_rewards', None)
@@ -1151,15 +1150,18 @@ def online_train_routine():
                 current_round = NUM_TRAINS
                 weights = np.ones(len(training_df_copy), dtype=np.float32)
                 offline_mask = training_df_copy['_collection_round'].isna()
-                weights[offline_mask.values] = RECENCY_DECAY_WEIGHT_FACTOR ** (current_round + 1)
+                if offline_mask.any():
+                    weights[offline_mask.values] = RECENCY_DECAY_WEIGHT_FACTOR ** (current_round + 1)
                 online_mask = ~offline_mask
                 if online_mask.any():
                     collection_rounds = training_df_copy.loc[online_mask, '_collection_round'].values.astype(float)
                     weights[online_mask.values] = RECENCY_DECAY_WEIGHT_FACTOR ** (current_round - collection_rounds)
                 training_df_copy['_sample_weight'] = weights
+                offline_weight_str = f"{weights[offline_mask.values].mean():.4f}" if offline_mask.any() else "N/A"
+                newest_online_weight_str = f"{weights[online_mask.values].max():.4f}" if online_mask.any() else "N/A"
                 logger.info(f"Per-round recency weighting: decay={RECENCY_DECAY_WEIGHT_FACTOR}, current_round={current_round}, "
-                            f"offline_weight={weights[offline_mask.values].mean():.4f} ({offline_mask.sum()} samples), "
-                            f"newest_online_weight={weights[online_mask.values].max():.4f if online_mask.any() else 'N/A'} ({online_mask.sum()} samples)")
+                            f"offline_weight={offline_weight_str} ({offline_mask.sum()} samples), "
+                            f"newest_online_weight={newest_online_weight_str} ({online_mask.sum()} samples)")
             else:
                 training_df_copy['_sample_weight'] = 1.0
 
@@ -1182,16 +1184,26 @@ def online_train_routine():
             # Normalize the entire dataset (reuse same logic)
             normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
                 training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
-            
+
+            # UPDATE STATISTICS: Compute pooled statistics for pod features from combined offline+online data
+            # This ensures OOD detection uses the updated [min, max] range from online data
+            if pod_feature_types:
+                logger.info(f"🔄 Updating pooled statistics for {len(pod_feature_types)} pod feature types during online training")
+                data_normalizer._compute_pooled_pod_statistics(
+                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True
+                )
+
             # Normalize features using cached matching columns
             for feature in normalizable_features:
                 if feature in pod_feature_types:
                     # OPTIMIZATION: Use cached matching columns lookup
+                    # Pod features: stats already updated via _compute_pooled_pod_statistics above
                     matching_columns = data_normalizer._get_matching_columns_cached(training_df_copy.columns, feature)
                     for col in matching_columns:
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=False)
+                    # Request features: update stats during training
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True)
             
             # Get sorted pod IDs
             sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
@@ -1589,63 +1601,38 @@ def initialize():
     
     # Model directory and offline data are GPU-specific
     if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
-        base_dir = None
-        # if TARGET_GPU_MODEL == "NVIDIA-A10":
-        #     base_dir = "/app/NVIDIA-A10/PrefillOnly"
-        #     final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
-        # elif TARGET_GPU_MODEL == "NVIDIA-A30":
-        #     base_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}"
-        #     final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
-        # elif TARGET_GPU_MODEL in ["GPU-L3c", "NVIDIA-L40", "NVIDIA-L40S", "NVIDIA-L20"]:
-        #     base_dir = "/app/NVIDIA-L20/Aggregated"
-        #     final_model_dir = f"{base_dir}/final_model-latency_predictor"
-        # elif TARGET_GPU_MODEL == "hetero":
-        #     base_dir = "/app/hetero/Aggregated"
-        #     final_model_dir = f"{base_dir}/final_model-latency_predictor"
-        # else:
-        #     logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
-        #     assert False
-        
-        ## some default model for non learning based routing startegies
-        if TARGET_GPU_MODEL == "NVIDIA-A10":
-            if 'latency_predictor' in ROUTING_STRATEGY:
+        if TARGET_GPU_MODEL == "NVIDIA-A10" and 'latency_predictor' in ROUTING_STRATEGY:
                 final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-                offline_csv_path = "/app/NVIDIA-A10/PrefillOnly/offline_training_data.csv"
+                offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
-            elif 'contextual_bandit' in ROUTING_STRATEGY:
-                final_model_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
-                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-                offline_csv_path = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/offline_training_data.csv"
-                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
-        elif TARGET_GPU_MODEL == "NVIDIA-A30":
+        elif TARGET_GPU_MODEL in {"NVIDIA-A30"}:
             if 'contextual_bandit' in ROUTING_STRATEGY or 'latency_predictor' in ROUTING_STRATEGY:
-                base_dir = f"/app/NVIDIA-A30/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}"
-                final_model_dir = f"{base_dir}/final_model-{ROUTING_STRATEGY}"
-                offline_csv_path = f"{base_dir}/offline_training_data.csv"
+                final_model_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-{ROUTING_STRATEGY}"
+                offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
                 offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
             else:
-                base_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix"
-                final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
-                offline_csv_path = f"{base_dir}/offline_training_data.csv"
-                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
-                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
-                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+                logger.error(f"Unknown routing strategy: {ROUTING_STRATEGY} in TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
+                assert False
+                # final_model_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                # offline_csv_path = f"{final_model_dir}/data-processed.csv"
+                # hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                # feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                # offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         else:
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
     else:
-        base_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0"
-        final_model_dir = f"{base_dir}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
-        offline_csv_path = f"{base_dir}/offline_training_data.csv"
+        final_model_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+        offline_csv_path = f"{final_model_dir}/data-processed.csv"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
-        
+    
+    logger.info(f"ROUTING_STRATEGY: {ROUTING_STRATEGY}")
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
     logger.info(f"WORKLOAD_CATEGORY: {WORKLOAD_CATEGORY}")
     logger.info(f"WORKLOAD_NAME: {WORKLOAD_NAME}")

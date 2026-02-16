@@ -347,7 +347,7 @@ def export_metrics_to_csv(all_metrics, base_dir):
     ]
 
     # Save CSV file in the same directory as the PDF
-    csv_filepath = os.path.join(base_dir, "routing_strategy_metrics.csv")
+    csv_filepath = os.path.join(base_dir, "routing_strategy_metrics_client.csv")
 
     rows = []
     for metrics in all_metrics:
@@ -732,7 +732,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     plt.subplots_adjust(top=0.96, bottom=0.08, left=0.05, right=0.95)
     
     # Save the figure
-    output_file = f"{base_dir}/routing_strategy_comparison.pdf"
+    output_file = f"{base_dir}/routing_strategy_comparison_client.pdf"
     plt.savefig(output_file, bbox_inches='tight', dpi=300)
     print(f"** Saved comparison plot to {output_file}")
     

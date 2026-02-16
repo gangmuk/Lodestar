@@ -41,6 +41,7 @@ var (
 	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
+	prefixHitThreshold                 int                    = utils.LoadEnvInt("PREFIX_HIT_THRESHOLD", 30) // default 30% threshold for prefix hit routing
 )
 
 func init() {
@@ -289,6 +290,39 @@ func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[st
 		klog.Warningf("No target pod found for matched pods: %v", matchedPods)
 	}
 	return targetPod
+}
+
+// routePrefixHitThresholdOrLeastRequest implements a simple threshold-based prefix routing policy.
+// Logic:
+// 1. If any pod has prefix hit ratio > PREFIX_HIT_THRESHOLD, route to the pod with the highest prefix hit ratio
+// 2. Otherwise, fall back to least request count routing
+// This is a simpler alternative to routePrefixRatioAndLoad which uses statistical thresholds (mean + std_dev).
+func routePrefixHitThresholdOrLeastRequest(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+	var maxHitRatio int = 0
+	var maxHitPodIP string
+
+	// Find the pod with the highest prefix hit ratio that exceeds the threshold
+	for podIP, hitRatio := range matchedPods {
+		if hitRatio > prefixHitThreshold && hitRatio > maxHitRatio {
+			maxHitRatio = hitRatio
+			maxHitPodIP = podIP
+		}
+	}
+
+	// If we found a pod exceeding threshold, route to it
+	if maxHitPodIP != "" {
+		targetPod, _ := utils.FilterPodByIP(maxHitPodIP, readyPods)
+		if targetPod != nil {
+			klog.Infof("routePrefixHitThresholdOrLeastRequest, selected pod: %s with prefix hit ratio: %d%% > threshold: %d%%",
+				maxHitPodIP, maxHitRatio, prefixHitThreshold)
+			return targetPod
+		}
+		klog.Warningf("routePrefixHitThresholdOrLeastRequest, pod %s not found in readyPods", maxHitPodIP)
+	}
+
+	// Fallback to least request count routing
+	klog.Infof("routePrefixHitThresholdOrLeastRequest, no pod exceeds threshold %d%%, fallback to least request count", prefixHitThreshold)
+	return selectTargetPodWithLeastRequestCount(cache, readyPods)
 }
 
 // logic:

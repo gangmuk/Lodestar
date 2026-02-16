@@ -272,8 +272,10 @@ class NeuralContextualBandit:
             
             elif self.exploration_method == 'epsilon_greedy':
                 # Epsilon-greedy exploration
+                # Use actual number of pods from input, not self.action_dim (which may differ if trained on different pod count)
+                actual_num_pods = len(predicted_rewards)
                 if np.random.random() < self.epsilon:
-                    action = np.random.randint(0, self.action_dim)
+                    action = np.random.randint(0, actual_num_pods)
                     explored = True
                 else:
                     action = int(np.argmax(predicted_rewards))
@@ -281,13 +283,17 @@ class NeuralContextualBandit:
             
             elif self.exploration_method == 'ucb':
                 # Upper Confidence Bound
+                # Use actual number of pods from input, not self.action_dim (which may differ if trained on different pod count)
+                actual_num_pods = len(predicted_rewards)
                 exploitation = predicted_rewards
-                
+
                 # Add exploration bonus: sqrt(2 * log(t) / n_a)
+                # Only use action_counts for the actual number of pods
+                action_counts_slice = self.action_counts[:actual_num_pods] if len(self.action_counts) >= actual_num_pods else np.zeros(actual_num_pods)
                 exploration_bonus = np.sqrt(
-                    self.ucb_confidence * np.log(self.total_steps + 1) / (self.action_counts + 1)
+                    self.ucb_confidence * np.log(self.total_steps + 1) / (action_counts_slice + 1)
                 )
-                
+
                 ucb_values = exploitation + exploration_bonus
                 action = int(np.argmax(ucb_values))
                 # UCB inherently balances exploration/exploitation, mark as exploitation for simplicity
@@ -303,11 +309,12 @@ class NeuralContextualBandit:
             
             else:
                 raise ValueError(f"Unknown exploration method: {self.exploration_method}")
-            
-            # Update counters
-            self.action_counts[action] += 1
+
+            # Update counters (handle case where runtime pods differ from training)
+            if action < len(self.action_counts):
+                self.action_counts[action] += 1
             self.total_steps += 1
-            
+
             return action, predicted_rewards, explored
     
     def learn(self, pod_features, kv_hit_ratios, request_features, actions, rewards, input_tokens=None, sample_weights=None):

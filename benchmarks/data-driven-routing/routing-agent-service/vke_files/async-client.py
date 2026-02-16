@@ -410,7 +410,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         total_decode_time = (completion_time - first_token_time)*1000 if first_response_time else 0
         avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
-        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: request_send_time: {actual_start_time - BASE_TIME:.2f}, Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms, target-Pod: {result['selected_pod_ip']}")
+        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: request_send_time: {actual_start_time - BASE_TIME:.2f}, Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # # Log scheduling information
         # if scheduled_time:
