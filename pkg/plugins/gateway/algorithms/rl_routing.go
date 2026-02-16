@@ -662,6 +662,9 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
 					targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
+				} else if ctx.SubAlgorithm == "prefix_cache_3" {
+					klog.Infof("subAlgorithm, prefix_cache_3 routing (threshold-based), request_id: %s", ctx.RequestID)
+					targetPod = routePrefixHitThresholdOrLeastRequest(r.cache, readyPods, podIPsWithMatchingRatios)
 				}
 				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
 				if targetPod == nil {

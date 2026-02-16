@@ -28,7 +28,8 @@ data_file="${final_model_dir}/data.csv"
 processed_csv="${final_model_dir}/data-processed.csv"
 
 # ./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}" contextual_bandit
-./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}"
+# ./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}"
+./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}" contextual_bandit with_bitsandbytes
 if [ ! -f "${data_file}" ]; then
     echo "❌ Data file not found: ${data_file}"
     exit 1
@@ -39,9 +40,9 @@ echo "✓ Found data file: ${data_file}"
 
 analyze_dataset=1
 analyze_behavior=0
-sampling_ratio=0.3
+sampling_ratio=0.5
 # sampling_ratio=1.0
-ttft_threshold=30000
+ttft_threshold=15000
 buffer_size=100000
 
 hidden_dim=128

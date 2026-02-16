@@ -55,45 +55,162 @@ POLICY_COLOR_FAMILIES = {
 DEFAULT_COLORS = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']
 
 # Preferred ordering for routing policies in plots
+# Order: random -> least_request -> prefix_cache -> contextual_bandit
 PREFERRED_POLICY_ORDER = [
     'random',
     'least_request',
-    'least_latency',
     'prefix_cache_1',
+    'prefix_cache_2',
+    'prefix_cache',
     'contextual_bandit',
 ]
 
-PREFERRED_WORKLOAD_ORDER = [
-    'SharingRatio71%',
-    'SharingRatio47%',
-    'SharingRatio28%',
-    'SharingRatio9%',
-]
+
+def extract_rps_from_workload(workload):
+    """Extract RPS number from workload string for sorting.
+
+    Examples:
+    - "gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes" -> 4
+    - "mooncake/conversation-2/rps15-benchmark/without_bitsandbytes" -> 15
+    """
+    match = re.search(r'rps(\d+)', workload.lower())
+    if match:
+        return int(match.group(1))
+    return 9999  # Put workloads without RPS at the end
+
+
+def extract_sharing_ratio(workload):
+    """Extract SharingRatio percentage from workload string for sorting.
+
+    Examples:
+    - "gangmuk-prefix/SharingRatio71%/rps4" -> 71
+    - "gangmuk-prefix/SharingRatio9%/rps6" -> 9
+    - "MixedSharingRatio10_30_50_70%" -> average or first value
+    """
+    # Handle MixedSharingRatio
+    match = re.search(r'MixedSharingRatio(\d+)', workload)
+    if match:
+        return int(match.group(1))
+    # Handle regular SharingRatio
+    match = re.search(r'SharingRatio(\d+)', workload)
+    if match:
+        return int(match.group(1))
+    return 9999  # Put workloads without SharingRatio at the end
+
+
+def extract_workload_category(workload):
+    """Extract workload category from workload string.
+
+    Examples:
+    - "gangmuk-prefix/SharingRatio71%/rps4" -> "gangmuk-prefix"
+    - "mooncake/conversation-2/rps15" -> "mooncake"
+    - "azure/azure_code_poisson/rps25" -> "azure"
+    """
+    # Split by '/' and get the first meaningful part
+    parts = workload.split('/')
+    for part in parts:
+        part_lower = part.lower()
+        if 'gangmuk' in part_lower or 'prefix' in part_lower:
+            return 'gangmuk-prefix'
+        elif 'mooncake' in part_lower:
+            return 'mooncake'
+        elif 'azure' in part_lower:
+            return 'azure'
+    # If no known category, return the first part
+    return parts[0] if parts else 'unknown'
+
+
+def get_workload_sort_key(workload):
+    """Get hierarchical sort key for a workload.
+
+    Sort order:
+    1. Workload category (gangmuk-prefix, mooncake, azure, etc.)
+    2. SharingRatio (71%, 47%, 28%, 9% - descending order)
+    3. RPS (4, 5, 6, 7, etc. - ascending order)
+    """
+    category = extract_workload_category(workload)
+
+    # Category priority: gangmuk-prefix first, then mooncake, then azure, then others
+    category_priority = {
+        'gangmuk-prefix': 0,
+        'mooncake': 1,
+        'azure': 2,
+    }
+    cat_order = category_priority.get(category, 99)
+
+    # SharingRatio: higher percentages first (descending), so negate for sort
+    sharing_ratio = extract_sharing_ratio(workload)
+    sharing_order = -sharing_ratio if sharing_ratio < 9999 else 9999
+
+    # RPS: lower first (ascending)
+    rps = extract_rps_from_workload(workload)
+
+    return (cat_order, sharing_order, rps, workload)
+
+
+def extract_datetime_from_name(name):
+    """Extract datetime string from strategy name for sorting.
+
+    Looks for patterns like YYYYMMDD_HHMMSS or similar date-time formats.
+    Returns a sortable string (empty string if not found, which sorts first).
+    """
+    # Pattern: YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS
+    match = re.search(r'(\d{8}[_-]\d{6})', name)
+    if match:
+        return match.group(1)
+    # Pattern: YYYY-MM-DD_HH-MM-SS or similar
+    match = re.search(r'(\d{4}-\d{2}-\d{2}[_-]\d{2}-\d{2}-\d{2})', name)
+    if match:
+        return match.group(1)
+    # Pattern: just a date YYYYMMDD
+    match = re.search(r'(\d{8})', name)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def get_policy_sort_key(policy):
+    """Get sort key for a policy: (priority, datetime, name).
+
+    Priority order: random(0) -> least_request(1) -> prefix_cache(2) -> contextual_bandit(3) -> others(4+)
+    Within same priority, sort by datetime (past to recent).
+    """
+    policy_lower = policy.lower()
+    datetime_str = extract_datetime_from_name(policy)
+
+    if 'random' in policy_lower:
+        return (0, datetime_str, policy)
+    elif 'least_request' in policy_lower:
+        return (1, datetime_str, policy)
+    elif 'prefix_cache' in policy_lower:
+        return (2, datetime_str, policy)
+    elif 'contextual_bandit' in policy_lower:
+        return (3, datetime_str, policy)
+    elif 'least_latency' in policy_lower:
+        return (4, datetime_str, policy)
+    elif 'least_kv_cache' in policy_lower:
+        return (5, datetime_str, policy)
+    else:
+        return (6, datetime_str, policy)
 
 
 def order_policies(policies):
-    """Order policies with preferred ones first, then remaining alphabetically."""
-    preferred = []
-    preferred_set = set()
-    for name in PREFERRED_POLICY_ORDER:
-        if name in policies:
-            preferred.append(name)
-            preferred_set.add(name)
-    remaining = sorted([p for p in policies if p not in preferred_set])
-    return preferred + remaining
+    """Order policies: random -> least_request -> prefix_cache -> contextual_bandit.
+
+    Within same routing policy category, sort by datetime (past to recent).
+    """
+    return sorted(policies, key=get_policy_sort_key)
 
 
 def order_workloads(workloads):
-    """Order workloads with preferred SharingRatio groups first, then remaining."""
-    preferred = []
-    preferred_set = set()
-    for name in PREFERRED_WORKLOAD_ORDER:
-        for workload in workloads:
-            if name in workload and workload not in preferred_set:
-                preferred.append(workload)
-                preferred_set.add(workload)
-    remaining = sorted([w for w in workloads if w not in preferred_set])
-    return preferred + remaining
+    """Order workloads hierarchically.
+
+    Sort order:
+    1. Workload category (gangmuk-prefix, mooncake, azure, etc.)
+    2. SharingRatio (71%, 47%, 28%, 9% - descending)
+    3. RPS (4, 5, 6, 7, etc. - ascending)
+    """
+    return sorted(workloads, key=get_workload_sort_key)
 
 
 def categorize_policy(policy_name):
@@ -236,8 +353,9 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
     policy_colors = generate_policy_colors(policies)
 
     # Create figure with one row per workload
-    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 6 * n_workloads))
-    gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.6)
+    # Increased height per workload and hspace for better spacing between subfigures
+    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 7 * n_workloads))
+    gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.8)
 
     for workload_idx, workload in enumerate(workloads):
         ax = fig.add_subplot(gs[workload_idx, 0])
@@ -261,6 +379,7 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         avg_values = []
         p99_values = []
         p999_values = []
+        num_requests_values = []
 
         for policy in available_policies:
             policy_data = workload_df[workload_df['routing_policy'] == policy]
@@ -268,10 +387,16 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
                 avg_values.append(policy_data['avg_ttft'].mean())
                 p99_values.append(policy_data['p99_ttft'].mean())
                 p999_values.append(policy_data['p999_ttft'].mean())
+                # Get num_requests if available
+                if 'num_requests' in policy_data.columns:
+                    num_requests_values.append(int(policy_data['num_requests'].sum()))
+                else:
+                    num_requests_values.append(0)
             else:
                 avg_values.append(0)
                 p99_values.append(0)
                 p999_values.append(0)
+                num_requests_values.append(0)
 
         # Get max value for y-axis scaling
         max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
@@ -325,17 +450,32 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         ]
         ax.legend(handles=legend_elements, loc='upper right', fontsize=12, ncol=3)
 
+        # Add num_requests annotation below each policy group
+        has_num_requests = False
+        for i, policy in enumerate(available_policies):
+            if num_requests_values[i] > 0:
+                has_num_requests = True
+                group_center = group_centers[i]
+                ax.text(group_center, -max_value * 0.12, f'n={num_requests_values[i]}',
+                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+
         # Styling
         ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize)
         ax.set_title(f'TTFT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
         ax.tick_params(axis='y', labelsize=tick_fontsize)
         ax.tick_params(axis='x', labelsize=10)
         ax.grid(axis='y', alpha=0.3)
-        ax.set_ylim(0, max_value * 1.4)
+        # Adjust y-axis limits to accommodate num_requests text
+        if has_num_requests:
+            ax.set_ylim(-max_value * 0.18, max_value * 1.4)
+        else:
+            ax.set_ylim(0, max_value * 1.4)
 
     suffix = "(Averaged)" if averaged else "(Individual)"
-    plt.suptitle(f'Routing Strategy Performance Across All Workloads {suffix} - From Client Logs', 
-                 fontsize=maintitle_fontsize, y=0.99)
+    # Reduced top margin to bring subfigures closer to suptitle
+    plt.subplots_adjust(top=0.95, bottom=0.05)
+    plt.suptitle(f'Routing Strategy Performance Across All Workloads {suffix} - From Client Logs',
+                 fontsize=maintitle_fontsize, y=0.98)
 
     filename = "all_workloads_summary_from_client_log_averaged.pdf" if averaged else "all_workloads_summary_from_client_log_individual.pdf"
     output_path = os.path.join(output_dir, filename)
@@ -354,8 +494,9 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
 
     policy_colors = generate_policy_colors(policies)
 
-    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 6 * n_workloads))
-    gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.6)
+    # Increased height per workload and hspace for better spacing between subfigures
+    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 7 * n_workloads))
+    gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.8)
 
     for workload_idx, workload in enumerate(workloads):
         ax = fig.add_subplot(gs[workload_idx, 0])
@@ -374,6 +515,7 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
         avg_values = []
         p99_values = []
         p999_values = []
+        num_requests_values = []
 
         for policy in available_policies:
             policy_data = workload_df[workload_df['routing_policy'] == policy]
@@ -385,10 +527,16 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
                     p999_values.append(policy_data[f'p999_{metric_col}'].mean())
                 else:
                     p999_values.append(0)
+                # Get num_requests if available
+                if 'num_requests' in policy_data.columns:
+                    num_requests_values.append(int(policy_data['num_requests'].sum()))
+                else:
+                    num_requests_values.append(0)
             else:
                 avg_values.append(0)
                 p99_values.append(0)
                 p999_values.append(0)
+                num_requests_values.append(0)
 
         max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
 
@@ -436,15 +584,30 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
         ]
         ax.legend(handles=legend_elements, loc='upper right', fontsize=12, ncol=3)
 
+        # Add num_requests annotation below each policy group
+        has_num_requests = False
+        for i, policy in enumerate(available_policies):
+            if num_requests_values[i] > 0:
+                has_num_requests = True
+                group_center = group_centers[i]
+                ax.text(group_center, -max_value * 0.12, f'n={num_requests_values[i]}',
+                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+
         ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
         ax.set_title(f'{metric_name} Comparison - {workload}', fontsize=subtitle_fontsize)
         ax.tick_params(axis='y', labelsize=tick_fontsize)
         ax.tick_params(axis='x', labelsize=10)
         ax.grid(axis='y', alpha=0.3)
-        ax.set_ylim(0, max_value * 1.4)
+        # Adjust y-axis limits to accommodate num_requests text
+        if has_num_requests:
+            ax.set_ylim(-max_value * 0.18, max_value * 1.4)
+        else:
+            ax.set_ylim(0, max_value * 1.4)
 
-    plt.suptitle(f'{metric_name} Performance Across All Workloads - From Client Logs', 
-                 fontsize=maintitle_fontsize, y=0.99)
+    # Reduced top margin to bring subfigures closer to suptitle
+    plt.subplots_adjust(top=0.95, bottom=0.05)
+    plt.suptitle(f'{metric_name} Performance Across All Workloads - From Client Logs',
+                 fontsize=maintitle_fontsize, y=0.98)
 
     filename = f"all_workloads_{metric_col}_from_client_log.pdf"
     output_path = os.path.join(output_dir, filename)
@@ -519,6 +682,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

@@ -4,15 +4,18 @@
 
 # Check if root directory is provided
 if [ -z "$1" ]; then
-    echo "Usage: $0 <root_directory> [filter_word]"
+    echo "Usage: $0 <root_directory> [output_dir_name] [filter_word...]"
     echo "  root_directory: Directory to search for CSV files"
-    echo "  filter_word: (optional) Only process files in directories containing this word"
+    echo "  output_dir_name: (optional) Output directory name or full path"
+    echo "  filter_word: (optional) One or more words - files in directories containing any of these words will be processed"
     exit 1
 fi
 
 ROOT_DIR="$1"
 OUTPUT_DIR_NAME="$2"
-FILTER_WORD="$3"
+# Collect all filter words from $3 onwards
+shift 2
+FILTER_WORDS=("$@")
 
 # Validate that the directory exists
 if [ ! -d "${ROOT_DIR}" ]; then
@@ -41,17 +44,24 @@ fi
 # Find all filtered-aibrix-gateway-plugins.log.csv files recursively
 files=$(find "${ROOT_DIR}" -type f -name "filtered-aibrix-gateway-plugins.log.csv" | sort)
 
-# Filter files by directory name if filter word is provided
-if [ -n "$FILTER_WORD" ]; then
+# Filter files by directory name if filter words are provided
+if [ ${#FILTER_WORDS[@]} -gt 0 ]; then
     filtered_files=""
     while IFS= read -r file; do
-        # Check if the file path contains the filter word
-        if [[ "$file" == *"$FILTER_WORD"* ]]; then
+        # Check if the file path contains any of the filter words
+        match_found=false
+        for filter_word in "${FILTER_WORDS[@]}"; do
+            if [[ "$file" == *"$filter_word"* ]]; then
+                match_found=true
+                break
+            fi
+        done
+        if [ "$match_found" = true ]; then
             filtered_files="${filtered_files}${file}"$'\n'
         fi
     done <<< "$files"
     files=$(echo "$filtered_files" | sed '/^$/d' | sort)
-    echo "Filtering directories containing: $FILTER_WORD"
+    echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
 else
     echo "No filter specified - processing all files"
 fi

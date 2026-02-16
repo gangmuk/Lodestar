@@ -244,34 +244,65 @@ def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iter
     return metrics, df
 
 
+def extract_datetime_from_strategy(strategy_name):
+    """Extract datetime string from strategy name for sorting.
+
+    Looks for patterns like YYYYMMDD_HHMMSS or similar date-time formats.
+    Returns a sortable string (empty string if not found, which sorts first).
+    """
+    # Common datetime patterns in strategy names
+    import re
+    # Pattern: YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS
+    match = re.search(r'(\d{8}[_-]\d{6})', strategy_name)
+    if match:
+        return match.group(1)
+    # Pattern: YYYY-MM-DD_HH-MM-SS or similar
+    match = re.search(r'(\d{4}-\d{2}-\d{2}[_-]\d{2}-\d{2}-\d{2})', strategy_name)
+    if match:
+        return match.group(1)
+    # Pattern: just a date YYYYMMDD
+    match = re.search(r'(\d{8})', strategy_name)
+    if match:
+        return match.group(1)
+    return ""
+
+
 def get_strategy_priority(strategy_name):
-    """Define strategy ordering for consistent plots."""
-    if rl_naive_routing in strategy_name.lower():
-        return (0, strategy_name)
-    elif e2e_latency_predictor_routing in strategy_name.lower():
-        return (1, strategy_name)
-    elif ttft_latency_predictor_routing in strategy_name.lower():
-        return (2, strategy_name)
-    elif avg_tpot_latency_predictor_routing in strategy_name.lower():
-        return (3, strategy_name)
-    elif prefix_cache_1_routing in strategy_name.lower():
-        return (4, strategy_name)
-    elif prefix_cache_2_routing in strategy_name.lower():
-        return (5, strategy_name)
-    elif preble_routing in strategy_name.lower():
-        return (6, strategy_name)
-    elif random_routing in strategy_name.lower():
-        return (7, strategy_name)
-    elif least_kv_cache_routing in strategy_name.lower():
-        return (8, strategy_name)
-    elif least_latency_routing in strategy_name.lower():
-        return (9, strategy_name)
-    elif least_request_routing in strategy_name.lower():
-        return (10, strategy_name)
-    elif contextual_bandit_routing in strategy_name.lower():
-        return (11, strategy_name)
+    """Define strategy ordering for consistent plots.
+
+    Order: random -> least_request -> prefix_cache -> contextual_bandit
+    Within same routing policy, sort by datetime (past to recent).
+    """
+    strategy_lower = strategy_name.lower()
+    datetime_str = extract_datetime_from_strategy(strategy_name)
+
+    # Primary order: random(0) -> least_request(1) -> prefix_cache(2) -> contextual_bandit(3) -> others(4+)
+    if random_routing in strategy_lower:
+        return (0, datetime_str, strategy_name)
+    elif least_request_routing in strategy_lower:
+        return (1, datetime_str, strategy_name)
+    elif least_kv_cache_routing in strategy_lower:
+        return (2, datetime_str, strategy_name)
+    elif least_latency_routing in strategy_lower:
+        return (3, datetime_str, strategy_name)
+    elif prefix_cache_1_routing in strategy_lower:
+        return (4, datetime_str, strategy_name)
+    elif prefix_cache_2_routing in strategy_lower:
+        return (5, datetime_str, strategy_name)
+    elif preble_routing in strategy_lower:
+        return (6, datetime_str, strategy_name)
+    elif contextual_bandit_routing in strategy_lower:
+        return (7, datetime_str, strategy_name)
+    elif rl_naive_routing in strategy_lower:
+        return (8, datetime_str, strategy_name)
+    elif e2e_latency_predictor_routing in strategy_lower:
+        return (9, datetime_str, strategy_name)
+    elif ttft_latency_predictor_routing in strategy_lower:
+        return (10, datetime_str, strategy_name)
+    elif avg_tpot_latency_predictor_routing in strategy_lower:
+        return (11, datetime_str, strategy_name)
     else:
-        return (12, strategy_name)
+        return (12, datetime_str, strategy_name)
 
 
 def get_strategy_color(strategy_name, index_in_category):
@@ -449,13 +480,29 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     ]
     ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
 
+    # Add num_requests annotation below each strategy group
+    has_num_requests = False
+    for i, strategy in enumerate(strategies):
+        if 'num_requests' in metrics_df.columns:
+            num_requests = metrics_indexed.loc[strategy, 'num_requests'] if 'num_requests' in metrics_indexed.columns else 0
+            if pd.notna(num_requests) and num_requests > 0:
+                has_num_requests = True
+                group_center = group_centers[i]
+                # Position text below x-axis
+                ax.text(group_center, -max_value * 0.15, f'n={int(num_requests)}',
+                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+
     # Styling
     ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize)
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='y', alpha=0.3)
-    ax.set_ylim(0, max(max_value * 1.4, 1.0))
+    # Adjust y-axis limits to accommodate num_requests text if present
+    if has_num_requests:
+        ax.set_ylim(-max_value * 0.2, max(max_value * 1.4, 1.0))
+    else:
+        ax.set_ylim(0, max(max_value * 1.4, 1.0))
 
 
 def plot_routing_comparison(metrics_list, base_dir, csv_data_dict=None):
@@ -490,10 +537,11 @@ def plot_routing_comparison(metrics_list, base_dir, csv_data_dict=None):
             category_counts['other'] += 1
     
     # Create figure with GridSpec
-    fig = plt.figure(figsize=(18, 32))
+    # Increased height and hspace for better spacing between subfigures
+    fig = plt.figure(figsize=(18, 36))
     gs = GridSpec(6, 9, figure=fig,
                   height_ratios=[1, 1.5, 1.5, 1.5, 1, 1],
-                  hspace=0.9,
+                  hspace=1.0,  # More space between subfigures
                   wspace=0.35)
     
     # Plot components if we have CSV data
@@ -542,7 +590,8 @@ def plot_routing_comparison(metrics_list, base_dir, csv_data_dict=None):
                 ax.set_xticks([])
                 ax.set_yticks([])
     
-    plt.subplots_adjust(top=0.96, bottom=0.08, left=0.05, right=0.95)
+    # Reduced top margin to bring subfigures closer to top; increased bottom for labels
+    plt.subplots_adjust(top=0.98, bottom=0.06, left=0.05, right=0.95)
     
     # Save the figure
     output_file = f"{base_dir}/routing_strategy_comparison.pdf"
