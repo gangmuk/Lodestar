@@ -2850,10 +2850,10 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             iteration_tasks = None
             results = None
 
-            # # Add a small buffer before next iteration if not the last iteration
-            # if iteration < iterations - 1:
-            #     logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
-            #     await asyncio.sleep(2.0)
+            # Add a small buffer before next iteration if not the last iteration
+            if iteration < iterations - 1:
+                logger.info(f"Waiting 2 seconds before starting iteration {iteration+2}")
+                await asyncio.sleep(2.0)
 
     # Log overall benchmark completion
     overall_end_time = time.time()
