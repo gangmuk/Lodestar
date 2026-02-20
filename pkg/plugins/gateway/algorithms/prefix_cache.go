@@ -41,7 +41,7 @@ var (
 	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
-	prefixHitThreshold                 int                    = utils.LoadEnvInt("PREFIX_HIT_THRESHOLD", 30) // default 30% threshold for prefix hit routing
+	prefixHitThreshold                 int                    = utils.LoadEnvInt("PREFIX_HIT_THRESHOLD", 50) // default 30% threshold for prefix hit routing
 )
 
 func init() {
@@ -82,6 +82,10 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	}, nil
 }
 
+func PrintRequestCounts(requestID string, targetPodName string, targetPodIP string, cache cache.Cache, readyPods []*v1.Pod) {
+	klog.InfoS("routing_decision", "request_id", requestID, "target_pod", targetPodName, "target_pod_ip", targetPodIP, "pod_request_count", getRequestCounts(cache, readyPods))
+}
+
 func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	var prefixHashes []uint64
 	var matchedPods map[string]int
@@ -100,49 +104,25 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) 
 
 	var isLoadImbalanced bool
 	targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(p.cache, readyPods)
+
 	if isLoadImbalanced {
 		prefixHashes = p.prefixCacheIndexer.GetPrefixHashes(tokens)
-		klog.InfoS("prefix_cache_load_imbalanced",
-			"request_id", ctx.RequestID,
-			"target_pod", targetPod.Name,
-			"target_pod_ip", targetPod.Status.PodIP,
-			"pod_request_count", getRequestCounts(p.cache, readyPods))
 	} else {
 		matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-		klog.InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
-
 		if len(matchedPods) > 0 {
 			targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)
-			if targetPod != nil {
-				klog.InfoS("prefix_cache_matched_pods",
-					"request_id", ctx.RequestID,
-					"target_pod", targetPod.Name,
-					"target_pod_ip", targetPod.Status.PodIP,
-					"matched_pods", matchedPods,
-					"pod_request_count", getRequestCounts(p.cache, readyPods))
-			} else {
-				klog.InfoS("prefix_cache_skip_matched_pods",
-					"request_id", ctx.RequestID,
-					"matched_pods", matchedPods,
-					"pod_request_count", getRequestCounts(p.cache, readyPods))
-			}
 		}
 	}
 
 	// no pod with prefix match, as a fallback select pod with least request count
 	if len(matchedPods) == 0 || targetPod == nil {
 		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
-		klog.InfoS("prefix_cache_fallback_least_request_count",
-			"request_id", ctx.RequestID,
-			"target_pod", targetPod.Name,
-			"target_pod_ip", targetPod.Status.PodIP,
-			"matched_pods", matchedPods,
-			"pod_request_count", getRequestCounts(p.cache, readyPods))
 	}
-
 	if len(prefixHashes) > 0 {
 		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
 	}
+
+	PrintRequestCounts(ctx.RequestID, targetPod.Name, targetPod.Status.PodIP, p.cache, readyPods)
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
@@ -351,7 +331,7 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 			targetPods = append(targetPods, podname)
 		}
 	}
-	if maxValue - minValue > podRunningRequestImbalanceAbsCount {
+	if maxValue-minValue > podRunningRequestImbalanceAbsCount {
 		// Imbalanced
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 		imbalance = true

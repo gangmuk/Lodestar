@@ -297,7 +297,6 @@ func extractGPUModelFromPod(pod *v1.Pod) string {
 
 // Route selects the optimal pod based on latency predictions
 func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	route_start_time := time.Now()
 	readyPods := pods.All()
 	var targetPod *v1.Pod = nil
 	if !received_the_first_request {
@@ -371,10 +370,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 
 	var logMessage string
-	log_construction_start_time := time.Now()
-	// Prepare for JSON strings to use in logging
 	var jsonStrings = make(map[string]string)
-
 	// 1. KV cache hit ratios
 	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(ctx.RequestID)
 	jsonStrings["allPodsKvCacheHitRatios"] = jsonStringify(allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
@@ -548,23 +544,27 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		jsonStrings["GPU"],
 		"NotDecidedYet",
 	)
-
 	routing_agent_failed := 0
-
-	log_construction_overhead := time.Since(log_construction_start_time).Milliseconds()
 	reqBody, err := json.Marshal(logMessage)
 	if err != nil {
 		klog.Errorf("failure to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
-		r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-		routing_agent_failed = 1
+		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+		if targetPod == nil {
+			return "", fmt.Errorf("fallback routing failed after marshal error, requestID: %s", ctx.RequestID)
+		}
+		ctx.SetTargetPod(targetPod)
+		return ctx.TargetAddress(), nil
 	}
-	request_prepare_overhead := time.Since(route_start_time).Milliseconds()
 	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
 	http_req_to_routing_agent, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 	if reqErr != nil {
 		klog.Errorf("failure to create request: %v, requestID: %s", reqErr, ctx.RequestID)
 		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-		routing_agent_failed = 1
+		if targetPod == nil {
+			return "", fmt.Errorf("fallback routing failed after request creation error, requestID: %s", ctx.RequestID)
+		}
+		ctx.SetTargetPod(targetPod)
+		return ctx.TargetAddress(), nil
 	}
 	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
 	/////////////////////////////////////////////////
@@ -588,7 +588,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			routing_agent_failed = 1
 		} else {
 			var routeResponse RouteResponse
-			unmarshal_start := time.Now()
 			if err := json.Unmarshal(responseBody, &routeResponse); err != nil {
 				klog.Errorf("failure to unmarshal responseBody: %v, requestID: %s", err, ctx.RequestID)
 				if strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
@@ -597,21 +596,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				}
 			}
 			resp.Body.Close()
-
-			EndToEndOverhead := routeResponse.EndToEndOverhead
-			TensorTransferOverhead := routeResponse.TensorTransferOverhead
-			InferOverhead := routeResponse.InferOverhead
-			OtherOverhead := routeResponse.OtherOverhead
-			utils.SetEndToEndOverheadForRequest(float64(EndToEndOverhead), ctx.RequestID)
-			utils.SetTensorTransferOverheadForRequest(float64(TensorTransferOverhead), ctx.RequestID)
-			utils.SetInferOverheadForRequest(float64(InferOverhead), ctx.RequestID)
-			utils.SetOtherOverheadForRequest(float64(OtherOverhead), ctx.RequestID)
-
-			unmarshal_overhead := time.Since(unmarshal_start).Milliseconds()
 			if targetPod == nil { // This means that routing-agent-service infer http request was successful
-				getpod_start := time.Now()
 				targetPod = GetPod(routeResponse.SelectedPod, readyPods)
-				getpod_overhead := time.Since(getpod_start).Milliseconds()
 				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
 				if targetPod == nil {
 					klog.Errorf("failure, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
@@ -624,7 +610,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
 					routing_agent_failed = 1
 				}
-
 				utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
 
 				//////////////////////////////////////////////////////////////////
@@ -662,8 +647,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
 					targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
-				} else if ctx.SubAlgorithm == "prefix_cache_3" {
-					klog.Infof("subAlgorithm, prefix_cache_3 routing (threshold-based), request_id: %s", ctx.RequestID)
+				} else if ctx.SubAlgorithm == "prefix_hit_threshold_or_least_request" {
+					klog.Infof("subAlgorithm, prefix_hit_threshold_or_least_request routing (threshold-based), request_id: %s", ctx.RequestID)
 					targetPod = routePrefixHitThresholdOrLeastRequest(r.cache, readyPods, podIPsWithMatchingRatios)
 				}
 				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
@@ -671,8 +656,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					klog.Warningf("targetPod is nil after routing algorithm execution, using fallback routing for requestID: %s", ctx.RequestID)
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				}
-
-				set_shared_var_start := time.Now()
 				if routeResponse.NumTrains > utils.GetNumTrains() {
 					utils.SetNumTrains(routeResponse.NumTrains)
 				}
@@ -682,23 +665,22 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
 				utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
 				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
-
-				// Set predicted rewards if present (contextual_bandit provides this)
 				if len(routeResponse.PredictedRewards) > 0 {
 					utils.SetPredictedRewards(routeResponse.PredictedRewards, ctx.RequestID)
 					utils.SetChosenPodPredictedReward(routeResponse.ChosenPodPredictedReward, ctx.RequestID)
 					klog.V(5).Infof("Predicted rewards for requestID %s: %v, chosen pod reward: %f",
 						ctx.RequestID, routeResponse.PredictedRewards, routeResponse.ChosenPodPredictedReward)
 				}
-
 				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
-				set_shared_var_overhead := time.Since(set_shared_var_start).Milliseconds()
-				if targetPod != nil {
-					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: %s, SelectedPodGeneralPodId: %s, Route EndToEndOverhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms", ctx.RequestID, targetPod.Status.PodIP, routeResponse.SelectedPodGeneralPodId, EndToEndOverhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead)
-				} else {
-					klog.V(5).Infof("RL router, requestID: %s, SelectedPod: nil, SelectedPodGeneralPodId: %s, Route EndToEndOverhead: %dms, log_construction_overhead: %dms, request_prepare_overhead: %dms, unmarshal_overhead: %dms, getpod_overhead: %dms, set_shared_var_overhead: %dms", ctx.RequestID, routeResponse.SelectedPodGeneralPodId, EndToEndOverhead, log_construction_overhead, request_prepare_overhead, unmarshal_overhead, getpod_overhead, set_shared_var_overhead)
+			} else {
+				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
+				if routeResponse.OODFallback == 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
+					klog.Infof("subAlgorithm, ood_fallback routing, request_id: %s", ctx.RequestID)
+					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+					routing_agent_failed = 1
 				}
+				utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
 			}
 		}
 	}
@@ -717,6 +699,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	if targetPod == nil {
 		klog.Errorf("CRITICAL: targetPod is still nil before setting context, requestID: %s. Using fallback routing.", ctx.RequestID)
 		targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+	}
+
+	if targetPod == nil {
+		return "", fmt.Errorf("all routing attempts failed, no available pod for requestID: %s", ctx.RequestID)
 	}
 
 	ctx.SetTargetPod(targetPod)

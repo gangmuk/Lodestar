@@ -117,6 +117,9 @@ func (c *Store) updatePodMetrics() {
 			return true
 		}
 
+		// Probe and cache vLLM version (no-op if already cached for this podIP)
+		utils.FetchAndCacheVLLMVersion(metaPod.Status.PodIP)
+
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
 		url := fmt.Sprintf("http://%s:%d/metrics", metaPod.Status.PodIP, podPort)
 		allMetrics, err := metrics.ParseMetricsURL(url)
@@ -152,8 +155,9 @@ func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string
 			continue
 		}
 
-		// TODO: we should refact metricName to fit other engine
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		// Resolve metric name based on vLLM version (e.g. gpu_cache_usage_perc -> kv_cache_usage_perc)
+		resolvedName := utils.ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", resolvedName)]
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
 			continue
@@ -188,7 +192,8 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 			continue
 		}
 
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		resolvedHistName := utils.ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", resolvedHistName)]
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
 			continue
@@ -228,7 +233,8 @@ func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[st
 		}
 		rawMetricName := metric.RawMetricName
 		scope := metric.MetricScope
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", rawMetricName)]
+		resolvedLabelName := utils.ResolveVLLMMetricName(pod.Status.PodIP, rawMetricName)
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", resolvedLabelName)]
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", rawMetricName)
 			continue

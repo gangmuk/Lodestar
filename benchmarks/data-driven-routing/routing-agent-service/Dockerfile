@@ -35,49 +35,35 @@ RUN pip install --no-cache-dir -r requirements.txt
 ########################################################
 
 COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/final_model-latency_predictor_ttft NVIDIA-A30/maxTokens_100-maxTokensStd_10/final_model-latency_predictor
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_100-maxTokensStd_10/data-processed.csv NVIDIA-A30/maxTokens_100-maxTokensStd_10/offline_training_data.csv
-
 ## output 1
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/offline_training_data.csv
 COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
-
-# COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/offline_training_data.csv
-# COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
-# COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/toolagent/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/toolagent/offline_training_data.csv
-# COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/toolagent/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/toolagent/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
-
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/offline_training_data.csv
 COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-20260216_063353 NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/conversation-2/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-20260216_063335 NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_conversation_2
 
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio9%/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio9%/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/toolagent-2/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-20260216_063258 NVIDIA-A30/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_toolagent_2
 
-# COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/before_latency_optimization/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-before_latency_optimization
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-20260213_082500 NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
 
-COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/data-processed.csv NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/offline_training_data.csv
 COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
-
 
 #############################
 ## use_given_output_length ##
 #############################
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/azure/data-processed.csv NVIDIA-A30/use_given_output_length/azure/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens NVIDIA-A30/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens
+COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens NVIDIA-A30/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens
 
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/mooncake/data-processed.csv NVIDIA-A30/use_given_output_length/mooncake/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens NVIDIA-A30/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens
+COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens NVIDIA-A30/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens
 
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/gangmuk-prefix/data-processed.csv NVIDIA-A30/use_given_output_length/gangmuk-prefix/offline_training_data.csv
-COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens NVIDIA-A30/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear-without_output_tokens
+COPY workload-and-experiment_results/NVIDIA-A30/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens NVIDIA-A30/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens
+
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio9%/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio9%
+
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio47%/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_15000 NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000
+
+COPY workload-and-experiment_results/NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio47%/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_30000 NVIDIA-A30/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_30000
 
 
 ###############################################################################

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -749,6 +750,9 @@ var (
 
 	SelectedPodGPUMutex sync.RWMutex
 	SelectedPodGPU      = make(map[string]string) // requestID -> selected pod GPU
+
+	vllmVersionMutex sync.RWMutex
+	vllmVersion      = make(map[string]string) // podIP -> vLLM version string e.g. "0.11.0"
 )
 
 func init() {
@@ -882,6 +886,100 @@ func init() {
 	klog.Info("Initialized global variables for AIBRIX RL Router")
 }
 
+// FetchAndCacheVLLMVersion probes the vLLM /version endpoint for the given podIP
+// and caches the result. Subsequent calls for the same podIP are no-ops.
+func FetchAndCacheVLLMVersion(podIP string) error {
+	// Fast path: already cached
+	vllmVersionMutex.RLock()
+	_, exists := vllmVersion[podIP]
+	vllmVersionMutex.RUnlock()
+	if exists {
+		return nil
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := fmt.Sprintf("http://%s:%d/version", podIP, PodPort)
+	resp, err := client.Get(url)
+	if err != nil {
+		klog.Warningf("Failed to fetch vLLM version from %s: %v, defaulting to unknown", podIP, err)
+		vllmVersionMutex.Lock()
+		vllmVersion[podIP] = "unknown"
+		vllmVersionMutex.Unlock()
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		klog.Warningf("Failed to read vLLM version response from %s: %v, defaulting to unknown", podIP, err)
+		vllmVersionMutex.Lock()
+		vllmVersion[podIP] = "unknown"
+		vllmVersionMutex.Unlock()
+		return err
+	}
+
+	var result struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		klog.Warningf("Failed to parse vLLM version JSON from %s: %v, defaulting to unknown", podIP, err)
+		vllmVersionMutex.Lock()
+		vllmVersion[podIP] = "unknown"
+		vllmVersionMutex.Unlock()
+		return err
+	}
+
+	vllmVersionMutex.Lock()
+	vllmVersion[podIP] = result.Version
+	vllmVersionMutex.Unlock()
+	klog.Infof("Cached vLLM version for pod %s: %s", podIP, result.Version)
+	return nil
+}
+
+// GetVLLMVersion returns the cached vLLM version for the given podIP.
+// Returns "unknown" if not found.
+func GetVLLMVersion(podIP string) string {
+	vllmVersionMutex.RLock()
+	defer vllmVersionMutex.RUnlock()
+	if v, ok := vllmVersion[podIP]; ok {
+		return v
+	}
+	return "unknown"
+}
+
+// ResolveVLLMMetricName maps logical metric names to the correct Prometheus
+// metric name based on the vLLM version running on the given pod.
+// vLLM >= 0.7 renamed gpu_cache_usage_perc/cpu_cache_usage_perc to kv_cache_usage_perc.
+func ResolveVLLMMetricName(podIP string, metricName string) string {
+	version := GetVLLMVersion(podIP)
+	if version == "unknown" {
+		return metricName
+	}
+
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return metricName
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return metricName
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return metricName
+	}
+
+	// vLLM >= 0.7 uses kv_cache_usage_perc instead of gpu/cpu_cache_usage_perc
+	useNewNames := major > 0 || minor >= 7
+	if useNewNames {
+		switch metricName {
+		case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
+			return "kv_cache_usage_perc"
+		}
+	}
+	return metricName
+}
+
 var PrevRewardForRequest map[string]float64
 var PrevRewardForRequestMutex sync.RWMutex
 
@@ -951,8 +1049,8 @@ func GetFailureFallbackForRequest(requestID string) int {
 	if val, ok := FailureFallbackForRequest[requestID]; ok {
 		return val
 	}
-	klog.Errorf("Error, Failed GetFailureFallbackForRequest for request ID: %s, not found, returning 0", requestID)
-	return 1
+	klog.V(5).Infof("Error, Failed GetFailureFallbackForRequest for request ID: %s, not found, returning 0", requestID)
+	return -1
 }
 
 func CleanupFailureFallbackForRequest(requestID string) {
@@ -1135,101 +1233,101 @@ func GetGPUModelFromNode(nodeName string) (string, error) {
 	return "", fmt.Errorf("node %s does not have GPU label", nodeName)
 }
 
-func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
-	EndToEndOverheadMutex.RLock()
-	defer EndToEndOverheadMutex.RUnlock()
-	if val, ok := EndToEndOverhead[requestID]; ok {
-		return val, true
-	}
-	klog.Errorf("Error, Failed GetEndToEndOverheadForRequest for request ID: %s, not found, returning 0", requestID)
-	return 0, false
-}
+// func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
+// 	EndToEndOverheadMutex.RLock()
+// 	defer EndToEndOverheadMutex.RUnlock()
+// 	if val, ok := EndToEndOverhead[requestID]; ok {
+// 		return val, true
+// 	}
+// 	klog.Errorf("Error, Failed GetEndToEndOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+// 	return 0, false
+// }
 
-func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
-	EndToEndOverheadMutex.Lock()
-	defer EndToEndOverheadMutex.Unlock()
-	EndToEndOverhead[requestID] = endToEndOverhead
-	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
-}
+// func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
+// 	EndToEndOverheadMutex.Lock()
+// 	defer EndToEndOverheadMutex.Unlock()
+// 	EndToEndOverhead[requestID] = endToEndOverhead
+// 	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
+// }
 
-func CleanupEndToEndOverheadForRequest(requestID string) {
-	EndToEndOverheadMutex.Lock()
-	defer EndToEndOverheadMutex.Unlock()
-	delete(EndToEndOverhead, requestID)
-	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
-}
+// func CleanupEndToEndOverheadForRequest(requestID string) {
+// 	EndToEndOverheadMutex.Lock()
+// 	defer EndToEndOverheadMutex.Unlock()
+// 	delete(EndToEndOverhead, requestID)
+// 	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
+// }
 
-func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, requestID string) {
-	TensorTransferOverheadMutex.Lock()
-	defer TensorTransferOverheadMutex.Unlock()
-	TensorTransferOverhead[requestID] = tensorTransferOverhead
-	klog.V(5).Infof("SetTensorTransferOverheadForRequest, requestID: %s, tensorTransferOverhead: %f", requestID, tensorTransferOverhead)
-}
+// func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, requestID string) {
+// 	TensorTransferOverheadMutex.Lock()
+// 	defer TensorTransferOverheadMutex.Unlock()
+// 	TensorTransferOverhead[requestID] = tensorTransferOverhead
+// 	klog.V(5).Infof("SetTensorTransferOverheadForRequest, requestID: %s, tensorTransferOverhead: %f", requestID, tensorTransferOverhead)
+// }
 
-func GetTensorTransferOverheadForRequest(requestID string) (float64, bool) {
-	TensorTransferOverheadMutex.RLock()
-	defer TensorTransferOverheadMutex.RUnlock()
-	if val, ok := TensorTransferOverhead[requestID]; ok {
-		return val, true
-	}
-	klog.Errorf("Error, Failed GetTensorTransferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
-	return 0, false
-}
+// func GetTensorTransferOverheadForRequest(requestID string) (float64, bool) {
+// 	TensorTransferOverheadMutex.RLock()
+// 	defer TensorTransferOverheadMutex.RUnlock()
+// 	if val, ok := TensorTransferOverhead[requestID]; ok {
+// 		return val, true
+// 	}
+// 	klog.Errorf("Error, Failed GetTensorTransferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+// 	return 0, false
+// }
 
-func CleanupTensorTransferOverheadForRequest(requestID string) {
-	TensorTransferOverheadMutex.Lock()
-	defer TensorTransferOverheadMutex.Unlock()
-	delete(TensorTransferOverhead, requestID)
-	klog.V(5).Infof("CleanupTensorTransferOverheadForRequest, requestID: %s", requestID)
-}
+// func CleanupTensorTransferOverheadForRequest(requestID string) {
+// 	TensorTransferOverheadMutex.Lock()
+// 	defer TensorTransferOverheadMutex.Unlock()
+// 	delete(TensorTransferOverhead, requestID)
+// 	klog.V(5).Infof("CleanupTensorTransferOverheadForRequest, requestID: %s", requestID)
+// }
 
-func SetInferOverheadForRequest(inferOverhead float64, requestID string) {
-	InferOverheadMutex.Lock()
-	defer InferOverheadMutex.Unlock()
-	InferOverhead[requestID] = inferOverhead
-	klog.V(5).Infof("SetInferOverheadForRequest, requestID: %s, inferOverhead: %f", requestID, inferOverhead)
-}
+// func SetInferOverheadForRequest(inferOverhead float64, requestID string) {
+// 	InferOverheadMutex.Lock()
+// 	defer InferOverheadMutex.Unlock()
+// 	InferOverhead[requestID] = inferOverhead
+// 	klog.V(5).Infof("SetInferOverheadForRequest, requestID: %s, inferOverhead: %f", requestID, inferOverhead)
+// }
 
-func GetInferOverheadForRequest(requestID string) (float64, bool) {
-	InferOverheadMutex.RLock()
-	defer InferOverheadMutex.RUnlock()
-	if val, ok := InferOverhead[requestID]; ok {
-		return val, true
-	}
-	klog.Errorf("Error, Failed GetInferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
-	return 0, false
-}
+// func GetInferOverheadForRequest(requestID string) (float64, bool) {
+// 	InferOverheadMutex.RLock()
+// 	defer InferOverheadMutex.RUnlock()
+// 	if val, ok := InferOverhead[requestID]; ok {
+// 		return val, true
+// 	}
+// 	klog.Errorf("Error, Failed GetInferOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+// 	return 0, false
+// }
 
-func CleanupInferOverheadForRequest(requestID string) {
-	InferOverheadMutex.Lock()
-	defer InferOverheadMutex.Unlock()
-	delete(InferOverhead, requestID)
-	klog.V(5).Infof("CleanupInferOverheadForRequest, requestID: %s", requestID)
-}
+// func CleanupInferOverheadForRequest(requestID string) {
+// 	InferOverheadMutex.Lock()
+// 	defer InferOverheadMutex.Unlock()
+// 	delete(InferOverhead, requestID)
+// 	klog.V(5).Infof("CleanupInferOverheadForRequest, requestID: %s", requestID)
+// }
 
-func SetOtherOverheadForRequest(otherOverhead float64, requestID string) {
-	OtherOverheadMutex.Lock()
-	defer OtherOverheadMutex.Unlock()
-	OtherOverhead[requestID] = otherOverhead
-	klog.V(5).Infof("SetOtherOverheadForRequest, requestID: %s, otherOverhead: %f", requestID, otherOverhead)
-}
+// func SetOtherOverheadForRequest(otherOverhead float64, requestID string) {
+// 	OtherOverheadMutex.Lock()
+// 	defer OtherOverheadMutex.Unlock()
+// 	OtherOverhead[requestID] = otherOverhead
+// 	klog.V(5).Infof("SetOtherOverheadForRequest, requestID: %s, otherOverhead: %f", requestID, otherOverhead)
+// }
 
-func GetOtherOverheadForRequest(requestID string) (float64, bool) {
-	OtherOverheadMutex.RLock()
-	defer OtherOverheadMutex.RUnlock()
-	if val, ok := OtherOverhead[requestID]; ok {
-		return val, true
-	}
-	klog.Errorf("Error, Failed GetOtherOverheadForRequest for request ID: %s, not found, returning 0", requestID)
-	return 0, false
-}
+// func GetOtherOverheadForRequest(requestID string) (float64, bool) {
+// 	OtherOverheadMutex.RLock()
+// 	defer OtherOverheadMutex.RUnlock()
+// 	if val, ok := OtherOverhead[requestID]; ok {
+// 		return val, true
+// 	}
+// 	klog.Errorf("Error, Failed GetOtherOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+// 	return 0, false
+// }
 
-func CleanupOtherOverheadForRequest(requestID string) {
-	OtherOverheadMutex.Lock()
-	defer OtherOverheadMutex.Unlock()
-	delete(OtherOverhead, requestID)
-	klog.V(5).Infof("CleanupOtherOverheadForRequest, requestID: %s", requestID)
-}
+// func CleanupOtherOverheadForRequest(requestID string) {
+// 	OtherOverheadMutex.Lock()
+// 	defer OtherOverheadMutex.Unlock()
+// 	delete(OtherOverhead, requestID)
+// 	klog.V(5).Infof("CleanupOtherOverheadForRequest, requestID: %s", requestID)
+// }
 
 func SetNumTrains(numTrains int) {
 	NumTrains = numTrains
@@ -2362,7 +2460,8 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 		return fmt.Errorf("error parsing metric families from pod %s: %v", pod.Status.PodIP, err)
 	}
 
-	fullMetricName := fmt.Sprintf("vllm:%s", metricName)
+	resolvedName := ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+	fullMetricName := fmt.Sprintf("vllm:%s", resolvedName)
 	metricFamily, exists := allMetrics[fullMetricName]
 
 	// Select the appropriate storage and mutex based on metricName

@@ -93,10 +93,23 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
-	// requestID := uuid.New().String()
-	// klog.InfoS("processing request", "requestID", requestID)
 	completed := false
+	requestCounted := false
 	requestID := ""
+
+	// Ensure exactly-once cleanup on any exit path (context cancel, EOF, recv error, send error).
+	// If the request was counted (AddRequestCount called) but not yet completed
+	// (DoneRequestTrace not yet called), this defer decrements the counter.
+	// It also always returns the routing context to the pool.
+	defer func() {
+		if requestCounted && routerCtx != nil {
+			s.cache.DoneRequestCount(routerCtx, routerCtx.RequestID, model, traceTerm)
+		}
+		if routerCtx != nil {
+			routerCtx.Delete()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -129,6 +142,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 						"requestID", routerCtx.RequestID)
 				}
 				ctx = routerCtx
+				requestCounted = true // AddRequestCount was called inside HandleRequestBody
 			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
@@ -142,20 +156,31 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			if isRespError {
 				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", routerCtx.RequestID)
 				klog.Errorf("Response body processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, routerCtx.RequestID, routerCtx.TargetAddress(), model)
-				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+				resp = generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
 			} else {
+				prevCompleted := completed
 				resp, completed = s.HandleResponseBody(ctx, req, user, rpm, model, stream, traceTerm, completed)
+				if !prevCompleted && completed {
+					// DoneRequestTrace was called inside HandleResponseBody's defer
+					requestCounted = false
+				}
 			}
 		default:
 			klog.Errorf("Unknown Request type %+v\n", v)
 		}
 
-		if err := srv.Send(resp); err != nil && len(model) > 0 {
-			s.cache.DoneRequestCount(routerCtx, routerCtx.RequestID, model, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
+		if err := srv.Send(resp); err != nil {
+			// context.Canceled typically means Envoy already finished delivering
+			// the response to the client and tore down the ext_proc stream.
+			// This is benign in streamed response mode — the client got all data.
+			if ctx.Err() == context.Canceled {
+				klog.V(4).InfoS("srv.Send failed after context canceled (client/Envoy finished), ending stream", "requestID", requestID)
+			} else {
+				klog.ErrorS(err, "srv.Send failed, ending stream", "requestID", requestID)
 			}
-			klog.ErrorS(err, "Error, requestID", routerCtx.RequestID)
+			// Return immediately — the top-level defer handles cleanup
+			// (DoneRequestCount if requestCounted is still true, and routerCtx.Delete).
+			return fmt.Errorf("srv.Send failed for request %s: %w", requestID, err)
 		}
 	}
 }

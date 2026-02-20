@@ -411,6 +411,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			"invalid routing context"), complete
 	}
 
+	// Ensure exactly-once decrement: this defer fires on any return path after
+	// routerCtx is validated. The top-level defer in Process() handles cleanup
+	// if this defer does NOT fire (e.g., early exit before completion).
+	defer func() {
+		if !hasCompleted && complete && routerCtx != nil {
+			s.cache.DoneRequestTrace(routerCtx, routerCtx.RequestID, model, promptTokens, completionTokens, traceTerm)
+		}
+	}()
+
 	timingObj, exists := utils.RequestTimings.Load(routerCtx.RequestID)
 	var timing *RequestTiming
 	if exists {
@@ -419,7 +428,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	currentTime := time.Now()
 	if timing != nil {
 		if stream {
-			usage_, complete, errorResponse := s.handleStreamingResponse(routerCtx.RequestID, b.ResponseBody.GetBody())
+			var usage_ openai.CompletionUsage
+			var errorResponse *extProcPb.ProcessingResponse
+			usage_, complete, errorResponse = s.handleStreamingResponse(routerCtx.RequestID, b.ResponseBody.GetBody())
 			usage = usage_
 			if errorResponse != nil {
 				return errorResponse, complete
@@ -506,7 +517,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
 			utils.CleanupPredictedRewards(routerCtx.RequestID)
 			utils.CleanupChosenPodPredictedReward(routerCtx.RequestID)
-			utils.CleanupEndToEndOverheadForRequest(routerCtx.RequestID)
 			utils.CleanupSelectedPodGPU(routerCtx.RequestID)
 			utils.CleanupOODFallbackForRequest(routerCtx.RequestID)
 			utils.CleanupFailureFallbackForRequest(routerCtx.RequestID)
@@ -562,15 +572,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			)
 		}
 	}
-
-	defer func() {
-		if !hasCompleted && complete {
-			s.cache.DoneRequestTrace(routerCtx, routerCtx.RequestID, model, promptTokens, completionTokens, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
 
 	if stream {
 		t := &http.Response{
@@ -945,13 +946,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	predictedRewards := utils.GetPredictedRewards(routerCtx.RequestID)
 	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 	headers, jsonStrings["predictedRewards"] = addMetricToHeaders(headers, HeaderPredictedRewards, predictedRewards, utils.GetPredictedRewardsMutex())
-	endToEndOverhead, _ := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
-	TensorTransferOverhead, _ := utils.GetTensorTransferOverheadForRequest(routerCtx.RequestID)
-	InferOverhead, _ := utils.GetInferOverheadForRequest(routerCtx.RequestID)
-	OtherOverhead, _ := utils.GetOtherOverheadForRequest(routerCtx.RequestID)
+
 	oodFallback := utils.GetOODFallbackForRequest(routerCtx.RequestID)
 	failureFallback := utils.GetFailureFallbackForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%f@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@EndToEndOverhead@%f@TensorTransferOverhead@%f@InferOverhead@%f@OtherOverhead@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%d@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -984,10 +982,6 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		routerCtx.Iteration,
 		routerCtx.SubAlgorithm,
 		prev_reward,
-		endToEndOverhead,
-		TensorTransferOverhead,
-		InferOverhead,
-		OtherOverhead,
 		jsonStrings["GPU"],
 		selectedPodGPU,
 		failureFallback,
