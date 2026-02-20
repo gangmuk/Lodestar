@@ -55,7 +55,6 @@ func NewLeastRequestRouter() (types.Router, error) {
 // Routes request based of least active request among input ready pods
 func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	targetPod := selectTargetPodWithLeastRequestCount(r.cache, pods.All())
-
 	// Use fallback if no valid metrics
 	if targetPod == nil {
 		klog.Warning("no pods with valid metrics found for least-request routing strategy; selecting a pod randomly as fallback",
@@ -69,6 +68,8 @@ func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
+
+	PrintRequestCounts(ctx.RequestID, targetPod.Name, targetPod.Status.PodIP, r.cache, pods.All())
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil

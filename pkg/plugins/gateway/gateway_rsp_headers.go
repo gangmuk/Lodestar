@@ -33,14 +33,6 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 
 	var isProcessingError bool
 	var processingErrorCode int
-	defer func() {
-		if isProcessingError {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, 0)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{

@@ -90,7 +90,12 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 }
 
 func (r *RoutingContext) TargetAddress() string {
-	return r.targetAddress(r.TargetPod())
+	pod := r.TargetPod()
+	if pod == nil {
+		klog.Errorf("TargetAddress called with nil TargetPod")
+		return ""
+	}
+	return r.targetAddress(pod)
 }
 
 func (r *RoutingContext) TargetAddressWithoutPort() string {
