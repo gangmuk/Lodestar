@@ -6,7 +6,8 @@ routing_policy="rl-online-router"
 # subAlgorithm="least_latency"
 subAlgorithm="contextual_bandit_perpodmodel_checkpoint_negative_linear"
 
-llm_model="llama-3-8b-instruct"
+# llm_model="llama-3-8b-instruct"
+llm_model="qwen25-1-5b-instruct"
 random_request_id=$((RANDOM % 1000))
 # routing_policy="preble"
 
