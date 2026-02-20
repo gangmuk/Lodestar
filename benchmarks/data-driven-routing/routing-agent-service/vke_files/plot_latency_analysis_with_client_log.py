@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.patches import Patch
 from pathlib import Path
 import argparse
 import sys
@@ -46,17 +47,29 @@ def parse_log_file(log_file_path):
                     
                     e2e_str = line.split('E2E: ')[1].split('ms')[0]
                     e2e = float(e2e_str)
-                    
+
+                    # Extract input and output token counts
+                    input_tokens = None
+                    output_tokens = None
+                    if 'Input: ' in line:
+                        input_str = line.split('Input: ')[1].split(',')[0]
+                        input_tokens = int(input_str)
+                    if 'Output: ' in line:
+                        output_str = line.split('Output: ')[1].split(',')[0]
+                        output_tokens = int(output_str)
+
                     # Use sequential counter as timestamp
                     timestamp = len(data)
-                    
+
                     data.append({
                         'request_id': req_id,
                         'ttft': ttft,
                         'avg_tpot': avg_tpot,
                         'e2e': e2e,
                         'iteration': iteration,
-                        'timestamp': timestamp
+                        'timestamp': timestamp,
+                        'input_tokens': input_tokens,
+                        'output_tokens': output_tokens
                     })
                 except Exception as e:
                     continue
@@ -142,6 +155,37 @@ def calculate_cdf(data):
     return sorted_data, cdf_values
 
 
+def categorize_input_length(tokens):
+    """Categorize input tokens into short/medium/long groups."""
+    if tokens is None or np.isnan(tokens):
+        return None
+    if tokens < 1000:
+        return 'Short (0-999)'
+    elif tokens < 5000:
+        return 'Medium (1K-5K)'
+    else:
+        return 'Long (5K+)'
+
+
+def get_input_length_stats(df, metric):
+    """Get statistics for each input length group."""
+    groups = ['Short (0-999)', 'Medium (1K-5K)', 'Long (5K+)']
+    stats = {}
+    for group in groups:
+        group_df = df[df['input_length_group'] == group]
+        data = group_df[metric].dropna()
+        if len(data) > 0:
+            stats[group] = {
+                'count': len(data),
+                'avg': data.mean(),
+                'p50': np.percentile(data, 50),
+                'p90': np.percentile(data, 90),
+                'p99': np.percentile(data, 99),
+                'p999': np.percentile(data, 99.9)
+            }
+    return stats
+
+
 def plot_comprehensive_analysis(df, window_df, transitions, output_path):
     """
     Create comprehensive analysis plot with time series (top) and CDF (bottom).
@@ -149,12 +193,25 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
     # Set up the style
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
-    
+
+    # Add input length grouping to dataframe
+    has_input_tokens = 'input_tokens' in df.columns and df['input_tokens'].notna().any()
+    if has_input_tokens:
+        df['input_length_group'] = df['input_tokens'].apply(categorize_input_length)
+
     # Create figure with gridspec for custom layout
-    fig = plt.figure(figsize=(18, 16))
-    # 9 rows, 3 columns: 3 rows for time series (full width), 1 row for CDF, 3 rows for bar charts (one per row)
-    gs = gridspec.GridSpec(9, 3, figure=fig, height_ratios=[0.6, 0.6, 0.6, 0.1, 0.7, 0.1, 0.5, 0.5, 0.5], 
-                          hspace=0.4, wspace=0.3, left=0.06, right=0.98, top=0.96, bottom=0.04)
+    # Adjust layout based on whether input tokens are available
+    if has_input_tokens:
+        fig = plt.figure(figsize=(18, 30))
+        # 14 rows: 3 time series + spacer + per-iter CDF + spacer + all-req CDF + spacer + 3 bars + spacer + input-length CDF + input-length bars
+        gs = gridspec.GridSpec(14, 3, figure=fig,
+                              height_ratios=[0.5, 0.5, 0.5, 0.08, 0.6, 0.08, 0.6, 0.08, 0.6, 0.6, 0.6, 0.08, 0.6, 0.8],
+                              hspace=0.4, wspace=0.3, left=0.06, right=0.98, top=0.97, bottom=0.03)
+    else:
+        fig = plt.figure(figsize=(18, 22))
+        # 11 rows: 3 time series + spacer + per-iter CDF + spacer + all-req CDF + spacer + 3 bars
+        gs = gridspec.GridSpec(11, 3, figure=fig, height_ratios=[0.6, 0.6, 0.6, 0.1, 0.7, 0.1, 0.7, 0.1, 0.7, 0.7, 0.7],
+                              hspace=0.4, wspace=0.3, left=0.06, right=0.98, top=0.96, bottom=0.04)
     
     # Color schemes
     color_rps = '#3366CC'
@@ -228,38 +285,39 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
         ax_tpot.axvline(x=trans_time, color=color_transition, linestyle='--', linewidth=1.2, alpha=0.6)
     
     # ========================================================================
-    # CDF PLOTS (Bottom Row - 3 Columns)
+    # CDF PLOTS - Per Iteration (3 Columns)
     # ========================================================================
-    
+
     ax_cdf_ttft = plt.subplot(gs[4, 0])
     ax_cdf_tpot = plt.subplot(gs[4, 1])
     ax_cdf_e2e = plt.subplot(gs[4, 2])
-    
+
     cdf_axes = [ax_cdf_ttft, ax_cdf_tpot, ax_cdf_e2e]
     metrics = [
-        {'column': 'ttft', 'title': 'TTFT CDF', 'xlabel': 'TTFT (ms)'},
-        {'column': 'avg_tpot', 'title': 'TPOT CDF', 'xlabel': 'TPOT (ms)'},
-        {'column': 'e2e', 'title': 'End-to-End CDF', 'xlabel': 'E2E Latency (ms)'}
+        {'column': 'ttft', 'title': 'TTFT CDF (Per Iteration)', 'xlabel': 'TTFT (ms)'},
+        {'column': 'avg_tpot', 'title': 'TPOT CDF (Per Iteration)', 'xlabel': 'TPOT (ms)'},
+        {'column': 'e2e', 'title': 'End-to-End CDF (Per Iteration)', 'xlabel': 'E2E Latency (ms)'}
     ]
-    
+
     for ax, metric_config in zip(cdf_axes, metrics):
         metric = metric_config['column']
-        
+
         # Plot CDF for each iteration
         for iter_idx, iteration in enumerate(iterations):
             iter_df = df[df['iteration'] == iteration]
             data = iter_df[metric].dropna()
-            
+
             if len(data) > 0:
                 sorted_data, cdf_values = calculate_cdf(data)
+                avg = data.mean()
                 p50 = np.percentile(data, 50)
                 p99 = np.percentile(data, 99)
-                
+
                 color = iter_colors[iter_idx % len(iter_colors)]
-                label = f'Iter {iteration} (n={len(data)}, P50={p50:.0f}, P99={p99:.0f})'
-                ax.plot(sorted_data, cdf_values * 100, 
+                label = f'Iter {iteration} (n={len(data)}, Avg={avg:.0f}, P50={p50:.0f}, P99={p99:.0f})'
+                ax.plot(sorted_data, cdf_values * 100,
                        color=color, linewidth=1.5, alpha=0.85, label=label)
-        
+
         # Formatting
         ax.set_xlabel(metric_config['xlabel'], fontsize=10, fontweight='bold')
         ax.set_ylabel('CDF (%)', fontsize=10, fontweight='bold')
@@ -269,19 +327,68 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
         ax.set_xlim(left=0)
         ax.legend(loc='lower right', fontsize=8, framealpha=0.95)
         ax.set_facecolor('#F5F5F5')
-        
+
         # Add percentile lines
         ax.axhline(y=50, color='gray', linestyle=':', linewidth=1, alpha=0.5)
         ax.axhline(y=95, color='gray', linestyle=':', linewidth=1, alpha=0.5)
         ax.axhline(y=99, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+
+    # ========================================================================
+    # CDF PLOTS - All Requests (3 Columns)
+    # ========================================================================
+
+    ax_cdf_all_ttft = plt.subplot(gs[6, 0])
+    ax_cdf_all_tpot = plt.subplot(gs[6, 1])
+    ax_cdf_all_e2e = plt.subplot(gs[6, 2])
+
+    cdf_all_axes = [ax_cdf_all_ttft, ax_cdf_all_tpot, ax_cdf_all_e2e]
+    all_metrics = [
+        {'column': 'ttft', 'title': 'TTFT CDF (All Requests)', 'xlabel': 'TTFT (ms)'},
+        {'column': 'avg_tpot', 'title': 'TPOT CDF (All Requests)', 'xlabel': 'TPOT (ms)'},
+        {'column': 'e2e', 'title': 'End-to-End CDF (All Requests)', 'xlabel': 'E2E Latency (ms)'}
+    ]
+
+    all_req_color = '#34495E'  # Dark gray for all requests
+
+    for ax, metric_config in zip(cdf_all_axes, all_metrics):
+        metric = metric_config['column']
+        data = df[metric].dropna()
+
+        if len(data) > 0:
+            sorted_data, cdf_values = calculate_cdf(data)
+            avg = data.mean()
+            p50 = np.percentile(data, 50)
+            p90 = np.percentile(data, 90)
+            p99 = np.percentile(data, 99)
+            p999 = np.percentile(data, 99.9)
+
+            label = f'All (n={len(data)}, Avg={avg:.0f}, P50={p50:.0f}, P90={p90:.0f}, P99={p99:.0f}, P99.9={p999:.0f})'
+            ax.plot(sorted_data, cdf_values * 100,
+                   color=all_req_color, linewidth=2.0, alpha=0.9, label=label)
+
+        # Formatting
+        ax.set_xlabel(metric_config['xlabel'], fontsize=10, fontweight='bold')
+        ax.set_ylabel('CDF (%)', fontsize=10, fontweight='bold')
+        ax.set_title(metric_config['title'], fontsize=11, fontweight='bold', pad=8)
+        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        ax.set_ylim(0, 100)
+        ax.set_xlim(left=0)
+        ax.legend(loc='lower right', fontsize=8, framealpha=0.95)
+        ax.set_facecolor('#F5F5F5')
+
+        # Add percentile lines
+        ax.axhline(y=50, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+        ax.axhline(y=90, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+        ax.axhline(y=99, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+        ax.axhline(y=99.9, color='gray', linestyle=':', linewidth=1, alpha=0.5)
     
     # ========================================================================
     # BAR CHARTS (3 Rows - One per row, full width)
     # ========================================================================
-    
-    ax_bar_ttft = plt.subplot(gs[6, :])
-    ax_bar_tpot = plt.subplot(gs[7, :])
-    ax_bar_e2e = plt.subplot(gs[8, :])
+
+    ax_bar_ttft = plt.subplot(gs[8, :])
+    ax_bar_tpot = plt.subplot(gs[9, :])
+    ax_bar_e2e = plt.subplot(gs[10, :])
     
     bar_axes = [ax_bar_ttft, ax_bar_tpot, ax_bar_e2e]
     bar_metrics = [
@@ -339,20 +446,25 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
                      color='#34495E', label='All', edgecolor='black', linewidth=1)
         bars_list.append((bars, all_stats))
         
-        # Add value labels on top of each bar
+        # Add value labels on top of each bar (skip zero/invalid values)
         for bars, stats in bars_list:
             for bar, value in zip(bars, stats):
+                # Skip labels for zero, NaN, or very small values
+                if value is None or np.isnan(value) or value < 0.1:
+                    continue
                 height = bar.get_height()
+                if height < 0.1:
+                    continue
                 # Format value based on magnitude
                 if value < 10:
                     label_text = f'{value:.1f}'
                 else:
                     label_text = f'{int(value)}'
-                
+
                 ax.text(bar.get_x() + bar.get_width()/2., height,
                        label_text,
                        ha='center', va='bottom', fontsize=7, rotation=90,
-                       fontweight='normal')
+                       fontweight='normal', clip_on=True)
         
         # Formatting
         # ax.set_xlabel('Percentile', fontsize=10, fontweight='bold')
@@ -364,10 +476,137 @@ def plot_comprehensive_analysis(df, window_df, transitions, output_path):
         ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5, axis='y')
         ax.set_facecolor('#F5F5F5')
         ax.set_ylim(bottom=0)
-    
+
+    # ========================================================================
+    # INPUT LENGTH GROUPED PLOTS (if input tokens available)
+    # ========================================================================
+
+    if has_input_tokens:
+        # Colors for input length groups
+        input_length_colors = {
+            'Short (0-999)': '#2ecc71',    # Green
+            'Medium (1K-5K)': '#3498db',   # Blue
+            'Long (5K+)': '#e74c3c'        # Red
+        }
+        input_length_groups = ['Short (0-999)', 'Medium (1K-5K)', 'Long (5K+)']
+
+        # CDF plots by input length
+        ax_cdf_il_ttft = plt.subplot(gs[12, 0])
+        ax_cdf_il_tpot = plt.subplot(gs[12, 1])
+        ax_cdf_il_e2e = plt.subplot(gs[12, 2])
+
+        il_cdf_axes = [ax_cdf_il_ttft, ax_cdf_il_tpot, ax_cdf_il_e2e]
+        il_metrics = [
+            {'column': 'ttft', 'title': 'TTFT CDF by Input Length', 'xlabel': 'TTFT (ms)'},
+            {'column': 'avg_tpot', 'title': 'TPOT CDF by Input Length', 'xlabel': 'TPOT (ms)'},
+            {'column': 'e2e', 'title': 'E2E CDF by Input Length', 'xlabel': 'E2E Latency (ms)'}
+        ]
+
+        for ax, metric_config in zip(il_cdf_axes, il_metrics):
+            metric = metric_config['column']
+
+            for group in input_length_groups:
+                group_df = df[df['input_length_group'] == group]
+                data = group_df[metric].dropna()
+
+                if len(data) > 0:
+                    sorted_data, cdf_values = calculate_cdf(data)
+                    avg = data.mean()
+                    p50 = np.percentile(data, 50)
+                    p99 = np.percentile(data, 99)
+
+                    color = input_length_colors[group]
+                    label = f'{group} (n={len(data)}, Avg={avg:.0f}, P50={p50:.0f}, P99={p99:.0f})'
+                    ax.plot(sorted_data, cdf_values * 100,
+                           color=color, linewidth=1.5, alpha=0.85, label=label)
+
+            ax.set_xlabel(metric_config['xlabel'], fontsize=10, fontweight='bold')
+            ax.set_ylabel('CDF (%)', fontsize=10, fontweight='bold')
+            ax.set_title(metric_config['title'], fontsize=11, fontweight='bold', pad=8)
+            ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+            ax.set_ylim(0, 100)
+            ax.set_xlim(left=0)
+            ax.legend(loc='lower right', fontsize=8, framealpha=0.95)
+            ax.set_facecolor('#F5F5F5')
+
+            ax.axhline(y=50, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+            ax.axhline(y=90, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+            ax.axhline(y=99, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+
+        # Bar charts by input length (Avg, P50, P90, P99, P99.9)
+        ax_bar_il = plt.subplot(gs[13, :])
+
+        il_percentiles = ['Avg', 'P50', 'P90', 'P99', 'P99.9']
+        il_metrics_bar = ['ttft', 'avg_tpot', 'e2e']
+        il_metric_labels = ['TTFT', 'TPOT', 'E2E']
+
+        # Create grouped bar chart with input length groups
+        n_percentiles = len(il_percentiles)
+        n_metrics = len(il_metrics_bar)
+
+        x_base = np.arange(n_metrics)  # Base positions for each metric
+        group_width = 0.30  # Wider width for each input length group
+        bar_width = group_width / n_percentiles * 1.1  # Wider bars
+
+        # Alpha values for different percentiles (darker = higher percentile)
+        percentile_alphas = [0.4, 0.55, 0.7, 0.85, 1.0]
+
+        for metric_idx, metric in enumerate(il_metrics_bar):
+            for grp_idx, group in enumerate(input_length_groups):
+                group_df = df[df['input_length_group'] == group]
+                data = group_df[metric].dropna()
+
+                if len(data) > 0:
+                    stats_vals = [
+                        data.mean(),
+                        np.percentile(data, 50),
+                        np.percentile(data, 90),
+                        np.percentile(data, 99),
+                        np.percentile(data, 99.9)
+                    ]
+
+                    for p_idx, stat_val in enumerate(stats_vals):
+                        x_pos_bar = metric_idx + (grp_idx - 1) * group_width + (p_idx - 2) * bar_width * 0.9
+                        color = input_length_colors[group]
+                        alpha = percentile_alphas[p_idx]
+                        bar = ax_bar_il.bar(x_pos_bar, stat_val, bar_width * 0.85, alpha=alpha, color=color)
+
+                        # Add value label (skip small values)
+                        if stat_val >= 0.1:
+                            label_text = f'{stat_val:.0f}' if stat_val >= 10 else f'{stat_val:.1f}'
+                            ax_bar_il.text(x_pos_bar, stat_val, label_text, ha='center', va='bottom',
+                                          fontsize=8, rotation=90, clip_on=True)
+
+        ax_bar_il.set_xticks(x_base)
+        ax_bar_il.set_xticklabels(il_metric_labels, fontsize=10)
+        ax_bar_il.set_ylabel('Latency (ms)', fontsize=10, fontweight='bold')
+        ax_bar_il.set_title('Latency Statistics by Input Length Group (Avg, P50, P90, P99, P99.9)',
+                           fontsize=11, fontweight='bold', pad=8)
+        ax_bar_il.grid(True, alpha=0.3, linestyle='-', linewidth=0.5, axis='y')
+        ax_bar_il.set_facecolor('#F5F5F5')
+        ax_bar_il.set_ylim(bottom=0)
+
+        # Create custom legend for input length groups (colors)
+        legend_elements_groups = [Patch(facecolor=input_length_colors[g], alpha=0.7, label=g)
+                                  for g in input_length_groups]
+
+        # Create custom legend for percentiles (gradation)
+        base_color = '#666666'
+        legend_elements_percentiles = [Patch(facecolor=base_color, alpha=percentile_alphas[i], label=il_percentiles[i])
+                                       for i in range(len(il_percentiles))]
+
+        # Place two legends side by side
+        legend1 = ax_bar_il.legend(handles=legend_elements_groups, loc='upper left', fontsize=8, framealpha=0.95,
+                                   title='Input Length', title_fontsize=8)
+        ax_bar_il.add_artist(legend1)
+        ax_bar_il.legend(handles=legend_elements_percentiles, loc='upper right', fontsize=8, framealpha=0.95,
+                         title='Percentile', title_fontsize=8)
+
     # Add overall title
-    fig.suptitle('Comprehensive Latency Analysis - Time Series, CDF, and Statistics', 
-                fontsize=15, fontweight='bold', y=0.985)
+    title_text = 'Comprehensive Latency Analysis - Time Series, CDF, and Statistics'
+    if has_input_tokens:
+        title_text += ' (incl. Input Length Analysis)'
+    fig.suptitle(title_text, fontsize=15, fontweight='bold', y=0.99 if has_input_tokens else 0.985)
     
     # Save figure
     plt.savefig(output_path, bbox_inches='tight', facecolor='white')
