@@ -3,9 +3,9 @@ kind: Deployment
 metadata:
   generation: 17
   labels:
-    model.aibrix.ai/name: llama-3-8b-instruct
+    model.aibrix.ai/name: qwen25-1-5b-instruct
     model.aibrix.ai/port: "8000"
-  name: llama-3-8b-instruct
+  name: qwen25-1-5b-instruct
   namespace: default
 spec:
   progressDeadlineSeconds: 600
@@ -13,7 +13,7 @@ spec:
   revisionHistoryLimit: 10
   selector:
     matchLabels:
-      model.aibrix.ai/name: llama-3-8b-instruct
+      model.aibrix.ai/name: qwen25-1-5b-instruct
   strategy:
     type: Recreate
   template:
@@ -24,7 +24,7 @@ spec:
         prometheus.io/scrape: "true"
       creationTimestamp: null
       labels:
-        model.aibrix.ai/name: llama-3-8b-instruct
+        model.aibrix.ai/name: qwen25-1-5b-instruct
     spec:
       affinity:
         nodeAffinity:
@@ -34,7 +34,7 @@ spec:
               - key: machine.cluster.vke.volcengine.com/gpu-name
                 operator: In
                 values:
-                - NVIDIA-L20
+                - NVIDIA-A30
       containers:
       - command:
         - python3
@@ -47,9 +47,9 @@ spec:
         - --uvicorn-log-level
         - warning
         - --model
-        - /models/llama-3.1-8b-instruct/
+        - /models/Qwen2.5-1.5B-Instruct/
         - --served-model-name
-        - llama-3-8b-instruct
+        - qwen25-1-5b-instruct
         - --trust-remote-code
         - --api-key
         - sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi
@@ -146,12 +146,12 @@ spec:
       - command:
         - aibrix_download
         - --model-uri
-        - tos://aibrix-artifact-testing/models/llama-3.1-8b-instruct/
+        - tos://aibrix-artifact-testing/models/Qwen2.5-1.5B-Instruct/
         - --local-dir
         - /models/
         env:
         - name: DOWNLOADER_MODEL_NAME
-          value: llama-3.1-8b-instruct
+          value: Qwen2.5-1.5B-Instruct
         - name: DOWNLOADER_NUM_THREADS
           value: "16"
         - name: DOWNLOADER_ALLOW_FILE_SUFFIX
@@ -192,3 +192,32 @@ spec:
           medium: Memory
           sizeLimit: 4Gi
         name: dshm
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+  labels:
+    model.aibrix.ai/name: qwen25-1-5b-instruct
+    prometheus-discovery: "true"
+  name: qwen25-1-5b-instruct
+  namespace: default
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: serve
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    model.aibrix.ai/name: qwen25-1-5b-instruct
+  sessionAffinity: None
+  type: ClusterIP

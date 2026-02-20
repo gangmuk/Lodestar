@@ -1,0 +1,64 @@
+apiVersion: v1
+items:
+- apiVersion: autoscaling.aibrix.ai/v1alpha1
+  kind: PodAutoscaler
+  metadata:
+    annotations:
+      autoscaling.aibrix.ai/panic-threshold: "2"
+      autoscaling.aibrix.ai/scale-down-cooldown-window: 120s
+      autoscaling.aibrix.ai/scale-down-tolerance: "0.05"
+      autoscaling.aibrix.ai/scale-up-tolerance: "0.05"
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"autoscaling.aibrix.ai/v1alpha1","kind":"PodAutoscaler","metadata":{"annotations":{"autoscaling.aibrix.ai/panic-threshold":"2","autoscaling.aibrix.ai/scale-down-cooldown-window":"120s","autoscaling.aibrix.ai/scale-down-tolerance":"0.05","autoscaling.aibrix.ai/scale-up-tolerance":"0.05"},"labels":{"app.kubernetes.io/managed-by":"kustomize","app.kubernetes.io/name":"aibrix"},"name":"llama-3-8b-instruct-kpa","namespace":"default"},"spec":{"maxReplicas":8,"metricsSources":[{"metricSourceType":"pod","path":"metrics","port":"8000","protocolType":"http","targetMetric":"gpu_cache_usage_perc","targetValue":"0.1"}],"minReplicas":1,"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"llama-3-8b-instruct"},"scalingStrategy":"KPA"}}
+    creationTimestamp: "2026-01-15T15:50:54Z"
+    generation: 12
+    labels:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/name: aibrix
+    name: llama-3-8b-instruct-kpa
+    namespace: default
+    resourceVersion: "46774308"
+    uid: 41c5d5dc-e960-410e-bd69-4396e510effb
+  spec:
+    maxReplicas: 20
+    metricsSources:
+    - metricSourceType: pod
+      path: metrics
+      port: "8000"
+      protocolType: http
+      targetMetric: gpu_cache_usage_perc
+      targetValue: "0.1"
+    minReplicas: 0
+    scaleTargetRef:
+      apiVersion: apps/v1
+      kind: Deployment
+      name: llama-3-8b-instruct
+    scalingStrategy: KPA
+  status:
+    actualScale: 1
+    conditions:
+    - lastTransitionTime: "2026-01-15T15:50:54Z"
+      message: successfully retrieved target scale
+      reason: SucceededGetScale
+      status: "True"
+      type: AbleToScale
+    - lastTransitionTime: "2026-01-15T15:51:23Z"
+      message: ""
+      reason: AsExpected
+      status: "True"
+      type: ValidSpec
+    - lastTransitionTime: "2026-02-18T20:23:56Z"
+      message: desired=1, actual=1
+      reason: Stable
+      status: "False"
+      type: ScalingActive
+    - lastTransitionTime: "2026-02-18T20:23:56Z"
+      message: ""
+      reason: AsExpected
+      status: "True"
+      type: Ready
+    desiredScale: 1
+    lastScaleTime: "2026-02-18T20:23:46Z"
+kind: List
+metadata:
+  resourceVersion: ""
