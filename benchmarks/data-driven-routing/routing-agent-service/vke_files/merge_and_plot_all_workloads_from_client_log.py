@@ -20,6 +20,7 @@ import matplotlib.colors as mcolors
 import numpy as np
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Patch
+from matplotlib.backends.backend_pdf import PdfPages
 
 # Font sizes
 maintitle_fontsize = 24
@@ -43,6 +44,7 @@ POLICY_COLOR_FAMILIES = {
     'least_kv_cache': ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460'],
     'least_latency': ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff'],
     'least_request': ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1'],
+    'prefix_hit_threshold_or_least_request': ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b'],  # Olive/green-yellow family
     'contextual_bandit_quantile_based_perpodmodel_advanced': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],
     'contextual_bandit_quantile_based_perpodmodel': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],
     'contextual_bandit_perpodmodel_policygradient_throughput_based': ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50'],
@@ -120,12 +122,29 @@ def extract_workload_category(workload):
     return parts[0] if parts else 'unknown'
 
 
+def extract_mooncake_subcategory(workload):
+    """Extract mooncake subcategory (conversation-2, toolagent-2, etc.) for sorting.
+
+    Examples:
+    - "mooncake/conversation-2/rps15" -> 0 (conversation first)
+    - "mooncake/toolagent-2/rps20" -> 1 (toolagent second)
+    """
+    workload_lower = workload.lower()
+    if 'conversation' in workload_lower:
+        return 0
+    elif 'toolagent' in workload_lower:
+        return 1
+    else:
+        return 99
+
+
 def get_workload_sort_key(workload):
     """Get hierarchical sort key for a workload.
 
     Sort order:
     1. Workload category (gangmuk-prefix, mooncake, azure, etc.)
-    2. SharingRatio (71%, 47%, 28%, 9% - descending order)
+    2. For gangmuk-prefix: SharingRatio (71%, 47%, 28%, 9% - descending order)
+       For mooncake: subcategory (conversation-2 first, then toolagent-2)
     3. RPS (4, 5, 6, 7, etc. - ascending order)
     """
     category = extract_workload_category(workload)
@@ -138,14 +157,19 @@ def get_workload_sort_key(workload):
     }
     cat_order = category_priority.get(category, 99)
 
-    # SharingRatio: higher percentages first (descending), so negate for sort
-    sharing_ratio = extract_sharing_ratio(workload)
-    sharing_order = -sharing_ratio if sharing_ratio < 9999 else 9999
+    # Secondary sort key depends on category
+    if category == 'mooncake':
+        # For mooncake: conversation-2 first, then toolagent-2
+        secondary_order = extract_mooncake_subcategory(workload)
+    else:
+        # For gangmuk-prefix and others: SharingRatio (higher percentages first)
+        sharing_ratio = extract_sharing_ratio(workload)
+        secondary_order = -sharing_ratio if sharing_ratio < 9999 else 9999
 
     # RPS: lower first (ascending)
     rps = extract_rps_from_workload(workload)
 
-    return (cat_order, sharing_order, rps, workload)
+    return (cat_order, secondary_order, rps, workload)
 
 
 def extract_datetime_from_name(name):
@@ -179,6 +203,8 @@ def get_policy_sort_key(policy):
     datetime_str = extract_datetime_from_name(policy)
 
     if 'random' in policy_lower:
+        return (0, datetime_str, policy)
+    elif 'prefix_hit_threshold_or_least_request' in policy_lower:
         return (0, datetime_str, policy)
     elif 'least_request' in policy_lower:
         return (1, datetime_str, policy)
@@ -237,6 +263,8 @@ def categorize_policy(policy_name):
         return 'least_kv_cache'
     elif 'least_latency' in policy_lower:
         return 'least_latency'
+    elif 'prefix_hit_threshold_or_least_request' in policy_lower:
+        return 'prefix_hit_threshold_or_least_request'
     elif 'least_request' in policy_lower:
         return 'least_request'
     elif 'contextual_bandit_quantile_based_perpodmodel_advanced' in policy_lower:
@@ -310,10 +338,27 @@ def extract_routing_policy(strategy_full_name):
     return strategy_full_name
 
 
-def find_metrics_files(base_dir):
-    """Find all routing_strategy_metrics_from_client_log.csv files under base_dir."""
-    pattern = os.path.join(base_dir, "**", "routing_strategy_metrics_from_client_log.csv")
-    files = glob.glob(pattern, recursive=True)
+def find_metrics_files(base_dir, target_dirs=None):
+    """Find routing_strategy_metrics_from_client_log.csv files.
+
+    If target_dirs is provided, only look in those specific directories.
+    Otherwise, search recursively under base_dir.
+    """
+    files = []
+
+    if target_dirs:
+        # Only look in specified directories
+        for target_dir in target_dirs:
+            csv_path = os.path.join(target_dir, "routing_strategy_metrics_from_client_log.csv")
+            if os.path.exists(csv_path):
+                files.append(csv_path)
+            else:
+                print(f"Warning: No CSV found in {target_dir}")
+    else:
+        # Search recursively under base_dir
+        pattern = os.path.join(base_dir, "**", "routing_strategy_metrics_from_client_log.csv")
+        files = glob.glob(pattern, recursive=True)
+
     return files
 
 
@@ -338,23 +383,46 @@ def merge_metrics_files(files):
     return merged
 
 
-def plot_all_metrics_summary(df, output_dir, averaged=True):
+def get_short_experiment_label(strategy_full_name):
+    """Create a short label for an experiment from strategy_full_name.
+
+    Uses the same format as the averaged version:
+    - "prefix_cache_1-iter4-20260217_012930" -> "prefix_cache_1\n(20260217_012930)"
+    """
+    parts = strategy_full_name.split('-')
+    if len(parts) >= 2:
+        return f"{parts[0]}\n({parts[-1]})"
+    else:
+        return strategy_full_name
+
+
+def plot_all_metrics_summary(df, output_dir, pdf_pages=None):
     """Create a comprehensive summary plot with one workload per row.
+
+    Each row shows bar chart with avg, p99, p999 for each individual experiment.
     
-    Each row shows bar chart with avg, p99, p999 grouped by routing policy.
+    Args:
+        df: DataFrame with metrics data
+        output_dir: Output directory (used only if pdf_pages is None)
+        pdf_pages: Optional PdfPages object to save to multi-page PDF
     """
     workloads = order_workloads(df['workload'].unique())
     policies = order_policies(df['routing_policy'].unique())
 
     n_workloads = len(workloads)
-    n_policies = len(policies)
 
-    # Generate colors for each policy
+    # Generate colors for each policy category
     policy_colors = generate_policy_colors(policies)
 
+    # Calculate max number of experiments per workload for figure sizing
+    max_experiments = 0
+    for workload in workloads:
+        workload_df = df[df['workload'] == workload]
+        max_experiments = max(max_experiments, len(workload_df))
+
     # Create figure with one row per workload
-    # Increased height per workload and hspace for better spacing between subfigures
-    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 7 * n_workloads))
+    # Increased width to accommodate more bars
+    fig = plt.figure(figsize=(max(18, max_experiments * 1.5), 7 * n_workloads))
     gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.8)
 
     for workload_idx, workload in enumerate(workloads):
@@ -363,47 +431,54 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         # Filter data for this workload
         workload_df = df[df['workload'] == workload]
 
-        # Get policies that have data for this workload
-        available_policies = [p for p in policies if p in workload_df['routing_policy'].values]
-
-        if not available_policies:
+        if len(workload_df) == 0:
             ax.text(0.5, 0.5, f'No data for {workload}', ha='center', va='center')
             continue
 
-        # Bar positioning: 3 bars (avg, p99, p999) per policy
+        # Sort experiments by policy order, then datetime
+        experiments = workload_df['strategy_full_name'].unique().tolist()
+        experiments = sorted(experiments, key=get_policy_sort_key)
+
+        # Bar positioning: 3 bars (avg, p99, p999) per experiment
         bar_width = 0.25
         group_width = 3 * bar_width + 0.3
-        group_centers = np.arange(len(available_policies)) * group_width
+        group_centers = np.arange(len(experiments)) * group_width
 
-        # Collect metrics for each policy
+        # Collect metrics for each experiment
         avg_values = []
         p99_values = []
         p999_values = []
         num_requests_values = []
+        experiment_policies = []  # To get color for each experiment
 
-        for policy in available_policies:
-            policy_data = workload_df[workload_df['routing_policy'] == policy]
-            if len(policy_data) > 0:
-                avg_values.append(policy_data['avg_ttft'].mean())
-                p99_values.append(policy_data['p99_ttft'].mean())
-                p999_values.append(policy_data['p999_ttft'].mean())
+        for exp in experiments:
+            exp_data = workload_df[workload_df['strategy_full_name'] == exp]
+            if len(exp_data) > 0:
+                avg_values.append(exp_data['avg_ttft'].values[0])
+                p99_values.append(exp_data['p99_ttft'].values[0])
+                p999_values.append(exp_data['p999_ttft'].values[0])
                 # Get num_requests if available
-                if 'num_requests' in policy_data.columns:
-                    num_requests_values.append(int(policy_data['num_requests'].sum()))
+                if 'num_requests' in exp_data.columns:
+                    num_requests_values.append(int(exp_data['num_requests'].values[0]))
                 else:
                     num_requests_values.append(0)
+                # Get routing policy for color
+                experiment_policies.append(exp_data['routing_policy'].values[0])
             else:
                 avg_values.append(0)
                 p99_values.append(0)
                 p999_values.append(0)
                 num_requests_values.append(0)
+                experiment_policies.append('unknown')
 
         # Get max value for y-axis scaling
         max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
 
-        # Plot bars for each policy (avg, p99, p999)
-        for i, policy in enumerate(available_policies):
-            strategy_color = policy_colors[policy]
+        # Plot bars for each experiment (avg, p99, p999)
+        for i, exp in enumerate(experiments):
+            # Get color from the routing policy
+            policy = experiment_policies[i]
+            strategy_color = policy_colors.get(policy, '#7f7f7f')
             group_center = group_centers[i]
 
             offset_start = -bar_width
@@ -421,26 +496,14 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
                 if value > 0:
                     ax.text(pos, value + max_value * 0.02,
                            f'{value:.0f}', rotation=90, ha='center', va='bottom',
-                           fontsize=10, fontweight='bold')
+                           fontsize=8, fontweight='bold')
 
-        # Set up x-axis with policy names
+        # Set up x-axis with experiment names
         ax.set_xticks(group_centers)
 
-        strategy_labels = []
-        for policy in available_policies:
-            policy_data = workload_df[workload_df['routing_policy'] == policy]
-            if len(policy_data) > 0 and 'strategy_full_name' in policy_data.columns:
-                full_name = policy_data['strategy_full_name'].iloc[0]
-                parts = full_name.split('-')
-                if len(parts) >= 2:
-                    label = f"{parts[0]}\n({parts[-1]})"
-                else:
-                    label = policy
-            else:
-                label = policy
-            strategy_labels.append(label)
+        strategy_labels = [get_short_experiment_label(exp) for exp in experiments]
 
-        ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
+        ax.set_xticklabels(strategy_labels, fontsize=8, rotation=45, ha='right')
 
         # Add legend for Avg/P99/P999
         legend_elements = [
@@ -450,20 +513,20 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         ]
         ax.legend(handles=legend_elements, loc='upper right', fontsize=12, ncol=3)
 
-        # Add num_requests annotation below each policy group
+        # Add num_requests annotation below each experiment group
         has_num_requests = False
-        for i, policy in enumerate(available_policies):
+        for i, exp in enumerate(experiments):
             if num_requests_values[i] > 0:
                 has_num_requests = True
                 group_center = group_centers[i]
                 ax.text(group_center, -max_value * 0.12, f'n={num_requests_values[i]}',
-                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+                       ha='center', va='top', fontsize=7, style='italic', color='gray')
 
         # Styling
         ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize)
         ax.set_title(f'TTFT Latency Comparison - {workload}', fontsize=subtitle_fontsize)
         ax.tick_params(axis='y', labelsize=tick_fontsize)
-        ax.tick_params(axis='x', labelsize=10)
+        ax.tick_params(axis='x', labelsize=8)
         ax.grid(axis='y', alpha=0.3)
         # Adjust y-axis limits to accommodate num_requests text
         if has_num_requests:
@@ -471,77 +534,104 @@ def plot_all_metrics_summary(df, output_dir, averaged=True):
         else:
             ax.set_ylim(0, max_value * 1.4)
 
-    suffix = "(Averaged)" if averaged else "(Individual)"
     # Reduced top margin to bring subfigures closer to suptitle
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.suptitle(f'Routing Strategy Performance Across All Workloads {suffix} - From Client Logs',
+    plt.suptitle(f'TTFT Latency Performance Across All Workloads (Individual Experiments) - From Client Logs',
                  fontsize=maintitle_fontsize, y=0.98)
 
-    filename = "all_workloads_summary_from_client_log_averaged.pdf" if averaged else "all_workloads_summary_from_client_log_individual.pdf"
-    output_path = os.path.join(output_dir, filename)
-    plt.savefig(output_path, bbox_inches='tight', dpi=150)
-    plt.close()
-    print(f"Saved {output_path}")
+    if pdf_pages:
+        pdf_pages.savefig(fig, bbox_inches='tight', dpi=300)
+        plt.close()
+    else:
+        filename = "all_workloads_summary_from_client_log_individual.pdf"
+        output_path = os.path.join(output_dir, filename)
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
+        plt.close()
+        print(f"Saved {output_path}")
 
 
-def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
-    """Create a comparison plot for a specific metric (TTFT, TPOT, or E2E)."""
+def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel, pdf_pages=None):
+    """Create a comparison plot for a specific metric (TTFT, TPOT, or E2E).
+
+    Each experiment is shown as a separate bar (not averaged by policy).
+    
+    Args:
+        df: DataFrame with metrics data
+        output_dir: Output directory (used only if pdf_pages is None)
+        metric_col: Column name suffix (e.g., 'tpot', 'end_to_end')
+        metric_name: Display name for the metric
+        ylabel: Y-axis label
+        pdf_pages: Optional PdfPages object to save to multi-page PDF
+    """
     workloads = order_workloads(df['workload'].unique())
     policies = order_policies(df['routing_policy'].unique())
 
     n_workloads = len(workloads)
-    n_policies = len(policies)
 
     policy_colors = generate_policy_colors(policies)
 
-    # Increased height per workload and hspace for better spacing between subfigures
-    fig = plt.figure(figsize=(max(18, n_policies * 1.2), 7 * n_workloads))
+    # Calculate max number of experiments per workload for figure sizing
+    max_experiments = 0
+    for workload in workloads:
+        workload_df = df[df['workload'] == workload]
+        max_experiments = max(max_experiments, len(workload_df))
+
+    # Increased width to accommodate more bars
+    fig = plt.figure(figsize=(max(18, max_experiments * 1.5), 7 * n_workloads))
     gs = GridSpec(n_workloads, 1, figure=fig, hspace=0.8)
 
     for workload_idx, workload in enumerate(workloads):
         ax = fig.add_subplot(gs[workload_idx, 0])
 
         workload_df = df[df['workload'] == workload]
-        available_policies = [p for p in policies if p in workload_df['routing_policy'].values]
 
-        if not available_policies:
+        if len(workload_df) == 0:
             ax.text(0.5, 0.5, f'No data for {workload}', ha='center', va='center')
             continue
 
+        # Sort experiments by policy order, then datetime
+        experiments = workload_df['strategy_full_name'].unique().tolist()
+        experiments = sorted(experiments, key=get_policy_sort_key)
+
         bar_width = 0.25
         group_width = 3 * bar_width + 0.3
-        group_centers = np.arange(len(available_policies)) * group_width
+        group_centers = np.arange(len(experiments)) * group_width
 
         avg_values = []
         p99_values = []
         p999_values = []
         num_requests_values = []
+        experiment_policies = []
 
-        for policy in available_policies:
-            policy_data = workload_df[workload_df['routing_policy'] == policy]
-            if len(policy_data) > 0:
-                avg_values.append(policy_data[f'avg_{metric_col}'].mean())
-                p99_values.append(policy_data[f'p99_{metric_col}'].mean())
+        for exp in experiments:
+            exp_data = workload_df[workload_df['strategy_full_name'] == exp]
+            if len(exp_data) > 0:
+                avg_values.append(exp_data[f'avg_{metric_col}'].values[0])
+                p99_values.append(exp_data[f'p99_{metric_col}'].values[0])
                 # P999 might not exist for all metrics
-                if f'p999_{metric_col}' in policy_data.columns:
-                    p999_values.append(policy_data[f'p999_{metric_col}'].mean())
+                if f'p999_{metric_col}' in exp_data.columns:
+                    p999_values.append(exp_data[f'p999_{metric_col}'].values[0])
                 else:
                     p999_values.append(0)
                 # Get num_requests if available
-                if 'num_requests' in policy_data.columns:
-                    num_requests_values.append(int(policy_data['num_requests'].sum()))
+                if 'num_requests' in exp_data.columns:
+                    num_requests_values.append(int(exp_data['num_requests'].values[0]))
                 else:
                     num_requests_values.append(0)
+                # Get routing policy for color
+                experiment_policies.append(exp_data['routing_policy'].values[0])
             else:
                 avg_values.append(0)
                 p99_values.append(0)
                 p999_values.append(0)
                 num_requests_values.append(0)
+                experiment_policies.append('unknown')
 
         max_value = max(max(avg_values or [0]), max(p99_values or [0]), max(p999_values or [0]))
 
-        for i, policy in enumerate(available_policies):
-            strategy_color = policy_colors[policy]
+        for i, exp in enumerate(experiments):
+            policy = experiment_policies[i]
+            strategy_color = policy_colors.get(policy, '#7f7f7f')
             group_center = group_centers[i]
             offset_start = -bar_width
 
@@ -557,25 +647,13 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
 
                     ax.text(pos, value + max_value * 0.02,
                            f'{value:.0f}', rotation=90, ha='center', va='bottom',
-                           fontsize=10, fontweight='bold')
+                           fontsize=8, fontweight='bold')
 
         ax.set_xticks(group_centers)
 
-        strategy_labels = []
-        for policy in available_policies:
-            policy_data = workload_df[workload_df['routing_policy'] == policy]
-            if len(policy_data) > 0 and 'strategy_full_name' in policy_data.columns:
-                full_name = policy_data['strategy_full_name'].iloc[0]
-                parts = full_name.split('-')
-                if len(parts) >= 2:
-                    label = f"{parts[0]}\n({parts[-1]})"
-                else:
-                    label = policy
-            else:
-                label = policy
-            strategy_labels.append(label)
+        strategy_labels = [get_short_experiment_label(exp) for exp in experiments]
 
-        ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
+        ax.set_xticklabels(strategy_labels, fontsize=8, rotation=45, ha='right')
 
         legend_elements = [
             Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
@@ -584,19 +662,19 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
         ]
         ax.legend(handles=legend_elements, loc='upper right', fontsize=12, ncol=3)
 
-        # Add num_requests annotation below each policy group
+        # Add num_requests annotation below each experiment group
         has_num_requests = False
-        for i, policy in enumerate(available_policies):
+        for i, exp in enumerate(experiments):
             if num_requests_values[i] > 0:
                 has_num_requests = True
                 group_center = group_centers[i]
                 ax.text(group_center, -max_value * 0.12, f'n={num_requests_values[i]}',
-                       ha='center', va='top', fontsize=9, style='italic', color='gray')
+                       ha='center', va='top', fontsize=7, style='italic', color='gray')
 
         ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
         ax.set_title(f'{metric_name} Comparison - {workload}', fontsize=subtitle_fontsize)
         ax.tick_params(axis='y', labelsize=tick_fontsize)
-        ax.tick_params(axis='x', labelsize=10)
+        ax.tick_params(axis='x', labelsize=8)
         ax.grid(axis='y', alpha=0.3)
         # Adjust y-axis limits to accommodate num_requests text
         if has_num_requests:
@@ -606,33 +684,54 @@ def plot_metric_comparison(df, output_dir, metric_col, metric_name, ylabel):
 
     # Reduced top margin to bring subfigures closer to suptitle
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.suptitle(f'{metric_name} Performance Across All Workloads - From Client Logs',
+    plt.suptitle(f'{metric_name} Performance Across All Workloads (Individual Experiments) - From Client Logs',
                  fontsize=maintitle_fontsize, y=0.98)
 
-    filename = f"all_workloads_{metric_col}_from_client_log.pdf"
-    output_path = os.path.join(output_dir, filename)
-    plt.savefig(output_path, bbox_inches='tight', dpi=150)
-    plt.close()
-    print(f"Saved {output_path}")
+    if pdf_pages:
+        pdf_pages.savefig(fig, bbox_inches='tight', dpi=300)
+        plt.close()
+    else:
+        filename = f"all_workloads_{metric_col}_from_client_log_individual.pdf"
+        output_path = os.path.join(output_dir, filename)
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
+        plt.close()
+        print(f"Saved {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='Merge and plot routing metrics from client logs across workloads')
-    parser.add_argument('base_dir', help='Base directory to search for routing_strategy_metrics_from_client_log.csv files')
+    parser.add_argument('base_dir', help='Base directory for output (and recursive search if --target-dirs-file not provided)')
     parser.add_argument('--output-dir', '-o', default=None,
                         help='Output directory for merged CSV and plots (default: base_dir)')
+    parser.add_argument('--target-dirs-file', '-t', default=None,
+                        help='File containing list of target directories (one per line). If provided, only these directories will be used instead of recursive search.')
 
     args = parser.parse_args()
 
     base_dir = args.base_dir
     output_dir = args.output_dir if args.output_dir else base_dir
 
-    # Find all metrics files
-    print(f"Searching for routing_strategy_metrics_from_client_log.csv files in {base_dir}...")
-    files = find_metrics_files(base_dir)
+    # Load target directories from file if provided
+    target_dirs = None
+    if args.target_dirs_file:
+        if os.path.exists(args.target_dirs_file):
+            with open(args.target_dirs_file, 'r') as f:
+                target_dirs = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            print(f"Using {len(target_dirs)} target directories from {args.target_dirs_file}")
+        else:
+            print(f"Error: Target dirs file not found: {args.target_dirs_file}")
+            sys.exit(1)
+
+    # Find metrics files
+    if target_dirs:
+        print(f"Looking for routing_strategy_metrics_from_client_log.csv in specified directories...")
+    else:
+        print(f"Searching recursively for routing_strategy_metrics_from_client_log.csv files in {base_dir}...")
+
+    files = find_metrics_files(base_dir, target_dirs)
 
     if not files:
-        print(f"No routing_strategy_metrics_from_client_log.csv files found in {base_dir}")
+        print(f"No routing_strategy_metrics_from_client_log.csv files found")
         sys.exit(1)
 
     print(f"Found {len(files)} metrics files")
@@ -666,35 +765,25 @@ def main():
 
     # Create plots
     print("\n--- Generating Plots ---")
-    
-    # Summary plot (TTFT)
-    plot_all_metrics_summary(df, output_dir, averaged=True)
-    
-    # Individual metric plots
-    if 'avg_tpot' in df.columns:
-        plot_metric_comparison(df, output_dir, 'tpot', 'TPOT', 'TPOT (ms)')
-    
-    if 'avg_end_to_end' in df.columns:
-        plot_metric_comparison(df, output_dir, 'end_to_end', 'End-to-End Latency', 'E2E Latency (ms)')
 
+    # Create a single PDF file with all plots
+    pdf_filename = "all_workloads_from_client_log_individual.pdf"
+    pdf_path = os.path.join(output_dir, pdf_filename)
+    
+    with PdfPages(pdf_path) as pdf:
+        # Summary plot (TTFT) - each experiment as separate bar
+        plot_all_metrics_summary(df, output_dir, pdf_pages=pdf)
+
+        # Individual metric plots - each experiment as separate bar
+        if 'avg_tpot' in df.columns:
+            plot_metric_comparison(df, output_dir, 'tpot', 'TPOT', 'TPOT (ms)', pdf_pages=pdf)
+
+        if 'avg_end_to_end' in df.columns:
+            plot_metric_comparison(df, output_dir, 'end_to_end', 'End-to-End Latency', 'E2E Latency (ms)', pdf_pages=pdf)
+
+    print(f"Saved combined PDF to {pdf_path}")
     print("\nDone!")
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

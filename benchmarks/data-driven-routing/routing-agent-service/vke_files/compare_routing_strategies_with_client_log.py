@@ -37,12 +37,12 @@ least_kv_cache_routing = "least_kv_cache"
 least_latency_routing = "least_latency"
 least_request_routing = "least_request"
 contextual_bandit_routing = "contextual_bandit"
+prefix_hit_threshold_or_least_request_routing = "prefix_hit_threshold_or_least_request"
 
 
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
     strategy_lower = strategy_name.lower()
-    
     if rl_naive_routing in strategy_lower:
         return rl_naive_routing
     elif e2e_latency_predictor_routing in strategy_lower:
@@ -63,6 +63,8 @@ def categorize_strategy(strategy_name):
         return least_kv_cache_routing
     elif least_latency_routing in strategy_lower:
         return least_latency_routing
+    elif prefix_hit_threshold_or_least_request_routing in strategy_lower:
+        return prefix_hit_threshold_or_least_request_routing
     elif least_request_routing in strategy_lower:
         return least_request_routing
     elif contextual_bandit_routing in strategy_lower:
@@ -180,6 +182,7 @@ def calculate_performance_metrics(df, iteration_from=None):
     if 'e2e' in df.columns:
         metrics['avg_end_to_end'] = df['e2e'].mean()
         metrics['p99_end_to_end'] = df['e2e'].quantile(0.99)
+        metrics['p999_end_to_end'] = df['e2e'].quantile(0.999)
 
     # Calculate throughput
     if len(df) > 0 and 'relative_time' in df.columns:
@@ -192,44 +195,56 @@ def calculate_performance_metrics(df, iteration_from=None):
     return metrics
 
 
-def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iteration_from=None):
+def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iteration_from=None, iteration_upto=None):
     """Process a single client.log.txt file and return its performance metrics and DataFrame."""
     print(f"Processing {file_path}...")
-    
+
     # Parse the log file
     df = parse_log_file(file_path)
-    
+
     if df.empty:
         print(f"  Warning: No data found in {file_path}")
         return None, None
-    
+
     # Filter out warm-up period and cut last seconds if specified
     if len(df) > 0 and 'relative_time' in df.columns:
         min_time = df['relative_time'].min()
         max_time = df['relative_time'].max()
         original_count = len(df)
-        
+
         if warmup_seconds is not None:
             df = df[df['relative_time'] >= min_time + warmup_seconds]
         if cut_last_seconds is not None:
             df = df[df['relative_time'] <= max_time - cut_last_seconds]
-        
+
         filtered_count = len(df)
         if original_count != filtered_count:
             print(f"  Filtered: {original_count} -> {filtered_count} requests")
-    
+
     # Extract strategy name from the file path
     strategy = parse_strategy_name(file_path)
 
     # Apply iteration-based filtering only for ML-based policies
-    if iteration_from is not None and iteration_from > 0 and is_ml_strategy(strategy):
-        if 'iteration' in df.columns:
-            df['iteration'] = pd.to_numeric(df['iteration'], errors='coerce')
-            before_count = len(df)
+    if is_ml_strategy(strategy) and 'iteration' in df.columns:
+        df['iteration'] = pd.to_numeric(df['iteration'], errors='coerce')
+        before_count = len(df)
+
+        # Apply iteration_from filter
+        if iteration_from is not None and iteration_from > 0:
             df = df[df['iteration'] >= iteration_from]
-            after_count = len(df)
-            if before_count != after_count:
-                print(f"  Iteration filter: {before_count} -> {after_count} rows (iteration >= {iteration_from})")
+
+        # Apply iteration_upto filter
+        if iteration_upto is not None:
+            df = df[df['iteration'] <= iteration_upto]
+
+        after_count = len(df)
+        if before_count != after_count:
+            filter_desc = []
+            if iteration_from is not None and iteration_from > 0:
+                filter_desc.append(f">= {iteration_from}")
+            if iteration_upto is not None:
+                filter_desc.append(f"<= {iteration_upto}")
+            print(f"  Iteration filter: {before_count} -> {after_count} rows (iteration {' and '.join(filter_desc)})")
 
     # Calculate performance metrics
     metrics = calculate_performance_metrics(df, iteration_from)
@@ -327,6 +342,8 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460']
     elif least_latency_routing in strategy_name.lower():
         base_colors = ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']
+    elif prefix_hit_threshold_or_least_request_routing in strategy_name.lower():
+        base_colors = ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b']  # Olive/green-yellow family
     elif least_request_routing in strategy_name.lower():
         base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']
     elif contextual_bandit_routing in strategy_name.lower():
@@ -413,7 +430,7 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     else:  # e2e
         avg_values = [metrics_indexed.loc[s, 'avg_end_to_end'] if 'avg_end_to_end' in metrics_df.columns else 0 for s in strategies]
         p99_values = [metrics_indexed.loc[s, 'p99_end_to_end'] if 'p99_end_to_end' in metrics_df.columns else 0 for s in strategies]
-        p999_values = [0] * n_strategies  # No P999 for E2E in current metrics
+        p999_values = [metrics_indexed.loc[s, 'p999_end_to_end'] if 'p999_end_to_end' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'End-to-End Latency (ms)'
 
     # Get max value for y-axis scaling
@@ -524,7 +541,10 @@ def plot_routing_comparison(metrics_list, base_dir, csv_data_dict=None):
         rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0,
         preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0,
         avg_tpot_latency_predictor_routing: 0, random_routing: 0, least_kv_cache_routing: 0,
-        least_latency_routing: 0, least_request_routing: 0, contextual_bandit_routing: 0, 'other': 0
+        least_latency_routing: 0, least_request_routing: 0,
+        contextual_bandit_routing: 0,
+        prefix_hit_threshold_or_least_request_routing: 0,
+        'other': 0
     }
 
     for strategy in strategy_order:
@@ -594,8 +614,9 @@ def plot_routing_comparison(metrics_list, base_dir, csv_data_dict=None):
     plt.subplots_adjust(top=0.98, bottom=0.06, left=0.05, right=0.95)
     
     # Save the figure
-    output_file = f"{base_dir}/routing_strategy_comparison.pdf"
-    plt.savefig(output_file, bbox_inches='tight', dpi=300)
+    output_file = f"{base_dir}/routing_strategy_comparison_client.pdf"
+    # plt.savefig(output_file, bbox_inches='tight', dpi=300)
+    plt.savefig(output_file, bbox_inches='tight', dpi=600)
     print(f"** Saved comparison plot to {output_file}")
     plt.close()
 
@@ -607,18 +628,17 @@ def export_metrics_to_csv(all_metrics, base_dir):
         return None
 
     # Extract workload identifier from base_dir
+    # The directory tree may optionally contain a model name level between the GPU type
+    # and the output-token config, e.g.:
+    #   NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio9%/rps5-benchmark/...
+    #   NVIDIA-A10/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio71%/rps7-benchmark/...
+    # We include the full relative path so the workload identifier is unambiguous.
     workload = ""
     if "workload-and-experiment_results" in base_dir:
         parts = base_dir.split("workload-and-experiment_results")
         if len(parts) > 1:
             full_path = parts[1].lstrip("/")
-            path_parts = full_path.split("/")
-            # Build workload identifier
-            if len(path_parts) >= 5:
-                # Format: gpu_type/output_dist/category/name/load
-                workload = "/".join(path_parts[:5])
-            else:
-                workload = full_path
+            workload = full_path
 
     # Define columns
     csv_data = []
@@ -636,6 +656,7 @@ def export_metrics_to_csv(all_metrics, base_dir):
             'p999_tpot': metrics.get('p999_tpot', ''),
             'avg_end_to_end': metrics.get('avg_end_to_end', ''),
             'p99_end_to_end': metrics.get('p99_end_to_end', ''),
+            'p999_end_to_end': metrics.get('p999_end_to_end', ''),
             'throughput_rps': metrics.get('throughput_rps', ''),
         }
         csv_data.append(row)
@@ -657,14 +678,22 @@ if __name__ == "__main__":
                        help='Seconds to exclude from end')
     parser.add_argument('--iteration-from', type=int, default=0,
                        help='Only include rows with iteration >= this value for ML policies')
-    
+    parser.add_argument('--iteration-upto', type=int, default=None,
+                       help='Only include rows with iteration <= this value for ML policies')
+
     args = parser.parse_args()
-    
+
     base_dir = args.base_directory
     warmup_seconds = args.warmup_seconds
     cut_last_seconds = args.cut_last_seconds
     iteration_from = args.iteration_from
-    
+    iteration_upto = args.iteration_upto
+
+    # Validate iteration range
+    if iteration_upto is not None and iteration_from > 0 and iteration_upto < iteration_from:
+        print(f"Error: --iteration-upto ({iteration_upto}) cannot be smaller than --iteration-from ({iteration_from})")
+        sys.exit(1)
+
     print(f"Searching for client.log.txt files in {base_dir}...")
     if warmup_seconds is not None:
         print(f"Warmup seconds: {warmup_seconds}")
@@ -672,6 +701,8 @@ if __name__ == "__main__":
         print(f"Cut last seconds: {cut_last_seconds}")
     if iteration_from > 0:
         print(f"Iteration filter (ML policies only): >= {iteration_from}")
+    if iteration_upto is not None:
+        print(f"Iteration filter (ML policies only): <= {iteration_upto}")
     
     log_files = find_client_log_files(base_dir)
     print(f"Found {len(log_files)} client.log.txt files.\n")
@@ -685,7 +716,7 @@ if __name__ == "__main__":
     csv_data_dict = {}
     
     for log_file in log_files:
-        metrics, df = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from)
+        metrics, df = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, iteration_upto)
         if metrics and df is not None and not df.empty:
             all_metrics.append(metrics)
             csv_data_dict[metrics['strategy']] = df

@@ -34,6 +34,7 @@ least_kv_cache_routing="least_kv_cache"
 least_latency_routing="least_latency"
 least_request_routing="least_request"
 contextual_bandit_routing="contextual_bandit"
+prefix_hit_threshold_or_least_request_routing = "prefix_hit_threshold_or_least_request"
 
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
@@ -319,22 +320,18 @@ def export_metrics_to_csv(all_metrics, base_dir):
         return None
 
     # Extract workload identifier from base_dir for the workload column
-    # e.g., "NVIDIA-A10/maxTokens_1-maxTokensStd_0/SharingRatio71%/rps7" -> "SharingRatio71%/rps7"
+    # The directory tree may optionally contain a model name level between the GPU type
+    # and the output-token config, e.g.:
+    #   NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio9%/rps5-benchmark/...
+    #   NVIDIA-A10/maxTokens_1-maxTokensStd_0/gangmuk-prefix/SharingRatio71%/rps7-benchmark/...
+    # We include the full relative path (gpu_type/[model_name]/output_dist/category/...) so the
+    # workload identifier is unambiguous across different GPUs and models.
     workload = ""
     if "workload-and-experiment_results" in base_dir:
         parts = base_dir.split("workload-and-experiment_results")
         if len(parts) > 1:
-            # Get the path after workload-and-experiment_results
             full_path = parts[1].lstrip("/")
-            # Extract just the SharingRatio and rps parts
-            path_parts = full_path.split("/")
-            # Find the SharingRatio part and everything after
-            for i, part in enumerate(path_parts):
-                if "SharingRatio" in part or "MixedSharingRatio" in part:
-                    workload = "/".join(path_parts[i:])
-                    break
-            if not workload:
-                workload = full_path
+            workload = full_path
 
     # Define the metrics we want to export
     metric_columns = [
@@ -347,7 +344,7 @@ def export_metrics_to_csv(all_metrics, base_dir):
     ]
 
     # Save CSV file in the same directory as the PDF
-    csv_filepath = os.path.join(base_dir, "routing_strategy_metrics_client.csv")
+    csv_filepath = os.path.join(base_dir, "routing_strategy_metrics_gateway.csv")
 
     rows = []
     for metrics in all_metrics:
@@ -586,6 +583,8 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460']  # Brown/Tan family
     elif least_latency_routing in strategy_name.lower():
         base_colors = ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']  # Slate blue family
+    elif prefix_hit_threshold_or_least_request_routing in strategy_name.lower():
+        base_colors = ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b']  # Olive/green-yellow family
     elif least_request_routing in strategy_name.lower():
         base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']  # Cyan/Teal family
     elif contextual_bandit_routing in strategy_name.lower():
@@ -612,7 +611,22 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
     # Create color dictionary with grouped coloring
     color_dict = {}
-    category_counts = {rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0, preble_routing: 0, e2e_latency_predictor_routing: 0, ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0, random_routing: 0, least_kv_cache_routing: 0, least_latency_routing: 0, least_request_routing: 0, contextual_bandit_routing: 0, 'other': 0}
+    category_counts = {
+        rl_naive_routing: 0,
+        prefix_cache_1_routing: 0,
+        prefix_cache_2_routing: 0,
+        preble_routing: 0,
+        e2e_latency_predictor_routing: 0,
+        ttft_latency_predictor_routing: 0,
+        avg_tpot_latency_predictor_routing: 0,
+        random_routing: 0,
+        least_kv_cache_routing: 0,
+        least_latency_routing: 0,
+        least_request_routing: 0,
+        contextual_bandit_routing: 0,
+        prefix_hit_threshold_or_least_request_routing: 0,
+        'other': 0,
+    }
 
     for strategy in strategy_order:
         if rl_naive_routing in strategy.lower():
@@ -645,6 +659,9 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif least_latency_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[least_latency_routing])
             category_counts[least_latency_routing] += 1
+        elif prefix_hit_threshold_or_least_request_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[prefix_hit_threshold_or_least_request_routing])
+            category_counts[prefix_hit_threshold_or_least_request_routing] += 1
         elif least_request_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[least_request_routing])
             category_counts[least_request_routing] += 1
@@ -732,7 +749,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     plt.subplots_adjust(top=0.96, bottom=0.08, left=0.05, right=0.95)
     
     # Save the figure
-    output_file = f"{base_dir}/routing_strategy_comparison_client.pdf"
+    output_file = f"{base_dir}/routing_strategy_comparison_gateway.pdf"
     plt.savefig(output_file, bbox_inches='tight', dpi=300)
     print(f"** Saved comparison plot to {output_file}")
     
