@@ -5,7 +5,7 @@ set -e
 data_dir=$1
 model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
 REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
-latency_metric="ttft" # "ttft", "avg_tpot", "e2e_latency" (for latency_predictor)
+latency_metric=$2 # "ttft", "avg_tpot", "e2e_latency" (applies to all model types including contextual_bandit)
 time_stamp=$(date +%Y%m%d_%H%M%S)
 
 # Build final_model_dir path
@@ -14,7 +14,7 @@ final_model_dir="${final_model_dir}-${model_type}"
 if [ "${model_type}" == "latency_predictor" ]; then
     final_model_dir="${final_model_dir}_${latency_metric}"
 elif [[ "${model_type}" == *"contextual_bandit"* ]]; then
-    final_model_dir="${final_model_dir}_${REWARD_FUNCTION}"
+    final_model_dir="${final_model_dir}_${latency_metric}_${REWARD_FUNCTION}"
 fi
 final_model_dir=${final_model_dir}-${time_stamp}
 if [ -d "${final_model_dir}" ]; then
@@ -38,7 +38,7 @@ echo "✓ Found data file: ${data_file}"
 
 
 
-analyze_dataset=1
+analyze_dataset=0
 analyze_behavior=0
 sampling_ratio=0.5
 # sampling_ratio=1.0
@@ -47,12 +47,12 @@ buffer_size=100000
 
 hidden_dim=128
 batch_size=256
-training_epochs=10
+training_epochs=20
 learning_rate=0.0003 # 0.0001, 0.0003
 lr_scheduler_gamma=0.95
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 excluded_pod_features="none" # "inflight_requests,cpu_kv_cache" 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
-excluded_request_features="output_tokens, decode_tokens, cpu_kv_cache" # "none", "input_tokens", "output_tokens", "total_tokens"
+excluded_request_features="output_tokens, cpu_kv_cache" # "none", "input_tokens", "output_tokens", "total_tokens"
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 ttft_slo=1000

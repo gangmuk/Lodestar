@@ -42,7 +42,13 @@ fi
 [ -f "$OUTPUT_FILE" ] && rm "$OUTPUT_FILE"
 
 # Find all filtered-aibrix-gateway-plugins.log.csv files recursively
-files=$(find "${ROOT_DIR}" -type f -name "filtered-aibrix-gateway-plugins.log.csv" | sort)
+all_files=$(find "${ROOT_DIR}" -type f -name "filtered-aibrix-gateway-plugins.log.csv" | sort)
+
+# Check if any files exist at all
+if [ -z "$all_files" ]; then
+    echo "No filtered-aibrix-gateway-plugins.log.csv files found"
+    exit 1
+fi
 
 # Filter files by directory name if filter words are provided
 if [ ${#FILTER_WORDS[@]} -gt 0 ]; then
@@ -59,17 +65,21 @@ if [ ${#FILTER_WORDS[@]} -gt 0 ]; then
         if [ "$match_found" = true ]; then
             filtered_files="${filtered_files}${file}"$'\n'
         fi
-    done <<< "$files"
-    files=$(echo "$filtered_files" | sed '/^$/d' | sort)
-    echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
+    done <<< "$all_files"
+    filtered_files=$(echo "$filtered_files" | sed '/^$/d' | sort)
+    
+    # If filter matched no files, fall back to processing all files
+    if [ -z "$filtered_files" ]; then
+        echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
+        echo "No files matched the filter - processing all files instead"
+        files="$all_files"
+    else
+        files="$filtered_files"
+        echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
+    fi
 else
+    files="$all_files"
     echo "No filter specified - processing all files"
-fi
-
-# Check if any files were found
-if [ -z "$files" ]; then
-    echo "No filtered-aibrix-gateway-plugins.log.csv files found"
-    exit 1
 fi
 
 echo "Found $(echo "$files" | wc -l) file(s)"
