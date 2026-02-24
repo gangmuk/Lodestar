@@ -550,6 +550,108 @@ def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_wei
     }
 
 
+def calculate_rewards_e2e(e2e_values, reward_function, **kwargs):
+    """
+    Calculate rewards using end-to-end latency as a single metric.
+
+    Applies the same reward shaping as the corresponding ttft/tpot reward
+    functions but operates on e2e_latency directly.
+
+    Args:
+        e2e_values: End-to-end latency values in ms
+        reward_function: Name of the reward function to apply
+        **kwargs: Additional arguments (e2e_slo, e2e_p99, input_tokens, output_tokens, etc.)
+
+    Returns:
+        Dict with ttft_rewards (zeros), tpot_rewards (zeros), combined_rewards
+    """
+    zeros = np.zeros_like(e2e_values, dtype=np.float64)
+
+    if reward_function == "negative_linear":
+        rewards = -e2e_values / 1000.0
+
+    elif reward_function == "negative_squared":
+        rewards = -np.square(e2e_values / 1000.0)
+
+    elif reward_function == "negative_reciprocal":
+        rewards = -1000.0 / np.maximum(e2e_values, 1.0)
+
+    elif reward_function == "simple_latency_minimization":
+        rewards = -np.log(e2e_values + 1.0)
+
+    elif reward_function == "log_normalized":
+        e2e_p99 = kwargs.get('e2e_p99', None)
+        if e2e_p99 is None or e2e_p99 <= 0:
+            e2e_p99 = float(np.percentile(e2e_values, 99))
+            if e2e_p99 <= 0:
+                e2e_p99 = 1.0
+        rewards = -np.log(e2e_values + 1) / np.log(e2e_p99 + 1)
+
+    elif reward_function == "inverse_latency":
+        e2e_raw = 1000.0 / (e2e_values + 100.0)
+        rewards = (e2e_raw - 5.05) / 4.95
+
+    elif reward_function in ("linear_simple", "linear_simple_extended",
+                             "piecewise_linear_steeper_gradient", "latency_optimized"):
+        # SLO-based: use e2e_slo if provided, otherwise fall back to ttft_slo
+        e2e_slo = kwargs.get('e2e_slo', kwargs.get('ttft_slo', 1000))
+        rewards = np.where(
+            e2e_values <= 0,
+            2.0,
+            np.where(
+                e2e_values <= e2e_slo,
+                2.0 - (2.0 * e2e_values / e2e_slo),
+                -0.5 - (0.4 * np.minimum(4.0, (e2e_values - e2e_slo) / e2e_slo))
+            )
+        )
+
+    elif reward_function == "throughput_based":
+        input_tokens = kwargs.get('input_tokens')
+        output_tokens = kwargs.get('output_tokens')
+        if input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        elif input_tokens is not None:
+            total_tokens = input_tokens
+        else:
+            total_tokens = np.ones_like(e2e_values)
+        e2e_seconds = np.maximum(e2e_values / 1000.0, 0.001)
+        throughput = total_tokens / e2e_seconds
+        rewards = np.log(throughput + 1)
+
+    elif reward_function == "quantile_based":
+        input_tokens = kwargs.get('input_tokens')
+        if input_tokens is not None:
+            input_quantiles = np.percentile(input_tokens, [0, 33, 67, 100])
+            rewards = np.zeros_like(e2e_values, dtype=np.float64)
+            for i in range(3):
+                low = input_quantiles[i]
+                high = input_quantiles[i+1]
+                mask = (input_tokens >= low) & (input_tokens < high) if i < 2 else (input_tokens >= low)
+                if mask.sum() == 0:
+                    continue
+                bucket_e2e = e2e_values[mask]
+                mean_e2e = np.mean(bucket_e2e)
+                std_e2e = np.std(bucket_e2e)
+                if std_e2e > 1e-6:
+                    bucket_rewards = -(bucket_e2e - mean_e2e) / std_e2e
+                else:
+                    bucket_rewards = np.zeros_like(bucket_e2e)
+                rewards[mask] = np.clip(bucket_rewards, -3.0, 3.0)
+        else:
+            # Fallback to negative linear if no input_tokens
+            rewards = -e2e_values / 1000.0
+
+    else:
+        logger.error(f"Unsupported reward function for e2e_latency: {reward_function}, falling back to negative_linear")
+        rewards = -e2e_values / 1000.0
+
+    return {
+        'ttft_rewards': zeros,
+        'tpot_rewards': zeros,
+        'combined_rewards': rewards,
+    }
+
+
 def calculate_rewards_quantile_based(ttft_values,ot_values, input_tokens, output_tokens,
                                       ttft_reward_weight):
     """
@@ -1266,15 +1368,37 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
             avg_tpot_slo = hyperparameters['AVG_TPOT_SLO']
             ttft_reward_weight = hyperparameters['TTFT_REWARD_WEIGHT']
             reward_function = hyperparameters['REWARD_FUNCTION']
+            latency_metric = hyperparameters.get('LATENCY_METRIC', 'ttft')
             logger.info(
-                "Online training reward config: REWARD_FUNCTION=%s, TTFT_SLO=%s, AVG_TPOT_SLO=%s, TTFT_REWARD_WEIGHT=%s",
+                "Online training reward config: REWARD_FUNCTION=%s, LATENCY_METRIC=%s, TTFT_SLO=%s, AVG_TPOT_SLO=%s, TTFT_REWARD_WEIGHT=%s",
                 reward_function,
+                latency_metric,
                 ttft_slo,
                 avg_tpot_slo,
                 ttft_reward_weight,
             )
 
-            if reward_function == "linear_simple":
+            if latency_metric == 'e2e_latency':
+                # Use end-to-end latency directly as the reward signal
+                e2e_values = np.array(base_data['e2e_latency'], dtype=np.float64)
+                e2e_kwargs = {
+                    'ttft_slo': ttft_slo,
+                    'avg_tpot_slo': avg_tpot_slo,
+                    'input_tokens': np.array(base_data['input_tokens'], dtype=np.float64),
+                    'output_tokens': np.array(base_data['output_tokens'], dtype=np.float64),
+                }
+                if 'E2E_P99' in hyperparameters:
+                    e2e_kwargs['e2e_p99'] = hyperparameters['E2E_P99']
+                else:
+                    e2e_p99 = float(np.percentile(e2e_values, 99))
+                    e2e_kwargs['e2e_p99'] = e2e_p99
+                    hyperparameters['E2E_P99'] = e2e_p99
+                    logger.info(f"Computed E2E_P99={e2e_p99:.2f}ms from data")
+                if 'E2E_SLO' in hyperparameters:
+                    e2e_kwargs['e2e_slo'] = hyperparameters['E2E_SLO']
+                logger.info(f"Using e2e_latency as reward signal with {reward_function} (e2e range: {e2e_values.min():.1f}-{e2e_values.max():.1f}ms)")
+                reward = calculate_rewards_e2e(e2e_values, reward_function, **e2e_kwargs)
+            elif reward_function == "linear_simple":
                 reward = calculate_rewards_simple(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
             elif reward_function == "linear_simple_extended":
                 reward = calculate_rewards_simple_extended(ttft_values, tpot_values, ttft_slo, avg_tpot_slo, ttft_reward_weight)
@@ -1335,18 +1459,18 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                     # Store in hyperparameters for later use
                     hyperparameters['TTFT_P99'] = ttft_p99
                     hyperparameters['TPOT_P99'] = tpot_p99
-                
+
                 # Validate and fix P99 values
                 # If TPOT_P99 is 0 (all TPOT values are 0), use a minimum value to avoid division by zero
                 if tpot_p99 <= 0:
                     logger.warning(f"TPOT_P99 is {tpot_p99} (all TPOT values are 0). Using minimum value of 1.0 for log calculation.")
                     tpot_p99 = 1.0
                     hyperparameters['TPOT_P99'] = tpot_p99
-                
+
                 if ttft_p99 <= 0:
                     logger.error(f"Invalid TTFT_P99 value: {ttft_p99}. Cannot compute log_normalized rewards.")
                     raise ValueError(f"TTFT_P99 must be positive for log_normalized reward function. Got TTFT_P99={ttft_p99}")
-                
+
                 reward = calculate_rewards_log_normalized(
                     ttft_values, tpot_values,
                     ttft_p99=ttft_p99,
@@ -1361,10 +1485,10 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                     base_data.get(f"{pod}-kv_hit_ratio", [0] * len(selected_pods))[i] / 100.0  # Convert percentage to ratio
                     for i, pod in enumerate(selected_pods)
                 ])
-                
+
                 input_tokens = np.array(base_data['input_tokens'], dtype=np.float64)
                 output_tokens = np.array(base_data['output_tokens'], dtype=np.float64)
-                
+
                 reward = calculate_rewards_context_aware(
                     ttft_values, tpot_values, input_tokens, output_tokens,
                     kv_cache_hit_ratios, ttft_slo, avg_tpot_slo, ttft_reward_weight

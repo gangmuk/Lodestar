@@ -72,6 +72,7 @@ final_model_dir = None
 hyperparameter_file_path = None
 offline_csv_path = None
 ROUTING_STRATEGY = os.getenv("ROUTING_STRATEGY", "latency_predictor")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama-3-8b-instruct")
 MAX_TOTAL_DATA = int(os.getenv("MAX_TOTAL_DATA", 20000))
 RETURN_POD_PROBABILITIES = int(os.getenv("RETURN_POD_PROBABILITIES", "0"))
 RETURN_PREDICTED_REWARDS = int(os.getenv("RETURN_PREDICTED_REWARDS", "0"))
@@ -1609,7 +1610,7 @@ def initialize():
                 offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         elif TARGET_GPU_MODEL in {"NVIDIA-A30"}:
             if 'contextual_bandit' in ROUTING_STRATEGY or 'latency_predictor' in ROUTING_STRATEGY:
-                final_model_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-{ROUTING_STRATEGY}"
+                final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-{ROUTING_STRATEGY}"
                 offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -1626,12 +1627,13 @@ def initialize():
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
     else:
-        final_model_dir = f"/app/NVIDIA-A30/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+        final_model_dir = f"/app/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
         offline_csv_path = f"{final_model_dir}/data-processed.csv"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
         offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
     
+    logger.info(f"MODEL_NAME: {MODEL_NAME}")
     logger.info(f"ROUTING_STRATEGY: {ROUTING_STRATEGY}")
     logger.info(f"TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
     logger.info(f"WORKLOAD_CATEGORY: {WORKLOAD_CATEGORY}")
