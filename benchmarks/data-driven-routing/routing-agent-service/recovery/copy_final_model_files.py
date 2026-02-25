@@ -27,7 +27,15 @@ REMOTE_BASE = "/app/NVIDIA-A30"
 
 # All final_model dirs to copy, relative to REMOTE_BASE
 FINAL_MODEL_DIRS = [
+    # llama-3-8b-instruct / maxTokens_100-maxTokensStd_10
+    # "llama-3-8b-instruct/maxTokens_100-maxTokensStd_10/final_model-latency_predictor",
+    # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 (top-level)
+    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
+    # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 / azure
+    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
+    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
     # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 / gangmuk-prefix
+    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_30000",
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000",
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio9%",
@@ -35,6 +43,8 @@ FINAL_MODEL_DIRS = [
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_toolagent_2",
     "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_conversation_2",
+    # llama-3-8b-instruct / use_given_output_length / azure
+    "llama-3-8b-instruct/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",
     # llama-3-8b-instruct / use_given_output_length / gangmuk-prefix
     "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",
     "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",
@@ -46,6 +56,7 @@ FINAL_MODEL_DIRS = [
     "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2",
     "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2",
     "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2",
+    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",
     # qwen3-4b-instruct / use_given_output_length / gangmuk-prefix
     "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",
     "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",
@@ -264,8 +275,8 @@ def main():
     parser.add_argument("--namespace", type=str, default="default")
     parser.add_argument("--app-label", type=str, default="routing-agent-service")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be copied without copying")
-    parser.add_argument("--retry-failed", action="store_true",
-                        help="Only copy files that are missing or have wrong size")
+    parser.add_argument("--retry-failed", action="store_true", default=True,
+                        help="Only copy files that are missing or have wrong size (default: True)")
     args = parser.parse_args()
 
     pod = args.pod or get_pod_name(args.namespace, args.app_label)
