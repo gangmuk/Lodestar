@@ -1,0 +1,83 @@
+---
+NVIDIA-A30/
+- llama-3-8b-instruct/
+    - maxTokens_1-maxTokensStd_0/
+        - gangmuk-prefix/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_30000
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000  
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio9%
+        - mooncake/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_toolagent_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_conversation_2
+    - use_given_output_length/
+        - gangmuk-prefix/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens
+        - mooncake/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2
+
+- qwen3-4b-instruct/
+    - use_given_output_length/
+        - gangmuk-prefix/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear
+        - mooncake/
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2
+            - final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2
+
+Under each final_model directory, there are the following files to copy:
+- model_config.json
+- data_processor_command.txt
+- data_processor.log.txt
+- dataset_analyzer.log.txt
+- python_command.txt
+- feature_normalization_statistics.csv
+- feature_distribution_statistics.csv
+- reward_net.pth
+- optimizer.pth
+- metadata.pkl
+- training_metrics-False.csv
+- comprehensive_neural_cb_metrics-False.pdf
+- output.txt
+- offline_routing_agent.log.txt
+- full_path.txt
+- data.csv
+- data-processed_summary.json
+- data-processed.csv
+- data-processed-sampled.csv
+- dataset_analysis.pdf
+- encoded_data/ (not needed)
+- metadata-False.pkl (not needed)
+- optimizer-False.pth (not needed)
+- reward_net-False.pth (not needed)
+---
+
+routing_agent_service/
+- routing_agent_service.py
+- neural_contextual_bandit_perpodmodel_checkpoint.py
+- preprocess.py
+- data_processor.py
+- data_normalizer.py
+- encoding.py
+- offline_routing_agent.py
+- write_hyperparameters.py
+- utils.py
+
+
+- analyze_latency_distribution.py
+- analyze_processed_data.py
+- analyze_training_results.py
+- csv_training_analyzer.py
+- dataset_analyzer.py
+- distribution_shift_detector.py
+- replace_pod_ip_with_generalpodid.py

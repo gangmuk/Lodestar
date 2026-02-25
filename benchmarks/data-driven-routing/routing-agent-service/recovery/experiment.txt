@@ -1,0 +1,53 @@
+llama3 7b
+- prefill only
+    - I have final number for this. and I don't think I will rerun the experiment again..
+    - gangmuk-prefix 
+        - RPS: 4, 6, 8, 10
+    - mooncake
+        - RPS: 10, 15, 20, 25
+- use_given_output_length
+    - I need to rerun prefix cache and rl router experiment. I lost the training data and also the benchmark number. I have never run quicksilver for this workload.
+    - gangmuk-prefix
+        - RPS: 4, 6, 8
+    - mooncake
+        - RPS: 4, 8, 12, 16
+
+qwen3 4b
+- prefill only
+    - gangmuk-prefix
+        - RPS: 
+    - mooncake
+        - RPS: 
+- use_given_output_length
+    - gangmuk-prefix
+        - RPS: 4, 6, 8
+    - mooncake
+        - RPS: 8, 12, 16
+
+training data
+    - raw data
+        - lost
+    - sampled training data (routing agent service)
+        - yes, in the pod
+
+model
+    - model weight
+        - yes, in the pod
+
+code
+- routing agent service
+    - yes all in the routing agent service pod
+    - checkpoint
+    - data_processor.py
+    - analysis py
+    - normalizer py
+    - preprocess py
+    - encoding py
+
+
+- gateway
+    - lost
+        - but I think everything was pushed.
+
+- client
+    - yes, in the pod
