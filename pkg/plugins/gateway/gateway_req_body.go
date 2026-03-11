@@ -177,6 +177,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			// utils.MetricCPUCacheUsagePerc,
 			utils.MetricNumRequestsRunning,
 			utils.MetricNumRequestsWaiting,
+			// utils.MetricNumPreemptions,
+			// utils.MetricPromptTokensTotal,
+			// utils.MetricGenerationTokensTotal,
 		}
 
 		// NOTE: currently it is logging for every request for all pods. We can do periodically.
@@ -186,7 +189,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			go func(pod *v1.Pod) {
 				defer wg.Done()
 				for _, metricName := range targetMetrics {
-					utils.ReadAndStoreVLLMMetric(requestID, pod, metricName)
+					if err := utils.ReadAndStoreVLLMMetric(requestID, pod, metricName); err != nil {
+						klog.Errorf("ReadAndStoreVLLMMetric failed: %v", err)
+					}
 				}
 			}(pod)
 		}
