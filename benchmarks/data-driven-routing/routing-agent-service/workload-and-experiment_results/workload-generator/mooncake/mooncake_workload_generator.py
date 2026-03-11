@@ -14,6 +14,7 @@ import sys
 import re
 import math
 import numpy as np
+import pandas as pd
 from collections import defaultdict, Counter
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -1075,6 +1076,156 @@ class MooncakeWorkloadGenerator:
         return max(0, sharing_ratio)
 
 
+    def plot_workload_analysis(self, workload_data, output_dir):
+        """Generate plot.py-style distribution and time series analysis plots"""
+        requests = workload_data["requests"]
+        if not requests:
+            print("No requests to plot.")
+            return
+
+        df = pd.DataFrame(requests)
+        df['timestamp_seconds'] = df['timestamp'] / 1000
+        workload_name = os.path.basename(output_dir)
+
+        # ── Figure 1: Distribution Analysis (2×2) ──
+        fig1, axes1 = plt.subplots(2, 2, figsize=(10, 6))
+        fig1.suptitle(f'{workload_name} - Distribution Analysis', fontsize=16)
+
+        # RPS distribution
+        rps_data = df.groupby(df['timestamp_seconds'].astype(int)).size()
+        axes1[0, 0].hist(rps_data.values, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+        axes1[0, 0].set_xlabel('Requests per Second')
+        axes1[0, 0].set_ylabel('Frequency')
+        axes1[0, 0].set_title('RPS Distribution')
+        axes1[0, 0].grid(True, alpha=0.3)
+
+        # Input token length distribution
+        axes1[0, 1].hist(df['context_tokens'], bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
+        axes1[0, 1].set_xlabel('Input Token Length')
+        axes1[0, 1].set_ylabel('Frequency')
+        axes1[0, 1].set_title('Input Token Length Distribution')
+        axes1[0, 1].grid(True, alpha=0.3)
+
+        # Output token length distribution
+        axes1[1, 0].hist(df['generated_tokens'], bins=50, alpha=0.7, color='lightcoral', edgecolor='black')
+        axes1[1, 0].set_xlabel('Output Token Length')
+        axes1[1, 0].set_ylabel('Frequency')
+        axes1[1, 0].set_title('Output Token Length Distribution')
+        axes1[1, 0].grid(True, alpha=0.3)
+
+        # Input vs Output scatter
+        axes1[1, 1].scatter(df['context_tokens'], df['generated_tokens'], alpha=0.5, s=20, c='purple')
+        axes1[1, 1].set_xlabel('Input Token Length')
+        axes1[1, 1].set_ylabel('Output Token Length')
+        axes1[1, 1].set_title('Input vs Output Token Length')
+        axes1[1, 1].grid(True, alpha=0.3)
+
+        fig1.tight_layout()
+
+        # ── Figure 2: Time Series Analysis (4×2) ──
+        fig2, axes2 = plt.subplots(4, 2, figsize=(10, 8))
+        fig2.suptitle(f'{workload_name} - Time Series Analysis (1 second granularity)', fontsize=16)
+
+        df['num_token_blocks'] = df['hash_ids'].apply(len)
+        max_time = int(df['timestamp_seconds'].max()) + 1
+        time_bins = range(0, max_time + 1)
+
+        # RPS over time
+        rps_by_second = df.groupby(df['timestamp_seconds'].astype(int)).size().reindex(time_bins, fill_value=0)
+        axes2[0, 0].plot(rps_by_second.index, rps_by_second.values, linewidth=1, alpha=0.8, color='blue')
+        axes2[0, 0].set_xlabel('Time (seconds)')
+        axes2[0, 0].set_ylabel('Requests per Second')
+        axes2[0, 0].set_title('RPS Over Time')
+        axes2[0, 0].grid(True, alpha=0.3)
+        axes2[0, 0].set_xlim(0, max_time)
+
+        # Average input token length over time
+        input_by_second = df.groupby(df['timestamp_seconds'].astype(int))['context_tokens'].mean().reindex(time_bins, fill_value=np.nan)
+        valid = ~input_by_second.isna()
+        axes2[0, 1].plot(input_by_second.index[valid], input_by_second.values[valid], linewidth=1, alpha=0.8, color='green')
+        axes2[0, 1].set_xlabel('Time (seconds)')
+        axes2[0, 1].set_ylabel('Average Input Token Length')
+        axes2[0, 1].set_title('Average Input Token Length Over Time')
+        axes2[0, 1].grid(True, alpha=0.3)
+        axes2[0, 1].set_xlim(0, max_time)
+
+        # Average output token length over time
+        output_by_second = df.groupby(df['timestamp_seconds'].astype(int))['generated_tokens'].mean().reindex(time_bins, fill_value=np.nan)
+        valid = ~output_by_second.isna()
+        axes2[1, 0].plot(output_by_second.index[valid], output_by_second.values[valid], linewidth=1, alpha=0.8, color='red')
+        axes2[1, 0].set_xlabel('Time (seconds)')
+        axes2[1, 0].set_ylabel('Average Output Token Length')
+        axes2[1, 0].set_title('Average Output Token Length Over Time')
+        axes2[1, 0].grid(True, alpha=0.3)
+        axes2[1, 0].set_xlim(0, max_time)
+
+        # Prefix sharing ratio over time (1-minute windows)
+        def _find_longest_common_prefix(seq1, seq2):
+            for i in range(min(len(seq1), len(seq2))):
+                if seq1[i] != seq2[i]:
+                    return i
+            return min(len(seq1), len(seq2))
+
+        max_minute = int(df['timestamp_seconds'].max() / 60) + 1
+        prefix_ratios, minute_timestamps = [], []
+        for minute in range(max_minute + 1):
+            mdata = df[(df['timestamp_seconds'] >= minute * 60) & (df['timestamp_seconds'] < (minute + 1) * 60)]
+            if len(mdata) > 1:
+                mdata = mdata.sort_values('timestamp_seconds')
+                hash_list = list(mdata['hash_ids'])
+                ratios = []
+                for i in range(1, len(hash_list)):
+                    max_plen = 0
+                    for j in range(i):
+                        max_plen = max(max_plen, _find_longest_common_prefix(hash_list[i], hash_list[j]))
+                    if len(hash_list[i]) > 0:
+                        ratios.append(max_plen / len(hash_list[i]))
+                if ratios:
+                    prefix_ratios.append(sum(ratios) / len(ratios))
+                    minute_timestamps.append(minute)
+
+        axes2[1, 1].plot(minute_timestamps, prefix_ratios, linewidth=2, alpha=0.8, color='purple', marker='o', markersize=4)
+        axes2[1, 1].set_xlabel('Time (minutes)')
+        axes2[1, 1].set_ylabel('Prefix Sharing Ratio')
+        axes2[1, 1].set_title('Prefix Cache Hit Ratio Over Time (1-minute windows)')
+        axes2[1, 1].grid(True, alpha=0.3)
+        axes2[1, 1].set_xlim(0, max_minute)
+        axes2[1, 1].set_ylim(0, 1)
+
+        # Token blocks per request distribution
+        axes2[2, 0].hist(df['num_token_blocks'], bins=30, alpha=0.7, color='orange', edgecolor='black')
+        axes2[2, 0].set_xlabel('Number of Token Blocks')
+        axes2[2, 0].set_ylabel('Frequency')
+        axes2[2, 0].set_title(f'Token Blocks per Request Distribution ({self.num_tokens_per_hash_id} tokens/block)')
+        axes2[2, 0].grid(True, alpha=0.3)
+
+        # Input token length histogram
+        axes2[2, 1].hist(df['context_tokens'], bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
+        axes2[2, 1].set_xlabel('Input Token Length')
+        axes2[2, 1].set_ylabel('Frequency')
+        axes2[2, 1].set_title('Input Token Length Distribution')
+        axes2[2, 1].grid(True, alpha=0.3)
+
+        # Output token length histogram
+        axes2[3, 0].hist(df['generated_tokens'], bins=50, alpha=0.7, color='lightcoral', edgecolor='black')
+        axes2[3, 0].set_xlabel('Output Token Length')
+        axes2[3, 0].set_ylabel('Frequency')
+        axes2[3, 0].set_title('Output Token Length Distribution')
+        axes2[3, 0].grid(True, alpha=0.3)
+
+        axes2[3, 1].set_visible(False)
+        fig2.tight_layout()
+
+        # Save both figures into a single PDF
+        plot_file = os.path.join(output_dir, f"plot_{workload_name}.pdf")
+        with PdfPages(plot_file) as pdf:
+            pdf.savefig(fig1, dpi=300, bbox_inches='tight')
+            pdf.savefig(fig2, dpi=300, bbox_inches='tight')
+        plt.close(fig1)
+        plt.close(fig2)
+        print(f"Workload analysis plot saved to {plot_file}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate Mooncake-based workloads')
     parser.add_argument('--mooncake-trace', required=True,
@@ -1174,8 +1325,11 @@ def main():
     
     # Save workload
     generator.save_workload(workload_data, args.output_dir)
-    
-    # Generate plots if requested
+
+    # Always generate workload analysis plot (plot.py style)
+    generator.plot_workload_analysis(workload_data, args.output_dir)
+
+    # Generate additional plots if requested
     if args.generate_plots:
         combined_plot_file = os.path.join(args.output_dir, "workload_timeseries.pdf")
         with PdfPages(combined_plot_file) as pdf:

@@ -18,7 +18,7 @@ LOCAL_BASE = "/Users/gangmuk2/Downloads/recovery/routing-agent-service"
 
 # Timeout per file copy attempt (in seconds)
 # Increased for slow network connections - 60 minutes should be enough for large files
-COPY_TIMEOUT = 60 * 60  # 60 minutes
+COPY_TIMEOUT = 60 * 120  # 120 minutes
 
 
 # Files to copy - only the 3 that failed (large files that timed out)

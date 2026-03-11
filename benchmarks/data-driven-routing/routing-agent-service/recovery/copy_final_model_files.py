@@ -30,41 +30,41 @@ FINAL_MODEL_DIRS = [
     # llama-3-8b-instruct / maxTokens_100-maxTokensStd_10
     # "llama-3-8b-instruct/maxTokens_100-maxTokensStd_10/final_model-latency_predictor",
     # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 (top-level)
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",  # MISSING
     # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 / azure
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",  # MISSING
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/azure/azure_code_poisson/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",  # MISSING
     # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 / gangmuk-prefix
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_30000",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio9%",
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",  # MISSING
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_30000",  # recovered
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio47%_15000",  # recovered
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_SharingRatio9%",  # recovered
     # llama-3-8b-instruct / maxTokens_1-maxTokensStd_0 / mooncake
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_toolagent_2",
-    "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_conversation_2",
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear",  # recovered
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_toolagent_2",  # recovered
+    # "llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_conversation_2",  # recovered
     # llama-3-8b-instruct / use_given_output_length / azure
-    "llama-3-8b-instruct/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",
+    ## "llama-3-8b-instruct/use_given_output_length/azure/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",  # MISSING
     # llama-3-8b-instruct / use_given_output_length / gangmuk-prefix
-    "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",
-    "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",
-    "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",
+    # "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",  # recovered
     # llama-3-8b-instruct / use_given_output_length / mooncake
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2",
-    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2",  # recovered
+    # "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2",  # recovered
+    "llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear_without_output_tokens",  # MISSING
     # qwen3-4b-instruct / use_given_output_length / gangmuk-prefix
-    "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",
-    "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",
+    # "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear",  # recovered
+    # "qwen3-4b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear",  # recovered
     # qwen3-4b-instruct / use_given_output_length / mooncake
-    "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2",
-    "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2",
-    "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2",
-    "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2",
+    # "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_conversation_2",  # recovered
+    # "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2",  # recovered
+    # "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_e2e_latency_negative_linear_toolagent_2",  # recovered
+    # "qwen3-4b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2",  # recovered
 ]
 
 # Files to copy from each final_model dir
@@ -280,7 +280,7 @@ def main():
     args = parser.parse_args()
 
     pod = args.pod or get_pod_name(args.namespace, args.app_label)
-    local_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NVIDIA-A30")
+    local_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workload-and-experiment_results/NVIDIA-A30")
 
     total_files = len(FINAL_MODEL_DIRS) * len(FILES_TO_COPY)
     print(f"Pod: {pod}")
