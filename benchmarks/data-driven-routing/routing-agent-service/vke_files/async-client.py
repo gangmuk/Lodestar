@@ -1957,7 +1957,7 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tokens_std,
                                     input_tokens_std, max_input_tokens,
                                     input_token_length_scaling, output_token_length_scaling,
-                                    shuffle_requests, prompt_type, override_workload_output_length):
+                                    shuffle_requests_between_iterations, prompt_type, override_workload_output_length):
     """
     Prepare all requests for a single iteration.
 
@@ -2119,8 +2119,8 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
             }
             temp_requests.append(temp_request)
 
-    # Shuffle requests if enabled
-    if shuffle_requests:
+    # Shuffle requests if enabled (skip first iteration to preserve original order)
+    if shuffle_requests_between_iterations and iteration > 0:
         random.shuffle(temp_requests)
         logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
 
@@ -2349,7 +2349,7 @@ def create_blended_schedule(all_iteration_requests: List[List[Dict]], rps: float
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
-                       shuffle_requests=0, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
+                       shuffle_requests_between_iterations=0, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
                        input_token_length_scaling=1.0, output_token_length_scaling=1.0,
                        workload_path=None, iteration_overlap_ratio=0.0):
     """Main benchmark function that runs all requests asynchronously.
@@ -2401,7 +2401,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 max_input_tokens=max_input_tokens,
                 input_token_length_scaling=input_token_length_scaling,
                 output_token_length_scaling=output_token_length_scaling,
-                shuffle_requests=shuffle_requests,
+                shuffle_requests_between_iterations=shuffle_requests_between_iterations,
                 prompt_type=args.prompt_type,
                 override_workload_output_length=args.override_workload_output_length,
             )
@@ -2483,14 +2483,14 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             if profiling_mode:
                 if not rps:
                     raise ValueError("Profiling mode requires --rps (used as the maximum target RPS).")
-                if shuffle_requests:
-                    logger.warning("Profiling mode ignores --shuffle_requests to preserve load pattern ordering.")
-                    shuffle_requests = 0
+                if shuffle_requests_between_iterations:
+                    logger.warning("Profiling mode ignores --shuffle_requests_between_iterations to preserve load pattern ordering.")
+                    shuffle_requests_between_iterations = 0
                 if poisson_arrivals:
                     logger.warning("Profiling mode ignores --poisson_arrivals; profiling schedule already includes variability.")
                     poisson_arrivals = False
 
-            if shuffle_requests > 0:
+            if shuffle_requests_between_iterations > 0:
                 logger.info(f"Request shuffling enabled for iteration {iteration+1}")
 
             if max_input_tokens:
@@ -2695,8 +2695,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     }
                     temp_requests.append(temp_request)
 
-            # Shuffle requests if enabled
-            if shuffle_requests:
+            # Shuffle requests if enabled (skip first iteration to preserve original order)
+            if shuffle_requests_between_iterations and iteration > 0:
                 random.shuffle(temp_requests)
                 logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
 
@@ -2888,7 +2888,7 @@ async def main(args):
             history_lock=history_lock,
             iterations=args.iterations,
             rps=args.rps,
-            shuffle_requests=args.shuffle_requests,
+            shuffle_requests_between_iterations=args.shuffle_requests_between_iterations,
             poisson_arrivals=args.poisson_arrivals,
             max_input_tokens=args.max_input_tokens,
             input_tokens_std=args.input_tokens_std,
@@ -2946,7 +2946,7 @@ if __name__ == "__main__":
                        help="Token counting method for input truncation: 'tiktoken' (cl100k_base), 'char' (fast, 1 token ≈ 4 chars), or 'word' (fast, 1 word ≈ 1.33 tokens)")
     parser.add_argument("--rps", type=float, default=None, 
                        help="Requests per second (RPS). If specified, requests are sent at this rate instead of using workload timestamps.")
-    parser.add_argument("--shuffle_requests", type=int, default=0,
+    parser.add_argument("--shuffle_requests_between_iterations", type=int, default=0,
                        help="Shuffle the order of requests for each iteration (makes iterations non-identical). 0: no shuffle, 1: shuffle")
     parser.add_argument("--poisson_arrivals", action="store_true",
                        help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")

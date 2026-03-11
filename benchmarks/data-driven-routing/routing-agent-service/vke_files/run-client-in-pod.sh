@@ -413,9 +413,9 @@ experiment_configs=(
     #################################
 
     # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|12|2"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|12|4"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|12|3"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|12|3"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2_rps12|mooncake|conversation-2|${target_gpu}|12|3"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|12|4"
     # "least_request|mooncake|conversation-2|${target_gpu}|12|2"
 
 
@@ -471,12 +471,12 @@ experiment_configs=(
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|8|2"
     # "least_request|mooncake|toolagent-2|${target_gpu}|8|2"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|8|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|8|4"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|toolagent-2|${target_gpu}|8|4"
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|10|2"
     # "least_request|mooncake|toolagent-2|${target_gpu}|10|2"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|10|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|10|4"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|toolagent-2|${target_gpu}|10|4"
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|12|2"
@@ -730,6 +730,8 @@ RECENCY_DECAY_WEIGHT_FACTOR=1.0
 MAX_TOTAL_DATA=10000 # 50000 1000000
 MIN_NUM_TRAINING_DATA=5000
 MIN_NUM_UPDATE_DATA=1000
+
+shuffle_requests_between_iterations=1
 
 ENABLE_FALLBACK=0
 
@@ -1133,6 +1135,9 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         input_token_length_scaling=1.0
     fi
 
+    if [ "${workload_name}" == *"synthetic"* ]; then
+        shuffle_requests_between_iterations=0
+    fi
     kubectl exec ${ACTUAL_POD} -c ${CLIENT_SERVICE_CONTAINER_NAME} -- \
         python3 /app/async-client.py \
             --workload_path ${workload_path_in_pod} \
@@ -1151,7 +1156,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             --token_counting_mode ${token_counting_mode} \
             --rps ${rps} \
             --poisson_arrivals \
-            --shuffle_requests \
+            --shuffle_requests_between_iterations ${shuffle_requests_between_iterations} \
             --iterations ${total_num_episodes} \
             --streaming \
             --max_input_tokens ${max_input_tokens} \
