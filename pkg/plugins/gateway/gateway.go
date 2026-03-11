@@ -95,13 +95,32 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
 	completed := false
 	requestCounted := false
+	inflightCleaned := false
 	requestID := ""
 
 	// Ensure exactly-once cleanup on any exit path (context cancel, EOF, recv error, send error).
-	// If the request was counted (AddRequestCount called) but not yet completed
-	// (DoneRequestTrace not yet called), this defer decrements the counter.
-	// It also always returns the routing context to the pool.
+	//
+	// Inflight counters: cleanupInflightCounters is idempotent — it uses LoadAndDelete on
+	// RequestTimings, so if calculateTimingMetrics already ran and deleted the timing entry
+	// (normal completion), the call is a no-op. It also requires HasRouted() to avoid
+	// underflow when routing failed in HandleRequestBody (inflight never incremented).
+	//
+	// Request counting: If AddRequestCount was called but DoneRequestTrace was not yet called
+	// (requestCounted is still true), call DoneRequestCount to balance the counter.
 	defer func() {
+		if routerCtx != nil {
+			if routerCtx.HasRouted() {
+				if !inflightCleaned {
+					s.cleanupInflightCounters(routerCtx, routerCtx.RequestID)
+					s.cleanupPerRequestState(routerCtx, routerCtx.RequestID)
+				}
+			} else {
+				// Routing failed — inflight counters were never incremented, but
+				// per-request state (RequestTimings, tokens, etc.) may have been
+				// stored before routing. Clean those up to prevent memory leaks.
+				s.cleanupPerRequestState(routerCtx, routerCtx.RequestID)
+			}
+		}
 		if requestCounted && routerCtx != nil {
 			s.cache.DoneRequestCount(routerCtx, routerCtx.RequestID, model, traceTerm)
 		}
@@ -142,7 +161,14 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 						"requestID", routerCtx.RequestID)
 				}
 				ctx = routerCtx
-				requestCounted = true // AddRequestCount was called inside HandleRequestBody
+				// Only set requestCounted if AddRequestCount was actually called.
+				// HandleRequestBody calls AddRequestCount (line 244) only after routing
+				// succeeds. If routing failed (targetPodIP=="" or getRequestMessage error),
+				// it returns early with a non-nil routerCtx but AddRequestCount was never
+				// called, so DoneRequestCount in the defer would underflow.
+				if routerCtx.HasRouted() {
+					requestCounted = true
+				}
 			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
@@ -157,12 +183,34 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", routerCtx.RequestID)
 				klog.Errorf("Response body processing error %d, requestID: %s, selectedPod: %s, model: %s", respErrorCode, routerCtx.RequestID, routerCtx.TargetAddress(), model)
 				resp = generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+				// Clean up inflight counters for the failed request.
+				// The backend rejected the request (e.g., 400 context length exceeded),
+				// so HandleResponseBody is never called and counters would leak.
+				// Guard with HasRouted(): if routing failed in HandleRequestBody, no
+				// inflight counters were incremented and cleanup would underflow.
+				if !inflightCleaned && routerCtx != nil && routerCtx.HasRouted() {
+					klog.V(5).InfoS("Cleaning up inflight counters for error response",
+						"requestID", routerCtx.RequestID,
+						"errorCode", respErrorCode,
+						"model", model)
+					s.cleanupInflightCounters(routerCtx, routerCtx.RequestID)
+					s.cleanupPerRequestState(routerCtx, routerCtx.RequestID)
+					inflightCleaned = true
+				}
 			} else {
 				prevCompleted := completed
 				resp, completed = s.HandleResponseBody(ctx, req, user, rpm, model, stream, traceTerm, completed)
 				if !prevCompleted && completed {
-					// DoneRequestTrace was called inside HandleResponseBody's defer
+					// DoneRequestTrace was called inside HandleResponseBody's defer.
 					requestCounted = false
+					// Only mark inflight as cleaned if the EndOfStream path actually ran
+					// (which deletes RequestTimings after decrementing counters via
+					// calculateTimingMetrics). Error paths in HandleResponseBody may
+					// set complete=true without cleaning inflight counters; in that case
+					// the top-level defer must still run cleanupInflightCounters.
+					if _, exists := utils.RequestTimings.Load(routerCtx.RequestID); !exists {
+						inflightCleaned = true
+					}
 				}
 			}
 		default:
@@ -231,6 +279,105 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 		return "", err
 	}
 	return selectedPodAddress, nil
+}
+
+// cleanupInflightCounters decrements inflight counters for a request that didn't
+// complete normally through calculateTimingMetrics. It checks RequestTiming to
+// determine whether the request was still in the prefill phase or had transitioned
+// to decode, and decrements accordingly.
+//
+// Idempotency: This method uses LoadAndDelete on RequestTimings, so it can safely
+// be called multiple times — only the first call does actual work. This is critical
+// because multiple exit paths (streaming error handlers, HandleResponseBody error
+// returns, top-level defer) may all attempt cleanup.
+func (s *Server) cleanupInflightCounters(routerCtx *types.RoutingContext, requestID string) {
+	if routerCtx == nil {
+		return
+	}
+	podIP := routerCtx.TargetAddressWithoutPort()
+	if podIP == "" {
+		return
+	}
+
+	timingObj, loaded := utils.RequestTimings.LoadAndDelete(requestID)
+	if !loaded {
+		return
+	}
+	timing, ok := timingObj.(*RequestTiming)
+	if !ok || timing == nil {
+		return
+	}
+
+	if timing.firstTokenTime.IsZero() {
+		// Still in prefill phase — backend rejected before generating any tokens
+		utils.DecrementNumInflightPrefillRequestsForPod(podIP)
+		utils.DecrementNumInflightPrefillTokensForPod(podIP, int(timing.prefillTokenCount))
+	} else {
+		// Had transitioned to decode phase
+		utils.DecrementNumInflightDecodeRequestsForPod(podIP)
+		utils.DecrementNumInflightDecodeTokensForPod(podIP, int(timing.decodeTokenCount))
+	}
+	utils.DecrementNumInflightRequestsForPod(podIP)
+
+	klog.V(5).Infof("cleanupInflightCounters: decremented counters, requestID: %s, podIP: %s, wasPrefill: %t, prefillTokens: %d, decodeTokens: %d",
+		"requestID", requestID,
+		"podIP", podIP,
+		"wasPrefill", timing.firstTokenTime.IsZero(),
+		"prefillTokens", timing.prefillTokenCount,
+		"decodeTokens", timing.decodeTokenCount)
+}
+
+// cleanupPerRequestState removes all per-request tracking state from sync.Maps.
+// Safe to call even if some entries were never created (Delete on missing key is a no-op).
+func (s *Server) cleanupPerRequestState(routerCtx *types.RoutingContext, requestID string) {
+	if requestID == "" {
+		return
+	}
+
+	// RL agent cleanup
+	if routerCtx != nil && routerCtx.SubAlgorithm == "scalable_rl_agent" {
+		utils.RemoveLiveRequest(requestID)
+	}
+
+	// Per-request metric snapshots
+	utils.CleanupKVCacheHitRatio(requestID)
+	utils.CleanupInflightRequests(requestID)
+	utils.CleanupvLLMGPUKVCacheUsage(requestID)
+	utils.CleanupvLLMNumRequestsRunning(requestID)
+	utils.CleanupvLLMNumRequestsWaiting(requestID)
+	utils.CleanupSnapshotNumInflightPrefillTokensForRequest(requestID)
+	utils.CleanupSnapshotNumInflightDecodeTokensForRequest(requestID)
+	utils.CleanupSnapshotNumInflightPrefillRequestsForRequest(requestID)
+	utils.CleanupSnapshotNumInflightDecodeRequestsForRequest(requestID)
+	utils.CleanupRequestPodMetrics(requestID)
+
+	// Token and routing data
+	utils.CleanupByteArrayPrefillTokensForRequest(requestID)
+	utils.CleanupHashOfPrefixHashesForRequest(requestID)
+	utils.CleanupNumPrefillTokensForRequest(requestID)
+	utils.CleanupNumDecodeTokensForRequest(requestID)
+	utils.CleanuprequestToPodIP(requestID)
+
+	// Routing algorithm state
+	utils.CleanupExploration(requestID)
+	utils.CleanupPredictedLatencies(requestID)
+	utils.CleanupChosenPodPredictedLatency(requestID)
+	utils.CleanupPredictedRewards(requestID)
+	utils.CleanupChosenPodPredictedReward(requestID)
+	utils.CleanupSelectedPodGPU(requestID)
+	utils.CleanupOODFallbackForRequest(requestID)
+	utils.CleanupFailureFallbackForRequest(requestID)
+	utils.CleanupPrevRewardForRequest(requestID)
+
+	// Server-local per-request maps
+	// Note: RequestTimings is intentionally NOT deleted here. It is consumed by
+	// cleanupInflightCounters via LoadAndDelete to ensure exactly-once decrement.
+	s.routingContexts.Delete(requestID)
+	s.requestHeaders.Delete(requestID)
+	s.streamingUsageCache.Delete(requestID)
+	s.requestBuffers.Delete(requestID)
+	s.statusCode.Delete(requestID)
+	s.selectedPodIP.Delete(requestID)
 }
 
 func NewHealthCheckServer() *HealthServer {

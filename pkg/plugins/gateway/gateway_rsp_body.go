@@ -335,6 +335,9 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 				utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, int(timing.prefillTokenCount))
 			}
 			utils.DecrementNumInflightRequestsForPod(podIPWithoutPort)
+			// Delete timing entry so the top-level defer's cleanupInflightCounters
+			// (which uses LoadAndDelete) won't double-decrement.
+			utils.RequestTimings.Delete(requestID)
 		} else {
 			klog.ErrorS(nil, "routerCtx is nil in streaming error cleanup", "requestID", requestID)
 		}
@@ -493,7 +496,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			usage = res.Usage
 		}
 		if b.ResponseBody.EndOfStream {
-			klog.Infof("numOutputTokens(usage.CompletionTokens): %d", usage.CompletionTokens)
+			klog.V(5).Infof("numOutputTokens(usage.CompletionTokens): %d", usage.CompletionTokens)
 			hash_of_prefixHashes, _ := utils.GetHashOfPrefixHashesForRequest(routerCtx.RequestID)
 			utils.SetNumOutputTokensForHashOfPrefix(hash_of_prefixHashes, int(usage.CompletionTokens))
 			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
@@ -513,17 +516,23 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupByteArrayPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupHashOfPrefixHashesForRequest(routerCtx.RequestID)
 			utils.CleanupExploration(routerCtx.RequestID)
-			utils.CleanupPredictedLatencies(routerCtx.RequestID)
-			utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
+			// utils.CleanupPredictedLatencies(routerCtx.RequestID)
+			// utils.CleanupChosenPodPredictedLatency(routerCtx.RequestID)
 			utils.CleanupPredictedRewards(routerCtx.RequestID)
 			utils.CleanupChosenPodPredictedReward(routerCtx.RequestID)
 			utils.CleanupSelectedPodGPU(routerCtx.RequestID)
 			utils.CleanupOODFallbackForRequest(routerCtx.RequestID)
 			utils.CleanupFailureFallbackForRequest(routerCtx.RequestID)
+			utils.CleanupPrevRewardForRequest(routerCtx.RequestID)
+			utils.CleanupNumPrefillTokensForRequest(routerCtx.RequestID)
+			utils.CleanuprequestToPodIP(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
-			s.requestHeaders.Delete(routerCtx.RequestID) // Clean up cached request headers
+			s.requestHeaders.Delete(routerCtx.RequestID)
+			s.streamingUsageCache.Delete(routerCtx.RequestID)
+			s.statusCode.Delete(routerCtx.RequestID)
+			s.selectedPodIP.Delete(routerCtx.RequestID)
 		}
 	}
 	if usage.TotalTokens > 0 {
@@ -591,8 +600,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 		if err := streaming.Err(); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", routerCtx.RequestID, "responseBody", string(b.ResponseBody.GetBody()))
 
-			// Clean up metrics if we had transitioned to decode phase
-			timingObj, exists := utils.RequestTimings.Load(routerCtx.RequestID)
+			// Clean up metrics if we had transitioned to decode phase.
+			// Use LoadAndDelete so the top-level defer's cleanupInflightCounters won't
+			// double-decrement (it also uses LoadAndDelete for idempotency).
+			timingObj, exists := utils.RequestTimings.LoadAndDelete(routerCtx.RequestID)
 			if exists {
 				timing := timingObj.(*RequestTiming)
 				podIPWithoutPort := routerCtx.TargetAddressWithoutPort()
@@ -932,7 +943,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	normalized_request_start_time := timing.startTime.UnixMicro() - utils.FirstRequestStartTime
 	normalized_request_end_time := currentTime.UnixMicro() - utils.FirstRequestStartTime
 	exploration, explorationEnabled := utils.GetExploration(routerCtx.RequestID)
-
+	end_to_end_overhead := utils.GetEndToEndOverheadForRequest(routerCtx.RequestID)
 	prev_reward := -7.0
 	if routerCtx.SubAlgorithm == "scalable_rl_agent" {
 		prev_reward = utils.GetPrevRewardForRequest(routerCtx.RequestID)
@@ -942,14 +953,14 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	}
 	selectedPodGPU, _ := utils.GetSelectedPodGPU(routerCtx.RequestID)
 	// Get predicted latencies
-	predictedLatencies := utils.GetPredictedLatencies(routerCtx.RequestID)
+	// predictedLatencies := utils.GetPredictedLatecies(routerCtx.RequestID)
 	predictedRewards := utils.GetPredictedRewards(routerCtx.RequestID)
-	headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
+	// headers, jsonStrings["predictedLatencies"] = addMetricToHeaders(headers, HeaderPredictedLatencies, predictedLatencies, utils.GetPredictedLatenciesMutex())
 	headers, jsonStrings["predictedRewards"] = addMetricToHeaders(headers, HeaderPredictedRewards, predictedRewards, utils.GetPredictedRewardsMutex())
 
 	oodFallback := utils.GetOODFallbackForRequest(routerCtx.RequestID)
 	failureFallback := utils.GetFailureFallbackForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedLatencies@%s@chosenPodPredictedLatency@%d@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d",
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d@EndToEndOverhead@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -975,8 +986,6 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		utils.GetNumFlush(),
 		exploration,
 		explorationEnabled,
-		jsonStrings["predictedLatencies"],
-		utils.GetChosenPodPredictedLatency(routerCtx.RequestID),
 		jsonStrings["predictedRewards"],
 		utils.GetChosenPodPredictedReward(routerCtx.RequestID),
 		routerCtx.Iteration,
@@ -986,6 +995,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		selectedPodGPU,
 		failureFallback,
 		oodFallback,
+		end_to_end_overhead,
 	)
 	klog.Infof("%s", logMessage)
 

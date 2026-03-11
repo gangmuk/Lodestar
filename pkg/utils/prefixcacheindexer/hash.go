@@ -28,16 +28,18 @@ import (
 )
 
 const (
-	defaultPrefixCacheBlockNumber            = 200000
-	defaultPrefixCacheBlockSize              = 4
-	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
-	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
+	defaultPrefixCacheBlockNumber           = 200000
+	defaultPrefixCacheBlockSize             = 4
+	defaultPrefixCacheEvictionInternalInSec = 1 // 1 second
+	// defaultPrefixCacheEvictionDurationInSec = 300 // 60 seconds
+	defaultPrefixCacheEvictionDurationInMins = 20 // 10 minutes
 )
 
 var (
 	prefixCacheBlockNumber      = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", defaultPrefixCacheBlockNumber)
 	prefixCacheBlockSize        = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", defaultPrefixCacheBlockSize)
 	prefixCacheEvictionInterval = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", defaultPrefixCacheEvictionInternalInSec)) * time.Second
+	// prefixCacheEvictionDuration = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_SECONDS", defaultPrefixCacheEvictionDurationInSec)) * time.Second
 	prefixCacheEvictionDuration = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", defaultPrefixCacheEvictionDurationInMins)) * time.Minute
 )
 
@@ -58,7 +60,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_number", prefixCacheBlockNumber,
 		"prefix_cache_block_size", prefixCacheBlockSize,
 		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
-		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
+		"prefix_cache_block_eviction_duration_seconds", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
 		seed: seed,
 		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber,

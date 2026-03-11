@@ -29,12 +29,15 @@ import (
 )
 
 const (
-	MetricGPUCacheUsagePerc  = "gpu_cache_usage_perc"
-	MetricCPUCacheUsagePerc  = "cpu_cache_usage_perc"
-	MetricNumRequestsRunning = "num_requests_running"
-	MetricNumRequestsWaiting = "num_requests_waiting"
-	PodPort                  = 8000 // Same as in the metrics code
-	DefaultNumOutputTokens   = 128
+	MetricGPUCacheUsagePerc     = "gpu_cache_usage_perc"
+	MetricCPUCacheUsagePerc     = "cpu_cache_usage_perc"
+	MetricNumRequestsRunning    = "num_requests_running"
+	MetricNumRequestsWaiting    = "num_requests_waiting"
+	MetricNumPreemptions        = "num_preemptions_total"
+	MetricPromptTokensTotal     = "prompt_tokens_total"
+	MetricGenerationTokensTotal = "generation_tokens_total"
+	PodPort                     = 8000 // Same as in the metrics code
+	DefaultNumOutputTokens      = 128
 )
 
 type TimingResult struct {
@@ -633,7 +636,7 @@ var ChosenPodPredictedLatency = make(map[string]float64)
 
 var (
 	EndToEndOverheadMutex sync.RWMutex
-	EndToEndOverhead      map[string]float64 // requestID -> end to end overhead
+	EndToEndOverhead      map[string]int64 // requestID -> end to end overhead in milliseconds
 
 	TensorTransferOverheadMutex sync.RWMutex
 	TensorTransferOverhead      map[string]float64 // requestID -> tensor transfer overhead
@@ -745,6 +748,15 @@ var (
 	vllmNumRequestsWaitingMutex sync.RWMutex
 	vllmNumRequestsWaiting      map[string]map[string]float64 // requestID -> (podIP -> num requests waiting
 
+	vllmNumPreemptionsMutex sync.RWMutex
+	vllmNumPreemptions      map[string]map[string]float64 // requestID -> (podIP -> cumulative num preemptions)
+
+	vllmPromptTokensTotalMutex sync.RWMutex
+	vllmPromptTokensTotal      map[string]map[string]float64 // requestID -> (podIP -> cumulative prompt tokens)
+
+	vllmGenerationTokensTotalMutex sync.RWMutex
+	vllmGenerationTokensTotal      map[string]map[string]float64 // requestID -> (podIP -> cumulative generation tokens)
+
 	GPUModelMutex sync.RWMutex
 	GPUModel      = make(map[string]string) // podIP -> GPU model
 
@@ -776,7 +788,7 @@ func init() {
 	// RequestToNumTrainsMutex = sync.RWMutex{}
 
 	EndToEndOverheadMutex = sync.RWMutex{}
-	EndToEndOverhead = make(map[string]float64)
+	EndToEndOverhead = make(map[string]int64)
 
 	TensorTransferOverheadMutex = sync.RWMutex{}
 	TensorTransferOverhead = make(map[string]float64)
@@ -865,6 +877,15 @@ func init() {
 	vllmNumRequestsWaiting = make(map[string]map[string]float64)
 	vllmNumRequestsWaitingMutex = sync.RWMutex{}
 
+	vllmNumPreemptions = make(map[string]map[string]float64)
+	vllmNumPreemptionsMutex = sync.RWMutex{}
+
+	vllmPromptTokensTotal = make(map[string]map[string]float64)
+	vllmPromptTokensTotalMutex = sync.RWMutex{}
+
+	vllmGenerationTokensTotal = make(map[string]map[string]float64)
+	vllmGenerationTokensTotalMutex = sync.RWMutex{}
+
 	GPUModel = make(map[string]string) // podIP -> GPU model
 	GPUModelMutex = sync.RWMutex{}
 
@@ -949,7 +970,14 @@ func GetVLLMVersion(podIP string) string {
 
 // ResolveVLLMMetricName maps logical metric names to the correct Prometheus
 // metric name based on the vLLM version running on the given pod.
-// vLLM >= 0.7 renamed gpu_cache_usage_perc/cpu_cache_usage_perc to kv_cache_usage_perc.
+//
+// vLLM v1 engine (default since v0.9.2) renamed several metrics:
+//   - gpu_cache_usage_perc / cpu_cache_usage_perc → kv_cache_usage_perc
+//   - num_preemptions_total → num_preemptions (dropped _total suffix)
+//
+// Versions <= 0.8.x use the old engine with the old names.
+// v0.9.0-0.9.1 may use either engine depending on VLLM_USE_V1, so we use >= 0.10 as
+// a safe threshold and rely on the fallback in ReadAndStoreVLLMMetric for edge cases.
 func ResolveVLLMMetricName(podIP string, metricName string) string {
 	version := GetVLLMVersion(podIP)
 	if version == "unknown" {
@@ -969,12 +997,20 @@ func ResolveVLLMMetricName(podIP string, metricName string) string {
 		return metricName
 	}
 
-	// vLLM >= 0.7 uses kv_cache_usage_perc instead of gpu/cpu_cache_usage_perc
-	useNewNames := major > 0 || minor >= 7
-	if useNewNames {
+	// vLLM v1 engine renamed several metrics.
+	// v1 became the default in v0.9.2, but v0.9.0-0.9.1 could use either engine.
+	// Use >= 0.10 as a safe threshold; ReadAndStoreVLLMMetric has a fallback for edge cases.
+	useV1Names := major > 0 || minor >= 10
+	if useV1Names {
 		switch metricName {
 		case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
 			return "kv_cache_usage_perc"
+		case MetricNumPreemptions:
+			return "num_preemptions"
+		case MetricPromptTokensTotal:
+			return "prompt_tokens"
+		case MetricGenerationTokensTotal:
+			return "generation_tokens"
 		}
 	}
 	return metricName
@@ -1165,7 +1201,7 @@ func CleanupSelectedPodGPU(requestID string) {
 	SelectedPodGPUMutex.Lock()
 	defer SelectedPodGPUMutex.Unlock()
 	if _, exists := SelectedPodGPU[requestID]; !exists {
-		klog.Errorf("Error, Failed CleanupSelectedPodGPU for request ID: %s, not found", requestID)
+		klog.V(5).Infof("CleanupSelectedPodGPU already cleaned for request ID: %s", requestID)
 		return
 	}
 	delete(SelectedPodGPU, requestID)
@@ -1233,29 +1269,29 @@ func GetGPUModelFromNode(nodeName string) (string, error) {
 	return "", fmt.Errorf("node %s does not have GPU label", nodeName)
 }
 
-// func GetEndToEndOverheadForRequest(requestID string) (float64, bool) {
-// 	EndToEndOverheadMutex.RLock()
-// 	defer EndToEndOverheadMutex.RUnlock()
-// 	if val, ok := EndToEndOverhead[requestID]; ok {
-// 		return val, true
-// 	}
-// 	klog.Errorf("Error, Failed GetEndToEndOverheadForRequest for request ID: %s, not found, returning 0", requestID)
-// 	return 0, false
-// }
+func GetEndToEndOverheadForRequest(requestID string) int64 {
+	EndToEndOverheadMutex.RLock()
+	defer EndToEndOverheadMutex.RUnlock()
+	if val, ok := EndToEndOverhead[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetEndToEndOverheadForRequest for request ID: %s, not found, returning 0", requestID)
+	return -1
+}
 
-// func SetEndToEndOverheadForRequest(endToEndOverhead float64, requestID string) {
-// 	EndToEndOverheadMutex.Lock()
-// 	defer EndToEndOverheadMutex.Unlock()
-// 	EndToEndOverhead[requestID] = endToEndOverhead
-// 	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %f", requestID, endToEndOverhead)
-// }
+func SetEndToEndOverheadForRequest(endToEndOverhead int64, requestID string) {
+	EndToEndOverheadMutex.Lock()
+	defer EndToEndOverheadMutex.Unlock()
+	EndToEndOverhead[requestID] = endToEndOverhead
+	klog.V(5).Infof("SetEndToEndOverheadForRequest, requestID: %s, endToEndOverhead: %d", requestID, endToEndOverhead)
+}
 
-// func CleanupEndToEndOverheadForRequest(requestID string) {
-// 	EndToEndOverheadMutex.Lock()
-// 	defer EndToEndOverheadMutex.Unlock()
-// 	delete(EndToEndOverhead, requestID)
-// 	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
-// }
+func CleanupEndToEndOverheadForRequest(requestID string) {
+	EndToEndOverheadMutex.Lock()
+	defer EndToEndOverheadMutex.Unlock()
+	delete(EndToEndOverhead, requestID)
+	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
+}
 
 // func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, requestID string) {
 // 	TensorTransferOverheadMutex.Lock()
@@ -1644,7 +1680,7 @@ func CleanupRequestPodMetrics(requestID string) {
 		delete(requestToPodMetrics, requestID)
 		klog.V(5).Infof("CleanupRequestPodMetrics, Deleted metrics for request ID: %s", requestID)
 	} else {
-		klog.Errorf("Error, CleanupRequestPodMetrics, No metrics found for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupRequestPodMetrics already cleaned for request ID: %s", requestID)
 	}
 }
 
@@ -1716,7 +1752,7 @@ func CleanupByteArrayPrefillTokensForRequest(requestID string) {
 		delete(requestToByteArrayPrefillTokens, requestID)
 		klog.V(5).Infof("CleanupByteArrayPrefillTokensForRequest, Deleted prefill tokens for request ID: %s", requestID)
 	} else {
-		klog.Errorf("Error, CleanupByteArrayPrefillTokensForRequest, No prefill tokens found for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupByteArrayPrefillTokensForRequest already cleaned for request ID: %s", requestID)
 	}
 }
 
@@ -1836,7 +1872,7 @@ func CleanupHashOfPrefixHashesForRequest(requestID string) {
 		delete(requestToHashOfPrefixHashes, requestID)
 		klog.V(5).Infof("CleanupHashOfPrefixHashesForRequest, Deleted hash for request ID: %s", requestID)
 	} else {
-		klog.Errorf("Error, CleanupHashOfPrefixHashesForRequest, No hash found for request ID: %s", requestID)
+		klog.V(5).Infof("CleanupHashOfPrefixHashesForRequest already cleaned for request ID: %s", requestID)
 	}
 }
 
@@ -2421,7 +2457,7 @@ func CleanupNumDecodeTokensForRequest(requestID string) {
 	if _, ok := requestToNumDecodeTokens[requestID]; ok {
 		delete(requestToNumDecodeTokens, requestID)
 	} else {
-		klog.Errorf("Error, requestToNumDecodeTokens not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupNumDecodeTokensForRequest already cleaned for request ID %s", requestID)
 	}
 }
 
@@ -2431,7 +2467,7 @@ func CleanupNumPrefillTokensForRequest(requestID string) {
 	if _, ok := requestToNumPrefillTokens[requestID]; ok {
 		delete(requestToNumPrefillTokens, requestID)
 	} else {
-		klog.Errorf("Error, requestToNumPrefillTokens not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupNumPrefillTokensForRequest already cleaned for request ID %s", requestID)
 	}
 }
 
@@ -2464,6 +2500,42 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 	fullMetricName := fmt.Sprintf("vllm:%s", resolvedName)
 	metricFamily, exists := allMetrics[fullMetricName]
 
+	// Fallback: if the resolved name wasn't found, try the alternate name.
+	// This handles edge cases around v0.9.x where the engine (v1 vs old) determines
+	// which metric names are exposed.
+	if !exists {
+		var altName string
+		switch metricName {
+		case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
+			if resolvedName == metricName {
+				altName = "kv_cache_usage_perc"
+			} else {
+				altName = metricName
+			}
+		case MetricNumPreemptions:
+			if resolvedName == metricName {
+				altName = "num_preemptions"
+			} else {
+				altName = metricName
+			}
+		case MetricPromptTokensTotal:
+			if resolvedName == metricName {
+				altName = "prompt_tokens"
+			} else {
+				altName = metricName
+			}
+		case MetricGenerationTokensTotal:
+			if resolvedName == metricName {
+				altName = "generation_tokens"
+			} else {
+				altName = metricName
+			}
+		}
+		if altName != "" {
+			metricFamily, exists = allMetrics[fmt.Sprintf("vllm:%s", altName)]
+		}
+	}
+
 	// Select the appropriate storage and mutex based on metricName
 	var metricStorage map[string]map[string]float64
 	var metricMutex *sync.RWMutex
@@ -2481,21 +2553,26 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 	case MetricNumRequestsWaiting:
 		metricStorage = vllmNumRequestsWaiting
 		metricMutex = &vllmNumRequestsWaitingMutex
+	case MetricNumPreemptions:
+		metricStorage = vllmNumPreemptions
+		metricMutex = &vllmNumPreemptionsMutex
+	case MetricPromptTokensTotal:
+		metricStorage = vllmPromptTokensTotal
+		metricMutex = &vllmPromptTokensTotalMutex
+	case MetricGenerationTokensTotal:
+		metricStorage = vllmGenerationTokensTotal
+		metricMutex = &vllmGenerationTokensTotalMutex
 	default:
 		return fmt.Errorf("unknown metric name: %s", metricName)
 	}
 
 	if !exists {
-		klog.Errorf("Error, Metric %s not found for pod %s", metricName, pod.Status.PodIP)
-		klog.Errorf("Error, metricFamily: %+v", metricFamily)
-		klog.Errorf("Error, allMetrics: %+v", allMetrics)
-		metricMutex.Lock()
-		if _, ok := metricStorage[requestID]; !ok {
-			metricStorage[requestID] = make(map[string]float64)
+		availableMetrics := make([]string, 0, len(allMetrics))
+		for k := range allMetrics {
+			availableMetrics = append(availableMetrics, k)
 		}
-		metricStorage[requestID][pod.Status.PodIP] = -1
-		metricMutex.Unlock()
-		return nil
+		klog.Fatalf("metric vllm:%s (resolved from %s) not found for pod %s, available metrics: %v",
+			resolvedName, metricName, pod.Status.PodIP, availableMetrics)
 	}
 
 	for _, familyMetric := range metricFamily.Metric {
@@ -2595,13 +2672,67 @@ func GetvLLMNumRequestsWaitingForAllPods(requestID string) (map[string]float64, 
 	return nil, fmt.Errorf("vLLM Num requests waiting not found for request ID %s", requestID)
 }
 
+func GetvllmNumPreemptionsMutex() *sync.RWMutex {
+	return &vllmNumPreemptionsMutex
+}
+
+func GetvLLMNumPreemptionsForAllPods(requestID string) (map[string]float64, error) {
+	vllmNumPreemptionsMutex.RLock()
+	defer vllmNumPreemptionsMutex.RUnlock()
+
+	if preemptions, ok := vllmNumPreemptions[requestID]; ok {
+		result := make(map[string]float64, len(preemptions))
+		for k, v := range preemptions {
+			result[k] = v
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("vLLM num preemptions not found for request ID %s", requestID)
+}
+
+func GetvllmPromptTokensTotalMutex() *sync.RWMutex {
+	return &vllmPromptTokensTotalMutex
+}
+
+func GetvLLMPromptTokensTotalForAllPods(requestID string) (map[string]float64, error) {
+	vllmPromptTokensTotalMutex.RLock()
+	defer vllmPromptTokensTotalMutex.RUnlock()
+
+	if tokens, ok := vllmPromptTokensTotal[requestID]; ok {
+		result := make(map[string]float64, len(tokens))
+		for k, v := range tokens {
+			result[k] = v
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("vLLM prompt tokens total not found for request ID %s", requestID)
+}
+
+func GetvllmGenerationTokensTotalMutex() *sync.RWMutex {
+	return &vllmGenerationTokensTotalMutex
+}
+
+func GetvLLMGenerationTokensTotalForAllPods(requestID string) (map[string]float64, error) {
+	vllmGenerationTokensTotalMutex.RLock()
+	defer vllmGenerationTokensTotalMutex.RUnlock()
+
+	if tokens, ok := vllmGenerationTokensTotal[requestID]; ok {
+		result := make(map[string]float64, len(tokens))
+		for k, v := range tokens {
+			result[k] = v
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("vLLM generation tokens total not found for request ID %s", requestID)
+}
+
 func CleanupvLLMGPUKVCacheUsage(requestID string) {
 	vllmGPUKVCacheUsageMutex.Lock()
 	defer vllmGPUKVCacheUsageMutex.Unlock()
 	if _, ok := vllmGPUKVCacheUsage[requestID]; ok {
 		delete(vllmGPUKVCacheUsage, requestID)
 	} else {
-		klog.Errorf("Error, vLLM GPU KV cache usage not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupvLLMGPUKVCacheUsage already cleaned for request ID %s", requestID)
 	}
 }
 
@@ -2611,7 +2742,7 @@ func CleanupvLLMCPUKVCacheUsage(requestID string) {
 	if _, ok := vllmCPUKVCacheUsage[requestID]; ok {
 		delete(vllmCPUKVCacheUsage, requestID)
 	} else {
-		klog.Errorf("Error, vLLM CPU KV cache usage not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupvLLMCPUKVCacheUsage already cleaned for request ID %s", requestID)
 	}
 }
 
@@ -2621,7 +2752,7 @@ func CleanupvLLMNumRequestsRunning(requestID string) {
 	if _, ok := vllmNumRequestsRunning[requestID]; ok {
 		delete(vllmNumRequestsRunning, requestID)
 	} else {
-		klog.Errorf("Error, vLLM Num requests running not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupvLLMNumRequestsRunning already cleaned for request ID %s", requestID)
 	}
 }
 
@@ -2631,7 +2762,37 @@ func CleanupvLLMNumRequestsWaiting(requestID string) {
 	if _, ok := vllmNumRequestsWaiting[requestID]; ok {
 		delete(vllmNumRequestsWaiting, requestID)
 	} else {
-		klog.Errorf("Error, vLLM Num requests waiting not found for request ID %s", requestID)
+		klog.V(5).Infof("CleanupvLLMNumRequestsWaiting already cleaned for request ID %s", requestID)
+	}
+}
+
+func CleanupvLLMNumPreemptions(requestID string) {
+	vllmNumPreemptionsMutex.Lock()
+	defer vllmNumPreemptionsMutex.Unlock()
+	if _, ok := vllmNumPreemptions[requestID]; ok {
+		delete(vllmNumPreemptions, requestID)
+	} else {
+		klog.V(5).Infof("CleanupvLLMNumPreemptions already cleaned for request ID %s", requestID)
+	}
+}
+
+func CleanupvLLMPromptTokensTotal(requestID string) {
+	vllmPromptTokensTotalMutex.Lock()
+	defer vllmPromptTokensTotalMutex.Unlock()
+	if _, ok := vllmPromptTokensTotal[requestID]; ok {
+		delete(vllmPromptTokensTotal, requestID)
+	} else {
+		klog.V(5).Infof("CleanupvLLMPromptTokensTotal already cleaned for request ID %s", requestID)
+	}
+}
+
+func CleanupvLLMGenerationTokensTotal(requestID string) {
+	vllmGenerationTokensTotalMutex.Lock()
+	defer vllmGenerationTokensTotalMutex.Unlock()
+	if _, ok := vllmGenerationTokensTotal[requestID]; ok {
+		delete(vllmGenerationTokensTotal, requestID)
+	} else {
+		klog.V(5).Infof("CleanupvLLMGenerationTokensTotal already cleaned for request ID %s", requestID)
 	}
 }
 
