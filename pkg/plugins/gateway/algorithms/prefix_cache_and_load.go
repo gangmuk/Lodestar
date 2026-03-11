@@ -681,7 +681,7 @@ func (p *prefixCacheAndLoadRouter) Route(routingCtx *types.RoutingContext, pods 
 	}
 
 	if targetPod == nil {
-		klog.Infof("requestID: %s, Do cost model based routing! (matching ratio: %.2f%%, len(matchedPods): %d)", routingCtx.RequestID, matchPercentage, len(matchedPods))
+		klog.Infof("requestID: %s, Do cost model based routing! (matching ratio: %d%%, len(matchedPods): %d)", routingCtx.RequestID, matchPercentage, len(matchedPods))
 		// ts = time.Now()
 		podCosts := p.histogram.getCurrentAllocationCostPerPod(routingCtx.TargetGPU)
 		minCost := math.MaxFloat64
@@ -714,6 +714,6 @@ func (p *prefixCacheAndLoadRouter) Route(routingCtx *types.RoutingContext, pods 
 	}
 	p.histogram.update(time.Now(), node, node, targetPod.Status.PodIP, defaultDecodingLength)
 	routingCtx.SetTargetPod(targetPod)
-	klog.Infof("requestID: %s, entire Route overhead: %.2f seconds, Routing complete for request. target pod: %s", routingCtx.RequestID, time.Since(startTime).Milliseconds(), targetPod.Status.PodIP)
+	klog.Infof("requestID: %s, entire Route overhead: %d ms, Routing complete for request. target pod: %s", routingCtx.RequestID, time.Since(startTime).Milliseconds(), targetPod.Status.PodIP)
 	return routingCtx.TargetAddress(), nil
 }

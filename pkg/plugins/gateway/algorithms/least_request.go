@@ -54,7 +54,7 @@ func NewLeastRequestRouter() (types.Router, error) {
 
 // Routes request based of least active request among input ready pods
 func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	targetPod := selectTargetPodWithLeastRequestCount(r.cache, pods.All())
+	targetPod := selectTargetPodWithLeastRequestCount(ctx, r.cache, pods.All())
 	// Use fallback if no valid metrics
 	if targetPod == nil {
 		klog.Warning("no pods with valid metrics found for least-request routing strategy; selecting a pod randomly as fallback",
@@ -69,8 +69,6 @@ func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	PrintRequestCounts(ctx.RequestID, targetPod.Name, targetPod.Status.PodIP, r.cache, pods.All())
-
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }
@@ -81,7 +79,7 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 	}
 }
 
-func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
+func selectTargetPodWithLeastRequestCount(ctx *types.RoutingContext, cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
 	var targetPod *v1.Pod
 	targetPods := []string{}
 
@@ -100,6 +98,14 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 	if len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 	}
+
+	targetPodName, targetPodIP := "", ""
+	if targetPod != nil {
+		targetPodName = targetPod.Name
+		targetPodIP = targetPod.Status.PodIP
+	}
+	klog.InfoS("routing_decision", "request_id", ctx.RequestID, "target_pod", targetPodName, "target_pod_ip", targetPodIP, "pod_request_count", getRequestCounts(cache, readyPods))
+
 	return targetPod
 }
 
@@ -118,5 +124,19 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 		podRequestCount[pod.Name] = int(runningReq.GetSimpleValue())
 	}
 
+	return podRequestCount
+}
+
+// getRequestCountsByPodIP returns the same data as getRequestCounts but keyed by pod IP
+// instead of pod name. Use this in functions where matchedPods is keyed by pod IP.
+func getRequestCountsByPodIP(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	podRequestCount := map[string]int{}
+	for _, pod := range readyPods {
+		runningReq, err := cache.GetMetricValueByPod(pod.Name, metrics.RealtimeNumRequestsRunning)
+		if err != nil {
+			runningReq = &metrics.SimpleMetricValue{Value: 0}
+		}
+		podRequestCount[pod.Status.PodIP] = int(runningReq.GetSimpleValue())
+	}
 	return podRequestCount
 }
