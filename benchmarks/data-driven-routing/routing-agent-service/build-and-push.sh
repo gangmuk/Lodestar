@@ -16,7 +16,7 @@ else
 fi
 
 if [ "$build" == "vke" ]; then
-    tag=latest-vke-gangmuk
+    tag=latest-vke-gangmuk-recovery
     if [ "$USE_BUILDX" = true ]; then
         # sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
         sudo docker buildx build --platform linux/amd64 -f Dockerfile -t aibrix/gangmuk-routing-agent:${tag} --load .
@@ -27,10 +27,10 @@ if [ "$build" == "vke" ]; then
         echo "exiting..."
         exit 1
     fi
-    sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
-    sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
-    kubectl set image deployment/routing-agent-service routing-agent=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
-    # kubectl set env deployment/routing-agent-service POD_LABEL_SELECTOR="model.aibrix.ai/name=llama-3-8b-instruct"
+
+   sudo docker tag aibrix/gangmuk-routing-agent:${tag} aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+   sudo docker push aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
+   kubectl set image deployment/routing-agent-service routing-agent=aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gangmuk-routing-agent:${tag}
 else
     if [ "$build" == "local-linux" ]; then
         tag=latest-linux
