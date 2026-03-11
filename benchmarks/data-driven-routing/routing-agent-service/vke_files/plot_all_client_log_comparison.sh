@@ -2,77 +2,98 @@
 
 set -e
 
-# base_dir="/mnt/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0"
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0"
 # target_dir_list=(
-#     "${base_dir}/gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio71%/rps6-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio71%/rps8-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio71%/rps6-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio71%/rps8-benchmark/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps5-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps6-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps5-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps6-benchmark/without_bitsandbytes"
 #     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps7-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps8-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps8-benchmark/without_bitsandbytes"
 #     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps9-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps10-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps10-benchmark/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/gangmuk-prefix/SharingRatio28%/rps6-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio28%/rps8-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio28%/rps10-benchmark-fail/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio28%/rps6-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio28%/rps8-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio28%/rps10-benchmark-fail/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps6-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps8-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps10-benchmark-fail/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio9%/rps6-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio9%/rps8-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/SharingRatio9%/rps10-benchmark-fail/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps6-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
-#     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps10-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps6-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
+#     # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps10-benchmark/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/mooncake/conversation-2/rps10-benchmark/without_bitsandbytes"
+#     # "${base_dir}/mooncake/conversation-2/rps10-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/conversation-2/rps15-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/conversation-2/rps20-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/conversation-2/rps25-benchmark/without_bitsandbytes"
+#     # "${base_dir}/mooncake/conversation-2/rps30-benchmark/without_bitsandbytes"
 #     ########################################################
-#     "${base_dir}/mooncake/toolagent-2/rps10-benchmark/without_bitsandbytes"
+#     # "${base_dir}/mooncake/toolagent-2/rps10-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/toolagent-2/rps15-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/toolagent-2/rps20-benchmark/without_bitsandbytes"
 #     "${base_dir}/mooncake/toolagent-2/rps25-benchmark/without_bitsandbytes"
+#     # "${base_dir}/mooncake/toolagent-2/rps30-benchmark/without_bitsandbytes"
 #     ########################################################
+
+
+#     "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_200/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_300/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/toolagent_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/toolagent_realistic_tokenized_rpsscale_1_numtokens_200/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+#     "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_200/rps-1-benchmark/without_bitsandbytes"
 # )
 
 
-base_dir="/mnt/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length"
+
+
+
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length"
 target_dir_list=(
     "${base_dir}/gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/SharingRatio71%/rps6-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio71%/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/gangmuk-prefix/SharingRatio71%/rps8-benchmark/without_bitsandbytes"
     ########################################################
     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/SharingRatio47%/rps6-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio47%/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps8-benchmark/without_bitsandbytes"
     ########################################################
     "${base_dir}/gangmuk-prefix/SharingRatio28%/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/SharingRatio28%/rps6-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio28%/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/gangmuk-prefix/SharingRatio28%/rps8-benchmark/without_bitsandbytes"
     ########################################################
     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/SharingRatio9%/rps6-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio9%/rps8-benchmark/without_bitsandbytes"
-    ########################################################
+    # "${base_dir}/gangmuk-prefix/SharingRatio9%/rps8-benchmark/without_bitsandbytes"
+    # ########################################################
     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps6-benchmark/without_bitsandbytes"
     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
-    ########################################################
-    "${base_dir}/mooncake/conversation-2/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/conversation-2/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps10-benchmark/without_bitsandbytes"
+    # ########################################################
+    # "${base_dir}/mooncake/conversation-2/rps4-benchmark/without_bitsandbytes"
+    # "${base_dir}/mooncake/conversation-2/rps8-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/conversation-2/rps12-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/conversation-2/rps16-benchmark/without_bitsandbytes"
-    ########################################################
-    "${base_dir}/mooncake/toolagent-2/rps4-benchmark/without_bitsandbytes"
+    # "${base_dir}/mooncake/conversation-2/rps16-benchmark/without_bitsandbytes"
+    # ########################################################
+    # "${base_dir}/mooncake/toolagent-2/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/toolagent-2/rps8-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/toolagent-2/rps12-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/toolagent-2/rps16-benchmark/without_bitsandbytes"
-    ########################################################
+    # ########################################################
+    "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/toolagent_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
 )
+
+
+
 
 # base_dir="/mnt/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/qwen25-1-5b-instruct/maxTokens_1-maxTokensStd_0"
 # target_dir_list=(
@@ -218,20 +239,34 @@ target_dirs_file="${base_dir}/target_dirs.txt"
 printf "%s\n" "${target_dir_list[@]}" > "${target_dirs_file}"
 echo "Wrote ${#target_dir_list[@]} target directories to ${target_dirs_file}"
 
-# Process each workload (in parallel)
+# Process each workload (in parallel), tracking PIDs to catch failures
+pids=()
+pid_to_dir=()
 for target_dir in "${target_dir_list[@]}"; do
     echo "Processing ${target_dir}"
-    # python compare_routing_strategies.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)" &
-    # python compare_routing_strategies_with_client_log.py "${target_dir}" 30 --iteration-from 2 | grep -E "(Saved|metrics CSV)"
-    if [[ "${target_dir}" == *"mooncake/conversation-2/rps20-benchmark"* ]]; then
-        python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-upto 2 &
-    else
-        python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 &
-        echo "Processed ${target_dir} with iteration from 2"
+    python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 --iteration-upto 4 &
+    pids+=($!)
+    pid_to_dir+=("${target_dir}")
+    echo "Processed ${target_dir} with iteration from 2"
+done
+
+# Wait for all background jobs and check for failures
+failed_dirs=()
+for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+        echo "ERROR: Failed to process ${pid_to_dir[$i]}"
+        failed_dirs+=("${pid_to_dir[$i]}")
     fi
 done
 
-wait
+if [ "${#failed_dirs[@]}" -gt 0 ]; then
+    echo ""
+    echo "Aborting. ${#failed_dirs[@]} workload(s) failed:"
+    for d in "${failed_dirs[@]}"; do
+        echo "  - ${d}"
+    done
+    exit 1
+fi
 
 echo ""
 echo "=== Step 2: Merging and plotting all workloads ==="

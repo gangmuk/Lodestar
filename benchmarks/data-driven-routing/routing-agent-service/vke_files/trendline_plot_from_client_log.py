@@ -47,6 +47,24 @@ LEGEND_FONTSIZE = 14
 SUBFIG_LEGEND_FONTSIZE = 11
 
 # ── Line style rotation for policies sharing a color family ─────────────────
+def _shade_color(color, factor):
+    """Lighten (factor > 1) or darken (factor < 1) a color.
+
+    Returns an RGB tuple.  *color* can be anything matplotlib accepts.
+    """
+    import matplotlib.colors as mcolors
+    r, g, b = mcolors.to_rgb(color)
+    # Blend towards white (lighten) or black (darken)
+    if factor >= 1.0:
+        # lighten: interpolate towards white
+        t = factor - 1.0  # 0 = no change, 1 = full white
+        t = min(t, 1.0)
+        return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
+    else:
+        # darken: scale towards black
+        return (r * factor, g * factor, b * factor)
+
+
 LINE_STYLES = ['-', '--', '-.', ':']
 MARKERS = ['o', 's', '^', 'D', 'v', 'P', 'X', '*']
 
@@ -145,34 +163,60 @@ def _plot_trendlines_for_group(
         linestyle = LINE_STYLES[style_idx % len(LINE_STYLES)]
         marker = MARKERS[pi % len(MARKERS)]
 
-        xs = []
-        ys = []
+        # Collect per-RPS experiment values (one entry per experiment),
+        # sorted by datetime in strategy_full_name so run1 is the earliest.
+        rps_to_vals = {}
         for rps in rps_values:
             w = workload_at_rps[rps]
             rows = df_group[
                 (df_group['workload'] == w) & (df_group['routing_policy'] == policy)
-            ]
-            if len(rows) == 0:
-                continue
-            # If multiple experiments for same policy+workload, average them
-            val = rows[stat_prefix].mean()
-            if pd.notna(val) and val > 0:
-                xs.append(rps)
-                ys.append(val)
+            ].copy()
+            # Extract datetime suffix (YYYYMMDD_HHMMSS) for sorting
+            rows['_sort_dt'] = rows['strategy_full_name'].str.extract(
+                r'(\d{8}_\d{6})$', expand=False
+            ).fillna('')
+            rows = rows.sort_values('_sort_dt')
+            vals = rows[stat_prefix].dropna().tolist()
+            vals = [v for v in vals if v > 0]
+            rps_to_vals[rps] = vals
 
-        if xs:
-            # Per-subfigure legend: just y values keyed by x (RPS)
-            val_strs = [f'{y:.0f}({x})' for x, y in zip(xs, ys)]
-            subfig_label = ', '.join(val_strs)
+        max_experiments = max((len(v) for v in rps_to_vals.values()), default=0)
 
-            line, = ax.plot(xs, ys, color=color, linestyle=linestyle, marker=marker,
-                           markersize=7, linewidth=2.2, label=subfig_label)
-            line._policy_name = policy  # used by top-level legend
+        for exp_idx in range(max_experiments):
+            xs = []
+            ys = []
+            for rps in rps_values:
+                vals = rps_to_vals[rps]
+                if exp_idx < len(vals):
+                    xs.append(rps)
+                    ys.append(vals[exp_idx])
 
+            if xs:
+                val_strs = [f'{y:.0f}({x})' for x, y in zip(xs, ys)]
+                if max_experiments > 1:
+                    subfig_label = f'run{exp_idx+1}: ' + ', '.join(val_strs)
+                    # Gradation: run1 = base color, later runs progressively lighter
+                    shade_factor = 1.0 + exp_idx * (0.6 / max(max_experiments - 1, 1))
+                    run_color = _shade_color(color, shade_factor)
+                else:
+                    subfig_label = ', '.join(val_strs)
+                    run_color = color
+
+                line, = ax.plot(xs, ys, color=run_color, linestyle=linestyle, marker=marker,
+                               markersize=14, linewidth=2.2, label=subfig_label,
+                               markerfacecolor='none', markeredgewidth=2)
+                line._policy_name = policy  # used by top-level legend
+
+    # Set y-axis upper limit to max data value + 500
+    all_vals = df_group[stat_prefix].dropna()
+    all_vals = all_vals[all_vals > 0]
     if ylim_upper is not None:
         ax.set_ylim(0, ylim_upper)
-    else:
-        ax.set_ylim(0, None)
+    # elif len(all_vals) > 0:
+    #     ax.set_ylim(0, all_vals.max()*1.2)
+    # else:
+    #     ax.set_ylim(0, None)
+    ax.set_ylim(0, None)
 
     ax.set_xlabel('RPS', fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE)
@@ -219,10 +263,8 @@ def plot_trendlines(df, output_dir):
     with PdfPages(pdf_path) as pdf:
         for gk in sorted_group_keys:
             rps_workload_pairs = groups[gk]
-            if len(rps_workload_pairs) < 2:
-                # Need at least 2 RPS points to draw a trend line
-                print(f"Skipping group '{gk}' (only {len(rps_workload_pairs)} RPS point)")
-                continue
+            if len(rps_workload_pairs) == 1:
+                print(f"Group '{gk}' has only 1 RPS point — plotting as dot(s)")
 
             group_workloads = [w for _, w in rps_workload_pairs]
             df_group = df[df['workload'].isin(group_workloads)]
@@ -251,10 +293,8 @@ def plot_trendlines(df, output_dir):
             for ri, (col_stem, display, ylabel) in enumerate(available_metrics):
                 for ci, (stat, stat_label) in enumerate(stats):
                     stat_col = f'{stat}_{col_stem}'
-                    if col_stem == 'ttft' and stat == 'avg':
-                        ylim_upper = min(df_group[stat_col].max(), 5000+400)
-                    else:
-                        ylim_upper = None
+                    # ylim_upper = min(df_group[stat_col].max())
+                    ylim_upper = None
                     _plot_trendlines_for_group(
                         axes[ri][ci],
                         df_group,

@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import re
+import json
 from collections import defaultdict
 from datetime import datetime
 import os
@@ -48,14 +49,19 @@ rcParams['text.color'] = '#000000'
 
 
 def parse_log_file(log_file):
-    """Parse pod_request_count lines from the gateway log file."""
+    """Parse pod_request_count lines from the gateway log file.
+
+    Supports two formats:
+    - New: pod_request_count={"pod-name":3,"pod-name":1,...}
+    - Old: pod_request_count: map[pod1:3 pod2:1 ...]
+    """
     timestamps = []
     pod_series = defaultdict(list)
     pod_names_ordered = None
 
     with open(log_file) as f:
         for line in f:
-            if "pod_request_count:" not in line:
+            if "pod_request_count" not in line:
                 continue
 
             # Extract timestamp
@@ -64,16 +70,31 @@ def parse_log_file(log_file):
                 continue
             ts = datetime.strptime(ts_match.group(1), "%H:%M:%S.%f")
 
-            # Extract pod:value pairs
-            pairs = re.findall(r"([\w-]+):(-?\d+)", line.split("map[")[1].split("]")[0])
-            if not pairs:
-                continue
-
-            # Use short pod names (last segment of pod name)
             current = {}
-            for pod_full, val in pairs:
-                short = pod_full.rsplit("-", 1)[-1]
-                current[short] = int(val)
+
+            # New format: pod_request_count={"pod-name":3,...}
+            json_match = re.search(r'pod_request_count=(\{[^}]+\})', line)
+            if json_match:
+                try:
+                    raw = json.loads(json_match.group(1))
+                    for pod_full, val in raw.items():
+                        short = pod_full.rsplit("-", 1)[-1]
+                        current[short] = int(val)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            else:
+                # Old format: pod_request_count: map[pod1:3 pod2:1 ...]
+                if "map[" not in line:
+                    continue
+                pairs = re.findall(r"([\w-]+):(-?\d+)", line.split("map[")[1].split("]")[0])
+                if not pairs:
+                    continue
+                for pod_full, val in pairs:
+                    short = pod_full.rsplit("-", 1)[-1]
+                    current[short] = int(val)
+
+            if not current:
+                continue
 
             if pod_names_ordered is None:
                 pod_names_ordered = sorted(current.keys())
@@ -179,12 +200,12 @@ def plot_per_pod(timestamps, pod_series, pod_names, output_file):
 
     # --- Subplot 2: Aggregate statistics (Min, Max, Avg, Std) ---
     # Plot aggregate lines
-    ax2.plot(timestamps, max_values, color="#1A1A1A", linewidth=2.5, 
+    ax2.plot(timestamps, max_values, color="tab:red", linewidth=1.5, 
              linestyle='-', alpha=0.9, label="Max", zorder=2, antialiased=True)
-    ax2.plot(timestamps, avg_values, color="#666666", linewidth=2.5, 
-             linestyle='--', alpha=0.9, label="Average", zorder=2, antialiased=True)
-    ax2.plot(timestamps, min_values, color="#1A1A1A", linewidth=2.5, 
-             linestyle=':', alpha=0.9, label="Min", zorder=2, antialiased=True)
+    ax2.plot(timestamps, avg_values, color="tab:blue", linewidth=1.5, 
+             linestyle='-', alpha=0.9, label="Average", zorder=2, antialiased=True)
+    ax2.plot(timestamps, min_values, color="tab:green", linewidth=1.5, 
+             linestyle='-', alpha=0.9, label="Min", zorder=2, antialiased=True)
     
     # Zero reference line
     ax2.axhline(y=0, color="#D32F2F", linestyle="--", linewidth=1.5, 
@@ -195,9 +216,9 @@ def plot_per_pod(timestamps, pod_series, pod_names, output_file):
     
     # Plot std on right y-axis
     std_color = "#8B5A3C"  # Brown color for std
-    ax2_right.plot(timestamps, std_values, color=std_color, 
-                   linewidth=2.0, linestyle='-.', alpha=0.85, 
-                   label="Std Dev", zorder=3, antialiased=True)
+    # ax2_right.plot(timestamps, std_values, color=std_color, 
+    #                linewidth=2.0, linestyle='-.', alpha=0.85, 
+    #                label="Std Dev", zorder=3, antialiased=True)
     ax2_right.set_ylabel("Standard Deviation\n(between pods)", 
                         fontsize=12, fontweight='medium', color=std_color)
     ax2_right.tick_params(axis='y', labelcolor=std_color, labelsize=10)

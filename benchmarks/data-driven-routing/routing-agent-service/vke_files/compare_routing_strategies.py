@@ -36,6 +36,27 @@ least_request_routing="least_request"
 contextual_bandit_routing="contextual_bandit"
 prefix_hit_threshold_or_least_request_routing = "prefix_hit_threshold_or_least_request"
 
+INPUT_LENGTH_GROUPS = ['Short (0-999)', 'Medium (1K-3K)', 'Long (3K-5K)', 'Very Long (5K+)']
+INPUT_LENGTH_COLORS = {
+    'Short (0-999)': '#2ca02c',
+    'Medium (1K-3K)': '#1f77b4',
+    'Long (3K-5K)': '#ff7f0e',
+    'Very Long (5K+)': '#d62728',
+}
+
+def categorize_input_length(tokens):
+    """Categorize input tokens into short/medium/long/very long groups."""
+    if tokens is None or (isinstance(tokens, float) and np.isnan(tokens)):
+        return None
+    if tokens < 1000:
+        return 'Short (0-999)'
+    elif tokens < 3000:
+        return 'Medium (1K-3K)'
+    elif tokens < 5000:
+        return 'Long (3K-5K)'
+    else:
+        return 'Very Long (5K+)'
+
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
     strategy_lower = strategy_name.lower()
@@ -530,34 +551,59 @@ def calculate_slo_satisfaction(df, slo_ttft=500, slo_tpot=50):
         'both_satisfaction_rate': both_satisfied / total_requests * 100 if total_requests > 0 else 0
     }
 
-# Sort strategies by avg_ttft for consistent ordering
+def extract_datetime_from_strategy(strategy_name):
+    """Extract datetime string from strategy name for sorting.
+
+    Looks for patterns like YYYYMMDD_HHMMSS or similar date-time formats.
+    Returns a sortable string (empty string if not found, which sorts first).
+    """
+    # Pattern: YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS
+    match = re.search(r'(\d{8}[_-]\d{6})', strategy_name)
+    if match:
+        return match.group(1)
+    # Pattern: YYYY-MM-DD_HH-MM-SS or similar
+    match = re.search(r'(\d{4}-\d{2}-\d{2}[_-]\d{2}-\d{2}-\d{2})', strategy_name)
+    if match:
+        return match.group(1)
+    # Pattern: just a date YYYYMMDD
+    match = re.search(r'(\d{8})', strategy_name)
+    if match:
+        return match.group(1)
+    return ""
+
+# Sort strategies for consistent ordering
+# Order: random -> least_request -> prefix_cache -> contextual_bandit -> ...
+# Within same routing policy, sort by datetime (past to recent).
 def get_strategy_priority(strategy_name):
-    if rl_naive_routing in strategy_name.lower():
-        return (0, strategy_name)  # First priority
-    elif e2e_latency_predictor_routing in strategy_name.lower():
-        return (1, strategy_name)  # Second priority
-    elif ttft_latency_predictor_routing in strategy_name.lower():
-        return (2, strategy_name)  # Second priority
-    elif avg_tpot_latency_predictor_routing in strategy_name.lower():
-        return (3, strategy_name)  # Third priority
-    elif prefix_cache_1_routing in strategy_name.lower():
-        return (4, strategy_name)  # Second priority
-    elif prefix_cache_2_routing in strategy_name.lower():
-        return (5, strategy_name)  # Third priority
-    elif preble_routing in strategy_name.lower():
-        return (6, strategy_name)  # Second priority
-    elif random_routing in strategy_name.lower():
-        return (7, strategy_name)  # Third priority
-    elif least_kv_cache_routing in strategy_name.lower():
-        return (8, strategy_name)
-    elif least_latency_routing in strategy_name.lower():
-        return (9, strategy_name)
-    elif least_request_routing in strategy_name.lower():
-        return (10, strategy_name)
-    elif contextual_bandit_routing in strategy_name.lower():
-        return (11, strategy_name)
+    strategy_lower = strategy_name.lower()
+    datetime_str = extract_datetime_from_strategy(strategy_name)
+
+    if random_routing in strategy_lower:
+        return (0, datetime_str, strategy_name)
+    elif least_request_routing in strategy_lower:
+        return (1, datetime_str, strategy_name)
+    elif least_kv_cache_routing in strategy_lower:
+        return (2, datetime_str, strategy_name)
+    elif least_latency_routing in strategy_lower:
+        return (3, datetime_str, strategy_name)
+    elif prefix_cache_1_routing in strategy_lower:
+        return (4, datetime_str, strategy_name)
+    elif prefix_cache_2_routing in strategy_lower:
+        return (5, datetime_str, strategy_name)
+    elif preble_routing in strategy_lower:
+        return (6, datetime_str, strategy_name)
+    elif contextual_bandit_routing in strategy_lower:
+        return (7, datetime_str, strategy_name)
+    elif rl_naive_routing in strategy_lower:
+        return (8, datetime_str, strategy_name)
+    elif e2e_latency_predictor_routing in strategy_lower:
+        return (9, datetime_str, strategy_name)
+    elif ttft_latency_predictor_routing in strategy_lower:
+        return (10, datetime_str, strategy_name)
+    elif avg_tpot_latency_predictor_routing in strategy_lower:
+        return (11, datetime_str, strategy_name)
     else:
-        return (11, strategy_name)  # Others last
+        return (12, datetime_str, strategy_name)
 
 
 # Set up colors by category
@@ -595,11 +641,162 @@ def get_strategy_color(strategy_name, index_in_category):
     return base_colors[index_in_category % len(base_colors)]
 
     
-def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None):
+def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, metric_column, title, ylabel_text):
+    """Plot bar chart with avg/p99/p999 for each input token range, grouped by strategy."""
+    strategies = [s for s in strategy_order if s in csv_data_dict]
+    n_strategies = len(strategies)
+    if n_strategies == 0:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center', fontsize=12,
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    # Determine the input token column name
+    sample_df = csv_data_dict[strategies[0]]
+    if 'numInputTokens' in sample_df.columns:
+        input_col = 'numInputTokens'
+    elif 'input_tokens' in sample_df.columns:
+        input_col = 'input_tokens'
+    else:
+        ax.text(0.5, 0.5, 'No input token data available', ha='center', va='center', fontsize=12,
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    groups = INPUT_LENGTH_GROUPS
+    n_groups = len(groups)
+    stat_labels = ['Avg', 'P99', 'P999']
+    n_stats = len(stat_labels)
+
+    # Compute stats per strategy per group (including 'All' aggregated)
+    all_groups = groups + ['All']
+    all_bar_values = []  # list of (strategy, group, stat_label, value)
+    for strategy in strategies:
+        df = csv_data_dict[strategy]
+        if metric_column not in df.columns or input_col not in df.columns:
+            continue
+        df_tmp = df[[metric_column, input_col]].dropna()
+        df_tmp = df_tmp.copy()
+        df_tmp['_group'] = df_tmp[input_col].apply(categorize_input_length)
+        for group in groups:
+            gdf = df_tmp[df_tmp['_group'] == group][metric_column]
+            if len(gdf) == 0:
+                all_bar_values.append((strategy, group, 'Avg', 0))
+                all_bar_values.append((strategy, group, 'P99', 0))
+                all_bar_values.append((strategy, group, 'P999', 0))
+            else:
+                all_bar_values.append((strategy, group, 'Avg', gdf.mean()))
+                all_bar_values.append((strategy, group, 'P99', gdf.quantile(0.99)))
+                all_bar_values.append((strategy, group, 'P999', gdf.quantile(0.999)))
+        # Aggregated (All) stats
+        all_data = df_tmp[metric_column]
+        if len(all_data) == 0:
+            all_bar_values.append((strategy, 'All', 'Avg', 0))
+            all_bar_values.append((strategy, 'All', 'P99', 0))
+            all_bar_values.append((strategy, 'All', 'P999', 0))
+        else:
+            all_bar_values.append((strategy, 'All', 'Avg', all_data.mean()))
+            all_bar_values.append((strategy, 'All', 'P99', all_data.quantile(0.99)))
+            all_bar_values.append((strategy, 'All', 'P999', all_data.quantile(0.999)))
+
+    if not all_bar_values:
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center', fontsize=12)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    # Layout: for each strategy, (n_groups + 1 for All) sub-groups, each with n_stats bars
+    n_all_groups = len(all_groups)
+    bar_width = 0.15
+    sub_group_width = n_stats * bar_width + 0.05
+    group_block_width = n_all_groups * sub_group_width + 0.4  # extra space for separator
+    strategy_centers = np.arange(n_strategies) * group_block_width
+
+    stat_alphas = {'Avg': 0.9, 'P99': 0.7, 'P999': 0.5}
+    all_group_colors = dict(INPUT_LENGTH_COLORS)
+    all_group_colors['All'] = '#555555'  # Gray for aggregated
+    max_value = max((v[3] for v in all_bar_values if np.isfinite(v[3])), default=1)
+
+    for si, strategy in enumerate(strategies):
+        base_x = strategy_centers[si] - (n_all_groups * sub_group_width) / 2
+
+        for gi, group in enumerate(all_groups):
+            group_color = all_group_colors[group]
+            sub_base = base_x + gi * sub_group_width
+
+            for stat_idx, stat_label in enumerate(stat_labels):
+                val = 0
+                for v in all_bar_values:
+                    if v[0] == strategy and v[1] == group and v[2] == stat_label:
+                        val = v[3]
+                        break
+                pos = sub_base + stat_idx * bar_width
+                alpha = stat_alphas[stat_label]
+                ax.bar(pos, val, bar_width, color=group_color, edgecolor='black',
+                       linewidth=0.5, alpha=alpha)
+                if np.isfinite(val) and val > 0:
+                    ax.text(pos, val + max_value * 0.01, f'{val:.0f}', rotation=90,
+                            ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+    # Draw vertical separator lines between experiments
+    for si in range(n_strategies - 1):
+        sep_x = (strategy_centers[si] + strategy_centers[si + 1]) / 2
+        ax.axvline(x=sep_x, color='gray', linestyle='--', linewidth=1.0, alpha=0.6)
+
+    # X-axis: strategy labels
+    ax.set_xticks(strategy_centers)
+    strategy_labels = []
+    for s in strategies:
+        parts = s.split('-')
+        if len(parts) >= 2:
+            label = f"{parts[0]}\n({parts[-1]})"
+        else:
+            label = s
+        strategy_labels.append(label)
+    ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
+
+    # Add count annotations for each strategy
+    for si, strategy in enumerate(strategies):
+        df = csv_data_dict[strategy]
+        if input_col in df.columns:
+            df_tmp = df[[input_col]].dropna().copy()
+            df_tmp['_group'] = df_tmp[input_col].apply(categorize_input_length)
+            counts = []
+            for group in groups:
+                n = (df_tmp['_group'] == group).sum()
+                counts.append(f"{group.split('(')[0].strip()[0]}:{n}")
+            total_n = len(df_tmp)
+            counts.append(f"All:{total_n}")
+            ax.text(strategy_centers[si], -max_value * 0.12,
+                    ', '.join(counts), ha='center', va='top', fontsize=7, color='gray')
+
+    # Legends
+    group_legend = [Patch(facecolor=all_group_colors[g], edgecolor='black', alpha=0.8,
+                          label=g) for g in all_groups]
+    stat_legend = [Patch(facecolor='gray', edgecolor='black', alpha=a, label=l)
+                   for l, a in zip(stat_labels, [0.9, 0.7, 0.5])]
+    all_handles = group_legend + stat_legend
+    ax.legend(handles=all_handles, loc='upper left', fontsize=10, ncol=len(all_handles))
+
+    ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
+    ax.set_title(title, fontsize=subtitle_fontsize)
+    ax.tick_params(axis='y', labelsize=tick_fontsize)
+    ax.tick_params(axis='x', labelsize=10)
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(-max_value * 0.18, max(max_value * 1.4, 1.0))
+
+
+def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None):
     """Create bar charts comparing performance metrics across routing strategies."""
     if not metrics_list:
         print("No metrics to plot.")
         return
+
+    # For token range plots, always use individual (non-merged) experiment data
+    if csv_data_dict_individual is None:
+        csv_data_dict_individual = csv_data_dict
     
     # Convert to DataFrame for easier plotting
     metrics_df = pd.DataFrame(metrics_list)
@@ -673,17 +870,41 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 32))  # Increased height for 6 rows with more spacing
+    fig = plt.figure(figsize=(18, 44))  # Increased height for 8 rows
 
-    # MODIFIED GridSpec: 6 rows (CDFs, TTFT bar chart, TPOT bar chart, overhead bar chart, time series graphs)
-    # Increased height_ratio for bar charts and increased hspace for better spacing
-    gs = GridSpec(6, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1.5, 1, 1],
+    # GridSpec: 8 rows (CDFs, TTFT bar, TTFT by token range, TPOT bar, TPOT by token range, overhead, time series x2)
+    gs = GridSpec(8, 9, figure=fig,
+                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1, 1],
                   hspace=0.9,
                   wspace=0.35)
     
     # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
     
+    # Build strategy order and color dict for individual (non-merged) experiments
+    # used by the token range plots
+    if csv_data_dict_individual:
+        individual_strategies = sorted(csv_data_dict_individual.keys(), key=get_strategy_priority)
+        individual_color_dict = {}
+        ind_category_counts = {
+            rl_naive_routing: 0, prefix_cache_1_routing: 0, prefix_cache_2_routing: 0,
+            preble_routing: 0, e2e_latency_predictor_routing: 0,
+            ttft_latency_predictor_routing: 0, avg_tpot_latency_predictor_routing: 0,
+            random_routing: 0, least_kv_cache_routing: 0, least_latency_routing: 0,
+            least_request_routing: 0, contextual_bandit_routing: 0,
+            prefix_hit_threshold_or_least_request_routing: 0, 'other': 0,
+        }
+        for strategy in individual_strategies:
+            category = categorize_strategy(strategy)
+            if category in ind_category_counts:
+                individual_color_dict[strategy] = get_strategy_color(strategy, ind_category_counts[category])
+                ind_category_counts[category] += 1
+            else:
+                individual_color_dict[strategy] = get_strategy_color(strategy, ind_category_counts['other'])
+                ind_category_counts['other'] += 1
+    else:
+        individual_strategies = strategy_order
+        individual_color_dict = color_dict
+
     # NEW: CDF plots, bar charts, and time series graphs
     if csv_data_dict:
         # Plot 1: TTFT Latency CDF (left half of row 0)
@@ -697,27 +918,38 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         # Plot 3: TTFT Bar Chart (full width, row 1)
         ax = fig.add_subplot(gs[1, :])
         plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99, P999)')
-        
-        # Plot 4: TPOT Bar Chart (full width, row 2)
+
+        # Plot 4: TTFT by Input Token Range (full width, row 2) — uses individual experiments
         ax = fig.add_subplot(gs[2, :])
-        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99, P999)')
-        
-        # Plot 5: End-to-End Overhead Bar Chart (full width, row 3)
+        plot_metric_by_token_range(ax, csv_data_dict_individual, individual_strategies, individual_color_dict, 'ttft',
+                                   'TTFT by Input Token Range (Avg, P99, P999)', 'TTFT (ms)')
+
+        # Plot 5: TPOT Bar Chart (full width, row 3)
         ax = fig.add_subplot(gs[3, :])
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99, P999)')
+
+        # Plot 6: TPOT by Input Token Range (full width, row 4) — uses individual experiments
+        ax = fig.add_subplot(gs[4, :])
+        plot_metric_by_token_range(ax, csv_data_dict_individual, individual_strategies, individual_color_dict, 'avg_tpot',
+                                   'Avg TPOT by Input Token Range (Avg, P99, P999)', 'Avg TPOT (ms)')
+
+        # Plot 7: End-to-End Overhead Bar Chart (full width, row 5)
+        ax = fig.add_subplot(gs[5, :])
         plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'end_to_end_overhead',
                                       'End-to-End Overhead Comparison (Avg, P50, P99, P999)')
 
-        # Plot 6: TTFT Time Series (full width, row 4)
-        ax = fig.add_subplot(gs[4, :])
+        # Plot 8: TTFT Time Series (full width, row 6)
+        ax = fig.add_subplot(gs[6, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1s averages)', 'TTFT (ms)')
-        
-        # Plot 7: Avg TPOT Time Series (full width, row 5)
-        ax = fig.add_subplot(gs[5, :])
+
+        # Plot 9: Avg TPOT Time Series (full width, row 7)
+        ax = fig.add_subplot(gs[7, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1s averages)', 'Avg TPOT (ms)')
     else:
         # If no CSV data provided, show placeholder text for all plots
         for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
-                                   (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]:
+                                   (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)]),
+                                   (6, [slice(None)]), (7, [slice(None)])]:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -1282,12 +1514,15 @@ if __name__ == "__main__":
             all_metrics.append(metrics)
             csv_data_dict[metrics['strategy']] = df  # STORE DataFrame by strategy name
     
+    # Keep a copy of the original per-experiment csv_data_dict before averaging
+    csv_data_dict_individual = dict(csv_data_dict)
+
     # Apply averaging if requested
     if average_duplicates:
         print(f"Original strategies: {[m['strategy'] for m in all_metrics]}")
         all_metrics = average_metrics_by_category(all_metrics, average_duplicates)
         print(f"After averaging: {[m['strategy'] for m in all_metrics]}")
-        
+
         # For CSV data, we'll keep the first experiment's data for each category
         # (Time series averaging is more complex and not implemented in this version)
         if csv_data_dict:
@@ -1317,4 +1552,4 @@ if __name__ == "__main__":
     export_metrics_to_csv(all_metrics, base_dir)
 
     # Plot the comparison - MODIFIED to pass csv_data_dict
-    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict)
+    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual)
