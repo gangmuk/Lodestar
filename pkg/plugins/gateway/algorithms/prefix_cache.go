@@ -116,7 +116,7 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) 
 
 	// no pod with prefix match, as a fallback select pod with least request count
 	if len(matchedPods) == 0 || targetPod == nil {
-		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
+		targetPod = selectTargetPodWithLeastRequestCount(ctx, p.cache, readyPods)
 	}
 	if len(prefixHashes) > 0 {
 		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
@@ -194,7 +194,7 @@ func routePrefixRatioAndLoad(cache cache.Cache, readyPods []*v1.Pod, matchedPods
 	var targetPodIP string
 	requestCount := []float64{}
 
-	podRequestCount := getRequestCounts(cache, readyPods)
+	podRequestCount := getRequestCountsByPodIP(cache, readyPods)
 	for _, cnt := range podRequestCount {
 		requestCount = append(requestCount, float64(cnt))
 	}
@@ -224,10 +224,10 @@ func routePrefixRatioAndLoad(cache cache.Cache, readyPods []*v1.Pod, matchedPods
 			targetPodIP = podIP
 			break
 		}
-		klog.Infof("routePrefixRatioAndLoad, podIP(%s) has high prefix matching ratio but too overloaded. prefix matching ratio: %f, request_count: %d, avg_request_count: %d, std_request_count: %f", podIP, matchedPods[podIP], reqCnt, meanRequestCount, stdDevRequestCount)
+		klog.Infof("routePrefixRatioAndLoad, podIP(%s) has high prefix matching ratio but too overloaded. prefix matching ratio: %d, request_count: %.0f, avg_request_count: %f, std_request_count: %f", podIP, matchedPods[podIP], reqCnt, meanRequestCount, stdDevRequestCount)
 		idx++
 	}
-	klog.Infof("routePrefixRatioAndLoad, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %f, request_count: %d", targetPodIP, idx, matchedPods[targetPodIP], podRequestCount[targetPodIP])
+	klog.Infof("routePrefixRatioAndLoad, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %d, request_count: %d", targetPodIP, idx, matchedPods[targetPodIP], podRequestCount[targetPodIP])
 	// iterate readyPods and log
 	targetPod, _ := utils.FilterPodByIP(targetPodIP, readyPods)
 	if targetPod == nil {
@@ -240,7 +240,7 @@ func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[st
 	var targetPodIP string
 	requestCount := []float64{}
 
-	podRequestCount := getRequestCounts(cache, readyPods)
+	podRequestCount := getRequestCountsByPodIP(cache, readyPods)
 	for _, cnt := range podRequestCount {
 		requestCount = append(requestCount, float64(cnt))
 	}
@@ -263,7 +263,7 @@ func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[st
 
 	targetPodIP = podIPs[0]
 
-	klog.Infof("routePrefixRatio, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %f, request_count: %d", targetPodIP, 0, matchedPods[targetPodIP], podRequestCount[targetPodIP])
+	klog.Infof("routePrefixRatio, finally selected pod: %s (%dth highest prefix match), prefix matching ratio: %d, request_count: %d", targetPodIP, 0, matchedPods[targetPodIP], podRequestCount[targetPodIP])
 	// iterate readyPods and log
 	targetPod, _ := utils.FilterPodByIP(targetPodIP, readyPods)
 	if targetPod == nil {
@@ -277,7 +277,7 @@ func routePrefixRatio(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[st
 // 1. If any pod has prefix hit ratio > PREFIX_HIT_THRESHOLD, route to the pod with the highest prefix hit ratio
 // 2. Otherwise, fall back to least request count routing
 // This is a simpler alternative to routePrefixRatioAndLoad which uses statistical thresholds (mean + std_dev).
-func routePrefixHitThresholdOrLeastRequest(cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
+func routePrefixHitThresholdOrLeastRequest(ctx *types.RoutingContext, cache cache.Cache, readyPods []*v1.Pod, matchedPods map[string]int) *v1.Pod {
 	var maxHitRatio int = 0
 	var maxHitPodIP string
 
@@ -302,7 +302,7 @@ func routePrefixHitThresholdOrLeastRequest(cache cache.Cache, readyPods []*v1.Po
 
 	// Fallback to least request count routing
 	klog.Infof("routePrefixHitThresholdOrLeastRequest, no pod exceeds threshold %d%%, fallback to least request count", prefixHitThreshold)
-	return selectTargetPodWithLeastRequestCount(cache, readyPods)
+	return selectTargetPodWithLeastRequestCount(ctx, cache, readyPods)
 }
 
 // logic:

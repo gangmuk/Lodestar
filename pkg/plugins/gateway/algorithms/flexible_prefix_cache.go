@@ -107,7 +107,7 @@ func (p flexiblePrefixCacheRouter) Route(ctx *types.RoutingContext, pods types.P
 			}
 		}
 		if len(matchedPods) == 0 || targetPod == nil {
-			targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
+			targetPod = selectTargetPodWithLeastRequestCount(ctx, p.cache, readyPods)
 			klog.Infof("prefix routing - least request count routing, request_id: %s, selectedPod: %s", ctx.RequestID, targetPod.Status.PodIP)
 		}
 	}
