@@ -1260,10 +1260,12 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     p50_ttft = np.percentile(df['ttft'], 50)
     p95_ttft = np.percentile(df['ttft'], 95)
     p99_ttft = np.percentile(df['ttft'], 99)
+    p99_9_ttft = np.percentile(df['ttft'], 99.9)
     avg_ttft = df['ttft'].mean()
     ax6.axvline(p50_ttft, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_ttft:.1f}ms')
     ax6.axvline(p95_ttft, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_ttft:.1f}ms')
     ax6.axvline(p99_ttft, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_ttft:.1f}ms')
+    ax6.axvline(p99_9_ttft, color='brown', linestyle='--', alpha=alpha, label=f'P99.9: {p99_9_ttft:.1f}ms')
     ax6.axvline(avg_ttft, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_ttft:.1f}ms')
     ax6.legend(fontsize=8)
     
@@ -1280,10 +1282,12 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     p50_tpot = np.percentile(df['avg_tpot'], 50)
     p95_tpot = np.percentile(df['avg_tpot'], 95)
     p99_tpot = np.percentile(df['avg_tpot'], 99)
+    p99_9_tpot = np.percentile(df['avg_tpot'], 99.9)
     avg_tpot = df['avg_tpot'].mean()
     ax7.axvline(p50_tpot, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_tpot:.1f}ms')
     ax7.axvline(p95_tpot, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_tpot:.1f}ms')
     ax7.axvline(p99_tpot, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_tpot:.1f}ms')
+    ax7.axvline(p99_9_tpot, color='brown', linestyle='--', alpha=alpha, label=f'P99.9: {p99_9_tpot:.1f}ms')
     ax7.axvline(avg_tpot, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_tpot:.1f}ms')
     ax7.legend(fontsize=8)
     
@@ -1300,10 +1304,12 @@ def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_po
     p50_e2e = np.percentile(df['e2e'], 50)
     p95_e2e = np.percentile(df['e2e'], 95)
     p99_e2e = np.percentile(df['e2e'], 99)
+    p99_9_e2e = np.percentile(df['e2e'], 99.9)
     avg_e2e = df['e2e'].mean()
     ax8.axvline(p50_e2e, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_e2e:.1f}ms')
     ax8.axvline(p95_e2e, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_e2e:.1f}ms')
     ax8.axvline(p99_e2e, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_e2e:.1f}ms')
+    ax8.axvline(p99_9_e2e, color='brown', linestyle='--', alpha=alpha, label=f'P99.9: {p99_9_e2e:.1f}ms')
     ax8.axvline(avg_e2e, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_e2e:.1f}ms')
     ax8.legend(fontsize=8)
     
@@ -1545,28 +1551,37 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
                 'iteration': iteration,
                 'avg_ttft': subset['ttft'].mean(),
                 'p99_ttft': np.percentile(subset['ttft'], 99),
+                'p99_9_ttft': np.percentile(subset['ttft'], 99.9),
                 'avg_tpot': subset['avg_tpot'].mean(),
                 'p99_tpot': np.percentile(subset['avg_tpot'], 99),
+                'p99_9_tpot': np.percentile(subset['avg_tpot'], 99.9),
                 'avg_e2e': subset['e2e'].mean(),
                 'p99_e2e': np.percentile(subset['e2e'], 99),
+                'p99_9_e2e': np.percentile(subset['e2e'], 99.9),
             })
     
     if iter_stats:
         iter_vals = [s['iteration'] for s in iter_stats]
         avg_ttft_vals = [s['avg_ttft'] for s in iter_stats]
         p99_ttft_vals = [s['p99_ttft'] for s in iter_stats]
+        p99_9_ttft_vals = [s['p99_9_ttft'] for s in iter_stats]
         avg_tpot_vals = [s['avg_tpot'] for s in iter_stats]
         p99_tpot_vals = [s['p99_tpot'] for s in iter_stats]
+        p99_9_tpot_vals = [s['p99_9_tpot'] for s in iter_stats]
         avg_e2e_vals = [s['avg_e2e'] for s in iter_stats]
         p99_e2e_vals = [s['p99_e2e'] for s in iter_stats]
+        p99_9_e2e_vals = [s['p99_9_e2e'] for s in iter_stats]
         
         # Compute overall statistics for legend
         overall_avg_ttft = df['ttft'].mean()
         overall_p99_ttft = np.percentile(df['ttft'], 99)
+        overall_p99_9_ttft = np.percentile(df['ttft'], 99.9)
         overall_avg_tpot = df['avg_tpot'].mean()
         overall_p99_tpot = np.percentile(df['avg_tpot'], 99)
+        overall_p99_9_tpot = np.percentile(df['avg_tpot'], 99.9)
         overall_avg_e2e = df['e2e'].mean()
         overall_p99_e2e = np.percentile(df['e2e'], 99)
+        overall_p99_9_e2e = np.percentile(df['e2e'], 99.9)
         
         # TTFT Trends (Avg + P99 with dual y-axis)
         ax_iter_ttft_trends.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
@@ -1584,17 +1599,22 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_ttft_vals):
             ax_iter_ttft_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='darkblue', fontweight='bold')
-        ax_iter_ttft_trends_right.set_ylabel('P99 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
+        # Add P99.9 line
+        ax_iter_ttft_trends_right.plot(iter_vals, p99_9_ttft_vals, marker='+', linestyle=':', color='brown', linewidth=linewidth, alpha=alpha, label=f'P99.9: {overall_p99_9_ttft:.1f}ms')
+        # Add value labels on each dot for P99.9 (positioned further to the right)
+        for it, val in zip(iter_vals, p99_9_ttft_vals):
+            ax_iter_ttft_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='brown', fontweight='bold')
+        ax_iter_ttft_trends_right.set_ylabel('P99/P99.9 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
         ax_iter_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
         
         ax_iter_ttft_trends.set_ylim(0, max(avg_ttft_vals) * 1.4)
-        ax_iter_ttft_trends_right.set_ylim(0, max(p99_ttft_vals) * 1.4)
+        ax_iter_ttft_trends_right.set_ylim(0, max(max(p99_ttft_vals), max(p99_9_ttft_vals)) * 1.4)
         ax_iter_ttft_trends.set_title('TTFT Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
         ax_iter_ttft_trends.grid(True, alpha=alpha)
         
         lines1, labels1 = ax_iter_ttft_trends.get_legend_handles_labels()
         lines2, labels2 = ax_iter_ttft_trends_right.get_legend_handles_labels()
-        ax_iter_ttft_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        ax_iter_ttft_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=3)
         
         # TPOT Trends (Avg + P99 with dual y-axis)
         ax_iter_tpot_trends.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_tpot:.1f}ms')
@@ -1612,17 +1632,22 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_tpot_vals):
             ax_iter_tpot_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='darkgreen', fontweight='bold')
-        ax_iter_tpot_trends_right.set_ylabel('P99 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
+        # Add P99.9 line
+        ax_iter_tpot_trends_right.plot(iter_vals, p99_9_tpot_vals, marker='+', linestyle=':', color='brown', linewidth=linewidth, alpha=alpha, label=f'P99.9: {overall_p99_9_tpot:.1f}ms')
+        # Add value labels on each dot for P99.9 (positioned further to the right)
+        for it, val in zip(iter_vals, p99_9_tpot_vals):
+            ax_iter_tpot_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='brown', fontweight='bold')
+        ax_iter_tpot_trends_right.set_ylabel('P99/P99.9 TPOT (ms)', fontsize=10, fontweight='bold', color='darkgreen')
         ax_iter_tpot_trends_right.tick_params(axis='y', labelcolor='darkgreen')
         
         ax_iter_tpot_trends.set_ylim(0, max(avg_tpot_vals) * 1.4)
-        ax_iter_tpot_trends_right.set_ylim(0, max(p99_tpot_vals) * 1.4)
+        ax_iter_tpot_trends_right.set_ylim(0, max(max(p99_tpot_vals), max(p99_9_tpot_vals)) * 1.4)
         ax_iter_tpot_trends.set_title('TPOT Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
         ax_iter_tpot_trends.grid(True, alpha=alpha)
         
         lines1, labels1 = ax_iter_tpot_trends.get_legend_handles_labels()
         lines2, labels2 = ax_iter_tpot_trends_right.get_legend_handles_labels()
-        ax_iter_tpot_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        ax_iter_tpot_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=3)
         
         # E2E Trends (Avg + P99 with dual y-axis)
         ax_iter_e2e_trends.plot(iter_vals, avg_e2e_vals, marker='o', linestyle='-', color='purple', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_e2e:.1f}ms')
@@ -1640,17 +1665,22 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         x_offset = x_range * 0.08  # Offset to the right
         for it, val in zip(iter_vals, p99_e2e_vals):
             ax_iter_e2e_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='indigo', fontweight='bold')
-        ax_iter_e2e_trends_right.set_ylabel('P99 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
+        # Add P99.9 line
+        ax_iter_e2e_trends_right.plot(iter_vals, p99_9_e2e_vals, marker='+', linestyle=':', color='brown', linewidth=linewidth, alpha=alpha, label=f'P99.9: {overall_p99_9_e2e:.1f}ms')
+        # Add value labels on each dot for P99.9 (positioned further to the right)
+        for it, val in zip(iter_vals, p99_9_e2e_vals):
+            ax_iter_e2e_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='brown', fontweight='bold')
+        ax_iter_e2e_trends_right.set_ylabel('P99/P99.9 E2E (ms)', fontsize=10, fontweight='bold', color='indigo')
         ax_iter_e2e_trends_right.tick_params(axis='y', labelcolor='indigo')
         
         ax_iter_e2e_trends.set_ylim(0, max(avg_e2e_vals) * 1.4)
-        ax_iter_e2e_trends_right.set_ylim(0, max(p99_e2e_vals) * 1.4)
+        ax_iter_e2e_trends_right.set_ylim(0, max(max(p99_e2e_vals), max(p99_9_e2e_vals)) * 1.4)
         ax_iter_e2e_trends.set_title('E2E Latency Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
         ax_iter_e2e_trends.grid(True, alpha=alpha)
         
         lines1, labels1 = ax_iter_e2e_trends.get_legend_handles_labels()
         lines2, labels2 = ax_iter_e2e_trends_right.get_legend_handles_labels()
-        ax_iter_e2e_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=2)
+        ax_iter_e2e_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=3)
     
     # TTFT CDF by Iterations
     for iteration in unique_iterations:
@@ -1660,7 +1690,8 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
             cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
             avg_ttft = subset['ttft'].mean()
             p99_ttft = np.percentile(subset['ttft'], 99)
-            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
+            p99_9_ttft = np.percentile(subset['ttft'], 99.9)
+            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms, p99.9: {p99_9_ttft:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
@@ -1677,7 +1708,8 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
             cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
             avg_tpot = subset['avg_tpot'].mean()
             p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
+            p99_9_tpot = np.percentile(subset['avg_tpot'], 99.9)
+            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms, p99.9: {p99_9_tpot:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
@@ -1694,7 +1726,8 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
             cdf = np.arange(1, len(sorted_e2e) + 1) / len(sorted_e2e)
             avg_e2e = subset['e2e'].mean()
             p99_e2e = np.percentile(subset['e2e'], 99)
-            ax_iter_e2e_cdf.plot(sorted_e2e, cdf, label=f'Iter {iteration}, avg: {avg_e2e:.0f}ms, p99: {p99_e2e:.0f}ms',
+            p99_9_e2e = np.percentile(subset['e2e'], 99.9)
+            ax_iter_e2e_cdf.plot(sorted_e2e, cdf, label=f'Iter {iteration}, avg: {avg_e2e:.0f}ms, p99: {p99_e2e:.0f}ms, p99.9: {p99_9_e2e:.0f}ms',
                                  color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     
     ax_iter_e2e_cdf.set_xlabel('E2E Latency (ms)', fontsize=10, fontweight='bold')
@@ -2440,10 +2473,12 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     p50_ttft = np.percentile(df['ttft'], 50)
     p95_ttft = np.percentile(df['ttft'], 95)
     p99_ttft = np.percentile(df['ttft'], 99)
+    p99_9_ttft = np.percentile(df['ttft'], 99.9)
     avg_ttft = df['ttft'].mean()
     ax_ttft_cdf.axvline(p50_ttft, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_ttft:.1f}ms')
     ax_ttft_cdf.axvline(p95_ttft, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_ttft:.1f}ms')
     ax_ttft_cdf.axvline(p99_ttft, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_ttft:.1f}ms')
+    ax_ttft_cdf.axvline(p99_9_ttft, color='brown', linestyle='--', alpha=alpha, label=f'P99.9: {p99_9_ttft:.1f}ms')
     ax_ttft_cdf.axvline(avg_ttft, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_ttft:.1f}ms')
     ax_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
     ax_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
@@ -2458,10 +2493,12 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
     p50_tpot = np.percentile(df['avg_tpot'], 50)
     p95_tpot = np.percentile(df['avg_tpot'], 95)
     p99_tpot = np.percentile(df['avg_tpot'], 99)
+    p99_9_tpot = np.percentile(df['avg_tpot'], 99.9)
     avg_tpot = df['avg_tpot'].mean()
     ax_tpot_cdf.axvline(p50_tpot, color='red', linestyle='--', alpha=alpha, label=f'P50: {p50_tpot:.1f}ms')
     ax_tpot_cdf.axvline(p95_tpot, color='orange', linestyle='--', alpha=alpha, label=f'P95: {p95_tpot:.1f}ms')
     ax_tpot_cdf.axvline(p99_tpot, color='purple', linestyle='--', alpha=alpha, label=f'P99: {p99_tpot:.1f}ms')
+    ax_tpot_cdf.axvline(p99_9_tpot, color='brown', linestyle='--', alpha=alpha, label=f'P99.9: {p99_9_tpot:.1f}ms')
     ax_tpot_cdf.axvline(avg_tpot, color='green', linestyle='-', alpha=alpha, label=f'Avg: {avg_tpot:.1f}ms')
     ax_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
     ax_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
@@ -2532,7 +2569,8 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
             cdf = np.arange(1, len(sorted_ttft) + 1) / len(sorted_ttft)
             avg_ttft = subset['ttft'].mean()
             p99_ttft = np.percentile(subset['ttft'], 99)
-            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms',
+            p99_9_ttft = np.percentile(subset['ttft'], 99.9)
+            ax_iter_ttft_cdf.plot(sorted_ttft, cdf, label=f'Iter {iteration}, avg: {avg_ttft:.0f}ms, p99: {p99_ttft:.0f}ms, p99.9: {p99_9_ttft:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     ax_iter_ttft_cdf.set_xlabel('TTFT (ms)', fontsize=10, fontweight='bold')
     ax_iter_ttft_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
@@ -2548,7 +2586,8 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
             cdf = np.arange(1, len(sorted_tpot) + 1) / len(sorted_tpot)
             avg_tpot = subset['avg_tpot'].mean()
             p99_tpot = np.percentile(subset['avg_tpot'], 99)
-            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms',
+            p99_9_tpot = np.percentile(subset['avg_tpot'], 99.9)
+            ax_iter_tpot_cdf.plot(sorted_tpot, cdf, label=f'Iter {iteration}, avg: {avg_tpot:.0f}ms, p99: {p99_tpot:.0f}ms, p99.9: {p99_9_tpot:.0f}ms',
                                   color=iteration_color_map[iteration], linewidth=1.5, alpha=0.7)
     ax_iter_tpot_cdf.set_xlabel('TPOT (ms)', fontsize=10, fontweight='bold')
     ax_iter_tpot_cdf.set_ylabel('CDF', fontsize=10, fontweight='bold')
