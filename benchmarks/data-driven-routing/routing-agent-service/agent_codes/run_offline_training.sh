@@ -3,10 +3,18 @@
 set -e
 
 data_dir=$1
+latency_metric=ttft # "ttft", "avg_tpot", "e2e_latency" (applies to all model types including contextual_bandit)
+REWARD_FUNCTION=negative_linear  # "negative_linear", "quantile_advantage", "quantile_based"
+
+sampling_ratio=0.5
+# sampling_ratio=1.0
+ttft_threshold=15000
+training_epochs=20
+
+
 model_type="contextual_bandit_perpodmodel_checkpoint" # "contextual_bandit_perpodmodel_advanced", "contextual_bandit_perpodmodel_policygradient", "latency_predictor"
-REWARD_FUNCTION="negative_linear" # "throughput_based", "log_normalized", "quantile_based", "negative_reciprocal", "negative_linear", "negative_squared", "linear_simple", "linear_simple_extended", "piecewise_linear_steeper_gradient", "latency_optimized"
-latency_metric=$2 # "ttft", "avg_tpot", "e2e_latency" (applies to all model types including contextual_bandit)
-time_stamp=$(date +%Y%m%d_%H%M%S)
+
+datetime=$(date +%Y%m%d_%H%M%S)
 
 # Build final_model_dir path
 final_model_dir="${data_dir}/final_model"
@@ -16,7 +24,13 @@ if [ "${model_type}" == "latency_predictor" ]; then
 elif [[ "${model_type}" == *"contextual_bandit"* ]]; then
     final_model_dir="${final_model_dir}_${latency_metric}_${REWARD_FUNCTION}"
 fi
-final_model_dir=${final_model_dir}-${time_stamp}
+
+
+
+# final_model_dir=${final_model_dir}-${datetime}
+final_model_dir=${final_model_dir}
+
+
 if [ -d "${final_model_dir}" ]; then
     rm -rf "${final_model_dir}"
 fi
@@ -27,9 +41,7 @@ mkdir -p "${final_model_dir}"
 data_file="${final_model_dir}/data.csv"
 processed_csv="${final_model_dir}/data-processed.csv"
 
-# ./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}" contextual_bandit
-# ./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}"
-./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}" contextual_bandit with_bitsandbytes
+./merge-filtered-gateway-log.sh "${data_dir}" "${data_file}" contextual_bandit final_model
 if [ ! -f "${data_file}" ]; then
     echo "❌ Data file not found: ${data_file}"
     exit 1
@@ -40,19 +52,15 @@ echo "✓ Found data file: ${data_file}"
 
 analyze_dataset=0
 analyze_behavior=0
-sampling_ratio=0.5
-# sampling_ratio=1.0
-ttft_threshold=15000
 buffer_size=100000
 
 hidden_dim=128
 batch_size=256
-training_epochs=20
 learning_rate=0.0003 # 0.0001, 0.0003
 lr_scheduler_gamma=0.95
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
 excluded_pod_features="none" # "inflight_requests,cpu_kv_cache" 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
-excluded_request_features="output_tokens, cpu_kv_cache" # "none", "input_tokens", "output_tokens", "total_tokens"
+excluded_request_features="output_tokens, cpu_kv_cache,inflight_requests" # "none", "input_tokens", "output_tokens", "total_tokens"
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 ttft_slo=1000
@@ -85,7 +93,8 @@ python3 write_hyperparameters.py \
 --model_type ${model_type} \
 --latency_metric ${latency_metric} \
 --include_gpu_features ${include_gpu_features} \
---buffer_size ${buffer_size}
+--buffer_size ${buffer_size} \
+--ttft_threshold ${ttft_threshold}
 
 echo "📄 STEP 1: start data_processor"
 start_time=$(date +%s)
@@ -105,7 +114,7 @@ fi
 
 if [ "${analyze_dataset}" = "1" ] || [ "${analyze_dataset}" = "true" ]; then
     echo "📄 STEP 2: start dataset_analyzer - this can take a while on large CSVs"
-    python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} --save-sampled-dataset 2>&1 | tee ${dataset_analyzer_log}
+    python3 dataset_analyzer.py --processed_csv ${processed_csv} --reward-function ${REWARD_FUNCTION} --ttft-slo ${ttft_slo} --avg-tpot-slo ${avg_tpot_slo} --ttft-reward-weight ${ttft_reward_weight} 2>&1 | tee ${dataset_analyzer_log}
 fi
 
 training_data_dir=$(dirname "${processed_csv}")

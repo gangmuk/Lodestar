@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
     echo "Usage: $0 <root_directory> [output_dir_name] [filter_word...]"
     echo "  root_directory: Directory to search for CSV files"
     echo "  output_dir_name: (optional) Output directory name or full path"
-    echo "  filter_word: (optional) One or more words - files in directories containing any of these words will be processed"
+    echo "  filter_word: (optional) One or more words - files in paths containing any of these words will be EXCLUDED"
     exit 1
 fi
 
@@ -62,7 +62,7 @@ if [ ${#FILTER_WORDS[@]} -gt 0 ]; then
                 break
             fi
         done
-        if [ "$match_found" = true ]; then
+        if [ "$match_found" = false ]; then
             filtered_files="${filtered_files}${file}"$'\n'
         fi
     done <<< "$all_files"
@@ -70,12 +70,12 @@ if [ ${#FILTER_WORDS[@]} -gt 0 ]; then
     
     # If filter matched no files, fall back to processing all files
     if [ -z "$filtered_files" ]; then
-        echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
-        echo "No files matched the filter - processing all files instead"
+        echo "Excluding paths containing any of: ${FILTER_WORDS[*]}"
+        echo "All files matched the exclude filter - processing all files instead"
         files="$all_files"
     else
         files="$filtered_files"
-        echo "Filtering directories containing any of: ${FILTER_WORDS[*]}"
+        echo "Excluding paths containing any of: ${FILTER_WORDS[*]}"
     fi
 else
     files="$all_files"
