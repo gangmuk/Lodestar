@@ -641,6 +641,15 @@ def calculate_rewards_e2e(e2e_values, reward_function, **kwargs):
             # Fallback to negative linear if no input_tokens
             rewards = -e2e_values / 1000.0
 
+    elif reward_function == "quantile_advantage":
+        input_tokens = kwargs.get('input_tokens')
+        if input_tokens is not None:
+            num_buckets = kwargs.get('num_buckets', 5)
+            result = calculate_rewards_quantile_advantage(e2e_values, input_tokens, num_buckets)
+            rewards = result['combined_rewards']
+        else:
+            rewards = -e2e_values / 1000.0
+
     else:
         logger.error(f"Unsupported reward function for e2e_latency: {reward_function}, falling back to negative_linear")
         rewards = -e2e_values / 1000.0
@@ -652,7 +661,7 @@ def calculate_rewards_e2e(e2e_values, reward_function, **kwargs):
     }
 
 
-def calculate_rewards_quantile_based(ttft_values,ot_values, input_tokens, output_tokens,
+def calculate_rewards_quantile_based(ttft_values, tpot_values, input_tokens, output_tokens,
                                       ttft_reward_weight):
     """
     Data-driven Z-score normalized reward function - NO hard-coded SLOs!
@@ -744,7 +753,69 @@ def calculate_rewards_quantile_based(ttft_values,ot_values, input_tokens, output
     }
 
 
-def calculate_rewards_absolute_latency(ttft_values, tpot_values, 
+def calculate_rewards_quantile_advantage(latency_values, input_tokens, num_buckets=5):
+    """
+    Advantage-based reward for LLM inference routing.
+
+    Groups requests by input length into percentile-based buckets,
+    computes per-bucket mean latency as a baseline, and rewards based
+    on how much better/worse the observed latency was compared to that
+    baseline.
+
+    The baseline cancels out at inference time (it is constant across
+    pods for a given request), so even an imperfect baseline cannot
+    bias the routing policy.  It only affects training convergence
+    speed by centering targets and equalizing gradient magnitudes
+    across request difficulties.
+
+    No std division — preserves the natural scaling where long-request
+    routing produces larger reward magnitudes (reflecting greater
+    system impact).
+
+    Works with any single latency metric (TTFT, E2E, etc.) controlled
+    by the caller via LATENCY_METRIC hyperparameter.
+
+    Args:
+        latency_values: Latency in ms (np array) — TTFT or E2E
+        input_tokens:   Number of input tokens per request (np array)
+        num_buckets:    Number of input-length buckets (default 20)
+
+    Returns:
+        Dict with ttft_rewards (zeros), tpot_rewards (zeros),
+        combined_rewards (advantage per sample).
+    """
+    zeros = np.zeros_like(latency_values, dtype=np.float64)
+
+    # Bucket by input token count (percentile-based, equal sample count)
+    effective_buckets = max(1, min(num_buckets, len(input_tokens)))
+    percentile_edges = np.percentile(
+        input_tokens, np.linspace(0, 100, effective_buckets + 1)
+    )
+    bucket_idx = np.clip(
+        np.digitize(input_tokens, percentile_edges[1:-1], right=True),
+        0, effective_buckets - 1,
+    )
+
+    # Per-bucket mean latency (the baseline)
+    bucket_means = np.zeros(effective_buckets, dtype=np.float64)
+    for b in range(effective_buckets):
+        mask = bucket_idx == b
+        if mask.sum() > 0:
+            bucket_means[b] = latency_values[mask].mean()
+
+    # Advantage: negative (latency - baseline)
+    # Positive when pod was faster than average for similar requests
+    baseline = bucket_means[bucket_idx]
+    rewards = -(latency_values - baseline) / 1000.0
+
+    return {
+        'ttft_rewards': zeros,
+        'tpot_rewards': zeros,
+        'combined_rewards': rewards,
+    }
+
+
+def calculate_rewards_absolute_latency(ttft_values, tpot_values,
                                        ttft_slo, tpot_slo,
                                        ttft_reward_weight):
     """
@@ -1386,6 +1457,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                     'avg_tpot_slo': avg_tpot_slo,
                     'input_tokens': np.array(base_data['input_tokens'], dtype=np.float64),
                     'output_tokens': np.array(base_data['output_tokens'], dtype=np.float64),
+                    'num_buckets': hyperparameters.get('REWARD_NUM_BUCKETS', 20),
                 }
                 if 'E2E_P99' in hyperparameters:
                     e2e_kwargs['e2e_p99'] = hyperparameters['E2E_P99']
@@ -1476,6 +1548,13 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
                     ttft_p99=ttft_p99,
                     tpot_p99=tpot_p99,
                     ttft_reward_weight=ttft_reward_weight
+                )
+            elif reward_function == "quantile_advantage":
+                # Uses TTFT as the latency metric (for E2E, use LATENCY_METRIC=e2e_latency)
+                input_tokens = np.array(base_data['input_tokens'], dtype=np.float64)
+                num_buckets = hyperparameters.get('REWARD_NUM_BUCKETS', 20)
+                reward = calculate_rewards_quantile_advantage(
+                    ttft_values, input_tokens, num_buckets
                 )
             elif reward_function == "context_aware":
                 # Extract KV cache hit ratios for selected pods

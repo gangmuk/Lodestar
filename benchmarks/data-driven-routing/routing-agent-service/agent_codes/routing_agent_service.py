@@ -89,6 +89,7 @@ TRAINING_RIGHT_NOW = False
 # Training data accumulation (offline + online) kept separate
 OFFLINE_DF = None  # Offline CSV data (older, static)
 ONLINE_DF = None  # Online appended data (newer, time-ordered)
+TTFT_THRESHOLD = None  # TTFT threshold for filtering online data (loaded from hyperparameters)
 TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
 OFFLINE_DATA_SIZE = 0  # Tracks offline data size (shrinks as we remove overflow)
 ONLINE_SEQ = 0  # Monotonic sequence for online data ordering when timestamps missing
@@ -189,6 +190,13 @@ def handle_flush():
                 if ONLINE_DF is None:
                     ONLINE_DF = pd.DataFrame()
                 online_batch = processed_df.copy()
+                # Filter out samples with excessively high TTFT (matching offline training behavior)
+                if TTFT_THRESHOLD is not None and 'ttft' in online_batch.columns:
+                    pre_filter_count = len(online_batch)
+                    online_batch = online_batch[online_batch['ttft'] <= TTFT_THRESHOLD]
+                    filtered_count = pre_filter_count - len(online_batch)
+                    if filtered_count > 0:
+                        logger.info(f"Filtered {filtered_count}/{pre_filter_count} samples with ttft > {TTFT_THRESHOLD}")
                 if '_online_seq' not in online_batch.columns:
                     online_batch['_online_seq'] = np.arange(ONLINE_SEQ, ONLINE_SEQ + len(online_batch))
                     ONLINE_SEQ += len(online_batch)
@@ -511,7 +519,7 @@ def handle_infer():
                 )
         elif 'contextual_bandit' in subAlgorithm or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'prefix_hit_threshold_or_least_request'}:
             # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
-            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
+            # logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
             global CONTEXTUAL_BANDIT_AGENT
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
             if CONTEXTUAL_BANDIT_AGENT is None:
@@ -584,174 +592,124 @@ def handle_infer():
             # Use the actual exploration flag from the agent, not just whether epsilon > 0
             result['explore_mask'] = 1 if result.get('explored', False) else 0
             
-            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result.get('predicted_rewards')}, chosen_pod_predicted_reward={result['confidence']}, epsilon={result.get('epsilon', 0):.3f}")
+            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['chosen_pod_predicted_reward']}")
             
-        elif subAlgorithm == 'rl_agent':
-            from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
-            # === OLD RL AGENT (entire cluster as input state) ===
-            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
+        # elif subAlgorithm == 'rl_agent':
+        #     from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
+        #     # === OLD RL AGENT (entire cluster as input state) ===
+        #     logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using OLD RL agent (entire cluster) for inference")
             
-            global RL_AGENT
+        #     global RL_AGENT
             
-            with RL_AGENT_LOCK.write():
-                # Check if initialization needed
-                pod_features_t = tensor_data['pod_features']
-                n_pods = int(pod_features_t.shape[1])
-                per_pod_dim = int(pod_features_t.shape[2])
+        #     with RL_AGENT_LOCK.write():
+        #         # Check if initialization needed
+        #         pod_features_t = tensor_data['pod_features']
+        #         n_pods = int(pod_features_t.shape[1])
+        #         per_pod_dim = int(pod_features_t.shape[2])
                 
-                if (RL_AGENT is None or 
-                    RL_AGENT.action_dim != n_pods or
-                    RL_AGENT.state_dim.get('pod_features') != per_pod_dim):
-                    # Initialize new agent
-                    kv_hit_t = tensor_data['kv_hit_ratios']
-                    req_features_t = tensor_data['request_features']
-                    state_dim = {
-                        'pod_features': per_pod_dim,
-                        'kv_hit_ratios': int(kv_hit_t.shape[2]),
-                        'request_features': int(req_features_t.shape[1]),
-                    }
-                    RL_AGENT = create_rl_routing_agent_sb3(
-                        state_dim=state_dim,
-                        action_dim=n_pods,
-                        **HYPERPARAMETERS
-                    )
-                    ckpt_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-                    if ckpt_path and os.path.exists(ckpt_path):
-                        try:
-                            RL_AGENT.load(ckpt_path)
-                            logger.info(f"Loaded RL checkpoint from {ckpt_path}")
-                        except Exception as e:
-                            logger.error(f"Failed to load RL checkpoint {ckpt_path}: {e}")
-                    logger.info(f"Initialized OLD RL agent with state_dim={state_dim}, action_dim={n_pods}")
+        #         if (RL_AGENT is None or 
+        #             RL_AGENT.action_dim != n_pods or
+        #             RL_AGENT.state_dim.get('pod_features') != per_pod_dim):
+        #             # Initialize new agent
+        #             kv_hit_t = tensor_data['kv_hit_ratios']
+        #             req_features_t = tensor_data['request_features']
+        #             state_dim = {
+        #                 'pod_features': per_pod_dim,
+        #                 'kv_hit_ratios': int(kv_hit_t.shape[2]),
+        #                 'request_features': int(req_features_t.shape[1]),
+        #             }
+        #             RL_AGENT = create_rl_routing_agent_sb3(
+        #                 state_dim=state_dim,
+        #                 action_dim=n_pods,
+        #                 **HYPERPARAMETERS
+        #             )
+        #             ckpt_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+        #             if ckpt_path and os.path.exists(ckpt_path):
+        #                 try:
+        #                     RL_AGENT.load(ckpt_path)
+        #                     logger.info(f"Loaded RL checkpoint from {ckpt_path}")
+        #                 except Exception as e:
+        #                     logger.error(f"Failed to load RL checkpoint {ckpt_path}: {e}")
+        #             logger.info(f"Initialized OLD RL agent with state_dim={state_dim}, action_dim={n_pods}")
                 
-                # Get agent reference under write lock
-                current_agent = RL_AGENT
+        #         # Get agent reference under write lock
+        #         current_agent = RL_AGENT
             
-            # Inference uses read lock for predictions (allows concurrency)
-            current_agent, result, infer_from_tensor_overhead_summary = infer_rl_agent(
-                tensor_data=tensor_data,
-                request_id=request_id,
-                sorted_all_pod_ids=sorted_all_pod_ids,
-                processed_df=processed_df,
-                rl_agent=current_agent,
-                hyperparameters=HYPERPARAMETERS,
-                agent_lock=RL_AGENT_LOCK  # RWLock for read (predict) and write (buffer)
-            )
+        #     # Inference uses read lock for predictions (allows concurrency)
+        #     current_agent, result, infer_from_tensor_overhead_summary = infer_rl_agent(
+        #         tensor_data=tensor_data,
+        #         request_id=request_id,
+        #         sorted_all_pod_ids=sorted_all_pod_ids,
+        #         processed_df=processed_df,
+        #         rl_agent=current_agent,
+        #         hyperparameters=HYPERPARAMETERS,
+        #         agent_lock=RL_AGENT_LOCK  # RWLock for read (predict) and write (buffer)
+        #     )
             
-            # Queue async update if online learning enabled
-            update_overhead = 0.0
-            if ENABLE_ONLINE_LEARNING:
-                update_start = time.time()
-                with RL_AGENT_LOCK.read():
-                    if RL_AGENT is not None:
-                        buffer_size = len(RL_AGENT.experience_buffer)
-                        batch_size = RL_AGENT.hyperparameters.get('batch_size', 64)
+        #     # Queue async update if online learning enabled
+        #     update_overhead = 0.0
+        #     if ENABLE_ONLINE_LEARNING:
+        #         update_start = time.time()
+        #         with RL_AGENT_LOCK.read():
+        #             if RL_AGENT is not None:
+        #                 buffer_size = len(RL_AGENT.experience_buffer)
+        #                 batch_size = RL_AGENT.hyperparameters.get('batch_size', 64)
                         
-                        if buffer_size >= batch_size:
-                            queue_rl_update(n_steps=batch_size)
-                            logger.debug(f"Queued RL update: buffer_size={buffer_size}, batch_size={batch_size}")
-                update_overhead = time.time() - update_start
+        #                 if buffer_size >= batch_size:
+        #                     queue_rl_update(n_steps=batch_size)
+        #                     logger.debug(f"Queued RL update: buffer_size={buffer_size}, batch_size={batch_size}")
+        #         update_overhead = time.time() - update_start
             
-            infer_from_tensor_overhead_summary['online_update'] = update_overhead
-        elif subAlgorithm == 'scalable_rl_agent':
-            from scalable_rl_routing_agent import BROKER, infer
+        #     infer_from_tensor_overhead_summary['online_update'] = update_overhead
+        # elif subAlgorithm == 'scalable_rl_agent':
+        #     from scalable_rl_routing_agent import BROKER, infer
             
-            # === NEW SCALABLE RL AGENT (pod-count independent) ===
-            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
+        #     # === NEW SCALABLE RL AGENT (pod-count independent) ===
+        #     logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
             
-            # Extract features from tensor_data
-            pod_features = tensor_data['pod_features'].cpu().numpy()[0]  # [num_pods, 10]
-            kv_hit_ratios = tensor_data['kv_hit_ratios'].cpu().numpy()[0]  # [num_pods, 1]
-            request_features = tensor_data['request_features'].cpu().numpy()[0]  # [3]
-            temporal_features = np.array([1], dtype=np.float32)  # Empty for now
+        #     # Extract features from tensor_data
+        #     pod_features = tensor_data['pod_features'].cpu().numpy()[0]  # [num_pods, 10]
+        #     kv_hit_ratios = tensor_data['kv_hit_ratios'].cpu().numpy()[0]  # [num_pods, 1]
+        #     request_features = tensor_data['request_features'].cpu().numpy()[0]  # [3]
+        #     temporal_features = np.array([1], dtype=np.float32)  # Empty for now
             
-            # Get previous reward from processed_df (gateway provides this)
-            if 'prev_reward' in processed_columns:
-                prev_reward = float(processed_df['prev_reward']) if is_dict_input else float(processed_df['prev_reward'].iloc[0])
-            else:
-                logger.error(f"scalable_rl_routing_agent, prev_reward not found in processed_df for requestID: {request_id}")
-                assert False
+        #     # Get previous reward from processed_df (gateway provides this)
+        #     if 'prev_reward' in processed_columns:
+        #         prev_reward = float(processed_df['prev_reward']) if is_dict_input else float(processed_df['prev_reward'].iloc[0])
+        #     else:
+        #         logger.error(f"scalable_rl_routing_agent, prev_reward not found in processed_df for requestID: {request_id}")
+        #         assert False
             
-            # Call infer function from scalable_rl_routing_agent
-            infer_start = time.time()
-            timeout_in_seconds = 5.0  # 5 second timeout for inference
-            pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, timeout_in_seconds)
-            infer_from_tensor_overhead_summary['scalable_rl_infer'] = time.time() - infer_start
+        #     # Call infer function from scalable_rl_routing_agent
+        #     infer_start = time.time()
+        #     timeout_in_seconds = 5.0  # 5 second timeout for inference
+        #     pod_idx, infer_from_tensor_overhead_summary = infer(request_id, prev_reward, pod_features, kv_hit_ratios, request_features, temporal_features, BROKER, timeout_in_seconds)
+        #     infer_from_tensor_overhead_summary['scalable_rl_infer'] = time.time() - infer_start
             
-            # Build result with actual probabilities
-            num_pods = len(sorted_all_pod_ids)
+        #     # Build result with actual probabilities
+        #     num_pods = len(sorted_all_pod_ids)
             
-            ## TODO: we need action probabilities for debugging
-            # if action_probs is not None:
-            #     # Use actual probabilities from policy
-            #     pod_probabilities = {sorted_all_pod_ids[i]: float(action_probs[i]) for i in range(min(num_pods, len(action_probs)))}
-            #     confidence = float(action_probs[pod_idx])
-            # else:
-            #     # Fallback to uniform
-            #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
-            #     confidence = 1.0/num_pods
+        #     ## TODO: we need action probabilities for debugging
+        #     # if action_probs is not None:
+        #     #     # Use actual probabilities from policy
+        #     #     pod_probabilities = {sorted_all_pod_ids[i]: float(action_probs[i]) for i in range(min(num_pods, len(action_probs)))}
+        #     #     confidence = float(action_probs[pod_idx])
+        #     # else:
+        #     #     # Fallback to uniform
+        #     #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
+        #     #     confidence = 1.0/num_pods
             
-            # TODO: these are placeholder. we need actual probabilities from the model.
-            pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
-            confidence = 1.0/num_pods
-            result = {
-                'selected_pod_index': int(pod_idx),
-                'pod_probabilities': pod_probabilities,
-                'confidence': confidence,
-                'explore_mask': 1,  # RL always explores
-            }
+        #     # TODO: these are placeholder. we need actual probabilities from the model.
+        #     pod_probabilities = {sorted_all_pod_ids[i]: 1.0/num_pods for i in range(num_pods)}
+        #     confidence = 1.0/num_pods
+        #     result = {
+        #         'selected_pod_index': int(pod_idx),
+        #         'pod_probabilities': pod_probabilities,
+        #         'confidence': confidence,
+        #         'explore_mask': 1,  # RL always explores
+        #     }
             
-            logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
-        elif subAlgorithm == 'scalable_rl_agent_old':
-            # === NEW SCALABLE RL AGENT (pod-count independent) ===
-            logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using SCALABLE RL agent (pod-independent) for inference")
-            
-            global SCALABLE_RL_AGENT
-            
-            with SCALABLE_RL_AGENT_LOCK.write():
-                if SCALABLE_RL_AGENT is None:
-                    # Initialize ONCE - works for any number of pods!
-                    pod_features_t = tensor_data['pod_features']
-                    per_pod_dim = int(pod_features_t.shape[2])  # e.g., 10
-                    kv_hit_t = tensor_data['kv_hit_ratios']
-                    kv_dim = int(kv_hit_t.shape[2])  # e.g., 1
-                    req_features_t = tensor_data['request_features']
-                    req_dim = int(req_features_t.shape[1])  # e.g., 3
-                    
-                    # Per-pod dimension = pod_features + kv_hit_ratios
-                    total_per_pod_dim = per_pod_dim + kv_dim
-                    
-                    SCALABLE_RL_AGENT = create_scalable_rl_agent(
-                        per_pod_dim=total_per_pod_dim,  # 11 (10 pod + 1 kv)
-                        request_dim=req_dim,             # 3
-                        max_pods=100,                    # Max expected pods
-                        **HYPERPARAMETERS
-                    )
-                    
-                    # Load checkpoint if available
-                    ckpt_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-                    if ckpt_path and os.path.exists(ckpt_path):
-                        try:
-                            SCALABLE_RL_AGENT.load(ckpt_path)
-                            logger.info(f"✅ Loaded scalable RL checkpoint from {ckpt_path}")
-                        except Exception as e:
-                            logger.warning(f"⚠️  Failed to load RL checkpoint {ckpt_path}: {e}")
-                    
-                    logger.info(f"🚀 Initialized SCALABLE RL agent: per_pod_dim={total_per_pod_dim}, "
-                              f"request_dim={req_dim}, max_pods=100 (works with ANY #pods!)")
-                
-                current_agent = SCALABLE_RL_AGENT
-            
-            # Inference (no lock needed - thread-safe in new design)
-            current_agent, result, infer_from_tensor_overhead_summary = infer_scalable_rl_agent(
-                tensor_data=tensor_data,
-                request_id=request_id,
-                sorted_all_pod_ids=sorted_all_pod_ids,
-                processed_df=processed_df,
-                rl_agent=current_agent,
-                hyperparameters=HYPERPARAMETERS,
-                agent_lock=None  # New agent doesn't need lock for prediction
-            )
+        #     logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
         else:
             logger.error(f"Unknown subAlgorithm: {subAlgorithm}")
             assert False
@@ -789,8 +747,9 @@ def handle_infer():
             overhead_log += f", preprocess_{key}: {value*1000:.0f}ms"
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
-            
-        logger.debug(f"overhead_log: {overhead_log}")
+        
+        if handle_infer_overhead_summary.get('handle_infer_end_to_end', 0) > 20:
+            logger.info(f"overhead_log: {overhead_log}")
         
         return_predicted_rewards = HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True)
         predicted_rewards_output = result.get('predicted_rewards', None)
@@ -813,7 +772,6 @@ def handle_infer():
             "selected_pod": selected_pod_ip,
             "selected_pod_generalpodid": selected_pod_generalpodid,
             "selected_pod_gpu_type": result.get('selected_pod_gpu_type', 'unknown'),
-            "confidence": round(result['confidence'], 2),
             "exploration": result['explore_mask'],
             "exploration_enabled": EXPLORATION_ENABLED,
             "request_id": request_id,
@@ -1627,7 +1585,7 @@ def initialize():
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
     else:
-        final_model_dir = f"/app/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+        final_model_dir = f"/app/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
         offline_csv_path = f"{final_model_dir}/data-processed.csv"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -1682,6 +1640,10 @@ def initialize():
             excluded_features.remove('none')
         request_features_train = [f for f in all_request_features if f not in excluded_features]
         logger.info(f"🔧 Request features for inference (after excluding {excluded_features}): {request_features_train}")
+
+        global TTFT_THRESHOLD
+        TTFT_THRESHOLD = HYPERPARAMETERS.get('TTFT_THRESHOLD', 15000)
+        logger.info(f"TTFT_THRESHOLD for online filtering: {TTFT_THRESHOLD}")
         
         model_type = HYPERPARAMETERS.get('MODEL_TYPE', 'contextual_bandit')
         logger.info(f"Model type configured: {model_type}")

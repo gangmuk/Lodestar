@@ -1006,6 +1006,16 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
             raise ValueError("Reward calculation produced NaN values. Check input data and P99 values.")
         
         logger.info(f"Reward calculation successful: ttft_rewards range=[{np.min(ttft_rewards):.4f}, {np.max(ttft_rewards):.4f}], tpot_rewards range=[{np.min(tpot_rewards):.4f}, {np.max(tpot_rewards):.4f}], combined_rewards range=[{np.min(combined_rewards):.4f}, {np.max(combined_rewards):.4f}]")
+    elif reward_function == 'quantile_advantage':
+        if 'input_tokens' in df.columns:
+            input_tokens = df['input_tokens'].values
+            reward_result = preprocess.calculate_rewards_quantile_advantage(
+                ttft_values, input_tokens, num_buckets=5
+            )
+        else:
+            logger.error("quantile_advantage reward function requires input_tokens column")
+            logger.error("Falling back to negative_linear for post-processing")
+            reward_result = preprocess.calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weight)
     elif reward_function == 'context_aware':
         logger.error("context_aware reward function requires detailed context data (input_tokens, kv_cache_hit_ratios) not available in this tool")
         logger.error("Falling back to latency_optimized for post-processing")
