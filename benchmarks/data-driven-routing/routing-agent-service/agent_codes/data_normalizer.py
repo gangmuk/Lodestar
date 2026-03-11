@@ -70,6 +70,30 @@ class RunningStats:
         self.feature_names = feature_names
         self.values = []
         
+    def replace_stats_from_data(self, new_data):
+        """Recompute stats from scratch using ONLY the provided data.
+
+        Unlike update_stats_incrementally which accumulates, this replaces
+        all statistics so they reflect exactly the given data.
+        Use this when ONLINE_TRAIN_FROM_SCRATCH=1 to ensure normalization
+        stats match only the current training window.
+        """
+        if new_data is None or len(new_data) == 0:
+            logger.error("Received empty data for RunningStats.replace_stats_from_data, skipping")
+            return
+        new_data = np.array(new_data, dtype=np.float64)
+        old_count = self.count
+        old_mean = self.mean
+        self.count = len(new_data)
+        self.mean = np.mean(new_data, axis=0)
+        self.sum_sq_diff = np.var(new_data, axis=0) * self.count
+        self.std = np.sqrt(self.sum_sq_diff / self.count)
+        self.min = np.min(new_data, axis=0)
+        self.max = np.max(new_data, axis=0)
+        logger.info(f"RunningStats.replace_stats_from_data for {self.feature_names}: "
+                   f"replaced stats (old_count={old_count}, old_mean={old_mean}) "
+                   f"with {self.count} samples, mean={self.mean}, std={self.std}")
+
     def update_stats_incrementally(self, new_data):
         if new_data is None or len(new_data) == 0:
             logger.error("Received empty data for RunningStats.update, skipping")
@@ -91,7 +115,7 @@ class RunningStats:
                 self.min = np.min(new_data, axis=0)
                 self.max = np.max(new_data, axis=0)
             else:
-                self.min = np.minimum(self.min, np.min(new_data, axis=0)) 
+                self.min = np.minimum(self.min, np.min(new_data, axis=0))
                 self.max = np.maximum(self.max, np.max(new_data, axis=0))
             logger.info(f"The very first RunningStats.update call for {self.feature_names}. Initialized running stats with {new_count} samples")
             return
@@ -109,7 +133,7 @@ class RunningStats:
             self.min = np.min(new_data, axis=0)
             self.max = np.max(new_data, axis=0)
         else:
-            self.min = np.minimum(self.min, np.min(new_data, axis=0)) 
+            self.min = np.minimum(self.min, np.min(new_data, axis=0))
             self.max = np.maximum(self.max, np.max(new_data, axis=0))
         
     def normalize(self, data):
@@ -527,7 +551,7 @@ def _get_matching_columns_cached(df_columns, feature_type: str) -> List[str]:
     return matching
 
 
-def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instance, update_statistics=True):
+def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=False):
     """
     Compute pooled statistics for pod features by aggregating across all pods.
 
@@ -536,6 +560,9 @@ def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instan
         pod_feature_types: Set of unique pod feature types (e.g., {"kv_hit_ratio", "inflight_requests"})
         stats_instance: FeatureStats instance to store the pooled statistics
         update_statistics: If False, skip updating stats (used during online training to prevent distribution shift)
+        recompute_from_scratch: If True, replace stats entirely from the current data
+            (use when ONLINE_TRAIN_FROM_SCRATCH=1 so stats reflect only the current training window).
+            If False, accumulate incrementally (use when ONLINE_TRAIN_FROM_SCRATCH=0).
 
     Returns:
         dict: Mapping from feature_type to pooled stats
@@ -545,21 +572,21 @@ def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instan
     for feature_type in pod_feature_types:
         # OPTIMIZATION: Use cached matching columns lookup
         matching_columns = _get_matching_columns_cached(processed_df.columns, feature_type)
-        
+
         if not matching_columns:
             continue
-            
+
         # Pool all values from all pods for this feature type
         all_values = []
         for col in matching_columns:
             values = processed_df[col].values
             all_values.extend(values)
-        
+
         all_values = np.array(all_values, dtype=np.float64).reshape(-1, 1)
-        
+
         logger.info(f"🔄 Pooling {len(matching_columns)} pod columns for feature type '{feature_type}' "
                    f"({len(all_values)} total samples)")
-        
+
         # Create or update pooled statistics for this feature type
         if feature_type not in stats_instance.feature_stats:
             # First time seeing this feature - initialize it even if update_statistics=False
@@ -568,37 +595,44 @@ def _compute_pooled_pod_statistics(processed_df, pod_feature_types, stats_instan
             stats_instance.feature_stats[feature_type].update_stats_incrementally(all_values)
             logger.info(f"🆕 Initialized NEW pooled stats for '{feature_type}'")
         elif update_statistics:
-            # Feature exists and we're allowed to update - update pooled statistics
-            stats_instance.feature_stats[feature_type].update_stats_incrementally(all_values)
-            logger.info(f"🔄 Updated pooled stats for '{feature_type}'")
+            if recompute_from_scratch:
+                # Replace stats entirely from current data (no accumulation from previous rounds)
+                stats_instance.feature_stats[feature_type].replace_stats_from_data(all_values)
+                logger.info(f"🔄 REPLACED pooled stats for '{feature_type}' from scratch (current window only)")
+            else:
+                # Incremental update (accumulate on top of existing stats)
+                stats_instance.feature_stats[feature_type].update_stats_incrementally(all_values)
+                logger.info(f"🔄 Updated pooled stats for '{feature_type}' (incremental)")
         else:
             # Feature exists but we're NOT allowed to update (online training freeze)
             logger.info(f"❄️  FROZE pooled stats for '{feature_type}' (online training mode)")
-        
+
         pooled_stats[feature_type] = stats_instance.feature_stats[feature_type]
-        
+
         logger.info(f"✅ Pooled stats for '{feature_type}': mean={pooled_stats[feature_type].mean[0]:.3f}, "
                    f"std={pooled_stats[feature_type].std[0]:.3f}, "
                    f"min={pooled_stats[feature_type].min[0]:.3f}, "
                    f"max={pooled_stats[feature_type].max[0]:.3f}")
-    
+
     return pooled_stats
 
 
-def _normalize_single_feature(processed_df, feature, stats_instance, update_statistics, request_id=None):
+def _normalize_single_feature(processed_df, feature, stats_instance, update_statistics, request_id=None, recompute_from_scratch=False):
     """
     Normalize a single feature using the provided statistics.
-    
+
     For pod features (e.g., "pod_0000-kv_hit_ratio"), this uses POOLED statistics
     from the base feature type (e.g., "kv_hit_ratio") to ensure all pods use
     the same normalization parameters.
-    
+
     Args:
         processed_df: DataFrame containing the feature
         feature: Feature name to normalize
         stats_instance: FeatureStats instance containing normalization statistics
         update_statistics: Whether this is training (True) or inference (False)
         request_id: Optional request ID for logging
+        recompute_from_scratch: If True, replace stats entirely from the current data
+            (use when ONLINE_TRAIN_FROM_SCRATCH=1). If False, accumulate incrementally.
     """
     log_prefix = f"request_id,{request_id}," if request_id else ""
     
@@ -663,9 +697,12 @@ def _normalize_single_feature(processed_df, feature, stats_instance, update_stat
             prev_min = processed_df[feature].values.min()
             prev_max = processed_df[feature].values.max()
             prev_mean = processed_df[feature].values.mean()
-            
+
             ##############################################
-            stats_instance.feature_stats[stats_key].update_stats_incrementally(feature_data)
+            if recompute_from_scratch:
+                stats_instance.feature_stats[stats_key].replace_stats_from_data(feature_data)
+            else:
+                stats_instance.feature_stats[stats_key].update_stats_incrementally(feature_data)
             ##############################################
             
             # Verify computed std is valid

@@ -929,13 +929,20 @@ def online_train_routine():
             # The model is being retrained on the combined (offline + online) data,
             # so the normalization statistics should reflect that combined distribution.
             # This ensures consistency between training and inference feature spaces.
+            #
+            # When ONLINE_TRAIN_FROM_SCRATCH=1: recompute stats from scratch so they
+            # reflect ONLY the current training window (no accumulation from prior rounds
+            # or the initial offline model stats).
+            # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally (model weights
+            # are carried forward, so stats should evolve gradually).
+            recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
             if pod_feature_types:
                 logger.info(f"🔄 Found {len(pod_feature_types)} pod feature types: {pod_feature_types}")
-                logger.info(f"🔄 UPDATING pooled statistics during online training")
+                logger.info(f"🔄 UPDATING pooled statistics during online training (recompute_from_scratch={recompute_stats})")
                 logger.info(f"   Reason: Model is retrained on new data - stats should reflect new distribution")
                 # Compute pooled statistics for pod features WITH updates
                 data_normalizer._compute_pooled_pod_statistics(
-                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True
+                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
                 )
             
             # VERIFICATION: Log normalization stats BEFORE normalization
@@ -980,8 +987,8 @@ def online_train_routine():
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
                     # Regular feature (request features) - update stats during training
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True)
-            
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats)
+
             # VERIFICATION: Log normalization stats AFTER normalization
             logger.info(f"VERIFICATION: Checking normalization stats after online training #{NUM_TRAINS}")
             for feature in normalizable_features:
@@ -1146,10 +1153,16 @@ def online_train_routine():
 
             # UPDATE STATISTICS: Compute pooled statistics for pod features from combined offline+online data
             # This ensures OOD detection uses the updated [min, max] range from online data
+            #
+            # When ONLINE_TRAIN_FROM_SCRATCH=1: recompute stats from scratch so they
+            # reflect ONLY the current training window (no accumulation from prior rounds
+            # or the initial offline model stats).
+            # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally.
+            recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
             if pod_feature_types:
-                logger.info(f"🔄 Updating pooled statistics for {len(pod_feature_types)} pod feature types during online training")
+                logger.info(f"🔄 Updating pooled statistics for {len(pod_feature_types)} pod feature types during online training (recompute_from_scratch={recompute_stats})")
                 data_normalizer._compute_pooled_pod_statistics(
-                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True
+                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
                 )
 
             # Normalize features using cached matching columns
@@ -1162,7 +1175,7 @@ def online_train_routine():
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
                     # Request features: update stats during training
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True)
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats)
             
             # Get sorted pod IDs
             sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
