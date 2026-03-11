@@ -36,7 +36,8 @@ def main():
     parser.add_argument('--training_seed', type=int, default=42, help='Training seed')
     parser.add_argument('--buffer_size', type=int, default=50000, help='Buffer size')
     parser.add_argument('--online_train_from_scratch', type=int, default=0, help='If 1, start online training from scratch (random weights). If 0, continue from last trained weights (default)')
-    
+    parser.add_argument('--ttft_threshold', type=float, default=None, help='TTFT threshold to filter out outlier samples (ms)')
+
     args = parser.parse_args()
 
     excluded = [x.strip() for x in args.excluded_pod_features.split(',') if x.strip()]
@@ -72,6 +73,7 @@ def main():
     RL_MODEL_HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = int(args.include_gpu_features)
     RL_MODEL_HYPERPARAMETERS['buffer_size'] = int(args.buffer_size)
     RL_MODEL_HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(int(args.online_train_from_scratch)) if args.online_train_from_scratch is not None else False
+    RL_MODEL_HYPERPARAMETERS['TTFT_THRESHOLD'] = float(args.ttft_threshold) if args.ttft_threshold is not None else None
     print(f"args.output: {args.output}")
     print(f"RL_MODEL_HYPERPARAMETERS: {RL_MODEL_HYPERPARAMETERS}")
     print("="*50)

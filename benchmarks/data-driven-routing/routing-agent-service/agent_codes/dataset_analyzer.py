@@ -1765,92 +1765,58 @@ class RLDatasetAnalyzer:
         # Sort by absolute TTFT correlation (primary) and feature name (secondary for consistency)
         feature_data.sort(key=lambda x: (-abs(x['ttft_corr']), x['name']))
         
-        # Create scatter plots (top features only for readability)
+        # Create hexbin plots (top features only for readability)
+        # Hexbin aggregates points into bins - renders fast regardless of dataset size
         n_features = min(len(feature_data), 12)  # Show top 12 features
         n_cols = 3
         n_rows_per_section = int(np.ceil(n_features / n_cols))
-        n_rows = n_rows_per_section * 2  # One section for TTFT, one for TPOT
-        
-        fig = plt.figure(figsize=(18, 5 * n_rows))
-        fig.suptitle('Feature-Latency Relationship Analysis (Scatter Plots)', 
-                    fontsize=18, fontweight='bold', y=0.995)
-        
-        # First, plot all TTFT scatter plots
-        plot_idx = 1
+        n_rows = n_rows_per_section * 2  # TTFT + TPOT sections
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 3.5 * n_rows))
+        fig.suptitle('Feature-Latency Correlations (Hexbin Density)',
+                    fontsize=16, fontweight='bold')
+        axes = np.atleast_2d(axes)
+
         for i, feat_info in enumerate(feature_data[:n_features]):
             feature_name = feat_info['name']
-            feature_values = feat_info['values']
-            
-            # Plot TTFT scatter
-            ax_ttft = plt.subplot(n_rows, n_cols, plot_idx)
-            plot_idx += 1
-            
-            scatter = ax_ttft.scatter(feature_values, ttft_values, 
-                                     alpha=0.7, s=20, c=ttft_values, 
-                                     cmap='RdYlGn_r', edgecolors='none')
-            
-            # Add regression line
+            feat_vals = feat_info['values']
+            row, col = divmod(i, n_cols)
+
+            # TTFT hexbin (top half)
+            ax_ttft = axes[row, col]
+            hb = ax_ttft.hexbin(feat_vals, ttft_values, gridsize=25, cmap='Blues', mincnt=1)
             try:
-                z = np.polyfit(feature_values, ttft_values, 1)
-                p = np.poly1d(z)
-                x_line = np.linspace(feature_values.min(), feature_values.max(), 100)
-                ax_ttft.plot(x_line, p(x_line), 'r--', alpha=0.8, linewidth=2, label='Trend')
+                z = np.polyfit(feat_vals, ttft_values, 1)
+                x_line = np.linspace(feat_vals.min(), feat_vals.max(), 50)
+                ax_ttft.plot(x_line, np.poly1d(z)(x_line), 'r-', linewidth=2, alpha=0.8)
             except:
                 pass
-            
-            # Formatting
-            ax_ttft.set_xlabel(feature_name.replace('_', ' ').title(), fontsize=13, fontweight='bold')
-            ax_ttft.set_ylabel('TTFT (ms)', fontsize=13, fontweight='bold')
-            sig_marker = '***' if feat_info['ttft_pval'] < 0.001 else '**' if feat_info['ttft_pval'] < 0.01 else '*' if feat_info['ttft_pval'] < 0.05 else ''
-            ax_ttft.set_title(f'r={feat_info["ttft_corr"]:.3f}{sig_marker}', 
-                            fontsize=11, fontweight='bold',
-                            color='darkgreen' if feat_info["ttft_corr"] > 0 else 'darkred')
+            sig = '***' if feat_info['ttft_pval'] < 0.001 else '**' if feat_info['ttft_pval'] < 0.01 else '*' if feat_info['ttft_pval'] < 0.05 else ''
+            ax_ttft.set_title(f'{feature_name}\nTTFT r={feat_info["ttft_corr"]:.3f}{sig}', fontsize=10)
+            ax_ttft.set_ylabel('TTFT (ms)')
             ax_ttft.grid(True, alpha=0.3)
-        
-        # Add section separator text
-        if n_features > 0:
-            fig.text(0.5, 0.5, 'TTFT Correlations ↑     |     Avg TPOT Correlations ↓', 
-                    ha='center', va='center', fontsize=14, fontweight='bold',
-                    bbox=dict(boxstyle='round,pad=0.8', facecolor='lightgray', alpha=0.8))
-        
-        # Then, plot all TPOT scatter plots
-        plot_idx = n_rows_per_section * n_cols + 1
-        for i, feat_info in enumerate(feature_data[:n_features]):
-            feature_name = feat_info['name']
-            feature_values = feat_info['values']
-            
-            # Plot TPOT scatter
-            ax_tpot = plt.subplot(n_rows, n_cols, plot_idx)
-            plot_idx += 1
-            
-            scatter = ax_tpot.scatter(feature_values, tpot_values,
-                                     alpha=0.7, s=20, c=tpot_values,
-                                     cmap='RdYlBu_r', edgecolors='none')
-            
-            # Add regression line
+
+            # TPOT hexbin (bottom half)
+            ax_tpot = axes[n_rows_per_section + row, col]
+            hb = ax_tpot.hexbin(feat_vals, tpot_values, gridsize=25, cmap='Oranges', mincnt=1)
             try:
-                z = np.polyfit(feature_values, tpot_values, 1)
-                p = np.poly1d(z)
-                x_line = np.linspace(feature_values.min(), feature_values.max(), 100)
-                ax_tpot.plot(x_line, p(x_line), 'b--', alpha=0.8, linewidth=2, label='Trend')
+                z = np.polyfit(feat_vals, tpot_values, 1)
+                x_line = np.linspace(feat_vals.min(), feat_vals.max(), 50)
+                ax_tpot.plot(x_line, np.poly1d(z)(x_line), 'b-', linewidth=2, alpha=0.8)
             except:
                 pass
-            
-            # Formatting
-            ax_tpot.set_xlabel(feature_name.replace('_', ' ').title(), fontsize=13, fontweight='bold')
-            ax_tpot.set_ylabel('Avg TPOT (ms)', fontsize=13, fontweight='bold')
-            sig_marker = '***' if feat_info['tpot_pval'] < 0.001 else '**' if feat_info['tpot_pval'] < 0.01 else '*' if feat_info['tpot_pval'] < 0.05 else ''
-            ax_tpot.set_title(f'r={feat_info["tpot_corr"]:.3f}{sig_marker}', 
-                            fontsize=11, fontweight='bold',
-                            color='darkblue' if feat_info["tpot_corr"] > 0 else 'darkred')
+            sig = '***' if feat_info['tpot_pval'] < 0.001 else '**' if feat_info['tpot_pval'] < 0.01 else '*' if feat_info['tpot_pval'] < 0.05 else ''
+            ax_tpot.set_title(f'{feature_name}\nTPOT r={feat_info["tpot_corr"]:.3f}{sig}', fontsize=10)
+            ax_tpot.set_ylabel('Avg TPOT (ms)')
             ax_tpot.grid(True, alpha=0.3)
-        
-        # Add legend
-        legend_text = 'Significance: *** p<0.001, ** p<0.01, * p<0.05 | r = Pearson correlation'
-        fig.text(0.5, 0.005, legend_text, ha='center', fontsize=11, style='italic',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='lightyellow', alpha=0.8))
-        
-        plt.tight_layout(rect=[0, 0.015, 1, 0.99])
+
+        # Hide unused subplots
+        for i in range(n_features, n_cols * n_rows_per_section):
+            row, col = divmod(i, n_cols)
+            axes[row, col].axis('off')
+            axes[n_rows_per_section + row, col].axis('off')
+
+        plt.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
         
@@ -1911,7 +1877,7 @@ class RLDatasetAnalyzer:
     
     def _plot_correlation_heatmap(self, pdf, rewards):
         """Plot state-performance correlation heatmap."""
-        fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         fig.suptitle('State-Performance Correlation Analysis', fontsize=16, fontweight='bold')
         
         # Calculate correlations using dynamic feature extraction
