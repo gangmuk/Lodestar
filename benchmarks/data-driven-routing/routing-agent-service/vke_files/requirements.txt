@@ -1,7 +1,8 @@
 aiohttp
 openai
-transformers
 kubernetes
 tqdm
 httpx
 uvloop
+tiktoken
+numpy
