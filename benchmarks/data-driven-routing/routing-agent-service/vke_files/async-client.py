@@ -27,7 +27,17 @@ try:
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
     plt = None
-from transformers import AutoTokenizer
+import tiktoken
+
+_tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
+
+# Token counting mode: "tiktoken" (exact) or "char" (fast, 1 token ≈ 4 chars).
+# Set from argparse via set_token_counting_mode().
+_token_counting_mode = "tiktoken"
+
+def set_token_counting_mode(mode: str):
+    global _token_counting_mode
+    _token_counting_mode = mode
 
 def static_hash(input_str: str) -> str:
     """Generate a 64-character unique hash for the given input"""
@@ -66,76 +76,46 @@ def sample_input_tokens(mean: int, std: float) -> int:
 def estimate_tokens_from_text(text: str, use_word_count: bool = True) -> int:
     """
     Estimate the number of tokens in a text string.
-
-    Args:
-        text: The text to estimate tokens for
-        use_word_count: If True, use word count approximation (fast). If False, use actual tokenizer (accurate but slower)
-
-    Returns:
-        Estimated number of tokens
+    Mode is controlled by --token_counting_mode (module-level _token_counting_mode).
+      - "tiktoken": exact count via tiktoken encoder
+      - "char": fast approximation, 1 token ≈ 4 characters
+      - "word": fast approximation, 1 word ≈ 1.33 tokens
     """
-    if use_word_count:
-        # Approximation: 1 token ≈ 0.75 words, so 1 word ≈ 1.33 tokens
-        word_count = len(text.split())
-        return int(word_count * 1.33)
-    else:
-        # Use actual tokenizer (requires model name to be set)
-        # This is more accurate but slower
-        try:
-            from transformers import AutoTokenizer
-            # You might need to specify the correct model/tokenizer
-            tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Default fallback
-            return len(tokenizer.encode(text))
-        except:
-            # Fallback to word count if tokenizer fails
-            word_count = len(text.split())
-            return int(word_count * 1.33)
+    if _token_counting_mode == "tiktoken":
+        return len(_tiktoken_encoder.encode(text))
+    elif _token_counting_mode == "char":
+        return len(text) // 4
+    else:  # word
+        return int(len(text.split()) * 1.33)
 
 def truncate_text_to_tokens(text: str, max_tokens: int, use_word_count: bool = True) -> str:
     """
     Truncate text to fit within a maximum token limit.
-
-    Args:
-        text: The text to truncate
-        max_tokens: Maximum number of tokens allowed
-        use_word_count: If True, use word count approximation
-
-    Returns:
-        Truncated text that should fit within max_tokens
+    Mode is controlled by --token_counting_mode (module-level _token_counting_mode).
+      - "tiktoken": encode, slice, decode (exact)
+      - "char": keep max_tokens * 4 characters (fast approximation)
+      - "word": keep max_tokens / 1.33 words (fast approximation)
     """
-    if use_word_count:
-        # Simple word-based truncation
-        # Since 1 token ≈ 0.75 words, we can keep roughly max_tokens / 1.33 words
+    if _token_counting_mode == "tiktoken":
+        tokens = _tiktoken_encoder.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return _tiktoken_encoder.decode(tokens[:max_tokens])
+    elif _token_counting_mode == "char":
+        max_chars = max_tokens * 4
+        if len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        last_space = truncated.rfind(' ')
+        if last_space > 0:
+            truncated = truncated[:last_space]
+        return truncated
+    else:  # word
         max_words = int(max_tokens / 1.33)
         words = text.split()
         if len(words) <= max_words:
             return text
         return ' '.join(words[:max_words])
-    else:
-        # Use actual tokenizer for precise truncation
-        try:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
-            # Encode the text
-            tokens = tokenizer.encode(text)
-
-            # If already within limit, return as-is
-            if len(tokens) <= max_tokens:
-                return text
-
-            # Truncate tokens and decode back to text
-            truncated_tokens = tokens[:max_tokens]
-            truncated_text = tokenizer.decode(truncated_tokens)
-
-            return truncated_text
-        except:
-            # Fallback to word-based truncation
-            max_words = int(max_tokens / 1.33)
-            words = text.split()
-            if len(words) <= max_words:
-                return text
-            return ' '.join(words[:max_words])
 
 def expand_text_to_tokens(text: str, target_tokens: int) -> str:
     """
@@ -2369,7 +2349,7 @@ def create_blended_schedule(all_iteration_requests: List[List[Dict]], rps: float
 async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strategy,
                        load_struct, output_file, model, max_tokens,
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
-                       shuffle_requests=False, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
+                       shuffle_requests=0, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
                        input_token_length_scaling=1.0, output_token_length_scaling=1.0,
                        workload_path=None, iteration_overlap_ratio=0.0):
     """Main benchmark function that runs all requests asynchronously.
@@ -2505,12 +2485,12 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     raise ValueError("Profiling mode requires --rps (used as the maximum target RPS).")
                 if shuffle_requests:
                     logger.warning("Profiling mode ignores --shuffle_requests to preserve load pattern ordering.")
-                    shuffle_requests = False
+                    shuffle_requests = 0
                 if poisson_arrivals:
                     logger.warning("Profiling mode ignores --poisson_arrivals; profiling schedule already includes variability.")
                     poisson_arrivals = False
 
-            if shuffle_requests:
+            if shuffle_requests > 0:
                 logger.info(f"Request shuffling enabled for iteration {iteration+1}")
 
             if max_input_tokens:
@@ -2962,10 +2942,12 @@ if __name__ == "__main__":
     parser.add_argument("--iterations", type=int, default=1, help="Number of times to iterate through the workload trace.")
     parser.add_argument("--prompt_type", type=str, default="chat", choices=["chat", "token-ids"],
                        help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
+    parser.add_argument("--token_counting_mode", type=str, default="tiktoken", choices=["tiktoken", "char", "word"],
+                       help="Token counting method for input truncation: 'tiktoken' (cl100k_base), 'char' (fast, 1 token ≈ 4 chars), or 'word' (fast, 1 word ≈ 1.33 tokens)")
     parser.add_argument("--rps", type=float, default=None, 
                        help="Requests per second (RPS). If specified, requests are sent at this rate instead of using workload timestamps.")
-    parser.add_argument("--shuffle_requests", action="store_true",
-                       help="Shuffle the order of requests for each iteration (makes iterations non-identical)")
+    parser.add_argument("--shuffle_requests", type=int, default=0,
+                       help="Shuffle the order of requests for each iteration (makes iterations non-identical). 0: no shuffle, 1: shuffle")
     parser.add_argument("--poisson_arrivals", action="store_true",
                        help="Use Poisson process (exponential inter-arrival times) instead of fixed intervals. Only works with --rps.")
     parser.add_argument(
@@ -2994,7 +2976,16 @@ if __name__ == "__main__":
                             "E.g., 0.1 means start at 10%% of target RPS. Default: 0.1")
 
     args = parser.parse_args()
-    
+
+    # Set token counting mode from args
+    set_token_counting_mode(args.token_counting_mode)
+    logger.info(f"Token counting mode: {args.token_counting_mode}")
+
+    # Treat --rps -1 (or any negative value) as "use workload timestamps"
+    if args.rps is not None and args.rps < 0:
+        logger.info(f"--rps={args.rps} interpreted as 'use workload timestamps'. Setting rps=None.")
+        args.rps = None
+
     # Validation: profiling-style workload mode requires --rps
     if args.workload_mode == "profiling" and not args.rps:
         raise ValueError("workload_mode='profiling' requires --rps to define the maximum RPS for load patterns.")

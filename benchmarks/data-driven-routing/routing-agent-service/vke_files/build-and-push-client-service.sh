@@ -11,6 +11,8 @@ if [ -z "$build" ]; then
   exit 1
 fi
 
+HF_TOKEN=""
+
 # docker buildx build --platform ${platform} --no-cache -t aibrix/gangmuk-client:${tag} .
 
 if [ "$build" == "vke" ]; then
@@ -35,7 +37,7 @@ else
     echo "Building client image for local K8s (${build})..."
     # Build from parent directory to include workload files
     # you don't need to use platform and buildx since sudo docker will build based on the current machine type automatically.
-    cd .. && sudo docker build -f vke_files/Dockerfile -t aibrix/gangmuk-client:${tag} .
+    cd .. && sudo docker build --build-arg HF_TOKEN=${HF_TOKEN} -f vke_files/Dockerfile -t aibrix/gangmuk-client:${tag} .
     sudo docker tag aibrix/gangmuk-client:${tag} gangmuk/gangmuk-client:${tag}
     sudo docker push gangmuk/gangmuk-client:${tag} # push to dockerhub
     echo "✓ Image pushed to DockerHub"
