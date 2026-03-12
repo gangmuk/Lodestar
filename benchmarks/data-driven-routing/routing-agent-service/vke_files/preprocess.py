@@ -32,7 +32,7 @@ def parse_log_file(file_path):
                 assert False
             if "**@" in line:
                 line = line.split("**@latency_metrics@")[1]
-            parts = line.split('@')
+            parts = [p for p in line.split('@') if p != '']
             row = {}
             json_columns = list()
             column_names = list()
