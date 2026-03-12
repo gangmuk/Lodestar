@@ -390,7 +390,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         total_decode_time = (completion_time - first_token_time)*1000 if first_response_time else 0
         avg_tpot = total_decode_time / output_tokens if output_tokens > 0 else 0
         
-        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration+1}/{total_num_episodes}]: request_send_time: {actual_start_time - BASE_TIME:.2f}, Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
+        logger.info(f"[Req {request_id}/{total_num_requests}({local_request_id}/{total_num_requests_per_iter}), iter {iteration}/{total_num_episodes}]: request_send_time: {actual_start_time - BASE_TIME:.2f}, Input: {prompt_tokens}, Output: {output_tokens}, TTFT: {ttft:.0f}ms, Avg_tpot: {avg_tpot:.0f}ms, E2E: {float(result['client_side_e2e_latency_in_ms']):.0f}ms, Variance: {(actual_start_time - scheduled_time)*1000:.2f}ms")
         
         # # Log scheduling information
         # if scheduled_time:
@@ -2122,7 +2122,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
     # Shuffle requests if enabled (skip first iteration to preserve original order)
     if shuffle_requests_between_iterations and iteration > 0:
         random.shuffle(temp_requests)
-        logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+        logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration}")
 
     return temp_requests
 
@@ -2391,7 +2391,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
         # Prepare all iterations' requests upfront
         all_iteration_requests = []
         for iteration in range(iterations):
-            logger.info(f"Preparing iteration {iteration+1}/{iterations} requests...")
+            logger.info(f"Preparing iteration {iteration}/{iterations} requests...")
             iter_requests = await prepare_iteration_requests(
                 load_struct=load_struct,
                 iteration=iteration,
@@ -2406,7 +2406,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 override_workload_output_length=args.override_workload_output_length,
             )
             all_iteration_requests.append(iter_requests)
-            logger.info(f"Prepared {len(iter_requests)} requests for iteration {iteration+1}")
+            logger.info(f"Prepared {len(iter_requests)} requests for iteration {iteration}")
 
         # Create blended schedule with overlapping target times
         base_time = time.time()
@@ -2463,7 +2463,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
 
         # For each iteration
         for iteration in range(iterations):
-            logger.info(f"Starting iteration {iteration+1}/{iterations}")
+            logger.info(f"Starting iteration {iteration}/{iterations}")
 
             # Prepare tasks for this iteration only
             iteration_tasks = []
@@ -2491,10 +2491,10 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     poisson_arrivals = False
 
             if shuffle_requests_between_iterations > 0:
-                logger.info(f"Request shuffling enabled for iteration {iteration+1}")
+                logger.info(f"Request shuffling enabled for iteration {iteration}")
 
             if max_input_tokens:
-                logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration+1}")
+                logger.info(f"Truncating requests with max_input_tokens={max_input_tokens} for iteration {iteration}")
 
             if input_tokens_std > 0:
                 logger.info(f"Sampling input tokens from Normal distribution with std={input_tokens_std} (mean from workload)")
@@ -2640,7 +2640,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                             if len(token_ids) > max_input_tokens:
                                 original_length = len(token_ids)
                                 token_ids = token_ids[:max_input_tokens]
-                                logger.info(f"[Iteration {iteration+1}] Truncated token-ids from {original_length} to {len(token_ids)} tokens")
+                                logger.info(f"[Iteration {iteration}] Truncated token-ids from {original_length} to {len(token_ids)} tokens")
                                 prompt = f"token_ids:{len(token_ids)}"  # Update placeholder
                         else:
                             # For chat mode, estimate and truncate text
@@ -2650,7 +2650,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                             if estimated_tokens > max_input_tokens:
                                 # Truncate the text to fit within token limit
                                 truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
-                                logger.info(f"[Iteration {iteration+1}] Truncated prompt from ~{estimated_tokens} to ~{max_input_tokens} tokens")
+                                logger.info(f"[Iteration {iteration}] Truncated prompt from ~{estimated_tokens} to ~{max_input_tokens} tokens")
 
                                 # Update the prompt with truncated text
                                 if isinstance(request["prompt"], str):
@@ -2698,7 +2698,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             # Shuffle requests if enabled (skip first iteration to preserve original order)
             if shuffle_requests_between_iterations and iteration > 0:
                 random.shuffle(temp_requests)
-                logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration+1}")
+                logger.info(f"Shuffled {len(temp_requests)} requests for iteration {iteration}")
 
             # Calculate metrics for logging
             total_num_requests_per_iter = len(temp_requests)
@@ -2737,7 +2737,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     start_fraction=args.iteration_ramp_start_fraction,
                     poisson_arrivals=poisson_arrivals,
                 )
-                logger.info(f"Iteration {iteration+1}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS, poisson={poisson_arrivals})")
+                logger.info(f"Iteration {iteration}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS, poisson={poisson_arrivals})")
 
             # Now assign target times and create final tasks
             cumulative_time = 0.0  # For Poisson arrivals
@@ -2777,8 +2777,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 iteration_tasks.append(task)
                 request_id += 1
 
-            logger.info(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
-            print(f"Iteration {iteration+1}: Scheduling {len(iteration_tasks)} tasks for execution")
+            logger.info(f"Iteration {iteration}: Scheduling {len(iteration_tasks)} tasks for execution")
+            print(f"Iteration {iteration}: Scheduling {len(iteration_tasks)} tasks for execution")
 
             # In profiling mode, also persist the generated profiling schedule as a workload-style JSONL
             if profiling_mode and profiling_dump_path:
@@ -2818,8 +2818,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
             error_count = len(iteration_tasks) - success_count
 
-            logger.info(f"Iteration {iteration+1} completed in {end_time - start_time:.2f} seconds")
-            logger.info(f"Iteration {iteration+1} results: {success_count} successful, {error_count} failed")
+            logger.info(f"Iteration {iteration} completed in {end_time - start_time:.2f} seconds")
+            logger.info(f"Iteration {iteration} results: {success_count} successful, {error_count} failed")
 
             # Update totals
             total_requests += len(iteration_tasks)
