@@ -17,7 +17,6 @@ import os
 # import sac
 # import ppo
 # import contextual_bandit
-import simpler_contextual_bandit
 import latency_predictor
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -38,9 +37,9 @@ from logger import logger
 import queue
 from collections import deque
 from rwlock import RWLock
-import neural_contextual_bandit_perpodmodel_advanced
+# import neural_contextual_bandit_perpodmodel_advanced
 import neural_contextual_bandit_perpodmodel_checkpoint
-import neural_contextual_bandit_perpodmodel_policygradient
+# import neural_contextual_bandit_perpodmodel_policygradient
 import distribution_shift_detector
 from distribution_shift_detector import PerSampleOODDetector, OODAction
 
@@ -94,6 +93,14 @@ TRAINING_DF_LOCK = threading.Lock()  # Thread safety for concurrent flush/train
 OFFLINE_DATA_SIZE = 0  # Tracks offline data size (shrinks as we remove overflow)
 ONLINE_SEQ = 0  # Monotonic sequence for online data ordering when timestamps missing
 PRINT_ONCE_AT_THE_FIRST_REQUEST = True
+
+# Replay buffer configuration
+FIFO_SIZE = int(os.getenv("FIFO_SIZE", "0"))  # 0 = use MAX_TOTAL_DATA (backward compat)
+REPLAY_SIZE = int(os.getenv("REPLAY_SIZE", "0"))  # 0 = no replay buffer
+REPLAY_BUFFER_DIR = os.getenv("REPLAY_BUFFER_DIR", "replay_buffer_state")
+OLD_TRANSFER_SAMPLES_PER_WINDOW = int(os.getenv("OLD_TRANSFER_SAMPLES_PER_WINDOW", "100"))
+REPLAY_BUFFER = None          # GradientReplayBuffer instance
+OLD_TRANSFER_MONITOR = None   # OldTransferMonitor instance
 # RL agent globals
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
 SCALABLE_RL_AGENT = None  # New scalable RL agent (pod-independent) - for 'scalable_rl_agent' subAlgorithm
@@ -812,8 +819,68 @@ def handle_infer():
         return jsonify({"error": str(e), "traceback": error_traceback}), 500
 
 
+def _split_new_and_historical(online_df, offline_df, current_round):
+    """Split online data into new batch (current round) and historical."""
+    if '_collection_round' in online_df.columns and len(online_df) > 0:
+        new_mask = online_df['_collection_round'] >= current_round
+        new_batch = online_df[new_mask]
+        historical_online = online_df[~new_mask]
+    else:
+        new_batch = online_df
+        historical_online = pd.DataFrame()
+    historical = pd.concat([offline_df, historical_online], ignore_index=True)
+    return new_batch, historical
+
+
+def _select_fifo(historical_df, fifo_size):
+    """Select most recent fifo_size samples from historical data."""
+    if fifo_size <= 0 or len(historical_df) == 0:
+        return pd.DataFrame()
+    sort_col = next((c for c in ['_online_seq', 'request_start_time', 'request_end_time']
+                     if c in historical_df.columns), None)
+    if sort_col:
+        sorted_df = historical_df.sort_values(sort_col, na_position='first')
+    else:
+        sorted_df = historical_df
+    return sorted_df.tail(min(fifo_size, len(sorted_df)))
+
+
+def _select_replay(replay_buffer):
+    """Return replay buffer's stored rows (computed in previous round)."""
+    if replay_buffer is None:
+        return pd.DataFrame()
+    data = replay_buffer.get_selected_data()
+    if data is None or len(data) == 0:
+        return pd.DataFrame()
+    return data
+
+
+def _evict_global_data(offline_df_copy, online_df_copy, max_keep):
+    """Evict from global storage to prevent unbounded growth, keeping max_keep samples."""
+    global OFFLINE_DF, ONLINE_DF, OFFLINE_DATA_SIZE
+    total = len(offline_df_copy) + len(online_df_copy)
+    if total <= max_keep:
+        return
+    overflow = total - max_keep
+    offline_remove = min(overflow, len(offline_df_copy))
+    if offline_remove > 0:
+        offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
+        overflow -= offline_remove
+    if overflow > 0 and len(online_df_copy) > 0:
+        sort_col = next((c for c in ['_online_seq', 'request_start_time', 'request_end_time']
+                         if c in online_df_copy.columns), None)
+        if sort_col:
+            online_df_copy = online_df_copy.sort_values(sort_col)
+        online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
+    with TRAINING_DF_LOCK:
+        OFFLINE_DF = offline_df_copy.copy()
+        ONLINE_DF = online_df_copy.copy()
+        OFFLINE_DATA_SIZE = len(OFFLINE_DF)
+        logger.info(f"Evicted global data: offline={len(OFFLINE_DF)}, online={len(ONLINE_DF)}")
+
+
 def online_train_routine():
-    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, OFFLINE_DF, ONLINE_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file
+    global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, OFFLINE_DF, ONLINE_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file, REPLAY_BUFFER, OLD_TRANSFER_MONITOR
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -844,40 +911,53 @@ def online_train_routine():
             # logger.info(f"Training on (offline data: {ENCODED_DATA_DIR}, online data: {ENCODED_DATA_DIR}, total data: {total_samples}")
             logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {len(online_df_copy)})")
 
-            # Remove overflow from offline data first, then oldest online data
-            if total_samples > MAX_TOTAL_DATA:
-                overflow = total_samples - MAX_TOTAL_DATA
-                
-                # Remove from offline portion first (treat offline as oldest)
-                offline_remove = min(overflow, current_offline_size)
-                if offline_remove > 0:
-                    offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
-                    overflow -= offline_remove
-                    logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). Removed {offline_remove} oldest offline samples")
-                
-                # If still overflow, remove oldest online samples by time/sequence
-                if overflow > 0 and len(online_df_copy) > 0:
-                    if 'request_start_time' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('request_start_time')
-                    elif 'request_end_time' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('request_end_time')
-                    elif '_online_seq' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('_online_seq')
-                    online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
-                    logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
-                
-                # Update the global OFFLINE_DF and ONLINE_DF after trimming
-                with TRAINING_DF_LOCK:
-                    OFFLINE_DF = offline_df_copy.copy()
-                    ONLINE_DF = online_df_copy.copy()
-                    OFFLINE_DATA_SIZE = len(OFFLINE_DF)
-                    logger.info(f"✅ Updated datasets: offline={len(OFFLINE_DF)}, online={len(ONLINE_DF)}")
-                
-                # Update total_samples for the rest of the function
-                total_samples = len(offline_df_copy) + len(online_df_copy)
+            if FIFO_SIZE > 0 or REPLAY_SIZE > 0:
+                # === TWO-POOL SELECTION (latency_predictor: FIFO only, replay not supported) ===
+                if REPLAY_SIZE > 0:
+                    logger.warning("REPLAY_SIZE > 0 with latency_predictor model: replay requires contextual_bandit, using FIFO only")
+                new_batch_df, historical_df = _split_new_and_historical(online_df_copy, offline_df_copy, NUM_TRAINS)
+                fifo_df = _select_fifo(historical_df, FIFO_SIZE)
+                training_df_copy = pd.concat([new_batch_df, fifo_df], ignore_index=True)
+                if 'request_id' in training_df_copy.columns:
+                    training_df_copy = training_df_copy.drop_duplicates(subset=['request_id'])
+                _evict_global_data(offline_df_copy, online_df_copy, FIFO_SIZE + REPLAY_SIZE)
+                total_samples = len(training_df_copy)
+                logger.info(f"Two-pool selection (latency_predictor): new_batch={len(new_batch_df)}, fifo={len(fifo_df)}, total={total_samples}")
+            else:
+                # === ORIGINAL FIFO LOGIC (backward compat) ===
+                if total_samples > MAX_TOTAL_DATA:
+                    overflow = total_samples - MAX_TOTAL_DATA
 
-            # Combine offline + online for training and shuffle only for training
-            training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
+                    # Remove from offline portion first (treat offline as oldest)
+                    offline_remove = min(overflow, current_offline_size)
+                    if offline_remove > 0:
+                        offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
+                        overflow -= offline_remove
+                        logger.info(f"⚠️  Total data ({total_samples}) exceeds limit ({MAX_TOTAL_DATA}). Removed {offline_remove} oldest offline samples")
+
+                    # If still overflow, remove oldest online samples by time/sequence
+                    if overflow > 0 and len(online_df_copy) > 0:
+                        if 'request_start_time' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('request_start_time')
+                        elif 'request_end_time' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('request_end_time')
+                        elif '_online_seq' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('_online_seq')
+                        online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
+                        logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
+
+                    # Update the global OFFLINE_DF and ONLINE_DF after trimming
+                    with TRAINING_DF_LOCK:
+                        OFFLINE_DF = offline_df_copy.copy()
+                        ONLINE_DF = online_df_copy.copy()
+                        OFFLINE_DATA_SIZE = len(OFFLINE_DF)
+                        logger.info(f"✅ Updated datasets: offline={len(OFFLINE_DF)}, online={len(ONLINE_DF)}")
+
+                    # Update total_samples for the rest of the function
+                    total_samples = len(offline_df_copy) + len(online_df_copy)
+
+                # Combine offline + online for training and shuffle only for training
+                training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
             if len(training_df_copy) == 0:
                 logger.error("Combined training dataset is empty after trimming")
                 TRAINING_RIGHT_NOW = False
@@ -1077,34 +1157,94 @@ def online_train_routine():
                 current_offline_size = len(offline_df_copy)
             
             logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {len(online_df_copy)})")
-            
-            # Remove overflow if needed (same logic as latency predictor)
-            if total_samples > MAX_TOTAL_DATA:
-                overflow = total_samples - MAX_TOTAL_DATA
-                offline_remove = min(overflow, current_offline_size)
-                if offline_remove > 0:
-                    offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
-                    overflow -= offline_remove
-                    logger.info(f"⚠️  Removed {offline_remove} oldest offline samples")
-                if overflow > 0 and len(online_df_copy) > 0:
-                    if 'request_start_time' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('request_start_time')
-                    elif 'request_end_time' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('request_end_time')
-                    elif '_online_seq' in online_df_copy.columns:
-                        online_df_copy = online_df_copy.sort_values('_online_seq')
-                    online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
-                    logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
-                
-                with TRAINING_DF_LOCK:
-                    OFFLINE_DF = offline_df_copy.copy()
-                    ONLINE_DF = online_df_copy.copy()
-                    OFFLINE_DATA_SIZE = len(OFFLINE_DF)
-                
-                total_samples = len(offline_df_copy) + len(online_df_copy)
 
-            # Combine offline + online for training and shuffle only for training
-            training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
+            if FIFO_SIZE > 0 or REPLAY_SIZE > 0:
+                # === TWO-POOL SELECTION ===
+                new_batch_df, historical_df = _split_new_and_historical(online_df_copy, offline_df_copy, NUM_TRAINS)
+                fifo_df = _select_fifo(historical_df, FIFO_SIZE)
+                replay_df = _select_replay(REPLAY_BUFFER)
+                training_df_copy = pd.concat([new_batch_df, fifo_df, replay_df], ignore_index=True)
+                if 'request_id' in training_df_copy.columns:
+                    training_df_copy = training_df_copy.drop_duplicates(subset=['request_id'])
+                _evict_global_data(offline_df_copy, online_df_copy, FIFO_SIZE + REPLAY_SIZE)
+                total_samples = len(training_df_copy)
+                logger.info(f"Two-pool selection (contextual_bandit): new_batch={len(new_batch_df)}, fifo={len(fifo_df)}, replay={len(replay_df)}, total={total_samples}")
+
+                # === TRAINING_DIAG: Data composition diagnostics for post-mortem analysis ===
+                new_pct = 100.0 * len(new_batch_df) / max(total_samples, 1)
+                fifo_pct = 100.0 * len(fifo_df) / max(total_samples, 1)
+                replay_pct = 100.0 * len(replay_df) / max(total_samples, 1)
+                logger.info(f"TRAINING_DIAG data_composition: new_batch={len(new_batch_df)}({new_pct:.1f}%), "
+                            f"fifo={len(fifo_df)}({fifo_pct:.1f}%), replay={len(replay_df)}({replay_pct:.1f}%), "
+                            f"total={total_samples}, round={NUM_TRAINS}")
+
+                # kv_hit_ratio comparison across pools
+                _kv_cols = [c for c in training_df_copy.columns if 'kv_hit_ratio' in c]
+                if _kv_cols:
+                    for _pool_name, _pool_df in [('new_batch', new_batch_df), ('fifo', fifo_df), ('replay', replay_df), ('combined', training_df_copy)]:
+                        if len(_pool_df) > 0 and all(c in _pool_df.columns for c in _kv_cols):
+                            _max_kv = _pool_df[_kv_cols].max(axis=1)
+                            _mean_kv = _pool_df[_kv_cols].values.mean()
+                            _high_kv_frac = (_max_kv > 50).mean()
+                            logger.info(f"TRAINING_DIAG kv_hit_ratio({_pool_name}): mean_all_pods={_mean_kv:.2f}, "
+                                        f"max_kv_per_req(mean={_max_kv.mean():.2f}, p50={_max_kv.median():.2f}), "
+                                        f"high_prefix_frac(max>50%)={_high_kv_frac:.3f}, n={len(_pool_df)}")
+
+                # Temporal composition of each pool
+                for _pool_name, _pool_df in [('fifo', fifo_df), ('replay', replay_df)]:
+                    if len(_pool_df) > 0 and '_collection_round' in _pool_df.columns:
+                        _rounds = _pool_df['_collection_round']
+                        _offline_n = int(_rounds.isna().sum())
+                        _parts = []
+                        if _offline_n > 0:
+                            _parts.append(f"offline={_offline_n}")
+                        for _rnd in sorted(_rounds.dropna().unique()):
+                            _parts.append(f"r{int(_rnd)}={int((_rounds == _rnd).sum())}")
+                        logger.info(f"TRAINING_DIAG temporal({_pool_name}): {', '.join(_parts)}")
+
+                # TTFT comparison across pools
+                if 'ttft' in training_df_copy.columns:
+                    for _pool_name, _pool_df in [('new_batch', new_batch_df), ('fifo', fifo_df), ('replay', replay_df)]:
+                        if len(_pool_df) > 0 and 'ttft' in _pool_df.columns:
+                            _ttft = _pool_df['ttft'].values
+                            logger.info(f"TRAINING_DIAG ttft({_pool_name}): mean={np.nanmean(_ttft):.1f}, "
+                                        f"p50={np.nanmedian(_ttft):.1f}, p90={np.nanpercentile(_ttft, 90):.1f}, n={len(_pool_df)}")
+
+                # Pod distribution in each pool
+                if 'selected_pod' in training_df_copy.columns:
+                    for _pool_name, _pool_df in [('new_batch', new_batch_df), ('fifo', fifo_df), ('replay', replay_df)]:
+                        if len(_pool_df) > 0 and 'selected_pod' in _pool_df.columns:
+                            _pods = _pool_df['selected_pod'].value_counts().sort_index()
+                            _pod_str = ', '.join(f"{p}={c}" for p, c in _pods.items())
+                            logger.info(f"TRAINING_DIAG pod_dist({_pool_name}): {_pod_str}")
+            else:
+                # === ORIGINAL FIFO LOGIC (backward compat) ===
+                if total_samples > MAX_TOTAL_DATA:
+                    overflow = total_samples - MAX_TOTAL_DATA
+                    offline_remove = min(overflow, current_offline_size)
+                    if offline_remove > 0:
+                        offline_df_copy = offline_df_copy.iloc[offline_remove:].reset_index(drop=True)
+                        overflow -= offline_remove
+                        logger.info(f"⚠️  Removed {offline_remove} oldest offline samples")
+                    if overflow > 0 and len(online_df_copy) > 0:
+                        if 'request_start_time' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('request_start_time')
+                        elif 'request_end_time' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('request_end_time')
+                        elif '_online_seq' in online_df_copy.columns:
+                            online_df_copy = online_df_copy.sort_values('_online_seq')
+                        online_df_copy = online_df_copy.iloc[overflow:].reset_index(drop=True)
+                        logger.info(f"⚠️  Removed {overflow} oldest online samples after offline trimming")
+
+                    with TRAINING_DF_LOCK:
+                        OFFLINE_DF = offline_df_copy.copy()
+                        ONLINE_DF = online_df_copy.copy()
+                        OFFLINE_DATA_SIZE = len(OFFLINE_DF)
+
+                    total_samples = len(offline_df_copy) + len(online_df_copy)
+
+                # Combine offline + online for training and shuffle only for training
+                training_df_copy = pd.concat([offline_df_copy, online_df_copy], ignore_index=True)
             if len(training_df_copy) == 0:
                 logger.error("Combined training dataset is empty after trimming")
                 TRAINING_RIGHT_NOW = False
@@ -1147,6 +1287,14 @@ def online_train_routine():
                 logger.warning(f"Filling {total_missing_numeric} missing numeric values with 0")
                 training_df_copy[numeric_columns] = training_df_copy[numeric_columns].fillna(0)
             
+            # Save pre-normalization copy for replay buffer (replay rows must be stored
+            # UN-normalized so they get fresh normalization each round; storing normalized
+            # rows would cause double-normalization in the next round)
+            if REPLAY_SIZE > 0:
+                training_df_pre_norm = training_df_copy.copy()
+            else:
+                training_df_pre_norm = None
+
             # Normalize the entire dataset (reuse same logic)
             normalizable_features, non_normalizable_features, pod_feature_types = data_normalizer._get_normalizable_features(
                 training_df_copy, HYPERPARAMETERS.get('NO_NORMALIZE_FEATURES', []))
@@ -1176,7 +1324,7 @@ def online_train_routine():
                 else:
                     # Request features: update stats during training
                     data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats)
-            
+
             # Get sorted pod IDs
             sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
             logger.info(f"Training with pods: {sorted_all_pod_ids}")
@@ -1188,6 +1336,24 @@ def online_train_routine():
             encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, HYPERPARAMETERS)
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
             
+            # --- Compute replay buffer for NEXT round using current (previous) model ---
+            if REPLAY_SIZE > 0 and NUM_TRAINS > 0:
+                try:
+                    import replay_buffer as rb
+                    prev_agent = neural_contextual_bandit_perpodmodel_checkpoint._cached_agent
+                    if prev_agent is not None:
+                        tensor_path = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
+                        if os.path.exists(tensor_path):
+                            import torch as _torch
+                            tensor_data = _torch.load(tensor_path)
+                            REPLAY_BUFFER.update(prev_agent, tensor_data, training_df_pre_norm)
+                            REPLAY_BUFFER.save(REPLAY_BUFFER_DIR)
+                            logger.info(f"Replay buffer updated: {len(REPLAY_BUFFER.selected_data)} samples")
+                except Exception as e:
+                    logger.warning(f"Replay buffer update failed: {e}")
+                    import traceback
+                    logger.warning(traceback.format_exc())
+
             # Train Neural Contextual Bandit
             train_start_time = time.time()
             if 'perpodmodel_advanced' in ROUTING_STRATEGY:
@@ -1215,6 +1381,24 @@ def online_train_routine():
                 logger.error(f"Unknown contextual bandit ROUTING_STRATEGY: {ROUTING_STRATEGY}, skipping online training")
                 return
             logger.info(f"Neural CB batch training done, train time: {time.time() - train_start_time} seconds")
+
+            # --- Old Transfer monitoring ---
+            if OLD_TRANSFER_MONITOR is not None:
+                try:
+                    tensor_path = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
+                    if os.path.exists(tensor_path):
+                        import torch as _torch
+                        tensor_data = _torch.load(tensor_path)
+                        OLD_TRANSFER_MONITOR.register_window(NUM_TRAINS, tensor_data)
+
+                    trained_agent = neural_contextual_bandit_perpodmodel_checkpoint._cached_agent
+                    if trained_agent is not None:
+                        window_losses = OLD_TRANSFER_MONITOR.evaluate_all_windows(trained_agent)
+                        for round_id, loss in sorted(window_losses.items()):
+                            logger.info(f"OLD_TRANSFER: window={round_id}, loss={loss:.6f} (after round {NUM_TRAINS})")
+                        OLD_TRANSFER_MONITOR.save(REPLAY_BUFFER_DIR)
+                except Exception as e:
+                    logger.warning(f"Old Transfer monitoring failed: {e}")
 
             # Save updated normalization statistics to file
             stats_save_start = time.time()
@@ -1826,6 +2010,25 @@ def initialize():
     else:
         logger.warning(f"⚠️  Per-sample OOD detection disabled (stats file not found)")
         per_sample_ood_detector = None
+
+    # Initialize replay buffer and old transfer monitor
+    global REPLAY_BUFFER, OLD_TRANSFER_MONITOR
+    if REPLAY_SIZE > 0:
+        import replay_buffer as rb
+        REPLAY_BUFFER = rb.GradientReplayBuffer(REPLAY_SIZE, REPLAY_BUFFER_DIR)
+        if os.path.exists(os.path.join(REPLAY_BUFFER_DIR, 'replay_buffer.pkl')):
+            REPLAY_BUFFER.load(REPLAY_BUFFER_DIR)
+        logger.info(f"Replay buffer initialized: size={REPLAY_SIZE}, dir={REPLAY_BUFFER_DIR}")
+
+    if OLD_TRANSFER_SAMPLES_PER_WINDOW > 0 and (FIFO_SIZE > 0 or REPLAY_SIZE > 0):
+        import replay_buffer as rb
+        OLD_TRANSFER_MONITOR = rb.OldTransferMonitor(
+            samples_per_window=OLD_TRANSFER_SAMPLES_PER_WINDOW,
+            persist_dir=REPLAY_BUFFER_DIR
+        )
+        if os.path.exists(os.path.join(REPLAY_BUFFER_DIR, 'old_transfer_monitor.pkl')):
+            OLD_TRANSFER_MONITOR.load(REPLAY_BUFFER_DIR)
+        logger.info(f"Old Transfer monitor initialized: {OLD_TRANSFER_SAMPLES_PER_WINDOW} samples/window")
 
     # Add checkpointing configuration to hyperparameters
     HYPERPARAMETERS['CHECKPOINT_INTERVAL_STEPS'] = 100

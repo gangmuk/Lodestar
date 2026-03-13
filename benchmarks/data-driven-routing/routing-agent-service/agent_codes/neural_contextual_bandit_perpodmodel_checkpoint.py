@@ -463,6 +463,45 @@ class NeuralContextualBandit:
         self.reward_net.train()
         return loss.item()
 
+    def extract_activations_and_predictions(self, contexts, batch_size=512):
+        """
+        Extract last hidden layer activations and predictions for replay buffer selection.
+
+        Args:
+            contexts: [N, per_pod_context_dim] tensor — per-selected-action contexts
+        Returns:
+            activations: [N, hidden_dim] numpy array (from scorer[6] ReLU output)
+            predictions: [N] numpy array
+        """
+        self.reward_net.eval()
+
+        all_activations = []
+        all_predictions = []
+        captured = {}
+
+        def hook_fn(module, input, output):
+            captured['activation'] = output.detach()
+
+        # Register hook on scorer[6] (ReLU before final Linear)
+        hook = self.reward_net.scorer[6].register_forward_hook(hook_fn)
+
+        try:
+            N = contexts.shape[0]
+            with torch.no_grad():
+                for start in range(0, N, batch_size):
+                    end = min(start + batch_size, N)
+                    batch = contexts[start:end].to(device)
+                    preds = self.reward_net(batch)  # [batch, 1]
+                    all_predictions.append(preds.squeeze(1).cpu().numpy())
+                    all_activations.append(captured['activation'].cpu().numpy())
+        finally:
+            hook.remove()
+            self.reward_net.train()
+
+        activations = np.concatenate(all_activations, axis=0)
+        predictions = np.concatenate(all_predictions, axis=0)
+        return activations, predictions
+
     def save(self, final_model_dir, num_trains=None):
         """Save model and metadata"""
         os.makedirs(final_model_dir, exist_ok=True)
