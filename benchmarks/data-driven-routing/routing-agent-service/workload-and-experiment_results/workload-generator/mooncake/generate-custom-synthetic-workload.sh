@@ -10,12 +10,12 @@
 # Use both factors=1.0 to get identical output to realistic_workload_generator.py
 
 STRETCH_AFTER_PCT=${STRETCH_AFTER_PCT:-0.7}
-HEAD_STRETCH=${HEAD_STRETCH:-2.0}
-TAIL_STRETCH=${TAIL_STRETCH:-8.0}
+HEAD_STRETCH=${HEAD_STRETCH:-1.5}
+TAIL_STRETCH=${TAIL_STRETCH:-11.0}
 RPS_SCALE=${RPS_SCALE:-1}
 NUM_TOKENS=${NUM_TOKENS:-100}
 OUTPUT_SCALE=${OUTPUT_SCALE:-1.0}
-DURATION=${DURATION:-1800}
+DURATION=${DURATION:-2000}
 TRACE=${TRACE:-Mooncake_synthetic_trace.jsonl}
 
 OUTPUT_DIR="synthetic_realistic_workload_tokenized-rpsscale_${RPS_SCALE}-numtokens_${NUM_TOKENS}-outputscale_${OUTPUT_SCALE}-duration_${DURATION}-head_${HEAD_STRETCH}x-tail_${TAIL_STRETCH}x-after${STRETCH_AFTER_PCT}"
