@@ -22,7 +22,7 @@ import preprocess
 from logger import logger
 
 
-def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0, return_df=False):
+def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0, max_training_data_size=None, return_df=False):
     """
     Process raw text log file to structured CSV with all features but no normalization.
     
@@ -135,6 +135,12 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     else:
         logger.info("No filtering applied, keeping all samples")
 
+    # Step 5b: Apply max_training_data_size truncation (after shuffle+sampling+filtering)
+    if max_training_data_size is not None and max_training_data_size > 0 and len(processed_df) > max_training_data_size:
+        before_truncation = len(processed_df)
+        processed_df = processed_df.sample(n=max_training_data_size, random_state=42).reset_index(drop=True)
+        logger.info(f"Truncated to max_training_data_size={max_training_data_size}: {before_truncation} → {len(processed_df)} samples")
+
     # Step 6: Add metadata columns for tracking
     processed_df['source_file'] = os.path.basename(input_file)
 
@@ -162,6 +168,7 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
             'sampling_applied': sampling_ratio < 1.0,
             'note': 'Sampling applied BEFORE preprocessing for efficiency'
         },
+        'max_training_data_size': max_training_data_size,
         'filtering': {
             'ttft_threshold': ttft_threshold,
             'avg_tpot_threshold': avg_tpot_threshold,
@@ -184,7 +191,7 @@ def process_raw_data_to_csv(input_file, output_file, hyperparameters, ttft_thres
     return output_file
 
 
-def process_directory_batch(input_dir, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0):
+def process_directory_batch(input_dir, output_file, hyperparameters, ttft_threshold=None, avg_tpot_threshold=None, sampling_ratio=1.0, max_training_data_size=None):
     data_files = []
     for file in os.listdir(input_dir):
         if file.startswith('data') and file.endswith('.csv'):
@@ -200,7 +207,7 @@ def process_directory_batch(input_dir, output_file, hyperparameters, ttft_thresh
     processed_files = []
     for data_file in data_files:
         try:
-            processed_file = process_raw_data_to_csv(data_file, output_file, hyperparameters, ttft_threshold, avg_tpot_threshold, sampling_ratio)
+            processed_file = process_raw_data_to_csv(data_file, output_file, hyperparameters, ttft_threshold, avg_tpot_threshold, sampling_ratio, max_training_data_size)
             processed_files.append(processed_file)
             logger.info(f"✓ Processed: {data_file} → {processed_file}")
         except Exception as e:
@@ -325,6 +332,8 @@ def main():
                         help='Filter samples with TTFT exceeding this threshold (in ms). If not specified, no TTFT filtering is applied.')
     parser.add_argument('--avg_tpot_threshold', type=float, default=None,
                         help='Filter samples with avg_tpot exceeding this threshold (in ms). If not specified, no TPOT filtering is applied.')
+    parser.add_argument('--max_training_data_size', type=int, default=None,
+                        help='Maximum number of training samples to keep after sampling and filtering. If not specified, no truncation is applied.')
     args = parser.parse_args()
 
     hyperparameters = load_hyperparameter_file(args.hyperparameters_file_path)
@@ -354,7 +363,7 @@ def main():
     
     if args.batch:
         # Batch processing mode
-        process_directory_batch(args.input_file, args.output_file, hyperparameters, args.ttft_threshold, args.avg_tpot_threshold, args.sampling_ratio)
+        process_directory_batch(args.input_file, args.output_file, hyperparameters, args.ttft_threshold, args.avg_tpot_threshold, args.sampling_ratio, args.max_training_data_size)
     else:
         # Single file processing mode
         if not os.path.exists(args.input_file):
@@ -371,6 +380,7 @@ def main():
             args.ttft_threshold,
             args.avg_tpot_threshold,
             args.sampling_ratio,
+            args.max_training_data_size,
             return_df=True
         )
         
