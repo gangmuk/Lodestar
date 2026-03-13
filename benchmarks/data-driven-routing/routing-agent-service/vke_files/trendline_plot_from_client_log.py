@@ -127,6 +127,68 @@ def _short_group_label(group_key: str) -> str:
 
 # ── Plotting ────────────────────────────────────────────────────────────────
 
+def _plot_bars_for_group(
+    ax, df_group, rps_workload_pairs, policies, policy_colors,
+    stat_prefix, ylabel, title,
+):
+    """Plot a bar chart on a single axes for a workload group with one RPS point.
+
+    One bar per policy.  The numeric value is annotated on top of each bar
+    at 45-degree rotation so it is readable even when bars are close together.
+    """
+    if stat_prefix not in df_group.columns:
+        ax.set_visible(False)
+        return
+
+    rps, workload = rps_workload_pairs[0]
+
+    bar_vals = []
+    bar_labels = []
+    bar_colors = []
+    for policy in policies:
+        rows = df_group[
+            (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
+        ]
+        vals = rows[stat_prefix].dropna().tolist()
+        vals = [v for v in vals if v > 0]
+        val = np.mean(vals) if vals else 0
+        bar_vals.append(val)
+        bar_labels.append(policy)
+        bar_colors.append(policy_colors.get(policy, '#7f7f7f'))
+
+    if not any(v > 0 for v in bar_vals):
+        ax.set_visible(False)
+        return
+
+    x_pos = np.arange(len(bar_labels))
+    bars = ax.bar(x_pos, bar_vals, color=bar_colors, width=0.6, edgecolor='black',
+                  linewidth=0.8)
+
+    # Annotate each bar with its value at 45 degrees
+    max_val = max(bar_vals) if bar_vals else 1
+    for idx, (bar_obj, val) in enumerate(zip(bars, bar_vals)):
+        if val > 0:
+            ax.text(
+                bar_obj.get_x() + bar_obj.get_width() / 2,
+                bar_obj.get_height() + max_val * 0.02,
+                f'{val:.0f}',
+                ha='center', va='bottom',
+                fontsize=SUBFIG_LEGEND_FONTSIZE,
+                rotation=45,
+            )
+        bar_obj._policy_name = bar_labels[idx]  # for top-level legend
+
+    # Extra top margin so rotated labels are not clipped
+    ax.set_ylim(0, max_val * 1.35)
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(bar_labels, fontsize=TICK_FONTSIZE - 2, rotation=30, ha='right')
+    ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_title(f'{title}  (RPS {rps})', fontsize=SUBTITLE_FONTSIZE)
+    ax.tick_params(axis='y', labelsize=TICK_FONTSIZE)
+    ax.grid(axis='y', alpha=0.3)
+
+
 def _plot_trendlines_for_group(
     ax, df_group, rps_workload_pairs, policies, policy_colors,
     stat_prefix, ylabel, title, ylim_upper=None
@@ -263,8 +325,9 @@ def plot_trendlines(df, output_dir):
     with PdfPages(pdf_path) as pdf:
         for gk in sorted_group_keys:
             rps_workload_pairs = groups[gk]
-            if len(rps_workload_pairs) == 1:
-                print(f"Group '{gk}' has only 1 RPS point — plotting as dot(s)")
+            use_bar = len(rps_workload_pairs) == 1
+            if use_bar:
+                print(f"Group '{gk}' has only 1 RPS point — using bar chart")
 
             group_workloads = [w for _, w in rps_workload_pairs]
             df_group = df[df['workload'].isin(group_workloads)]
@@ -283,39 +346,53 @@ def plot_trendlines(df, output_dir):
 
             fig, axes = plt.subplots(
                 n_rows, n_cols,
-                figsize=(6 * n_cols, 4.5 * n_rows),
+                figsize=(6 * n_cols, 5.5 * n_rows if use_bar else 4.5 * n_rows),
                 squeeze=False,
             )
 
             short_label = _short_group_label(gk)
-            fig.suptitle(f'Trend Lines — {short_label}', fontsize=TITLE_FONTSIZE, y=1.02)
+            chart_type = 'Bar Chart' if use_bar else 'Trend Lines'
+            fig.suptitle(f'{chart_type} — {short_label}', fontsize=TITLE_FONTSIZE, y=1.02)
 
             for ri, (col_stem, display, ylabel) in enumerate(available_metrics):
                 for ci, (stat, stat_label) in enumerate(stats):
                     stat_col = f'{stat}_{col_stem}'
-                    # ylim_upper = min(df_group[stat_col].max())
-                    ylim_upper = None
-                    _plot_trendlines_for_group(
-                        axes[ri][ci],
-                        df_group,
-                        rps_workload_pairs,
-                        policies,
-                        policy_colors,
-                        stat_col,
-                        ylabel,
-                        f'{stat_label} {display}',
-                        ylim_upper=ylim_upper,
-                    )
+                    if use_bar:
+                        _plot_bars_for_group(
+                            axes[ri][ci],
+                            df_group,
+                            rps_workload_pairs,
+                            policies,
+                            policy_colors,
+                            stat_col,
+                            ylabel,
+                            f'{stat_label} {display}',
+                        )
+                    else:
+                        ylim_upper = None
+                        _plot_trendlines_for_group(
+                            axes[ri][ci],
+                            df_group,
+                            rps_workload_pairs,
+                            policies,
+                            policy_colors,
+                            stat_col,
+                            ylabel,
+                            f'{stat_label} {display}',
+                            ylim_upper=ylim_upper,
+                        )
 
             # Shared routing-policy legend at the top of the page
             # Collect one handle per policy (use policy name only, not the per-subfig label)
             seen_policies = {}
             for ax_row in axes:
                 for ax in ax_row:
-                    for line in ax.get_lines():
-                        name = getattr(line, '_policy_name', None)
+                    # Check both lines (trendline mode) and patches (bar mode)
+                    artists = list(ax.get_lines()) + list(ax.patches)
+                    for artist in artists:
+                        name = getattr(artist, '_policy_name', None)
                         if name and name not in seen_policies:
-                            seen_policies[name] = line
+                            seen_policies[name] = artist
 
             if seen_policies:
                 top_handles = list(seen_policies.values())
@@ -329,7 +406,7 @@ def plot_trendlines(df, output_dir):
                     framealpha=0.9,
                 )
 
-            fig.tight_layout(rect=[0, 0, 1, 0.97])
+            fig.tight_layout(rect=[0, 0.03 if use_bar else 0, 1, 0.97])
             pdf.savefig(fig, bbox_inches='tight', dpi=300)
             plt.close(fig)
 

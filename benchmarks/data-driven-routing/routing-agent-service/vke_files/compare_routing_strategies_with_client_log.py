@@ -498,11 +498,15 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
             (p999_values[i], 'P999', 0.5),
         ]
 
+        # Use diagonal hatch pattern for onlinelearning_0 strategies
+        hatch_pattern = '///' if 'onlinelearning_0' in strategy.lower() else None
+
         for j, (value, label, alpha) in enumerate(bar_sets):
             if value > 0:  # Only plot if we have data
                 pos = group_center + offset_start + j * bar_width
                 ax.bar(pos, value, bar_width, color=strategy_color,
-                       edgecolor='black', linewidth=0.8, alpha=alpha)
+                       edgecolor='black', linewidth=0.8, alpha=alpha,
+                       hatch=hatch_pattern)
 
                 # Add value labels on top of bars
                 if np.isfinite(value):
@@ -639,6 +643,9 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
             group_color = all_group_colors[group]
             sub_base = base_x + gi * sub_group_width
 
+            # Use diagonal hatch pattern for onlinelearning_0 strategies
+            hatch_pattern = '///' if 'onlinelearning_0' in strategy.lower() else None
+
             for stat_idx, stat_label in enumerate(stat_labels):
                 val = 0
                 for v in all_bar_values:
@@ -648,7 +655,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
                 pos = sub_base + stat_idx * bar_width
                 alpha = stat_alphas[stat_label]
                 ax.bar(pos, val, bar_width, color=group_color, edgecolor='black',
-                       linewidth=0.5, alpha=alpha)
+                       linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
                 if np.isfinite(val) and val > 0:
                     ax.text(pos, val + max_value * 0.01, f'{val:.0f}', rotation=90,
                             ha='center', va='bottom', fontsize=7, fontweight='bold')
