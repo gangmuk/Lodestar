@@ -77,19 +77,24 @@ target_dir_list=(
     "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
     # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps10-benchmark/without_bitsandbytes"
     # ########################################################
-    # "${base_dir}/mooncake/conversation-2/rps4-benchmark/without_bitsandbytes"
     # "${base_dir}/mooncake/conversation-2/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/mooncake/conversation-2/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/conversation-2/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/conversation-2/rps11-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/conversation-2/rps12-benchmark/without_bitsandbytes"
-    # "${base_dir}/mooncake/conversation-2/rps16-benchmark/without_bitsandbytes"
     # ########################################################
-    # "${base_dir}/mooncake/toolagent-2/rps4-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/toolagent-2/rps8-benchmark/without_bitsandbytes"
+    # "${base_dir}/mooncake/toolagent-2/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/toolagent-2/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/toolagent-2/rps11-benchmark/without_bitsandbytes"
     "${base_dir}/mooncake/toolagent-2/rps12-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/toolagent-2/rps16-benchmark/without_bitsandbytes"
     # ########################################################
-    "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+    "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7/rps-1-benchmark/without_bitsandbytes"
+
     "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+
     "${base_dir}/mooncake/toolagent_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+
 )
 
 
