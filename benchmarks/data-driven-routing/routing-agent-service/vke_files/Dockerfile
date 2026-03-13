@@ -93,7 +93,7 @@ COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_reali
 
 COPY workload-and-experiment_results/workload-generator/mooncake/conversation_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1-duration_600 /app/workload/mooncake/conversation_realistic_tokenized_rpsscale_3_numtokens_100
 
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1-duration_600 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_3_numtokens_100
+# COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1-duration_600 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_3_numtokens_100
 
 COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1-duration_600 /app/workload/mooncake/toolagent_realistic_tokenized_rpsscale_3_numtokens_100
 
@@ -105,15 +105,12 @@ COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_reali
 COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1-duration_600 /app/workload/mooncake/toolagent_realistic_tokenized_rpsscale_3_numtokens_100
 
 
-
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_3-numtokens_100-outputscale_1.0-duration_1800-head_2.0x-tail_4.0x-after0.7 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_3_numtokens_100_head_2.0x_tail_4.0x_after0.7
-
-
 COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_realistic_workload_tokenized-rpsscale_2-numtokens_200-outputscale_1-duration_600 /app/workload/mooncake/toolagent_realistic_tokenized_rpsscale_2_numtokens_200
 
 
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_1800-head_2.0x-tail_8.0x-after0.7 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_2.0x_tail_8.0x_after0.7
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1.5-numtokens_100-outputscale_1.0-duration_1800-head_2.0x-tail_8.0x-after0.7 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1.5_numtokens_100_head_2.0x_tail_8.0x_after0.7
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7-smoothed /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed
 
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

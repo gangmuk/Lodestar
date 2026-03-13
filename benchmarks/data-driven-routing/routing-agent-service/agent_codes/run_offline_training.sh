@@ -8,6 +8,7 @@ REWARD_FUNCTION=negative_linear  # "negative_linear", "quantile_advantage", "qua
 
 sampling_ratio=0.5
 # sampling_ratio=1.0
+max_training_data_size=10000
 ttft_threshold=15000
 training_epochs=20
 
@@ -59,8 +60,8 @@ batch_size=256
 learning_rate=0.0003 # 0.0001, 0.0003
 lr_scheduler_gamma=0.95
 lr_scheduler_type="exponential" # "exponential", "constant", "gradient_adaptive"
-excluded_pod_features="none" # "inflight_requests,cpu_kv_cache" 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
-excluded_request_features="output_tokens, cpu_kv_cache,inflight_requests" # "none", "input_tokens", "output_tokens", "total_tokens"
+excluded_pod_features="cpu_kv_cache,inflight_requests" # "inflight_requests,cpu_kv_cache" 'decode_tokens', 'gpu_kv_cache', 'inflight_requests', 'kv_hit_ratio', 'prefill_tokens', 'running_requests', 'waiting_requests', 'inflight_prefill_requests', 'inflight_decode_requests'
+excluded_request_features="output_tokens,total_tokens" # "none", "input_tokens", "output_tokens", "total_tokens"
 include_gpu_features=0
 no_normalize_features="none" # "kv_hit_ratio", "none"
 ttft_slo=1000
@@ -98,7 +99,7 @@ python3 write_hyperparameters.py \
 
 echo "📄 STEP 1: start data_processor"
 start_time=$(date +%s)
-data_processor_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold}"
+data_processor_cmd="python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold} --max_training_data_size ${max_training_data_size}"
 # python3 data_processor.py --input_file ${data_file} --output_file ${processed_csv} --sampling_ratio ${sampling_ratio} --hyperparameters_file_path ${hyper_json} --ttft_threshold ${ttft_threshold} 2>&1 | tee ${data_processor_log}
 
 echo "data_processor_cmd: ${data_processor_cmd}"
