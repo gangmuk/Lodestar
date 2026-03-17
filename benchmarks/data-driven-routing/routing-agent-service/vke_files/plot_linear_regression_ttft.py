@@ -36,6 +36,14 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    'font.size': 22,
+    'axes.titlesize': 24,
+    'axes.labelsize': 22,
+    'xtick.labelsize': 18,
+    'ytick.labelsize': 18,
+    'legend.fontsize': 18,
+})
 
 import torch
 import torch.nn as nn
@@ -368,22 +376,22 @@ def main():
     X, y, feature_names, df, valid_indices, selected_pods_list = load_and_build_features(csv_path, config)
     print(f"Dataset: {X.shape[0]} samples, {X.shape[1]} features")
 
-    # Train linear regression on 60%, plot both models on ALL data.
-    # NN is already trained (reward_net.pth), so it can predict on 100%.
+    # Train linear regression on 60%, evaluate and plot on the 40% test set only.
     indices = np.arange(len(y))
-    idx_train, _ = train_test_split(indices, test_size=0.4, random_state=42)
+    idx_train, idx_test = train_test_split(indices, test_size=0.4, random_state=42)
     X_train, y_train = X[idx_train], y[idx_train]
-    print(f"Linear regression trained on {len(idx_train)} samples, evaluated on all {len(y)} samples")
+    X_test, y_test = X[idx_test], y[idx_test]
+    print(f"Linear regression trained on {len(idx_train)} samples, evaluated on {len(idx_test)} test samples")
 
     # ---- Linear Regression ----
     lr_model = LinearRegression()
     lr_model.fit(X_train, y_train)
-    y_pred_lr = lr_model.predict(X)  # predict on ALL data
+    y_pred_lr = lr_model.predict(X_test)  # predict on test data only
 
-    r2_lr = r2_score(y, y_pred_lr)
-    mae_lr = mean_absolute_error(y, y_pred_lr)
-    rmse_lr = np.sqrt(mean_squared_error(y, y_pred_lr))
-    print(f"\n--- Linear Regression (all data) ---")
+    r2_lr = r2_score(y_test, y_pred_lr)
+    mae_lr = mean_absolute_error(y_test, y_pred_lr)
+    rmse_lr = np.sqrt(mean_squared_error(y_test, y_pred_lr))
+    print(f"\n--- Linear Regression (test data) ---")
     print(f"  R²:   {r2_lr:.4f}")
     print(f"  MAE:  {mae_lr:.4f}")
     print(f"  RMSE: {rmse_lr:.4f}")
@@ -393,8 +401,9 @@ def main():
         print(f"    {name:>30s}: {coef:+.6f}")
     print(f"    {'intercept':>30s}: {lr_model.intercept_:+.6f}")
 
-    # ---- Neural Network ----
+    # ---- Neural Network (evaluate on test set only) ----
     nn_X, context_dim = build_nn_input(df, valid_indices, selected_pods_list, config, feature_stats)
+    nn_X_test = nn_X[idx_test]
     hidden_dim = config.get('hidden_dim', 128)
     reward_net = load_reward_net(model_dir, context_dim, hidden_dim)
 
@@ -402,14 +411,14 @@ def main():
     r2_nn = mae_nn = rmse_nn = None
     if reward_net is not None:
         with torch.no_grad():
-            nn_input = torch.from_numpy(nn_X).float()  # ALL data
+            nn_input = torch.from_numpy(nn_X_test).float()  # test data only
             nn_output = reward_net(nn_input).squeeze(-1).numpy()
         y_pred_nn = nn_output
 
-        r2_nn = r2_score(y, y_pred_nn)
-        mae_nn = mean_absolute_error(y, y_pred_nn)
-        rmse_nn = np.sqrt(mean_squared_error(y, y_pred_nn))
-        print(f"\n--- Neural Network ---")
+        r2_nn = r2_score(y_test, y_pred_nn)
+        mae_nn = mean_absolute_error(y_test, y_pred_nn)
+        rmse_nn = np.sqrt(mean_squared_error(y_test, y_pred_nn))
+        print(f"\n--- Neural Network (test data) ---")
         print(f"  R²:   {r2_nn:.4f}")
         print(f"  MAE:  {mae_nn:.4f}")
         print(f"  RMSE: {rmse_nn:.4f}")
@@ -418,29 +427,28 @@ def main():
     reward_func = config.get('REWARD_FUNCTION', 'negative_linear')
     fig, ax = plt.subplots(figsize=(7, 7))
 
-    # Linear regression dots (blue)
-    ax.scatter(y, y_pred_lr, alpha=0.35, s=12, color='#4878CF', edgecolors='none',
+    # Linear regression dots (blue) — test data only
+    ax.scatter(y_test, y_pred_lr, alpha=0.35, s=12, color='#4878CF', edgecolors='none',
                label='Linear Regression', rasterized=True)
 
-    # Neural network dots (orange)
+    # Neural network dots (orange) — test data only
     if y_pred_nn is not None:
-        ax.scatter(y, y_pred_nn, alpha=0.35, s=12, color='#E8801B', edgecolors='none',
+        ax.scatter(y_test, y_pred_nn, alpha=0.35, s=12, color='#E8801B', edgecolors='none',
                    label='Neural Network', rasterized=True)
 
     # Diagonal (perfect prediction)
     ax.plot([axis_limit, 0], [axis_limit, 0], color='#333333', linestyle='--', linewidth=1.2,
             label='y = x', zorder=5)
 
-    ax.set_xlabel('Ground Truth Reward', fontsize=20)
-    ax.set_ylabel('Predicted Reward', fontsize=20)
+    ax.set_xlabel('Ground Truth Reward')
+    ax.set_ylabel('Predicted Reward')
     ax.set_xlim(axis_limit, 0)
     ax.set_ylim(axis_limit, 0)
     ax.set_aspect('equal')
     ax.invert_xaxis()
     ax.invert_yaxis()
-    ax.tick_params(labelsize=16)
 
-    ax.legend(loc='lower right', fontsize=16, framealpha=0.9, edgecolor='#cccccc')
+    ax.legend(loc='lower right', framealpha=0.9, edgecolor='#cccccc')
     ax.grid(True, alpha=0.2, linewidth=0.5)
     plt.tight_layout()
 
@@ -461,22 +469,17 @@ def main():
     ]:
         if y_pred is None:
             continue
-        ax.scatter(y, y_pred, alpha=0.35, s=12, color=color, edgecolors='none', rasterized=True)
+        ax.scatter(y_test, y_pred, alpha=0.35, s=12, color=color, edgecolors='none', rasterized=True)
         ax.plot([axis_limit, 0], [axis_limit, 0], color='#333333', linestyle='--', linewidth=1.2,
-                label='y = x', zorder=5)
-        # Invisible entries for R²/RMSE in legend
-        ax.plot([], [], ' ', label=f'$R^2$ = {r2:.3f}')
-        ax.plot([], [], ' ', label=f'RMSE = {rmse:.3f}')
-        ax.set_xlabel('Ground Truth Reward', fontsize=20)
-        ax.set_ylabel('Predicted Reward', fontsize=20)
-        ax.set_title(title, fontsize=22)
+                zorder=5)
+        ax.set_xlabel('Ground Truth Reward')
+        ax.set_ylabel('Predicted Reward')
+        ax.set_title(title)
         ax.set_xlim(axis_limit, 0)
         ax.set_ylim(axis_limit, 0)
         ax.set_aspect('equal')
         ax.invert_xaxis()
         ax.invert_yaxis()
-        ax.tick_params(labelsize=16)
-        ax.legend(loc='lower right', fontsize=16, framealpha=0.9, edgecolor='#cccccc')
         ax.grid(True, alpha=0.2, linewidth=0.5)
 
     fig2.tight_layout()
@@ -490,39 +493,50 @@ def main():
     print(f"Saved side-by-side PDF to {sidebyside_pdf}")
     plt.close()
 
-    # ---- Side-by-side hexbin density plot ----
+    # ---- Side-by-side hexbin density plot (shared color scale) ----
     from matplotlib.colors import LogNorm
-    fig3, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+    fig3, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7), constrained_layout=True)
 
+    # First pass: draw hexbins to find global count range
+    hexbins = []
+    axes_list = []
     for ax, y_pred, title, r2, rmse in [
         (ax1, y_pred_lr, 'Linear Regression', r2_lr, rmse_lr),
         (ax2, y_pred_nn, 'Neural Network', r2_nn, rmse_nn),
     ]:
         if y_pred is None:
             continue
-        hb = ax.hexbin(y, y_pred, gridsize=40, cmap='YlOrRd', mincnt=1,
-                        norm=LogNorm(), extent=[axis_limit, 0, axis_limit, 0],
+        hb = ax.hexbin(y_test, y_pred, gridsize=40, cmap='YlOrRd', mincnt=1,
+                        extent=[axis_limit, 0, axis_limit, 0],
                         rasterized=True)
+        hexbins.append(hb)
+        axes_list.append((ax, title))
+
+    # Compute shared vmin/vmax across both panels
+    global_vmin = min(hb.get_array().min() for hb in hexbins)
+    global_vmax = max(hb.get_array().max() for hb in hexbins)
+    shared_norm = LogNorm(vmin=global_vmin, vmax=global_vmax)
+
+    # Apply shared norm to all hexbins
+    for hb in hexbins:
+        hb.set_norm(shared_norm)
+
+    for ax, title in axes_list:
         ax.plot([axis_limit, 0], [axis_limit, 0], color='#333333', linestyle='--', linewidth=1.2,
-                label='y = x', zorder=5)
-        ax.plot([], [], ' ', label=f'$R^2$ = {r2:.3f}')
-        ax.plot([], [], ' ', label=f'RMSE = {rmse:.3f}')
-        ax.set_xlabel('Ground Truth Reward', fontsize=20)
-        ax.set_ylabel('Predicted Reward', fontsize=20)
-        ax.set_title(title, fontsize=22)
+                zorder=5)
+        ax.set_xlabel('Ground Truth Reward')
+        ax.set_ylabel('Predicted Reward')
+        ax.set_title(title)
         ax.set_xlim(axis_limit, 0)
         ax.set_ylim(axis_limit, 0)
         ax.set_aspect('equal')
         ax.invert_xaxis()
         ax.invert_yaxis()
-        ax.tick_params(labelsize=16)
-        ax.legend(loc='lower right', fontsize=16, framealpha=0.9, edgecolor='#cccccc')
         ax.grid(True, alpha=0.2, linewidth=0.5)
-        cb = fig3.colorbar(hb, ax=ax, shrink=0.8)
-        cb.set_label('Count', fontsize=14)
-        cb.ax.tick_params(labelsize=12)
 
-    fig3.tight_layout()
+    # Single shared colorbar
+    cb = fig3.colorbar(hexbins[0], ax=[ax1, ax2], shrink=0.8)
+    cb.set_label('Count')
 
     hexbin_path = output_path.rsplit('.', 1)[0] + '_hexbin.png'
     fig3.savefig(hexbin_path, dpi=200)
@@ -536,7 +550,7 @@ def main():
     # Save per-sample predictions to CSV
     pred_csv_path = output_path.rsplit('.', 1)[0] + '_predictions.csv'
     pred_df = pd.DataFrame({
-        'ground_truth_reward': y,
+        'ground_truth_reward': y_test,
         'linear_regression_pred': y_pred_lr,
         'neural_network_pred': y_pred_nn if y_pred_nn is not None else np.nan,
     })

@@ -2,6 +2,7 @@
 """Visualize temporal prefix sharing: original vs shuffled workload side-by-side."""
 
 import json
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
@@ -41,6 +42,8 @@ def compute_all(records):
     for m in sorted(by_minute.keys()):
         reqs = by_minute[m]
         if len(reqs) <= 1:
+            minute_keys.append(m)
+            minute_ratios.append(0.0)
             continue
         ratios = []
         for i in range(len(reqs)):
@@ -52,7 +55,7 @@ def compute_all(records):
                 best = max(best, find_lcp(hids, reqs[j]['hash_ids']))
             ratios.append(best / len(hids))
         minute_keys.append(m)
-        minute_ratios.append(np.mean(ratios))
+        minute_ratios.append(np.mean(ratios) if ratios else 0.0)
     data['minute_keys'] = minute_keys
     data['minute_ratios'] = minute_ratios
 
@@ -122,11 +125,13 @@ def compute_all(records):
     # Root prefix composition over time (10s bins)
     bin_size = 10
     max_sec = int(records[-1]['timestamp_ms'] / 1000) + 1
-    first_hid_set = sorted(set(r['hash_ids'][0] for r in records))
+    first_hid_set = sorted(set(r['hash_ids'][0] for r in records if r['hash_ids']))
     hid_to_idx = {h: i for i, h in enumerate(first_hid_set)}
     bins = range(0, max_sec + bin_size, bin_size)
     stacked = np.zeros((len(first_hid_set), len(bins)))
     for r in records:
+        if not r['hash_ids']:
+            continue
         b = int(r['timestamp_ms'] / 1000) // bin_size
         if b < len(bins):
             stacked[hid_to_idx[r['hash_ids'][0]], b] += 1
@@ -147,7 +152,8 @@ def plot_column(fig, axes, col, data, title_suffix, color_accent):
     ax = axes[0, col]
     ax.plot(data['sec_keys'], data['sec_ratios'], linewidth=0.6, alpha=0.4,
             color=color_accent, label='Per-second')
-    ax.plot(data['minute_keys'], data['minute_ratios'], linewidth=2.5,
+    minute_keys_sec = [m * 60 + 30 for m in data['minute_keys']]
+    ax.plot(minute_keys_sec, data['minute_ratios'], linewidth=2.5,
             color='navy' if col == 0 else 'darkred', marker='o', markersize=5,
             label='Per-minute avg', zorder=5)
     ax.set_ylabel('Prefix Sharing Ratio')
@@ -231,27 +237,35 @@ def plot_column(fig, axes, col, data, title_suffix, color_accent):
     ax.set_title(f'Best Prefix Match Length — {title_suffix}')
     ax.grid(True, alpha=0.3)
 
-import sys
+
+def shuffle_workload(records):
+    """Shuffle request contents while preserving the original timestamp distribution.
+
+    This randomly reassigns which request content lands at which timestamp,
+    destroying temporal locality (e.g., requests from the same conversation
+    no longer arrive close together in time).
+    """
+    import random
+    rng = random.Random(42)
+    timestamps = [r['timestamp_ms'] for r in records]
+    contents = [{'hash_ids': r['hash_ids'], 'prefix_group': r['prefix_group']} for r in records]
+    rng.shuffle(contents)
+    shuffled = []
+    for ts, c in zip(timestamps, contents):
+        shuffled.append({'timestamp_ms': ts, **c})
+    return shuffled
+
+
 def main():
     input_file = sys.argv[1]
+    workload_name = input_file.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+
     print("Loading original workload...")
     orig = load_workload(input_file)
     print(f"  {len(orig)} requests")
 
-    # print("Loading shuffled workload...")
-    # shuffled_input_file = input_file.replace('.jsonl', '-shuffled.jsonl')
-    def shuffle_and_save_workload(input_file):
-        with open(input_file, 'r') as f:
-            requests = [json.loads(line) for line in f]
-        import random
-        random.shuffle(requests)
-        output_file = input_file.replace('.jsonl', '-shuffled.jsonl')
-        with open(output_file, 'w') as f:
-            for request in requests:
-                f.write(json.dumps(request) + '\n')
-        return output_file
-    shuffled_input_file = shuffle_and_save_workload(input_file)
-    shuf = load_workload(shuffled_input_file)
+    print("Creating shuffled workload (timestamps preserved, content reassigned)...")
+    shuf = shuffle_workload(orig)
     print(f"  {len(shuf)} requests")
 
     print("Computing metrics for original...")
@@ -261,7 +275,7 @@ def main():
 
     # ── Side-by-side plot: 6 rows x 2 cols ──
     fig, axes = plt.subplots(6, 2, figsize=(16, 24))
-    fig.suptitle('Temporal Prefix Sharing: Original vs Shuffled (conversation-2)',
+    fig.suptitle(f'Temporal Prefix Sharing: Original vs Shuffled ({workload_name})',
                  fontsize=17, fontweight='bold', y=0.995)
 
     plot_column(fig, axes, 0, data_orig, 'Original', 'steelblue')
