@@ -36,26 +36,23 @@ least_request_routing="least_request"
 contextual_bandit_routing="contextual_bandit"
 prefix_hit_threshold_or_least_request_routing = "prefix_hit_threshold_or_least_request"
 
-INPUT_LENGTH_GROUPS = ['Short (0-999)', 'Medium (1K-3K)', 'Long (3K-5K)', 'Very Long (5K+)']
+INPUT_LENGTH_GROUPS = ['Short (0-1K)', 'Medium (1K-5K)', 'Long (5K+)']
 INPUT_LENGTH_COLORS = {
-    'Short (0-999)': '#2ca02c',
-    'Medium (1K-3K)': '#1f77b4',
-    'Long (3K-5K)': '#ff7f0e',
-    'Very Long (5K+)': '#d62728',
+    'Short (0-1K)': '#2ca02c',
+    'Medium (1K-5K)': '#1f77b4',
+    'Long (5K+)': '#d62728',
 }
 
 def categorize_input_length(tokens):
-    """Categorize input tokens into short/medium/long/very long groups."""
+    """Categorize input tokens into short/medium/long groups."""
     if tokens is None or (isinstance(tokens, float) and np.isnan(tokens)):
         return None
     if tokens < 1000:
-        return 'Short (0-999)'
-    elif tokens < 3000:
-        return 'Medium (1K-3K)'
+        return 'Short (0-1K)'
     elif tokens < 5000:
-        return 'Long (3K-5K)'
+        return 'Medium (1K-5K)'
     else:
-        return 'Very Long (5K+)'
+        return 'Long (5K+)'
 
 def categorize_strategy(strategy_name):
     """Categorize strategy name into one of the predefined routing types."""
@@ -75,6 +72,8 @@ def categorize_strategy(strategy_name):
         return prefix_cache_2_routing
     elif preble_routing in strategy_lower:
         return preble_routing
+    elif contextual_bandit_routing in strategy_lower:
+        return contextual_bandit_routing
     elif random_routing in strategy_lower:
         return random_routing
     elif least_kv_cache_routing in strategy_lower:
@@ -83,8 +82,6 @@ def categorize_strategy(strategy_name):
         return least_latency_routing
     elif least_request_routing in strategy_lower:
         return least_request_routing
-    elif contextual_bandit_routing in strategy_lower:
-        return contextual_bandit_routing
     else:
         return strategy_name  # Return original if no category match
 
@@ -578,7 +575,14 @@ def get_strategy_priority(strategy_name):
     strategy_lower = strategy_name.lower()
     datetime_str = extract_datetime_from_strategy(strategy_name)
 
-    if random_routing in strategy_lower:
+    if contextual_bandit_routing in strategy_lower:
+        if 'random' in strategy_lower:
+            return (7, 0, datetime_str, strategy_name)  # random init first
+        elif 'onlinelearning' in strategy_lower:
+            return (7, 2, datetime_str, strategy_name)  # online learning last
+        else:
+            return (7, 1, datetime_str, strategy_name)  # no online learning middle
+    elif random_routing in strategy_lower:
         return (0, datetime_str, strategy_name)
     elif least_request_routing in strategy_lower:
         return (1, datetime_str, strategy_name)
@@ -592,8 +596,6 @@ def get_strategy_priority(strategy_name):
         return (5, datetime_str, strategy_name)
     elif preble_routing in strategy_lower:
         return (6, datetime_str, strategy_name)
-    elif contextual_bandit_routing in strategy_lower:
-        return (7, datetime_str, strategy_name)
     elif rl_naive_routing in strategy_lower:
         return (8, datetime_str, strategy_name)
     elif e2e_latency_predictor_routing in strategy_lower:
@@ -623,6 +625,8 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']  # Dark green/Lime family
     elif preble_routing in strategy_name.lower():
         base_colors = ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']  # Orange/Gold family
+    elif contextual_bandit_routing in strategy_name.lower():
+        base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
     elif random_routing in strategy_name.lower():
         base_colors = ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']  # Light green family
     elif least_kv_cache_routing in strategy_name.lower():
@@ -633,8 +637,6 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b']  # Olive/green-yellow family
     elif least_request_routing in strategy_name.lower():
         base_colors = ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']  # Cyan/Teal family
-    elif contextual_bandit_routing in strategy_name.lower():
-        base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
     else:
         base_colors = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']  # Gray family
     # Use modulo to cycle through colors if more strategies than colors
@@ -717,7 +719,15 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     stat_alphas = {'Avg': 0.9, 'P99': 0.7, 'P999': 0.5}
     all_group_colors = dict(INPUT_LENGTH_COLORS)
     all_group_colors['All'] = '#555555'  # Gray for aggregated
-    max_value = max((v[3] for v in all_bar_values if np.isfinite(v[3])), default=1)
+
+    # Compute separate max values for left (Avg) and right (P99/P999) axes
+    avg_vals = [v[3] for v in all_bar_values if v[2] == 'Avg' and np.isfinite(v[3])]
+    tail_vals = [v[3] for v in all_bar_values if v[2] in ('P99', 'P999') and np.isfinite(v[3])]
+    max_avg = max(avg_vals, default=1)
+    max_tail = max(tail_vals, default=1)
+
+    # Create right y-axis for P99/P999
+    ax2 = ax.twinx()
 
     for si, strategy in enumerate(strategies):
         base_x = strategy_centers[si] - (n_all_groups * sub_group_width) / 2
@@ -726,8 +736,9 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
             group_color = all_group_colors[group]
             sub_base = base_x + gi * sub_group_width
 
-            # Use diagonal hatch pattern for onlinelearning_0 strategies
-            hatch_pattern = '///' if 'onlinelearning_0' in strategy.lower() else None
+            # Use hatch patterns: '///' for onlinelearning_0, 'xx' for contextual_bandit with random init
+            sl = strategy.lower()
+            hatch_pattern = 'xx' if 'onlinelearning_0' in sl else ('//' if contextual_bandit_routing in sl and 'random' in sl else None)
 
             for stat_idx, stat_label in enumerate(stat_labels):
                 val = 0
@@ -737,11 +748,20 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
                         break
                 pos = sub_base + stat_idx * bar_width
                 alpha = stat_alphas[stat_label]
-                ax.bar(pos, val, bar_width, color=group_color, edgecolor='black',
-                       linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
-                if np.isfinite(val) and val > 0:
-                    ax.text(pos, val + max_value * 0.01, f'{val:.0f}', rotation=90,
-                            ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+                # Avg on left axis, P99/P999 on right axis
+                if stat_label == 'Avg':
+                    ax.bar(pos, val, bar_width, color=group_color, edgecolor='black',
+                           linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
+                    if np.isfinite(val) and val > 0:
+                        ax.text(pos, val + max_avg * 0.01, f'{val:.0f}', rotation=90,
+                                ha='center', va='bottom', fontsize=7, fontweight='bold', color='#222266')
+                else:
+                    ax2.bar(pos, val, bar_width, color=group_color, edgecolor='black',
+                            linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
+                    if np.isfinite(val) and val > 0:
+                        ax2.text(pos, val + max_tail * 0.01, f'{val:.0f}', rotation=90,
+                                 ha='center', va='bottom', fontsize=7, fontweight='bold', color='#662222')
 
     # Draw vertical separator lines between experiments
     for si in range(n_strategies - 1):
@@ -772,23 +792,23 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
                 counts.append(f"{group.split('(')[0].strip()[0]}:{n}")
             total_n = len(df_tmp)
             counts.append(f"All:{total_n}")
-            ax.text(strategy_centers[si], -max_value * 0.12,
+            ax.text(strategy_centers[si], -max_avg * 0.12,
                     ', '.join(counts), ha='center', va='top', fontsize=7, color='gray')
 
     # Legends
     group_legend = [Patch(facecolor=all_group_colors[g], edgecolor='black', alpha=0.8,
-                          label=g) for g in all_groups]
-    stat_legend = [Patch(facecolor='gray', edgecolor='black', alpha=a, label=l)
-                   for l, a in zip(stat_labels, [0.9, 0.7, 0.5])]
-    all_handles = group_legend + stat_legend
-    ax.legend(handles=all_handles, loc='upper left', fontsize=10, ncol=len(all_handles))
+                          label=g) for g in groups]  # Exclude 'All' gray patch
+    ax.legend(handles=group_legend, loc='upper left', fontsize=10, ncol=len(group_legend))
 
-    ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
+    ax.set_ylabel(f'{ylabel_text} — Avg', fontsize=ylabel_fontsize, color='#222266')
+    ax2.set_ylabel(f'{ylabel_text} — P99/P999', fontsize=ylabel_fontsize, color='#662222')
     ax.set_title(title, fontsize=subtitle_fontsize)
-    ax.tick_params(axis='y', labelsize=tick_fontsize)
+    ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
+    ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#662222')
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='y', alpha=0.3)
-    ax.set_ylim(-max_value * 0.18, max(max_value * 1.4, 1.0))
+    ax.set_ylim(0, max(max_avg * 1.6, 1.0))
+    ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
 def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None):
@@ -850,6 +870,9 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif preble_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[preble_routing])
             category_counts[preble_routing] += 1
+        elif contextual_bandit_routing in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts[contextual_bandit_routing])
+            category_counts[contextual_bandit_routing] += 1
         elif random_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[random_routing])
             category_counts[random_routing] += 1
@@ -865,9 +888,6 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif least_request_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[least_request_routing])
             category_counts[least_request_routing] += 1
-        elif contextual_bandit_routing in strategy.lower():
-            color_dict[strategy] = get_strategy_color(strategy, category_counts[contextual_bandit_routing])
-            category_counts[contextual_bandit_routing] += 1
         else:
             color_dict[strategy] = get_strategy_color(strategy, category_counts['other'])
             category_counts['other'] += 1
@@ -1060,7 +1080,7 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
 
 # New function to plot single metric comparison (TTFT or TPOT) with avg, p99, p999
 def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, metric_type, title):
-    """Plot bar chart with single metric (TTFT or TPOT) showing avg, p99, p999 grouped by strategy."""
+    """Plot bar chart with single metric (TTFT or TPOT) showing avg on left y-axis, p99/p999 on right y-axis."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     n_strategies = len(strategies)
     if n_strategies == 0:
@@ -1090,60 +1110,94 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
         p999_values = [metrics_indexed.loc[s, 'p999_end_to_end_overhead'] if 'p999_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'End-to-End Overhead (ms)'
 
-    # Get max value for y-axis scaling (ignore NaN/Inf)
-    all_values = np.array((avg_values or []) + (p99_values or []) + (p999_values or []), dtype=float)
-    finite_values = all_values[np.isfinite(all_values)]
-    if finite_values.size == 0:
+    # Compute max values for each y-axis
+    avg_arr = np.array(avg_values, dtype=float)
+    avg_finite = avg_arr[np.isfinite(avg_arr)]
+    if metric_type == 'end_to_end_overhead':
+        p50_values = [metrics_indexed.loc[s, 'p50_end_to_end_overhead']
+                      if 'p50_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
+        tail_arr = np.array(p50_values + p99_values + p999_values, dtype=float)
+    else:
+        tail_arr = np.array(p99_values + p999_values, dtype=float)
+    tail_finite = tail_arr[np.isfinite(tail_arr)]
+
+    if avg_finite.size == 0 and tail_finite.size == 0:
         ax.text(0.5, 0.5, 'No valid data available', ha='center', va='center', fontsize=12,
                 bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
         ax.set_xticks([])
         ax.set_yticks([])
         return
-    max_value = float(np.max(finite_values))
 
-    # Create bar positions - 3 bars per strategy (TTFT/TPOT) or 4 bars (overhead)
+    max_avg = float(np.max(avg_finite)) if avg_finite.size > 0 else 1.0
+    max_tail = float(np.max(tail_finite)) if tail_finite.size > 0 else 1.0
+
+    # Create right y-axis for P99/P999
+    ax2 = ax.twinx()
+
+    # Create bar positions
     num_bars = 4 if metric_type == 'end_to_end_overhead' else 3
     bar_width = 0.2 if metric_type == 'end_to_end_overhead' else 0.25
     group_width = num_bars * bar_width + 0.3  # Space between groups
     group_centers = np.arange(n_strategies) * group_width
 
-    # Plot bars for each metric (avg, p99, p999)
+    # Plot bars for each metric
     for i, strategy in enumerate(strategies):
         strategy_color = color_dict[strategy]
         group_center = group_centers[i]
 
-        # Calculate positions for the 3 bars in each group
         offset_start = -(num_bars - 1) * bar_width / 2
 
-        # Create bars with slight color variations
-        bar_sets = [
-            (avg_values[i], 'Avg', 0.9),
-            (p99_values[i], 'P99', 0.7),
-            (p999_values[i], 'P999', 0.5),
-        ]
+        # Use hatch patterns
+        sl = strategy.lower()
+        hatch_pattern = 'xx' if 'onlinelearning_0' in sl else ('//' if contextual_bandit_routing in sl and 'random' in sl else None)
+
         if metric_type == 'end_to_end_overhead':
-            bar_sets = [
-                (avg_values[i], 'Avg', 0.9),
-                (metrics_indexed.loc[strategy, 'p50_end_to_end_overhead']
-                 if 'p50_end_to_end_overhead' in metrics_df.columns else 0, 'P50', 0.75),
-                (p99_values[i], 'P99', 0.6),
-                (p999_values[i], 'P999', 0.45),
+            # Avg on left axis
+            pos = group_center + offset_start + 0 * bar_width
+            ax.bar(pos, avg_values[i], bar_width, color=strategy_color,
+                   edgecolor='black', linewidth=0.8, alpha=0.9, hatch=hatch_pattern)
+            if np.isfinite(avg_values[i]):
+                ax.text(pos, avg_values[i] + max_avg * 0.02,
+                       f'{avg_values[i]:.0f}', rotation=90, ha='center', va='bottom',
+                       fontsize=10, fontweight='bold', color='#222266')
+
+            # P50, P99, P999 on right axis
+            right_bars = [
+                (p50_values[i], 'P50', 0.75, 1),
+                (p99_values[i], 'P99', 0.6, 2),
+                (p999_values[i], 'P999', 0.45, 3),
             ]
+            for value, label, alpha, j in right_bars:
+                pos = group_center + offset_start + j * bar_width
+                ax2.bar(pos, value, bar_width, color=strategy_color,
+                       edgecolor='black', linewidth=0.8, alpha=alpha, hatch=hatch_pattern)
+                if np.isfinite(value):
+                    ax2.text(pos, value + max_tail * 0.02,
+                            f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                            fontsize=10, fontweight='bold', color='#662222')
+        else:
+            # Avg on left axis
+            pos = group_center + offset_start + 0 * bar_width
+            ax.bar(pos, avg_values[i], bar_width, color=strategy_color,
+                   edgecolor='black', linewidth=0.8, alpha=0.9, hatch=hatch_pattern)
+            if np.isfinite(avg_values[i]):
+                ax.text(pos, avg_values[i] + max_avg * 0.02,
+                       f'{avg_values[i]:.0f}', rotation=90, ha='center', va='bottom',
+                       fontsize=10, fontweight='bold', color='#222266')
 
-        # Use diagonal hatch pattern for onlinelearning_0 strategies
-        hatch_pattern = '///' if 'onlinelearning_0' in strategy.lower() else None
-
-        for j, (value, label, alpha) in enumerate(bar_sets):
-            pos = group_center + offset_start + j * bar_width
-            ax.bar(pos, value, bar_width, color=strategy_color,
-                   edgecolor='black', linewidth=0.8, alpha=alpha,
-                   hatch=hatch_pattern)
-
-            # Add value labels on top of bars
-            if np.isfinite(value):
-                ax.text(pos, value + max_value * 0.02,
-                       f'{value:.0f}', rotation=90, ha='center', va='bottom',
-                       fontsize=10, fontweight='bold')
+            # P99, P999 on right axis
+            right_bars = [
+                (p99_values[i], 'P99', 0.7, 1),
+                (p999_values[i], 'P999', 0.5, 2),
+            ]
+            for value, label, alpha, j in right_bars:
+                pos = group_center + offset_start + j * bar_width
+                ax2.bar(pos, value, bar_width, color=strategy_color,
+                       edgecolor='black', linewidth=0.8, alpha=alpha, hatch=hatch_pattern)
+                if np.isfinite(value):
+                    ax2.text(pos, value + max_tail * 0.02,
+                            f'{value:.0f}', rotation=90, ha='center', va='bottom',
+                            fontsize=10, fontweight='bold', color='#662222')
 
     # Set up x-axis with strategy names
     ax.set_xticks(group_centers)
@@ -1153,29 +1207,27 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     for s in strategies:
         parts = s.split('-')
         if len(parts) >= 2:
-            # First line: routing strategy name
-            # Second line: timestamp
             label = f"{parts[0]}\n({parts[-1]})"
         else:
             label = s
         strategy_labels.append(label)
-    
+
     ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
 
-    # Add legend for Avg/P99/P999
+    # Add legend for Avg/P99/P999 with axis indication
     if metric_type == 'end_to_end_overhead':
         legend_elements = [
-            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.75, label='P50'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.6, label='P99'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.45, label='P999')
+            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg (left)'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.75, label='P50 (right)'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.6, label='P99 (right)'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.45, label='P999 (right)')
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=4)
     else:
         legend_elements = [
-            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999')
+            Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg (left)'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99 (right)'),
+            Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999 (right)')
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
 
@@ -1187,21 +1239,20 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
             if pd.notna(num_requests) and num_requests > 0:
                 has_num_requests = True
                 group_center = group_centers[i]
-                # Position text below x-axis
-                ax.text(group_center, -max_value * 0.15, f'n={int(num_requests)}',
+                ax.text(group_center, -max_avg * 0.15, f'n={int(num_requests)}',
                        ha='center', va='top', fontsize=9, style='italic', color='gray')
 
     # Styling
-    ax.set_ylabel(ylabel_text, fontsize=ylabel_fontsize)
+    ax.set_ylabel(f'{ylabel_text} — Avg', fontsize=ylabel_fontsize, color='#222266')
+    ax2.set_ylabel(f'{ylabel_text} — P99/P999', fontsize=ylabel_fontsize, color='#662222')
     ax.set_title(title, fontsize=subtitle_fontsize)
-    ax.tick_params(axis='y', labelsize=tick_fontsize)
+    ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
+    ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#662222')
     ax.tick_params(axis='x', labelsize=10)
     ax.grid(axis='y', alpha=0.3)
-    # Adjust y-axis limits to accommodate num_requests text if present
-    if has_num_requests:
-        ax.set_ylim(-max_value * 0.2, max(max_value * 1.4, 1.0))
-    else:
-        ax.set_ylim(0, max(max_value * 1.4, 1.0))
+    # Set y-axis limits (both start from 0)
+    ax.set_ylim(0, max(max_avg * 1.6, 1.0))
+    ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
 # New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99, p999
