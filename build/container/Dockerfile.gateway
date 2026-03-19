@@ -29,6 +29,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ga
 FROM gcr.io/distroless/static:debug-nonroot
 WORKDIR /
 COPY --from=builder /workspace/gateway-plugins .
+COPY --from=builder /workspace/pkg/plugins/gateway/ /snapshot/pkg/plugins/gateway/
+COPY --from=builder /workspace/pkg/utils/kvcache.go /snapshot/pkg/utils/kvcache.go
 USER 65532:65532
 
 ENTRYPOINT ["/gateway-plugins"]

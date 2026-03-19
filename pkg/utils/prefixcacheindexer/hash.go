@@ -17,6 +17,7 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
+	"encoding/binary"
 	"math/rand"
 	"sync"
 	"time"
@@ -103,7 +104,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 			break
 		}
 	}
-	klog.Infof("prefixMatchPods: %v, prefixHashes: %v", prefixMatchPods, prefixHashes)
+	klog.V(5).Infof("prefixMatchPods: %v, prefixHashes: %v", prefixMatchPods, prefixHashes)
 	return prefixMatchPods, prefixHashes
 }
 
@@ -180,20 +181,32 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 }
 
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
-	prefixHashes := []uint64{}
-	if len(tokens) < prefixCacheBlockSize {
-		klog.Infof("total token length(%d) is < prefixCacheBlockSize(%d). prefixhashing will not happpen...", len(tokens), prefixCacheBlockSize)
-		return prefixHashes
-	}
+	numBlocks := len(tokens) / prefixCacheBlockSize
+	prefixHashes := make([]uint64, 0, numBlocks)
 	digest := xxhash.NewWithSeed(seed)
+
+	// Chain block hashes so each prefix hash depends on all preceding blocks.
+	// This preserves true prefix semantics and avoids independent block matches.
+	parentHash := seed
+	var parentHashBytes [8]byte
+
 	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
 		end := i + prefixCacheBlockSize
 		if end > len(tokens) {
+			// Don't hash incomplete blocks
 			break
 		}
-		_, _ = digest.Write(tokens[i:end])
-		prefixHashes = append(prefixHashes, digest.Sum64())
+
 		digest.ResetWithSeed(seed)
+
+		// Write parent hash first (as 8 bytes), then current block.
+		binary.LittleEndian.PutUint64(parentHashBytes[:], parentHash)
+		_, _ = digest.Write(parentHashBytes[:])
+		_, _ = digest.Write(tokens[i:end])
+
+		currentHash := digest.Sum64()
+		prefixHashes = append(prefixHashes, currentHash)
+		parentHash = currentHash
 	}
 	return prefixHashes
 }
