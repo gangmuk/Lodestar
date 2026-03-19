@@ -26,12 +26,15 @@ import (
 )
 
 func Test_PrefixHashTableE2E(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
 	cache := NewPrefixHashTable()
 	model := "m1"
 	model2 := "m2"
 	targetPod := "p1"
 	targetPod2 := "p2"
-	prefixCacheBlockSize = 4
 
 	matchedPods, prefixHashes := cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, model, getReadyPods())
 	assert.Equal(t, 0, len(matchedPods))
@@ -60,6 +63,11 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	assert.Equal(t, 1, len(matchedPods))
 	assert.Equal(t, targetPod, getFirstKey(matchedPods))
 	assert.Equal(t, 3, len(prefixHashes))
+
+	// there is no way to match prefix, even if some blocks were added previously
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{5, 6, 7, 8, 9, 10, 11, 12, 13}, model, getReadyPods())
+	assert.Equal(t, 0, len(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
 
 	// different model sharing same prefix
 	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}, model2, getReadyPods())
@@ -112,4 +120,36 @@ func getReadyPods() map[string]struct{} {
 		"p2": {},
 		"p3": {},
 	}
+}
+
+func TestHashChaining(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+
+	// Same prefix should produce same hashes
+	tokens1 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	tokens2 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	hashes1 := cache.GetPrefixHashes(tokens1)
+	hashes2 := cache.GetPrefixHashes(tokens2)
+	assert.Equal(t, hashes1, hashes2)
+
+	// Different suffix should produce different downstream hashes
+	tokens3 := []byte{1, 2, 3, 4, 5, 6, 7, 9}
+	hashes3 := cache.GetPrefixHashes(tokens3)
+	assert.NotEqual(t, hashes1[1], hashes3[1])
+
+	// Same first block, different second block
+	tokens4 := []byte{1, 2, 3, 4, 9, 10, 11, 12}
+	hashes4 := cache.GetPrefixHashes(tokens4)
+	assert.Equal(t, hashes1[0], hashes4[0])
+	assert.NotEqual(t, hashes1[1], hashes4[1])
+
+	// Changing first block should affect all subsequent chained hashes
+	tokens5 := []byte{0, 2, 3, 4, 5, 6, 7, 8}
+	hashes5 := cache.GetPrefixHashes(tokens5)
+	assert.NotEqual(t, hashes1[0], hashes5[0])
+	assert.NotEqual(t, hashes1[1], hashes5[1])
 }
