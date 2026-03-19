@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import os
 import encoding
-import simpler_contextual_bandit
 from logger import logger
 import preprocess
 import torch

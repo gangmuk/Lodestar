@@ -150,11 +150,46 @@ ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 1))  # 1=
 CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
 RECENCY_DECAY_WEIGHT_FACTOR = float(os.environ.get('RECENCY_DECAY_WEIGHT_FACTOR', '1.0'))
 ENABLE_FALLBACK = int(os.getenv("ENABLE_FALLBACK", 1))
+NORMALIZATION_MODE = os.getenv("NORMALIZATION_MODE", "zscore")  # "zscore" (data-dependent) or "fixed_range" (domain-knowledge bounds, immune to distribution shift)
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
            f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}, "
-           f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}, CB_RESET_LR_PER_ROUND={CB_RESET_LR_PER_ROUND}, RECENCY_DECAY_WEIGHT_FACTOR={RECENCY_DECAY_WEIGHT_FACTOR}")
+           f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}, CB_RESET_LR_PER_ROUND={CB_RESET_LR_PER_ROUND}, RECENCY_DECAY_WEIGHT_FACTOR={RECENCY_DECAY_WEIGHT_FACTOR}, "
+           f"NORMALIZATION_MODE={NORMALIZATION_MODE}")
 HYPERPARAMETERS = None
+
+# Fixed-range normalization bounds (domain-knowledge, hardware/config dependent)
+# Used when NORMALIZATION_MODE="fixed_range" to replace data-dependent z-score stats
+FIXED_RANGE_BOUNDS = {
+    'input_tokens': 30000,             # max_model_length for llama-3-8b
+    'output_tokens': 2048,            # practical max output length
+    'total_tokens': 32048,            # input + output max
+    'gpu_kv_cache': 1.0,              # already a [0,1] ratio
+    'kv_hit_ratio': 100,              # percentage [0, 100]
+    'waiting_requests': 50,           # practical max (beyond this = cascade)
+    'running_requests': 100,           # practical max concurrent on A30
+    'prefill_tokens': 100000,          # practical max inflight prefill per pod
+    'decode_tokens': 5000,            # practical max inflight decode per pod
+    'inflight_requests': 50,          # practical max
+    'inflight_prefill_requests': 30,  # practical max
+    'inflight_decode_requests': 30,   # practical max
+    'cpu_kv_cache': 1.0,              # ratio [0, 1]
+}
+
+def apply_fixed_range_normalization(stats_inst):
+    """Override stats_instance with fixed-range normalization bounds.
+    Sets mean=0, std=practical_max so z-score formula becomes x/max."""
+    import numpy as np
+    for feature_name, practical_max in FIXED_RANGE_BOUNDS.items():
+        rs = data_normalizer.RunningStats(feature_names=feature_name)
+        rs.count = 1
+        rs.mean = np.array([0.0])
+        rs.std = np.array([float(practical_max)])
+        rs.min = np.array([0.0])
+        rs.max = np.array([float(practical_max)])
+        rs.sum_sq_diff = np.array([0.0])
+        stats_inst.feature_stats[feature_name] = rs
+    logger.info(f"Applied fixed-range normalization for {len(FIXED_RANGE_BOUNDS)} features")
 
 BROKER_LOCK = RWLock()
 
@@ -427,11 +462,15 @@ def handle_infer():
             input_tokens_val = processed_df['input_tokens'] if is_dict_input else processed_df['input_tokens'].iloc[0]
             output_tokens_val = processed_df['output_tokens'] if is_dict_input else processed_df['output_tokens'].iloc[0]
             logger.info(f"   Request features: input_tokens={input_tokens_val:.4f}, output_tokens={output_tokens_val:.4f}")
+            excluded_pod_feats = set(HYPERPARAMETERS.get('EXCLUDED_POD_FEATURES', []))
             for pod_id in sorted_all_pod_ids[:3]:
-                kv = processed_df[f'{pod_id}-kv_hit_ratio'] if is_dict_input else processed_df[f'{pod_id}-kv_hit_ratio'].iloc[0]
-                inflight = processed_df[f'{pod_id}-inflight_requests'] if is_dict_input else processed_df[f'{pod_id}-inflight_requests'].iloc[0]
-                prefill = processed_df[f'{pod_id}-prefill_tokens'] if is_dict_input else processed_df[f'{pod_id}-prefill_tokens'].iloc[0]
-                logger.info(f"   {pod_id}: kv_hit_ratio={kv:.4f}, inflight={inflight:.4f}, prefill={prefill:.4f}")
+                parts = []
+                for feat in ['kv_hit_ratio', 'inflight_requests', 'prefill_tokens']:
+                    col = f'{pod_id}-{feat}'
+                    if feat not in excluded_pod_feats and col in (processed_df if is_dict_input else processed_df.columns):
+                        val = processed_df[col] if is_dict_input else processed_df[col].iloc[0]
+                        parts.append(f"{feat}={val:.4f}")
+                logger.info(f"   {pod_id}: {', '.join(parts)}")
 
         ## Encode data (normalization already done)
         encode_start_time = time.time()
@@ -599,7 +638,7 @@ def handle_infer():
             # Use the actual exploration flag from the agent, not just whether epsilon > 0
             result['explore_mask'] = 1 if result.get('explored', False) else 0
             
-            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['chosen_pod_predicted_reward']}")
+            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['chosen_pod_predicted_reward']}, infer_overhead_in_ms={(time.time() - infer_from_tensor_start_time)*1000:.0f}")
             
         # elif subAlgorithm == 'rl_agent':
         #     from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
@@ -797,17 +836,18 @@ def handle_infer():
         if pod_order is not None:
             response["predicted_rewards_pod_order"] = pod_order
         
-        # Return 503 if using random weights (LOAD_PRETRAINED_MODEL=0 and no training yet)
-        # Pipeline still runs (for verification/warmup) but client gets proper "not ready" signal
+        # Fallback routing if using random weights (no online training completed yet)
+        # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet
+        # Model still runs inference (for data collection) but gateway should use its own heuristic
         if LOAD_PRETRAINED_MODEL == 0 and NUM_TRAINS == 0:
-            logger.warning(f"⚠️  Inference completed with RANDOM WEIGHTS (NUM_TRAINS=0), returning 503")
-            logger.warning(f"⚠️  Need {MIN_NUM_TRAINING_DATA - TOTAL_NUM_NEW_DATA} more samples before first training")
-            response["error"] = "Model not trained yet"
-            response["reason"] = "LOAD_PRETRAINED_MODEL=0 and NUM_TRAINS=0 (using random weights)"
-            response["samples_needed"] = MIN_NUM_TRAINING_DATA
-            response["samples_collected"] = TOTAL_NUM_NEW_DATA
-            response["message"] = f"Service will be ready after first training ({MIN_NUM_TRAINING_DATA} samples)"
-            return jsonify(response), 503
+            response["ood_fallback"] = 2
+            response["fallback_reason"] = "model_not_trained"
+        # When switching to fixed-range normalization with a pretrained z-score model,
+        # the pretrained weights are incompatible with the new normalization scale.
+        # Force fallback until the first online training round retrains from scratch.
+        elif NORMALIZATION_MODE == "fixed_range" and LOAD_PRETRAINED_MODEL == 1 and NUM_TRAINS == 0:
+            response["ood_fallback"] = 2
+            response["fallback_reason"] = "normalization_mode_mismatch_until_retrained"
             
         return jsonify(response), 200
         
@@ -845,14 +885,36 @@ def _select_fifo(historical_df, fifo_size):
     return sorted_df.tail(min(fifo_size, len(sorted_df)))
 
 
-def _select_replay(replay_buffer):
+def _select_replay(replay_buffer, max_samples=None):
     """Return replay buffer's stored rows (computed in previous round)."""
     if replay_buffer is None:
         return pd.DataFrame()
     data = replay_buffer.get_selected_data()
     if data is None or len(data) == 0:
         return pd.DataFrame()
+    if max_samples is not None and len(data) > max_samples:
+        return data.head(max_samples).reset_index(drop=True)
     return data
+
+
+def _backfill_from_historical(historical_df, fifo_df, replay_df, needed):
+    """Random-sample from historical to fill shortfall when replay buffer is not yet full."""
+    if needed <= 0 or len(historical_df) == 0:
+        return pd.DataFrame()
+    # Exclude rows already in fifo/replay to avoid duplication
+    if 'request_id' in historical_df.columns:
+        used_ids = set()
+        if len(fifo_df) > 0 and 'request_id' in fifo_df.columns:
+            used_ids.update(fifo_df['request_id'])
+        if len(replay_df) > 0 and 'request_id' in replay_df.columns:
+            used_ids.update(replay_df['request_id'])
+        candidates = historical_df[~historical_df['request_id'].isin(used_ids)]
+    else:
+        candidates = historical_df
+    if len(candidates) == 0:
+        return pd.DataFrame()
+    sample_size = min(needed, len(candidates))
+    return candidates.sample(n=sample_size, random_state=42).reset_index(drop=True)
 
 
 def _evict_global_data(offline_df_copy, online_df_copy, max_keep):
@@ -885,14 +947,14 @@ def online_train_routine():
         logger.info(f"Previous training still in progress, skipping training")
         return
     if TOTAL_NUM_NEW_DATA < MIN_NUM_TRAINING_DATA:
-        logger.info(f"Not enough total training data available, NUM_NEW_DATA: {TOTAL_NUM_NEW_DATA} < {MIN_NUM_TRAINING_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
+        logger.info(f"Not enough total training data available, TOTAL_NUM_NEW_DATA ({TOTAL_NUM_NEW_DATA}) < MIN_NUM_TRAINING_DATA ({MIN_NUM_TRAINING_DATA}), wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
         return
     if NUM_NEW_DATA < MIN_NUM_UPDATE_DATA:
-        logger.info(f"Not enough new training data available, NUM_NEW_DATA: {NUM_NEW_DATA} < {MIN_NUM_UPDATE_DATA}, wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
+        logger.info(f"Not enough new training data available, NUM_NEW_DATA ({NUM_NEW_DATA}) < MIN_NUM_UPDATE_DATA ({MIN_NUM_UPDATE_DATA}), wait until enough data are added. NUM_TRAINS: {NUM_TRAINS}, TOTAL_NUM_DATA: {TOTAL_NUM_DATA}")
         return
     TRAINING_RIGHT_NOW = True
     training_start_time = time.time()
-    logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with {NUM_NEW_DATA} new training data")
+    logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with NUM_NEW_DATA ({NUM_NEW_DATA}) new training data")
     try:
         # Route to appropriate training function based on model type
         model_type = HYPERPARAMETERS['MODEL_TYPE']
@@ -1016,29 +1078,41 @@ def online_train_routine():
             # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally (model weights
             # are carried forward, so stats should evolve gradually).
             recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
+
+            # When using fixed-range normalization, do NOT update stats from data.
+            # The fixed-range bounds are domain-knowledge constants that should never change.
+            update_stats_online = NORMALIZATION_MODE != "fixed_range"
+            if not update_stats_online:
+                logger.info(f"📐 FIXED-RANGE normalization: skipping stats recomputation during online training")
+                # Re-apply fixed-range bounds in case they were overwritten
+                apply_fixed_range_normalization(stats_instance)
+
             if pod_feature_types:
                 logger.info(f"🔄 Found {len(pod_feature_types)} pod feature types: {pod_feature_types}")
-                logger.info(f"🔄 UPDATING pooled statistics during online training (recompute_from_scratch={recompute_stats})")
-                logger.info(f"   Reason: Model is retrained on new data - stats should reflect new distribution")
-                # Compute pooled statistics for pod features WITH updates
-                data_normalizer._compute_pooled_pod_statistics(
-                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
-                )
-            
+                if update_stats_online:
+                    logger.info(f"🔄 UPDATING pooled statistics during online training (recompute_from_scratch={recompute_stats})")
+                    logger.info(f"   Reason: Model is retrained on new data - stats should reflect new distribution")
+                    # Compute pooled statistics for pod features WITH updates
+                    data_normalizer._compute_pooled_pod_statistics(
+                        training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
+                    )
+                else:
+                    logger.info(f"❄️  FIXED-RANGE: Using frozen domain-knowledge bounds for pod features")
+
             # VERIFICATION: Log normalization stats BEFORE normalization
             logger.info(f"VERIFICATION: Checking normalization stats before online training #{NUM_TRAINS}")
             for feature in normalizable_features:
                 if feature in stats_instance.feature_stats:
                     stats = stats_instance.feature_stats[feature]
                     logger.info(f"VERIFICATION BEFORE: {feature} - OLD stats: count={stats.count}, mean={stats.mean}, std={stats.std}")
-                    
+
                     # For request features, log actual values
                     if feature not in pod_feature_types and feature in training_df_copy.columns:
                         actual_values = training_df_copy[feature].values
                         new_mean = actual_values.mean()
                         new_std = actual_values.std()
                         logger.info(f"VERIFICATION BEFORE: {feature} - NEW data: min={actual_values.min():.3f}, max={actual_values.max():.3f}, mean={new_mean:.3f}, std={new_std:.3f}")
-                        
+
                         # **PROOF OF CAUSATION**: Calculate what normalization would produce with OLD vs NEW stats
                         # Take a sample value from the new data
                         sample_value = actual_values[0]
@@ -1055,19 +1129,18 @@ def online_train_routine():
                                 logger.error(f"VERIFICATION PROOF: {feature} OUTLIER CREATED! Using old stats produces {normalized_with_old_stats:.3f} (should be ~{normalized_with_new_stats:.3f})")
 
             # Normalize features (with special handling for pooled pod features)
-            # UPDATE: We now update statistics during online training (update_statistics=True)
-            # This ensures normalization stats match the data the model is trained on.
             for feature in normalizable_features:
                 # Check if this is a pooled pod feature type (not a column name)
                 if feature in pod_feature_types:
                     # OPTIMIZATION: Use cached matching columns lookup
                     matching_columns = data_normalizer._get_matching_columns_cached(training_df_copy.columns, feature)
                     for col in matching_columns:
-                        # Pod features: stats already updated via _compute_pooled_pod_statistics above
+                        # Pod features: stats already set (either updated or fixed-range)
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
-                    # Regular feature (request features) - update stats during training
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats)
+                    # Regular feature (request features) - update stats only if not fixed-range
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance,
+                        update_statistics=update_stats_online, recompute_from_scratch=recompute_stats)
 
             # VERIFICATION: Log normalization stats AFTER normalization
             logger.info(f"VERIFICATION: Checking normalization stats after online training #{NUM_TRAINS}")
@@ -1143,7 +1216,7 @@ def online_train_routine():
                 logger.info(f"✅ Updated PerSampleOODDetector stats")
         
         elif 'contextual_bandit' in model_type:
-            logger.info(f"Training Neural Contextual Bandit on entire dataset (offline + online: {NUM_NEW_DATA} new)")
+            # logger.info(f"Training Neural Contextual Bandit on entire dataset (offline ({len(OFFLINE_DF)}) + online ({len(ONLINE_DF)}) = {total_samples} new)")
             
             # Get a copy of offline + online data for training (same as latency predictor)
             with TRAINING_DF_LOCK:
@@ -1160,9 +1233,18 @@ def online_train_routine():
 
             if FIFO_SIZE > 0 or REPLAY_SIZE > 0:
                 # === TWO-POOL SELECTION ===
+                target_pool = FIFO_SIZE + REPLAY_SIZE
                 new_batch_df, historical_df = _split_new_and_historical(online_df_copy, offline_df_copy, NUM_TRAINS)
                 fifo_df = _select_fifo(historical_df, FIFO_SIZE)
-                replay_df = _select_replay(REPLAY_BUFFER)
+                # Dynamic replay: when fifo < FIFO_SIZE, replay expands to compensate
+                needed_from_replay = target_pool - len(fifo_df)
+                replay_df = _select_replay(REPLAY_BUFFER, max_samples=needed_from_replay)
+                # Backfill from historical if replay buffer not yet fully populated
+                shortfall = needed_from_replay - len(replay_df)
+                if shortfall > 0 and len(historical_df) > 0:
+                    backfill_df = _backfill_from_historical(historical_df, fifo_df, replay_df, shortfall)
+                    replay_df = pd.concat([replay_df, backfill_df], ignore_index=True)
+                    logger.info(f"Backfilled {len(backfill_df)} samples from historical (fifo={len(fifo_df)}, replay_buf={needed_from_replay - shortfall}, backfill={len(backfill_df)}, target={target_pool})")
                 training_df_copy = pd.concat([new_batch_df, fifo_df, replay_df], ignore_index=True)
                 if 'request_id' in training_df_copy.columns:
                     training_df_copy = training_df_copy.drop_duplicates(subset=['request_id'])
@@ -1307,23 +1389,34 @@ def online_train_routine():
             # or the initial offline model stats).
             # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally.
             recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
+
+            # When using fixed-range normalization, do NOT update stats from data.
+            update_stats_online = NORMALIZATION_MODE != "fixed_range"
+            if not update_stats_online:
+                logger.info(f"📐 FIXED-RANGE normalization: skipping stats recomputation during CB online training")
+                apply_fixed_range_normalization(stats_instance)
+
             if pod_feature_types:
-                logger.info(f"🔄 Updating pooled statistics for {len(pod_feature_types)} pod feature types during online training (recompute_from_scratch={recompute_stats})")
-                data_normalizer._compute_pooled_pod_statistics(
-                    training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
-                )
+                if update_stats_online:
+                    logger.info(f"🔄 Updating pooled statistics for {len(pod_feature_types)} pod feature types during online training (recompute_from_scratch={recompute_stats})")
+                    data_normalizer._compute_pooled_pod_statistics(
+                        training_df_copy, pod_feature_types, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats
+                    )
+                else:
+                    logger.info(f"❄️  FIXED-RANGE: Using frozen domain-knowledge bounds for CB pod features")
 
             # Normalize features using cached matching columns
             for feature in normalizable_features:
                 if feature in pod_feature_types:
                     # OPTIMIZATION: Use cached matching columns lookup
-                    # Pod features: stats already updated via _compute_pooled_pod_statistics above
+                    # Pod features: stats already set (either updated or fixed-range)
                     matching_columns = data_normalizer._get_matching_columns_cached(training_df_copy.columns, feature)
                     for col in matching_columns:
                         data_normalizer._normalize_single_feature(training_df_copy, col, stats_instance, update_statistics=False)
                 else:
-                    # Request features: update stats during training
-                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance, update_statistics=True, recompute_from_scratch=recompute_stats)
+                    # Request features: update stats only if not fixed-range
+                    data_normalizer._normalize_single_feature(training_df_copy, feature, stats_instance,
+                        update_statistics=update_stats_online, recompute_from_scratch=recompute_stats)
 
             # Get sorted pod IDs
             sorted_all_pod_ids = utils.get_sorted_all_pod_ids('processed_csv_columns', training_df_copy.columns.tolist())
@@ -1337,18 +1430,18 @@ def online_train_routine():
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
             
             # --- Compute replay buffer for NEXT round using current (previous) model ---
-            if REPLAY_SIZE > 0 and NUM_TRAINS > 0:
+            # At round 0 (NUM_TRAINS=0), prev_agent=None triggers random fallback selection
+            if REPLAY_SIZE > 0:
                 try:
                     import replay_buffer as rb
-                    prev_agent = neural_contextual_bandit_perpodmodel_checkpoint._cached_agent
-                    if prev_agent is not None:
-                        tensor_path = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
-                        if os.path.exists(tensor_path):
-                            import torch as _torch
-                            tensor_data = _torch.load(tensor_path)
-                            REPLAY_BUFFER.update(prev_agent, tensor_data, training_df_pre_norm)
-                            REPLAY_BUFFER.save(REPLAY_BUFFER_DIR)
-                            logger.info(f"Replay buffer updated: {len(REPLAY_BUFFER.selected_data)} samples")
+                    prev_agent = neural_contextual_bandit_perpodmodel_checkpoint._cached_agent if NUM_TRAINS > 0 else None
+                    tensor_path = os.path.join(encoded_training_dir, 'tensor_dataset.pt')
+                    if os.path.exists(tensor_path):
+                        import torch as _torch
+                        tensor_data = _torch.load(tensor_path)
+                        REPLAY_BUFFER.update(prev_agent, tensor_data, training_df_pre_norm)
+                        REPLAY_BUFFER.save(REPLAY_BUFFER_DIR)
+                        logger.info(f"Replay buffer updated: {len(REPLAY_BUFFER.selected_data)} samples (model={'gradient' if prev_agent else 'random'})")
                 except Exception as e:
                     logger.warning(f"Replay buffer update failed: {e}")
                     import traceback
@@ -1899,6 +1992,9 @@ def initialize():
                 if stats_instance is not None:
                     logger.info(f"✅ Successfully loaded GPU-L3c baseline stats for {len(stats_instance.feature_stats)} features")
                     logger.info(f"   These stats will be used regardless of TARGET_GPU_MODEL={TARGET_GPU_MODEL}")
+                    if NORMALIZATION_MODE == "fixed_range":
+                        logger.info(f"   NORMALIZATION_MODE=fixed_range: Overriding loaded stats with domain-knowledge bounds")
+                        apply_fixed_range_normalization(stats_instance)
                     if LOAD_PRETRAINED_MODEL == 0:
                         logger.info(f"   LOAD_PRETRAINED_MODEL=0: Will train model from scratch but use GPU-L3c normalization baseline")
                 else:
@@ -2015,10 +2111,11 @@ def initialize():
     global REPLAY_BUFFER, OLD_TRANSFER_MONITOR
     if REPLAY_SIZE > 0:
         import replay_buffer as rb
-        REPLAY_BUFFER = rb.GradientReplayBuffer(REPLAY_SIZE, REPLAY_BUFFER_DIR)
+        # Buffer capacity = FIFO_SIZE + REPLAY_SIZE so it can compensate when fifo is short
+        REPLAY_BUFFER = rb.GradientReplayBuffer(FIFO_SIZE + REPLAY_SIZE, REPLAY_BUFFER_DIR)
         if os.path.exists(os.path.join(REPLAY_BUFFER_DIR, 'replay_buffer.pkl')):
             REPLAY_BUFFER.load(REPLAY_BUFFER_DIR)
-        logger.info(f"Replay buffer initialized: size={REPLAY_SIZE}, dir={REPLAY_BUFFER_DIR}")
+        logger.info(f"Replay buffer initialized: capacity={FIFO_SIZE + REPLAY_SIZE} (FIFO_SIZE={FIFO_SIZE}, REPLAY_SIZE={REPLAY_SIZE}), dir={REPLAY_BUFFER_DIR}")
 
     if OLD_TRANSFER_SAMPLES_PER_WINDOW > 0 and (FIFO_SIZE > 0 or REPLAY_SIZE > 0):
         import replay_buffer as rb
@@ -2082,81 +2179,81 @@ def initialize():
     
     logger.info(f"{BLUE_COLOR}model_type: {HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
 
+    # # if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
     # if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-    if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':
-        import scalable_rl_routing_agent
-        from scalable_rl_routing_agent import BROKER
+    #     import scalable_rl_routing_agent
+    #     from scalable_rl_routing_agent import BROKER
         
-        logger.info("Initializing scalable_rl_agent, scalable RL agent...")
-        global SCALABLE_RL_AGENT, BROKER_LOCK
-        with BROKER_LOCK.write():
-            # Get number of pods from current running pods
-            num_pods = len(sorted_running_pod_ips)
-            logger.info(f"Creating scalable RL agent with {num_pods} pods")
+    #     logger.info("Initializing scalable_rl_agent, scalable RL agent...")
+    #     global SCALABLE_RL_AGENT, BROKER_LOCK
+    #     with BROKER_LOCK.write():
+    #         # Get number of pods from current running pods
+    #         num_pods = len(sorted_running_pod_ips)
+    #         logger.info(f"Creating scalable RL agent with {num_pods} pods")
             
-            # # Create agent with hyperparameters
-            # SCALABLE_RL_AGENT = create_scalable_rl_agent(
-            #     per_pod_dim=HYPERPARAMETERS.get('per_pod_dim', 8),
-            #     request_dim=HYPERPARAMETERS.get('request_dim', 3),
-            #     max_pods=HYPERPARAMETERS.get('max_pods', 100),
-            #     learning_rate=HYPERPARAMETERS.get('learning_rate', 3e-4),
-            #     reward_decay_factor=HYPERPARAMETERS.get('reward_decay_factor', 1.0),
-            #     gae_lambda=HYPERPARAMETERS.get('gae_lambda', 0.95),
-            #     n_steps=HYPERPARAMETERS.get('n_steps', 256),
-            #     horizon=HYPERPARAMETERS.get('horizon', 1024),
-            #     batch_size=HYPERPARAMETERS.get('batch_size', 64),
-            #     last_layer_dim_vf=HYPERPARAMETERS.get('last_layer_dim_vf', 1),
-            #     rl=HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
-            #     static_num_pods=True,
-            # )
+    #         # # Create agent with hyperparameters
+    #         # SCALABLE_RL_AGENT = create_scalable_rl_agent(
+    #         #     per_pod_dim=HYPERPARAMETERS.get('per_pod_dim', 8),
+    #         #     request_dim=HYPERPARAMETERS.get('request_dim', 3),
+    #         #     max_pods=HYPERPARAMETERS.get('max_pods', 100),
+    #         #     learning_rate=HYPERPARAMETERS.get('learning_rate', 3e-4),
+    #         #     reward_decay_factor=HYPERPARAMETERS.get('reward_decay_factor', 1.0),
+    #         #     gae_lambda=HYPERPARAMETERS.get('gae_lambda', 0.95),
+    #         #     n_steps=HYPERPARAMETERS.get('n_steps', 256),
+    #         #     horizon=HYPERPARAMETERS.get('horizon', 1024),
+    #         #     batch_size=HYPERPARAMETERS.get('batch_size', 64),
+    #         #     last_layer_dim_vf=HYPERPARAMETERS.get('last_layer_dim_vf', 1),
+    #         #     rl=HYPERPARAMETERS.get('rl_algorithm', 'PPO'),
+    #         #     static_num_pods=True,
+    #         # )
             
-            SCALABLE_RL_AGENT = scalable_rl_routing_agent.ScalableRLRoutingAgent(
-                per_pod_dim=8, 
-                # per_pod_dim=11, 
-                request_dim=3, 
-                max_pods=100, 
-                num_requests_per_episode=HYPERPARAMETERS['num_requests_per_episode'], 
-                num_episodes_per_iteration=HYPERPARAMETERS['num_episodes_per_iteration'],
-                num_iterations=HYPERPARAMETERS['num_iterations'],   
-                rl=HYPERPARAMETERS['rl_algorithm'], 
-                static_num_pods=True, 
-                learning_rate=HYPERPARAMETERS['rl_learning_rate'], 
-                hidden_dim=HYPERPARAMETERS['hidden_dim'], 
-                gamma=HYPERPARAMETERS['gamma'], 
-                gae_lambda=HYPERPARAMETERS['gae_lambda'], 
-                tb_log_dir=os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
-                batch_size=HYPERPARAMETERS['batch_size'], 
-                training_epochs=HYPERPARAMETERS['training_epochs'], 
-                clip_range=HYPERPARAMETERS['clip_range'], 
-                entropy_coeff=HYPERPARAMETERS['entropy_coeff'], 
-                vf_coef=HYPERPARAMETERS['vf_coef'], 
-                max_grad_norm=HYPERPARAMETERS['max_grad_norm'], 
-                last_layer_dim_pi=HYPERPARAMETERS['last_layer_dim_pi'], 
-                last_layer_dim_vf=HYPERPARAMETERS['last_layer_dim_vf'], 
-                use_prioritized_replay=False, 
-                buffer_size=HYPERPARAMETERS['buffer_size'], 
-                priority_alpha=HYPERPARAMETERS['priority_alpha'], 
-                priority_beta=HYPERPARAMETERS['priority_beta'],
-                lr_scheduler_type=HYPERPARAMETERS['lr_scheduler_type'],
-                load_tb_best='/app/final_model/init_model/best_model.zip',
-                )
+    #         SCALABLE_RL_AGENT = scalable_rl_routing_agent.ScalableRLRoutingAgent(
+    #             per_pod_dim=8, 
+    #             # per_pod_dim=11, 
+    #             request_dim=3, 
+    #             max_pods=100, 
+    #             num_requests_per_episode=HYPERPARAMETERS['num_requests_per_episode'], 
+    #             num_episodes_per_iteration=HYPERPARAMETERS['num_episodes_per_iteration'],
+    #             num_iterations=HYPERPARAMETERS['num_iterations'],   
+    #             rl=HYPERPARAMETERS['rl_algorithm'], 
+    #             static_num_pods=True, 
+    #             learning_rate=HYPERPARAMETERS['rl_learning_rate'], 
+    #             hidden_dim=HYPERPARAMETERS['hidden_dim'], 
+    #             gamma=HYPERPARAMETERS['gamma'], 
+    #             gae_lambda=HYPERPARAMETERS['gae_lambda'], 
+    #             tb_log_dir=os.path.join(HYPERPARAMETERS['CHECKPOINT_DIR'], 'tb_logs'), 
+    #             batch_size=HYPERPARAMETERS['batch_size'], 
+    #             training_epochs=HYPERPARAMETERS['training_epochs'], 
+    #             clip_range=HYPERPARAMETERS['clip_range'], 
+    #             entropy_coeff=HYPERPARAMETERS['entropy_coeff'], 
+    #             vf_coef=HYPERPARAMETERS['vf_coef'], 
+    #             max_grad_norm=HYPERPARAMETERS['max_grad_norm'], 
+    #             last_layer_dim_pi=HYPERPARAMETERS['last_layer_dim_pi'], 
+    #             last_layer_dim_vf=HYPERPARAMETERS['last_layer_dim_vf'], 
+    #             use_prioritized_replay=False, 
+    #             buffer_size=HYPERPARAMETERS['buffer_size'], 
+    #             priority_alpha=HYPERPARAMETERS['priority_alpha'], 
+    #             priority_beta=HYPERPARAMETERS['priority_beta'],
+    #             lr_scheduler_type=HYPERPARAMETERS['lr_scheduler_type'],
+    #             load_tb_best='/app/final_model/init_model/best_model.zip',
+    #             )
             
-            logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
+    #         logger.info(f"scalable_rl_routing_agent, Scalable RL agent created successfully")
             
-            # Load checkpoint if available
-            checkpoint_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
-            if checkpoint_path and os.path.exists(checkpoint_path):
-                try:
-                    SCALABLE_RL_AGENT.load(checkpoint_path)
-                    logger.info(f"scalable_rl_routing_agent, Loaded scalable RL checkpoint from {checkpoint_path}")
-                except Exception as e:
-                    logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
+    #         # Load checkpoint if available
+    #         checkpoint_path = HYPERPARAMETERS.get('RL_CHECKPOINT_PATH')
+    #         if checkpoint_path and os.path.exists(checkpoint_path):
+    #             try:
+    #                 SCALABLE_RL_AGENT.load(checkpoint_path)
+    #                 logger.info(f"scalable_rl_routing_agent, Loaded scalable RL checkpoint from {checkpoint_path}")
+    #             except Exception as e:
+    #                 logger.warning(f"scalable_rl_routing_agent, Failed to load checkpoint: {e}")
         
-        # Start training thread
-        logger.info(f"{GREEN_COLOR}Start scalable rl training worker in initialize()...{RESET_COLOR}")
-        start_scalable_rl_training_worker()
-        logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
-        logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
+    #     # Start training thread
+    #     logger.info(f"{GREEN_COLOR}Start scalable rl training worker in initialize()...{RESET_COLOR}")
+    #     start_scalable_rl_training_worker()
+    #     logger.info(f"{GREEN_COLOR}Scalable RL agent initialized and training thread started{RESET_COLOR}")
+    #     logger.info("scalable_rl_routing_agent, Scalable RL agent initialized and training thread started")
     INIT_DONE = True
 
 def periodic_checkpoint_scalable_rl():
@@ -2272,6 +2369,19 @@ if __name__ == "__main__":
     initialize()
 
     logger.info(f"{RED_COLOR}initialize() finished in main()...{RESET_COLOR}")
+
+    # If switching normalization mode with a pretrained model, retrain immediately
+    # using the offline data so the model is consistent from the first request.
+    if (NORMALIZATION_MODE == "fixed_range" and LOAD_PRETRAINED_MODEL == 1
+            and ENABLE_ONLINE_LEARNING and OFFLINE_DF is not None and len(OFFLINE_DF) > 0):
+        logger.info(f"📐 FIXED-RANGE + LOAD_PRETRAINED_MODEL=1: Triggering immediate retraining "
+                    f"using {len(OFFLINE_DF)} offline samples to produce a fixed-range-compatible model")
+        # Seed the counters so online_train_routine passes its checks
+        TOTAL_NUM_NEW_DATA = len(OFFLINE_DF)
+        NUM_NEW_DATA = len(OFFLINE_DF)
+        TOTAL_NUM_DATA = len(OFFLINE_DF)
+        online_train_routine()
+        logger.info(f"📐 Immediate retraining complete. NUM_TRAINS={NUM_TRAINS}")
 
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model

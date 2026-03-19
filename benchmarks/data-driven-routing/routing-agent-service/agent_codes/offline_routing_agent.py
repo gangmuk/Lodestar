@@ -539,13 +539,35 @@ def normalize_and_encode_training_data(args, processed_csv_file, stats_instance,
     else:
         logger.warning("ttft or avg_tpot columns not found - cannot compute normalization constants")
     
+    # Build fixed-range bounds if using domain-knowledge normalization
+    fixed_range_bounds = None
+    if getattr(args, 'normalization_mode', 'zscore') == 'fixed_range':
+        # Domain-knowledge practical bounds: normalization = x / practical_max
+        # These are hardware/config dependent, NOT workload dependent
+        fixed_range_bounds = {
+            'input_tokens': 8192,             # max_model_length for llama-3-8b
+            'output_tokens': 2048,            # practical max output length
+            'total_tokens': 10240,            # input + output max
+            'gpu_kv_cache': 1.0,              # already a [0,1] ratio
+            'kv_hit_ratio': 100,              # percentage [0, 100]
+            'waiting_requests': 50,           # practical max (beyond this = cascade)
+            'running_requests': 30,           # practical max concurrent on A30
+            'prefill_tokens': 50000,          # practical max inflight prefill per pod
+            'decode_tokens': 5000,            # practical max inflight decode per pod
+            'inflight_requests': 50,          # practical max
+            'inflight_prefill_requests': 30,  # practical max
+            'inflight_decode_requests': 30,   # practical max
+        }
+        logger.info(f"Using FIXED-RANGE normalization with domain-knowledge bounds: {fixed_range_bounds}")
+
     # Apply normalization using the new data_normalizer module
     normalized_df, updated_stats_instance, summary = data_normalizer.normalize_processed_data(
         processed_csv_file,
         output_csv_file=None,  # Don't save, just return normalized data
         reward_function=HYPERPARAMETERS['REWARD_FUNCTION'],
         stats_file=None,  # Don't save stats yet
-        hyperparameters=HYPERPARAMETERS
+        hyperparameters=HYPERPARAMETERS,
+        fixed_range_bounds=fixed_range_bounds
     )
     
     # Update the stats instance
@@ -687,7 +709,9 @@ def main():
     parser.add_argument('--analyze_behavior', type=int, default=0, help='Analyze what the model has learned through feature sensitivity tests (1 to enable, 0 to disable)')
     parser.add_argument('--hyperparameter_file_path', type=str, required=True, help='Path to JSON hyperparameter file (single source of truth)')
     parser.add_argument('--final_model_dir', type=str, default=None, help='Final model directory')
-    
+    parser.add_argument('--normalization_mode', type=str, default='zscore', choices=['zscore', 'fixed_range'],
+                        help='Normalization mode: zscore (data-dependent mean/std) or fixed_range (domain-knowledge bounds)')
+
     args = parser.parse_args()
 
     # Setup logging to file in the final_model_dir

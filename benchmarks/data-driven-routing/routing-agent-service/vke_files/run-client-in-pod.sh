@@ -29,7 +29,7 @@ retry_command() {
             attempt=$((attempt + 1))
         fi
     done
-
+금
     echo "❌ Command failed after $max_attempts attempts: $*"
     return $exit_code
 }
@@ -171,6 +171,19 @@ experiment_configs=(
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|30|2|40"
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|30|2|60"
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|30|2|80"
+
+
+
+
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|11|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|11|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|11|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2|${target_gpu}|11|1|80"
+
+    # "prefix_hit_threshold_or_least_request|mooncake|conversation-2|${target_gpu}|11|3|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|conversation-2|${target_gpu}|11|3|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|conversation-2|${target_gpu}|11|3|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|conversation-2|${target_gpu}|11|3|80"
 
     #########################################################
     #########################################################
@@ -426,12 +439,21 @@ experiment_configs=(
 
     # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|11|4"
     # "least_request|mooncake|conversation-2|${target_gpu}|11|4"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|conversation-2|${target_gpu}|11|4"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|11|4"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|11|4"
 
+
+    # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|12|3"
+    # "least_request|mooncake|conversation-2|${target_gpu}|12|3"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|conversation-2|${target_gpu}|12|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|12|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|12|3"
+
+
+
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|16|2"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|20|2"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|12|2"
     
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|15|2"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|15|2"
@@ -484,10 +506,11 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|11|4"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|toolagent-2|${target_gpu}|11|4"
 
-    # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|12|2"
+    # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|12|3"
     # "least_request|mooncake|toolagent-2|${target_gpu}|12|2"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|12|4"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|toolagent-2|${target_gpu}|12|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|toolagent-2|${target_gpu}|12|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|toolagent-2|${target_gpu}|12|3"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|toolagent-2|${target_gpu}|12|3"
     
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|4|2"
@@ -585,12 +608,33 @@ experiment_configs=(
     # "random|mooncake|synthetic_realistic_tokenized_rpsscale_3_numtokens_100|${target_gpu}|-1|2"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_3_numtokens_100|${target_gpu}|-1|2"
     ##
-    "prefix_cache_1|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+
+
+
+
+    # "prefix_cache_1|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|2"
+    # "random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|80"
+
+    # "prefix_cache_1|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|1"
+    # "least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|2"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|2"
+    # "random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|5|1"
+
+
+
 
     # "prefix_cache_1|mooncake|synthetic_realistic_tokenized_rpsscale_1.5_numtokens_100_head_2.0x_tail_8.0x_after0.7|${target_gpu}|6|2"
     # "least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1.5_numtokens_100_head_2.0x_tail_8.0x_after0.7|${target_gpu}|6|2"
@@ -757,6 +801,8 @@ ONLINE_TRAIN_FROM_SCRATCH=1
 CB_RESET_LR_PER_ROUND=1
 RECENCY_DECAY_WEIGHT_FACTOR=1.0
 
+NORMALIZATION_MODE=zscore # zscore, fixed_range
+
 MAX_TOTAL_DATA=10000 # 50000 1000000
 FIFO_SIZE=5000
 REPLAY_SIZE=5000
@@ -830,6 +876,12 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         PREFIX_HIT_THRESHOLD=50
     fi
 
+    if [ "${routing_policy}" == "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random" ]; then
+        LOAD_PRETRAINED_MODEL=0
+    else
+        LOAD_PRETRAINED_MODEL=1
+    fi
+    echo "LOAD_PRETRAINED_MODEL: ${LOAD_PRETRAINED_MODEL}"
 
     if [ "${llm_model}" == "llama-3-8b-instruct" ]; then
         if [[ "${workload_name}" == *"realistic"* ]]; then
@@ -982,6 +1034,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         --env ONLINE_TRAIN_FROM_SCRATCH=${ONLINE_TRAIN_FROM_SCRATCH} \
         --env CB_RESET_LR_PER_ROUND=${CB_RESET_LR_PER_ROUND} \
         --env RECENCY_DECAY_WEIGHT_FACTOR=${RECENCY_DECAY_WEIGHT_FACTOR} \
+        --env NORMALIZATION_MODE=${NORMALIZATION_MODE} \
         --env ENABLE_FALLBACK=${ENABLE_FALLBACK} \
         --env POD_LABEL_SELECTOR=${POD_LABEL_SELECTOR} \
         --env EXPLORATION_RATE=${EXPLORATION_RATE} \
@@ -1171,9 +1224,12 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
         input_token_length_scaling=1.0
     fi
 
-    # if [ "${workload_name}" == *"synthetic"* ]; then
-    #     shuffle_requests_between_iterations=0
-    # fi
+    if [ "${workload_name}" == *"synthetic"* ]; then
+        shuffle_requests_between_iterations=0
+    else
+        shuffle_requests_between_iterations=1
+    fi
+    echo "* shuffle_requests_between_iterations: ${shuffle_requests_between_iterations}"
     kubectl exec ${ACTUAL_POD} -c ${CLIENT_SERVICE_CONTAINER_NAME} -- \
         python3 /app/async-client.py \
             --workload_path ${workload_path_in_pod} \

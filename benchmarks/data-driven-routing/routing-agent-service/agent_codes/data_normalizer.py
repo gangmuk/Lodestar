@@ -895,8 +895,9 @@ def normalize_features_batch_inference(processed_df, stats_instance, normalizabl
     logger.debug(f"{log_prefix}Batch normalized {len(normalizable_features)} features + {len(pod_feature_types)} pod types")
 
 
-def normalize_processed_data(processed_csv_file, output_csv_file=None, 
-                           reward_function='linear_simple', stats_file=None, hyperparameters=None):
+def normalize_processed_data(processed_csv_file, output_csv_file=None,
+                           reward_function='linear_simple', stats_file=None, hyperparameters=None,
+                           fixed_range_bounds=None):
     """
     Normalize processed CSV data and calculate rewards using specified function.
     
@@ -1131,9 +1132,33 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
         logger.info(f"🔄 Computing pooled statistics for {len(pod_feature_types)} pod feature types")
         _compute_pooled_pod_statistics(df, pod_feature_types, stats_instance)
         logger.info(f"✅ Pooled statistics computed successfully")
-    
+
+    # Step 6.6: If fixed_range_bounds provided, override all stats with fixed values.
+    # This implements domain-knowledge normalization: x / practical_max
+    # by setting mean=0, std=practical_max so the z-score formula (x - mean) / std = x / max.
+    use_fixed_range = fixed_range_bounds is not None
+    if use_fixed_range:
+        logger.info(f"📐 FIXED-RANGE normalization: overriding stats with domain-knowledge bounds")
+        for feature_name, practical_max in fixed_range_bounds.items():
+            rs = RunningStats(feature_names=feature_name)
+            rs.count = 1  # Mark as initialized
+            rs.mean = np.array([0.0])
+            rs.std = np.array([float(practical_max)])
+            rs.min = np.array([0.0])
+            rs.max = np.array([float(practical_max)])
+            rs.sum_sq_diff = np.array([0.0])
+            stats_instance.feature_stats[feature_name] = rs
+            # Track as normalized feature
+            stats_instance.CONFIG.setdefault("FEATURES_NORMALIZED", set()).add(feature_name)
+            logger.info(f"  {feature_name}: [0, {practical_max}] → normalized = x / {practical_max}")
+        stats_instance.CONFIG["NUM_FEATURES_NORMALIZED"] = len(stats_instance.CONFIG.get("FEATURES_NORMALIZED", set()))
+
     # Step 7: Normalize features (using pooled stats for pod features)
-    logger.info("Starting feature normalization...")
+    # When using fixed-range bounds, set update_statistics=False to prevent
+    # the normalizer from recomputing stats from data (which would overwrite
+    # our fixed-range values).
+    update_stats_during_norm = not use_fixed_range
+    logger.info(f"Starting feature normalization... (update_statistics={update_stats_during_norm})")
     for feature in normalizable_features:
         try:
             # Check if this is a pooled pod feature type (not a column name)
@@ -1141,10 +1166,10 @@ def normalize_processed_data(processed_csv_file, output_csv_file=None,
                 # OPTIMIZATION: Use cached matching columns lookup
                 matching_columns = _get_matching_columns_cached(df.columns, feature)
                 for col in matching_columns:
-                    _normalize_single_feature(df, col, stats_instance, update_statistics=True)
+                    _normalize_single_feature(df, col, stats_instance, update_statistics=update_stats_during_norm)
             else:
                 # Regular feature - normalize directly
-                _normalize_single_feature(df, feature, stats_instance, update_statistics=True)
+                _normalize_single_feature(df, feature, stats_instance, update_statistics=update_stats_during_norm)
         except Exception as e:
             logger.error(f"Failed to normalize feature {feature}: {e}")
             # Continue with other features instead of crashing
