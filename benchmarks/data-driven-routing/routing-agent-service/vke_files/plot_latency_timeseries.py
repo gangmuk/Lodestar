@@ -616,7 +616,15 @@ def extract_pod_specific_data(df, unique_pods):
                 })
     
     kv_cache_df = pd.DataFrame(kv_cache_data)
-    
+
+    # Apply sliding window (time-based, 1-second window) to cluster avg/min/max kv cache
+    if not kv_cache_df.empty:
+        kv_cache_df = kv_cache_df.sort_values('relative_time').reset_index(drop=True)
+        kv_cache_df = kv_cache_df.set_index('relative_time')
+        for col in ['cluster_avg_kv_cache', 'cluster_min_kv_cache', 'cluster_max_kv_cache']:
+            kv_cache_df[col] = kv_cache_df[col].rolling(window='1s', min_periods=1).mean()
+        kv_cache_df = kv_cache_df.reset_index()
+
     # 1. vllmNumRequestsRunning for selected pod and cluster-wide statistics
     running_requests_data = []
     for _, row in df.iterrows():
@@ -970,7 +978,7 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         # Filter out NaN values to avoid matplotlib conversion errors
         pod_df_clean = pod_df.dropna(subset=['relative_time', 'e2e'])
         if not pod_df_clean.empty:
-            ax3.scatter(pod_df_clean['relative_time'], pod_df_clean['e2e'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+            pass  # scatter dots removed
     
     # Note: Removed cluster-wise statistics as they are redundant with sliding window average  
     # Each request belongs to one pod, so cluster min/max across requests per time bin is not meaningful
@@ -1132,9 +1140,8 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
                 # Filter out NaN values to avoid matplotlib conversion errors
                 pod_data_clean = pod_data.dropna(subset=['relative_time', metric_col])
                 if not pod_data_clean.empty:
-                    ax.scatter(pod_data_clean['relative_time'], pod_data_clean[metric_col], 
-                             s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, label=f'Pod: {pod}')
-        
+                    ax.scatter(pod_data_clean['relative_time'], pod_data_clean[metric_col], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
+
         # Plot cluster-wide statistics
         
         if cluster_avg_col in data_df.columns:
