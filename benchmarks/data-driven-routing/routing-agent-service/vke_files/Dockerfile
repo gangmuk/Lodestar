@@ -112,6 +112,9 @@ COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_reali
 
 COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7-smoothed /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed
 
+COPY workload-and-experiment_results/mooncake/extended_workload/conversation-2 /app/workload/mooncake/conversation-2-extended_workload
+COPY workload-and-experiment_results/mooncake/extended_workload/toolagent-2 /app/workload/mooncake/toolagent-2-extended_workload
+
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
