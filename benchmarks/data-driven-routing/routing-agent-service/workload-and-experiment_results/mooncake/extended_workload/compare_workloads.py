@@ -26,7 +26,7 @@ plt.rcParams.update({
     'legend.fontsize': 11,
 })
 
-TOKENS_PER_BLOCK = None  # auto-detected
+TOKENS_PER_BLOCK = None  # kept for group stats; prefix hits use prompt text
 
 
 def load_workload(path):
@@ -42,12 +42,19 @@ def load_workload(path):
                     "output_tokens": req["Output Length"],
                     "hash_ids": req.get("hash_ids", []),
                     "prefix_group": req.get("prefix_group", ""),
+                    "prompt": req.get("prompt", ""),
                 })
     entries.sort(key=lambda e: e["timestamp_ms"])
     return entries
 
 
-def compute_prefix_hits(entries, tokens_per_block):
+def compute_prefix_hits(entries):
+    """Compute prefix hit ratio using hash_id trie.
+
+    Because prompt text is generated deterministically from hash_ids,
+    ``matched_blocks / total_blocks`` equals the prompt-text-level prefix
+    sharing ratio.
+    """
     class TrieNode:
         __slots__ = ['children']
         def __init__(self):
@@ -56,22 +63,96 @@ def compute_prefix_hits(entries, tokens_per_block):
     root = TrieNode()
     hit_ratios = []
     for e in entries:
+        hids = e["hash_ids"]
+        total_blocks = len(hids)
+
         node = root
         matched = 0
-        for h in e["hash_ids"]:
+        for h in hids:
             if h in node.children:
                 matched += 1
                 node = node.children[h]
             else:
                 break
-        hr = (matched * tokens_per_block) / e["input_tokens"] if e["input_tokens"] > 0 else 0
+
+        hr = matched / total_blocks if total_blocks > 0 else 0.0
         hit_ratios.append(hr)
+
         node = root
-        for h in e["hash_ids"]:
+        for h in hids:
             if h not in node.children:
                 node.children[h] = TrieNode()
             node = node.children[h]
     return hit_ratios
+
+
+def verify_prompt_text_sharing(entries, label=""):
+    """Spot-check that prompt-text sharing matches hash_id sharing."""
+    groups = defaultdict(list)
+    for e in entries:
+        groups[e["prefix_group"]].append(e)
+
+    checked = 0
+    mismatches = 0
+    for pg, reqs in groups.items():
+        if checked >= 200:
+            break
+        if len(reqs) < 2:
+            continue
+        p1, p2 = reqs[0]["prompt"], reqs[1]["prompt"]
+        common_chars = 0
+        for c1, c2 in zip(p1, p2):
+            if c1 == c2:
+                common_chars += 1
+            else:
+                break
+        text_ratio = common_chars / min(len(p1), len(p2)) if min(len(p1), len(p2)) > 0 else 0
+
+        h1, h2 = reqs[0]["hash_ids"], reqs[1]["hash_ids"]
+        shared_h = 0
+        for a, b in zip(h1, h2):
+            if a == b:
+                shared_h += 1
+            else:
+                break
+        hid_ratio = shared_h / min(len(h1), len(h2)) if min(len(h1), len(h2)) > 0 else 0
+
+        if abs(text_ratio - hid_ratio) > 0.05:
+            mismatches += 1
+        checked += 1
+
+    print(f"  [{label}] Prompt-text verification: {checked} groups, "
+          f"{mismatches} mismatches")
+
+
+def compute_unique_groups_timeseries(entries_sorted, window_ms=30000, step_ms=1000):
+    """Count unique prefix groups in a sliding window over time.
+
+    Uses a two-pointer sweep for O(n) efficiency.
+    """
+    if not entries_sorted:
+        return [], []
+    t_min = entries_sorted[0]["timestamp_ms"]
+    t_max = entries_sorted[-1]["timestamp_ms"]
+    n = len(entries_sorted)
+    xs, ys = [], []
+    left = 0
+    right = 0
+    group_counts = Counter()
+    for t in range(int(t_min), int(t_max) + step_ms, step_ms):
+        w_start = t - window_ms
+        while right < n and entries_sorted[right]["timestamp_ms"] <= t:
+            group_counts[entries_sorted[right]["prefix_group"]] += 1
+            right += 1
+        while left < n and entries_sorted[left]["timestamp_ms"] <= w_start:
+            pg = entries_sorted[left]["prefix_group"]
+            group_counts[pg] -= 1
+            if group_counts[pg] == 0:
+                del group_counts[pg]
+            left += 1
+        xs.append((t - t_min) / 1000)
+        ys.append(len(group_counts))
+    return xs, ys
 
 
 def compute_group_stats(entries):
@@ -116,8 +197,10 @@ def main():
 
     # Compute everything
     print("Computing prefix hit ratios...")
-    orig_hits = compute_prefix_hits(orig, TOKENS_PER_BLOCK)
-    ext_hits = compute_prefix_hits(ext, TOKENS_PER_BLOCK)
+    orig_hits = compute_prefix_hits(orig)
+    ext_hits = compute_prefix_hits(ext)
+    verify_prompt_text_sharing(orig, "original")
+    verify_prompt_text_sharing(ext, "extended")
 
     orig_inputs = [e["input_tokens"] for e in orig]
     ext_inputs = [e["input_tokens"] for e in ext]
@@ -142,23 +225,10 @@ def main():
     orig_roll = rolling_mean(orig_hits, window)
     ext_roll = rolling_mean(ext_hits, window)
 
-    # --- Compute group liveness ---
-    def compute_active_groups(entries, window_ms=10000, step_ms=5000):
-        pg_times = defaultdict(list)
-        for e in entries:
-            pg_times[e["prefix_group"]].append(e["timestamp_ms"])
-        times = sorted(e["timestamp_ms"] for e in entries)
-        t_min, t_max = int(times[0]), int(times[-1])
-        xs, ys = [], []
-        for t in range(t_min, t_max, step_ms):
-            active = sum(1 for pg, ts in pg_times.items() if any(t - window_ms <= tt <= t for tt in ts))
-            xs.append((t - t_min) / 1000)
-            ys.append(active)
-        return xs, ys
-
-    print("Computing active prefix groups over time...")
-    orig_active_x, orig_active_y = compute_active_groups(orig)
-    ext_active_x, ext_active_y = compute_active_groups(ext)
+    # --- Compute unique prefix groups over time (30s sliding window) ---
+    print("Computing unique prefix groups over time (30s window)...")
+    orig_active_x, orig_active_y = compute_unique_groups_timeseries(orig)
+    ext_active_x, ext_active_y = compute_unique_groups_timeseries(ext)
 
     # --- Plot: 3 rows x 4 cols ---
     fig, axes = plt.subplots(3, 4, figsize=(24, 15))
@@ -265,13 +335,13 @@ def main():
     ax.legend()
 
     # Row 3: prefix group temporal behavior
-    # 9. Active prefix groups over time (10s window)
+    # 9. Unique prefix groups over time (30s sliding window)
     ax = axes[2, 0]
     ax.plot(orig_active_x, orig_active_y, alpha=0.7, color="C0", label="original")
     ax.plot(ext_active_x, ext_active_y, alpha=0.7, color="C1", label="extended")
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Active Groups")
-    ax.set_title("Active Prefix Groups Over Time (10s window)")
+    ax.set_ylabel("Unique Prefix Groups")
+    ax.set_title("Unique Prefix Groups (30s window)")
     ax.legend()
 
     # 10. New group creation rate over time

@@ -26,8 +26,6 @@ TARGET_DIR = os.path.dirname(WORKLOAD_FILE)
 TRAINING_FILE = os.path.join(TARGET_DIR, "data-processed.csv")
 workload_name = os.path.splitext(os.path.basename(WORKLOAD_FILE))[0]
 OUTPUT_BASE = os.path.join(TARGET_DIR, f"data_distribution-{workload_name}")
-TOKENS_PER_BLOCK = 50  # each hash_id block = 50 tokens
-
 # Increase all font sizes globally
 plt.rcParams.update({
     'font.size': 16,
@@ -53,6 +51,7 @@ def load_workload():
                     "output_tokens": req["Output Length"],
                     "hash_ids": req.get("hash_ids", []),
                     "prefix_group": req.get("prefix_group", ""),
+                    "prompt": req.get("prompt", ""),
                 })
     return entries
 
@@ -125,6 +124,37 @@ def compute_rps_timeseries(times_us, bin_size_s=10):
     return centers, rps
 
 
+def compute_unique_groups_timeseries(entries_sorted, window_ms=30000, step_ms=1000):
+    """Count unique prefix groups in a sliding window over time.
+
+    Uses a two-pointer sweep for O(n) efficiency instead of re-scanning
+    all entries for every time step.
+    """
+    if not entries_sorted:
+        return [], []
+    t_min = entries_sorted[0]["timestamp_ms"]
+    t_max = entries_sorted[-1]["timestamp_ms"]
+    n = len(entries_sorted)
+    xs, ys = [], []
+    left = 0
+    right = 0
+    group_counts = Counter()
+    for t in range(int(t_min), int(t_max) + step_ms, step_ms):
+        w_start = t - window_ms
+        while right < n and entries_sorted[right]["timestamp_ms"] <= t:
+            group_counts[entries_sorted[right]["prefix_group"]] += 1
+            right += 1
+        while left < n and entries_sorted[left]["timestamp_ms"] <= w_start:
+            pg = entries_sorted[left]["prefix_group"]
+            group_counts[pg] -= 1
+            if group_counts[pg] == 0:
+                del group_counts[pg]
+            left += 1
+        xs.append((t - t_min) / 1000)
+        ys.append(len(group_counts))
+    return xs, ys
+
+
 class TrieNode:
     """Trie node for prefix matching on hash_id sequences."""
     __slots__ = ['children']
@@ -136,10 +166,10 @@ def compute_prefix_hit_ratios(entries_sorted):
     """
     Compute prefix hit ratio for each request in temporal order.
 
-    For each request at time T, find the longest prefix match from any
-    previously seen request by walking a trie built on hash_ids.
-
-    Hit ratio = (matched_blocks * TOKENS_PER_BLOCK) / input_tokens
+    Uses hash_id-based trie matching.  Because prompt text is generated
+    deterministically from hash_ids (each hash_id → a fixed text block),
+    ``matched_blocks / total_blocks`` equals the prompt-text-level prefix
+    sharing ratio.
 
     Returns list of hit_ratios (one per request, in order).
     """
@@ -148,9 +178,8 @@ def compute_prefix_hit_ratios(entries_sorted):
 
     for entry in entries_sorted:
         hids = entry["hash_ids"]
-        input_tokens = entry["input_tokens"]
+        total_blocks = len(hids)
 
-        # Walk trie to find longest prefix match from prior requests
         node = root
         matched_blocks = 0
         for h in hids:
@@ -160,11 +189,9 @@ def compute_prefix_hit_ratios(entries_sorted):
             else:
                 break
 
-        shared_tokens = matched_blocks * TOKENS_PER_BLOCK
-        hit_ratio = shared_tokens / input_tokens if input_tokens > 0 else 0.0
+        hit_ratio = matched_blocks / total_blocks if total_blocks > 0 else 0.0
         hit_ratios.append(hit_ratio)
 
-        # Insert this request's hash_ids into trie
         node = root
         for h in hids:
             if h not in node.children:
@@ -172,6 +199,50 @@ def compute_prefix_hit_ratios(entries_sorted):
             node = node.children[h]
 
     return hit_ratios
+
+
+def verify_prompt_text_sharing(entries_sorted, sample_size=200):
+    """Spot-check that prompt-text sharing matches hash_id sharing for a sample."""
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for e in entries_sorted:
+        groups[e["prefix_group"]].append(e)
+
+    checked = 0
+    mismatches = 0
+    for pg, reqs in groups.items():
+        if checked >= sample_size:
+            break
+        if len(reqs) < 2:
+            continue
+        p1 = reqs[0]["prompt"]
+        p2 = reqs[1]["prompt"]
+        common_chars = 0
+        for c1, c2 in zip(p1, p2):
+            if c1 == c2:
+                common_chars += 1
+            else:
+                break
+        text_ratio = common_chars / min(len(p1), len(p2)) if min(len(p1), len(p2)) > 0 else 0
+
+        h1, h2 = reqs[0]["hash_ids"], reqs[1]["hash_ids"]
+        shared_h = 0
+        for a, b in zip(h1, h2):
+            if a == b:
+                shared_h += 1
+            else:
+                break
+        hid_ratio = shared_h / min(len(h1), len(h2)) if min(len(h1), len(h2)) > 0 else 0
+
+        if abs(text_ratio - hid_ratio) > 0.05:
+            mismatches += 1
+        checked += 1
+
+    print(f"  Prompt-text verification: {checked} groups checked, "
+          f"{mismatches} mismatches (>{5}% deviation)")
+    if mismatches > 0:
+        print(f"  WARNING: {mismatches}/{checked} groups have text sharing "
+              f"inconsistent with hash_id sharing!")
 
 
 def main():
@@ -205,6 +276,7 @@ def main():
     print("Computing prefix hit ratios (temporal ordering)...")
     workload_sorted = sorted(workload, key=lambda e: e["timestamp_ms"])
     wl_hit_ratios = compute_prefix_hit_ratios(workload_sorted)
+    verify_prompt_text_sharing(workload_sorted)
 
     # Also compute hit ratio over time (rolling window)
     window_size = 10
@@ -213,8 +285,13 @@ def main():
         window_mean = statistics.mean(wl_hit_ratios[i - window_size:i])
         hit_ratio_rolling.append((i, window_mean))
 
+    # --- Unique prefix groups over time (30s sliding window) ---
+    print("Computing unique prefix groups over time (30s window)...")
+    wl_sorted_by_time = sorted(workload, key=lambda e: e["timestamp_ms"])
+    wl_upg_x, wl_upg_y = compute_unique_groups_timeseries(wl_sorted_by_time)
+
     # --- Plot ---
-    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
+    fig, axes = plt.subplots(1, 5, figsize=(30, 5))
 
     # 1. Input token distribution
     ax = axes[0]
@@ -265,6 +342,14 @@ def main():
     ax.set_title("Prefix Hit Ratio Over Time")
     ax.set_ylim(0, 1)
     ax.legend(fontsize=12)
+
+    # 5. Unique prefix groups over time (30s sliding window)
+    ax = axes[4]
+    if wl_upg_x:
+        ax.plot(wl_upg_x, wl_upg_y, color="C3", alpha=0.8, linewidth=1.2)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Unique Prefix Groups")
+    ax.set_title("Unique Prefix Groups (30s window)")
 
     plt.suptitle(f"Workload vs Training Data Distribution ({os.path.basename(TARGET_DIR)})", fontsize=20, y=1.02)
     plt.tight_layout()

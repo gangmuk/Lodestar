@@ -511,14 +511,21 @@ def _time_warp(requests: List[Dict], stats: Dict, rng: np.random.RandomState) ->
 # Step 3: Generate prompt text
 # ---------------------------------------------------------------------------
 
-def generate_prompt(input_tokens: int, tokens_per_block: int, word_pool: List[str],
-                    rng: np.random.RandomState) -> str:
-    """Generate random-word prompt text with approximately input_tokens tokens.
-    Approximation: 1 word ≈ 1 token * (tokens_per_block / words_per_block).
-    The original uses ~50 tokens per block with random words, roughly 1.33 tokens/word.
+def generate_prompt_from_hash_ids(hash_ids: List[int], tokens_per_block: int,
+                                  word_pool: List[str]) -> str:
+    """Generate prompt text deterministically from hash_ids.
+
+    Each hash_id is mapped to a fixed block of ``tokens_per_block`` words via a
+    per-hash_id PRNG seed.  Requests that share the same prefix of hash_ids will
+    therefore share the same text prefix, which is what the gateway's byte-level
+    prefix cache indexer needs in order to detect KV-cache reuse.
     """
-    target_words = int(input_tokens)
-    words = rng.choice(word_pool, size=max(1, target_words), replace=True)
+    sorted_pool = sorted(word_pool)
+    words: List[str] = []
+    for hid in hash_ids:
+        block_rng = np.random.RandomState(int(hid) & 0xFFFFFFFF)
+        block_words = block_rng.choice(sorted_pool, size=tokens_per_block, replace=True)
+        words.extend(block_words)
     return " ".join(words)
 
 
@@ -533,8 +540,8 @@ def write_workload(requests: List[Dict], output_path: str, word_pool: List[str],
 
     with open(output_path, "w") as f:
         for req in requests:
-            prompt_text = generate_prompt(req["input_tokens"], tokens_per_block,
-                                          word_pool, rng)
+            prompt_text = generate_prompt_from_hash_ids(
+                req["hash_ids"], tokens_per_block, word_pool)
             entry = {
                 "timestamp": int(req["timestamp_ms"]),
                 "requests": [{
