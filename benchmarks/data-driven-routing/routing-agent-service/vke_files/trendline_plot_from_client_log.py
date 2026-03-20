@@ -127,66 +127,103 @@ def _short_group_label(group_key: str) -> str:
 
 # ── Plotting ────────────────────────────────────────────────────────────────
 
-def _plot_bars_for_group(
-    ax, df_group, rps_workload_pairs, policies, policy_colors,
-    stat_prefix, ylabel, title,
-):
-    """Plot a bar chart on a single axes for a workload group with one RPS point.
+def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
+    """Plot Avg TTFT and P99 TTFT for each policy in one subplot with twin y-axes.
 
-    One bar per policy.  The numeric value is annotated on top of each bar
-    at 45-degree rotation so it is readable even when bars are close together.
+    Layout per policy group: [Avg bar | P99 bar]
+    Left y-axis  (ax)  → Avg TTFT  (solid bars)
+    Right y-axis (ax2) → P99 TTFT  (hatched bars)
     """
-    if stat_prefix not in df_group.columns:
+    rps, workload = rps_workload_pair
+    avg_col, p99_col = 'avg_ttft', 'p99_ttft'
+
+    has_avg = avg_col in df_group.columns
+    has_p99 = p99_col in df_group.columns
+    if not has_avg and not has_p99:
         ax.set_visible(False)
         return
 
-    rps, workload = rps_workload_pairs[0]
-
-    bar_vals = []
-    bar_labels = []
-    bar_colors = []
+    avg_vals, p99_vals, bar_colors = [], [], []
     for policy in policies:
         rows = df_group[
             (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
         ]
-        vals = rows[stat_prefix].dropna().tolist()
-        vals = [v for v in vals if v > 0]
-        val = np.mean(vals) if vals else 0
-        bar_vals.append(val)
-        bar_labels.append(policy)
+        def _mean(col):
+            if col not in df_group.columns:
+                return 0
+            vs = [v for v in rows[col].dropna().tolist() if v > 0]
+            return np.mean(vs) if vs else 0
+
+        avg_vals.append(_mean(avg_col))
+        p99_vals.append(_mean(p99_col))
         bar_colors.append(policy_colors.get(policy, '#7f7f7f'))
 
-    if not any(v > 0 for v in bar_vals):
+    if not any(v > 0 for v in avg_vals + p99_vals):
         ax.set_visible(False)
         return
 
-    x_pos = np.arange(len(bar_labels))
-    bars = ax.bar(x_pos, bar_vals, color=bar_colors, width=0.6, edgecolor='black',
-                  linewidth=0.8)
+    ax2 = ax.twinx()
 
-    # Annotate each bar with its value at 45 degrees
-    max_val = max(bar_vals) if bar_vals else 1
-    for idx, (bar_obj, val) in enumerate(zip(bars, bar_vals)):
-        if val > 0:
-            ax.text(
-                bar_obj.get_x() + bar_obj.get_width() / 2,
-                bar_obj.get_height() + max_val * 0.02,
-                f'{val:.0f}',
-                ha='center', va='bottom',
-                fontsize=SUBFIG_LEGEND_FONTSIZE,
-                rotation=45,
-            )
-        bar_obj._policy_name = bar_labels[idx]  # for top-level legend
+    n = len(policies)
+    bar_w = 0.35
+    group_centers = np.arange(n)
+    avg_x = group_centers - bar_w / 2
+    p99_x = group_centers + bar_w / 2
 
-    # Extra top margin so rotated labels are not clipped
-    ax.set_ylim(0, max_val * 1.35)
+    # ── Avg bars on left axis ────────────────────────────────────────────────
+    avg_bars = []
+    for i, (x, val, color) in enumerate(zip(avg_x, avg_vals, bar_colors)):
+        b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8)
+        b[0]._policy_name = policies[i]
+        avg_bars.append(b[0])
 
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(bar_labels, fontsize=TICK_FONTSIZE - 2, rotation=30, ha='right')
-    ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_title(f'{title}  (RPS {rps})', fontsize=SUBTITLE_FONTSIZE)
+    # ── P99 bars on right axis (hatched) ─────────────────────────────────────
+    p99_bars = []
+    for i, (x, val, color) in enumerate(zip(p99_x, p99_vals, bar_colors)):
+        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black',
+                    linewidth=0.8, hatch='//', alpha=0.75)
+        b[0]._policy_name = policies[i]
+        p99_bars.append(b[0])
+
+    # ── Annotations ─────────────────────────────────────────────────────────
+    max_avg = max(avg_vals) if avg_vals else 1
+    max_p99 = max(p99_vals) if p99_vals else 1
+
+    def _annotate(axis, bars, vals, max_val):
+        for bar_obj, val in zip(bars, vals):
+            if val > 0:
+                axis.text(
+                    bar_obj.get_x() + bar_obj.get_width() / 2,
+                    bar_obj.get_height() + max_val * 0.02,
+                    f'{val:.0f}',
+                    ha='center', va='bottom',
+                    fontsize=SUBFIG_LEGEND_FONTSIZE, rotation=45,
+                )
+
+    _annotate(ax,  avg_bars, avg_vals, max_avg)
+    _annotate(ax2, p99_bars, p99_vals, max_p99)
+
+    ax.set_ylim(0, max_avg * 1.4)
+    ax2.set_ylim(0, max_p99 * 1.4)
+
+    ax.set_xticks(group_centers)
+    ax.set_xticklabels(policies, fontsize=TICK_FONTSIZE - 2, rotation=30, ha='right')
+    ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE, color='black')
+    ax2.set_ylabel('P99 TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE, color='dimgray')
+    ax2.tick_params(axis='y', labelcolor='dimgray')
+    ax.set_title(f'TTFT  (RPS {rps})', fontsize=SUBTITLE_FONTSIZE)
     ax.tick_params(axis='y', labelsize=TICK_FONTSIZE)
     ax.grid(axis='y', alpha=0.3)
+
+    # Mini legend inside the subplot distinguishing Avg vs P99 style
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor='gray', edgecolor='black', label='Avg (left axis)'),
+        Patch(facecolor='gray', edgecolor='black', hatch='//', alpha=0.75,
+              label='P99 (right axis)'),
+    ]
+    ax.legend(handles=legend_handles, fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
+              loc='upper left', framealpha=0.8)
 
 
 def _plot_trendlines_for_group(
@@ -290,127 +327,149 @@ def _plot_trendlines_for_group(
     ax.legend(fontsize=SUBFIG_LEGEND_FONTSIZE, loc='best', framealpha=0.8)
 
 
-def plot_trendlines(df, output_dir):
-    """Generate all trend-line plots and save to a single PDF.
+def plot_trendlines(df, output_dir, exclude_patterns=None):
+    """Generate TTFT bar-chart plots and save to a single PDF.
 
     Layout: one page per workload group.
-    Each page has a grid of subplots:
-        rows = metrics (TTFT, TPOT, E2E)
-        cols = statistics (avg, p99, p999)
+    One row of subplots — one subplot per RPS point.
+    Each subplot shows Avg TTFT (left y-axis) and P99 TTFT (right y-axis)
+    as paired bars grouped by routing policy.
+
+    Args:
+        exclude_patterns: list of substrings — any routing policy whose name
+                          contains one of these is omitted from the plots.
     """
+    exclude_patterns = exclude_patterns or []
+
     workloads = df['workload'].unique().tolist()
     groups = group_workloads_by_category(workloads)
 
-    # Sort group keys for deterministic output
     sorted_group_keys = sorted(groups.keys())
-
-    policies = order_policies(df['routing_policy'].unique())
+    all_policies = order_policies(df['routing_policy'].unique())
+    policies = [
+        p for p in all_policies
+        if not any(pat in p for pat in exclude_patterns)
+    ]
+    if exclude_patterns:
+        excluded = [p for p in all_policies if p not in policies]
+        if excluded:
+            print(f"  Excluded policies: {excluded}")
     policy_colors = generate_policy_colors(policies)
-
-    # Define metrics to plot: (column_stem, display_name, ylabel)
-    metrics = [
-        ('ttft', 'TTFT', 'TTFT (ms)'),
-        ('tpot', 'TPOT', 'TPOT (ms)'),
-        ('end_to_end', 'End-to-End Latency', 'E2E Latency (ms)'),
-    ]
-
-    stats = [
-        ('avg', 'Avg'),
-        ('p99', 'P99'),
-        ('p999', 'P999'),
-    ]
 
     pdf_path = os.path.join(output_dir, 'trendline_from_client_log.pdf')
 
     with PdfPages(pdf_path) as pdf:
         for gk in sorted_group_keys:
             rps_workload_pairs = groups[gk]
-            use_bar = len(rps_workload_pairs) == 1
-            if use_bar:
-                print(f"Group '{gk}' has only 1 RPS point — using bar chart")
 
             group_workloads = [w for _, w in rps_workload_pairs]
             df_group = df[df['workload'].isin(group_workloads)]
 
-            # Determine which metrics are available
-            available_metrics = []
-            for col_stem, display, ylabel in metrics:
-                if f'avg_{col_stem}' in df_group.columns:
-                    available_metrics.append((col_stem, display, ylabel))
-
-            if not available_metrics:
+            if 'avg_ttft' not in df_group.columns and 'p99_ttft' not in df_group.columns:
                 continue
 
-            n_rows = len(available_metrics)
-            n_cols = len(stats)
-
+            # 1 row, one subplot per RPS point
+            n_cols = len(rps_workload_pairs)
             fig, axes = plt.subplots(
-                n_rows, n_cols,
-                figsize=(6 * n_cols, 5.5 * n_rows if use_bar else 4.5 * n_rows),
+                1, n_cols,
+                figsize=(7 * n_cols, 6),
                 squeeze=False,
             )
 
             short_label = _short_group_label(gk)
-            chart_type = 'Bar Chart' if use_bar else 'Trend Lines'
-            fig.suptitle(f'{chart_type} — {short_label}', fontsize=TITLE_FONTSIZE, y=1.02)
+            # Title sits at the very top; legend goes just below it
+            fig.suptitle(f'TTFT — {short_label}', fontsize=TITLE_FONTSIZE, y=1.10)
 
-            for ri, (col_stem, display, ylabel) in enumerate(available_metrics):
-                for ci, (stat, stat_label) in enumerate(stats):
-                    stat_col = f'{stat}_{col_stem}'
-                    if use_bar:
-                        _plot_bars_for_group(
-                            axes[ri][ci],
-                            df_group,
-                            rps_workload_pairs,
-                            policies,
-                            policy_colors,
-                            stat_col,
-                            ylabel,
-                            f'{stat_label} {display}',
-                        )
-                    else:
-                        ylim_upper = None
-                        _plot_trendlines_for_group(
-                            axes[ri][ci],
-                            df_group,
-                            rps_workload_pairs,
-                            policies,
-                            policy_colors,
-                            stat_col,
-                            ylabel,
-                            f'{stat_label} {display}',
-                            ylim_upper=ylim_upper,
-                        )
+            for ci, rps_pair in enumerate(rps_workload_pairs):
+                _plot_bars_twin_y(
+                    axes[0][ci], df_group, rps_pair, policies, policy_colors,
+                )
 
-            # Shared routing-policy legend at the top of the page
-            # Collect one handle per policy (use policy name only, not the per-subfig label)
+            # Shared policy-color legend placed between title and subplots
             seen_policies = {}
-            for ax_row in axes:
-                for ax in ax_row:
-                    # Check both lines (trendline mode) and patches (bar mode)
-                    artists = list(ax.get_lines()) + list(ax.patches)
-                    for artist in artists:
-                        name = getattr(artist, '_policy_name', None)
-                        if name and name not in seen_policies:
-                            seen_policies[name] = artist
+            for ax in axes[0]:
+                for patch in ax.patches:
+                    name = getattr(patch, '_policy_name', None)
+                    if name and name not in seen_policies:
+                        seen_policies[name] = patch
 
             if seen_policies:
-                top_handles = list(seen_policies.values())
-                top_labels = list(seen_policies.keys())
                 fig.legend(
-                    top_handles, top_labels,
+                    list(seen_policies.values()), list(seen_policies.keys()),
                     loc='upper center',
-                    ncol=min(len(top_handles), 6),
+                    ncol=min(len(seen_policies), 6),
                     fontsize=LEGEND_FONTSIZE,
-                    bbox_to_anchor=(0.5, 1.06),
+                    bbox_to_anchor=(0.5, 1.02),
                     framealpha=0.9,
                 )
 
-            fig.tight_layout(rect=[0, 0.03 if use_bar else 0, 1, 0.97])
+            # Reserve top margin so title + legend don't overlap the subplots
+            fig.tight_layout(rect=[0, 0, 1, 0.88])
             pdf.savefig(fig, bbox_inches='tight', dpi=300)
             plt.close(fig)
 
-    print(f"Saved trend-line PDF to {pdf_path}")
+    print(f"Saved bar-chart PDF to {pdf_path}")
+
+
+# ── CSV export ──────────────────────────────────────────────────────────────
+
+def export_performance_csv(df, groups, output_dir):
+    """Export a tidy performance summary CSV.
+
+    Each row represents one (workload_group, rps, routing_policy, run) combination.
+    Columns: workload_group, rps, routing_policy, run,
+             avg_ttft, p99_ttft, p999_ttft,
+             avg_tpot, p99_tpot, p999_tpot,
+             avg_end_to_end, p99_end_to_end, p999_end_to_end
+    """
+    stat_cols = [
+        'avg_ttft', 'p99_ttft', 'p999_ttft',
+        'avg_tpot', 'p99_tpot', 'p999_tpot',
+        'avg_end_to_end', 'p99_end_to_end', 'p999_end_to_end',
+    ]
+    # Only keep columns that actually exist in the dataframe
+    stat_cols = [c for c in stat_cols if c in df.columns]
+
+    rows = []
+    for gk, rps_workload_pairs in groups.items():
+        short_label = _short_group_label(gk)
+        group_workloads = [w for _, w in rps_workload_pairs]
+        df_group = df[df['workload'].isin(group_workloads)]
+
+        for rps, workload in rps_workload_pairs:
+            df_rps = df_group[df_group['workload'] == workload].copy()
+            # Sort runs by datetime suffix so run indices are stable
+            df_rps['_sort_dt'] = df_rps['strategy_full_name'].str.extract(
+                r'(\d{8}_\d{6})$', expand=False
+            ).fillna('')
+            df_rps = df_rps.sort_values(['routing_policy', '_sort_dt'])
+
+            for policy, df_policy in df_rps.groupby('routing_policy', sort=False):
+                df_policy = df_policy.reset_index(drop=True)
+                for run_idx, (_, row) in enumerate(df_policy.iterrows()):
+                    record = {
+                        'workload_group': short_label,
+                        'rps': rps,
+                        'routing_policy': policy,
+                        'run': run_idx + 1,
+                        'strategy_full_name': row.get('strategy_full_name', ''),
+                    }
+                    for col in stat_cols:
+                        val = row.get(col, None)
+                        record[col] = round(float(val), 2) if pd.notna(val) and val > 0 else None
+                    rows.append(record)
+
+    if not rows:
+        print("No data to export to CSV")
+        return
+
+    out_df = pd.DataFrame(rows)
+    # Sort for readability
+    out_df = out_df.sort_values(['workload_group', 'rps', 'routing_policy', 'run']).reset_index(drop=True)
+
+    csv_path = os.path.join(output_dir, 'performance_summary.csv')
+    out_df.to_csv(csv_path, index=False)
+    print(f"Saved performance summary CSV to {csv_path}  ({len(out_df)} rows)")
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -430,6 +489,13 @@ def main():
     parser.add_argument(
         '--target-dirs-file', '-t', default=None,
         help='File containing list of target directories (one per line).',
+    )
+    parser.add_argument(
+        '--exclude', '-e', nargs='+', default=[],
+        metavar='PATTERN',
+        help='Exclude routing policies whose name contains any of these substrings '
+             '(plot only; excluded policies are still saved in the CSV). '
+             'Example: --exclude e2e_latency_negative_linear',
     )
 
     args = parser.parse_args()
@@ -477,8 +543,14 @@ def main():
         rps_list = [r for r, _ in groups[gk]]
         print(f"  {_short_group_label(gk)}  — RPS points: {rps_list}")
 
-    # Generate plots
-    plot_trendlines(df, output_dir)
+    # Export performance summary CSV (full data, no exclusions)
+    export_performance_csv(df, groups, output_dir)
+
+    # Generate plots (with optional policy exclusions)
+    exclude_patterns = args.exclude
+    if exclude_patterns:
+        print(f"\nExcluding from plots policies matching: {exclude_patterns}")
+    plot_trendlines(df, output_dir, exclude_patterns=exclude_patterns)
     print("Done!")
 
 

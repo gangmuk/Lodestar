@@ -431,27 +431,21 @@ def normalize_time(df):
     df.reset_index(drop=True, inplace=True)
     return df
 
-def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from):
+def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from, upto_request=None):
     """Process a single log file and return its performance metrics AND the processed DataFrame."""
     print(f"Processing {file_path}...")
     df, json_columns = preprocess.parse_log_file(file_path)
     df = preprocess.parse_json_columns(df, json_columns)
     
-    # Filter out anomalous timestamps (outliers) before normalization
+    # Filter out clearly invalid timestamps (negative or absurdly large) before normalization
     if len(df) > 10 and 'request_start_time' in df.columns:
-        import statistics
-        valid_start_times = df['request_start_time'].dropna()
-        if len(valid_start_times) > 10:
-            median_time = statistics.median(valid_start_times)
-            # Filter out times that are more than 10x away from the median
-            outlier_threshold_low = median_time / 10
-            outlier_threshold_high = median_time * 10
-            before_count = len(df)
-            df = df[(df['request_start_time'] >= outlier_threshold_low) & 
-                    (df['request_start_time'] <= outlier_threshold_high)]
-            after_count = len(df)
-            if before_count > after_count:
-                print(f"  Warning: Filtered out {before_count - after_count} entries with anomalous timestamps (likely clock sync issues)")
+        before_count = len(df)
+        # Only remove negative timestamps and values that are clearly in the wrong unit
+        # (e.g., > 1e15 suggests microseconds stored as nanoseconds or corrupted data)
+        df = df[(df['request_start_time'] >= 0) & (df['request_start_time'] <= 1e15)]
+        after_count = len(df)
+        if before_count > after_count:
+            print(f"  Warning: Filtered out {before_count - after_count} entries with invalid timestamps (negative or > 1e15)")
     
     df = normalize_time(df)
     df = analyze_llm_inference_logs(df)
@@ -507,6 +501,11 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
             print(f"  Iteration filter applied: {before_count - after_count} rows removed (iteration >= {iteration_from})")
         else:
             print("  Warning: iteration column not found; skipping iteration filter")
+
+    # Limit to the first N requests by arrival order if requested
+    if upto_request is not None and len(df) > upto_request:
+        df = df.iloc[:upto_request]
+        print(f"  Truncated to first {upto_request} requests (--upto_request)")
 
     # Calculate performance metrics on filtered data
     metrics = calculate_performance_metrics(df)
@@ -1541,6 +1540,8 @@ if __name__ == "__main__":
                        help='Only include rows with iteration >= this value for ML policies')
     parser.add_argument('--average-duplicates', action='store_true',
                        help='Average multiple experiments for the same routing policy')
+    parser.add_argument('--upto_request', type=int, default=None,
+                       help='If given, only plot the first N requests (by arrival order) from each log file')
     
     args = parser.parse_args()
     
@@ -1549,6 +1550,7 @@ if __name__ == "__main__":
     cut_last_seconds = args.cut_last_seconds
     iteration_from = args.iteration_from
     average_duplicates = args.average_duplicates
+    upto_request = args.upto_request
     
     print(f"Searching for log files in {base_dir}...")
     if warmup_seconds is not None:
@@ -1557,6 +1559,8 @@ if __name__ == "__main__":
         print(f"cut_last_seconds: {cut_last_seconds} seconds")
     if average_duplicates:
         print("Will average multiple experiments for the same routing policy")
+    if upto_request is not None:
+        print(f"upto_request: plotting only the first {upto_request} requests")
     
     slo_ttft = 1000
     slo_tpot = 50
@@ -1573,7 +1577,7 @@ if __name__ == "__main__":
     csv_data_dict = {}  # ADD: Dictionary to store DataFrames
     
     for log_file in log_files:
-        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from)
+        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
         if result:
             metrics, df = result  # UNPACK both metrics and DataFrame
             all_metrics.append(metrics)
