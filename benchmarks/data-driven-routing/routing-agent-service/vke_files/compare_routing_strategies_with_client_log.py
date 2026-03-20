@@ -227,7 +227,7 @@ def calculate_performance_metrics(df, iteration_from=None):
     return metrics
 
 
-def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iteration_from=None, iteration_upto=None):
+def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iteration_from=None, iteration_upto=None, upto_request=None):
     """Process a single client.log.txt file and return its performance metrics and DataFrame."""
     print(f"Processing {file_path}...")
 
@@ -291,6 +291,11 @@ def process_log_file(file_path, warmup_seconds=None, cut_last_seconds=None, iter
             if iteration_upto is not None:
                 filter_desc.append(f"<= {iteration_upto}")
             print(f"  Iteration filter: {before_count} -> {after_count} rows (iteration {' and '.join(filter_desc)})")
+
+    # Limit to the first N requests by arrival order if requested
+    if upto_request is not None and len(df) > upto_request:
+        df = df.iloc[:upto_request]
+        print(f"  Truncated to first {upto_request} requests (--upto_request)")
 
     # Calculate performance metrics
     metrics = calculate_performance_metrics(df, iteration_from)
@@ -925,6 +930,8 @@ if __name__ == "__main__":
                        help='Only include rows with iteration >= this value for ML policies')
     parser.add_argument('--iteration-upto', type=int, default=None,
                        help='Only include rows with iteration <= this value for ML policies')
+    parser.add_argument('--upto_request', type=int, default=None,
+                       help='If given, only plot the first N requests (by arrival order) from each log file')
 
     args = parser.parse_args()
 
@@ -933,6 +940,7 @@ if __name__ == "__main__":
     cut_last_seconds = args.cut_last_seconds
     iteration_from = args.iteration_from
     iteration_upto = args.iteration_upto
+    upto_request = args.upto_request
 
     # Validate iteration range
     if iteration_upto is not None and iteration_from > 0 and iteration_upto < iteration_from:
@@ -948,6 +956,8 @@ if __name__ == "__main__":
         print(f"Iteration filter (ML policies only): >= {iteration_from}")
     if iteration_upto is not None:
         print(f"Iteration filter (ML policies only): <= {iteration_upto}")
+    if upto_request is not None:
+        print(f"upto_request: plotting only the first {upto_request} requests")
     
     log_files = find_client_log_files(base_dir)
     print(f"Found {len(log_files)} client.log.txt files.\n")
@@ -961,7 +971,7 @@ if __name__ == "__main__":
     csv_data_dict = {}
     
     for log_file in log_files:
-        metrics, df = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, iteration_upto)
+        metrics, df = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, iteration_upto, upto_request)
         if metrics and df is not None and not df.empty:
             all_metrics.append(metrics)
             csv_data_dict[metrics['strategy']] = df

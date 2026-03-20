@@ -54,48 +54,49 @@ set -e
 
 
 
-base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length"
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/gangmuk-prefix"
 target_dir_list=(
-    "${base_dir}/gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio71%/rps6-benchmark/without_bitsandbytes"
-    # "${base_dir}/gangmuk-prefix/SharingRatio71%/rps8-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio71%/rps4-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio71%/rps6-benchmark/without_bitsandbytes"
     ########################################################
-    "${base_dir}/gangmuk-prefix/SharingRatio47%/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio47%/rps6-benchmark/without_bitsandbytes"
-    # "${base_dir}/gangmuk-prefix/SharingRatio47%/rps8-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio47%/rps4-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio47%/rps6-benchmark/without_bitsandbytes"
     ########################################################
-    "${base_dir}/gangmuk-prefix/SharingRatio28%/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio28%/rps6-benchmark/without_bitsandbytes"
-    # "${base_dir}/gangmuk-prefix/SharingRatio28%/rps8-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio28%/rps4-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio28%/rps6-benchmark/without_bitsandbytes"
     ########################################################
-    "${base_dir}/gangmuk-prefix/SharingRatio9%/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/SharingRatio9%/rps6-benchmark/without_bitsandbytes"
-    # "${base_dir}/gangmuk-prefix/SharingRatio9%/rps8-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio9%/rps4-benchmark/without_bitsandbytes"
+    "${base_dir}/SharingRatio9%/rps6-benchmark/without_bitsandbytes"
     # ########################################################
-    "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps4-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps6-benchmark/without_bitsandbytes"
-    "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
-    # "${base_dir}/gangmuk-prefix/MixedSharingRatio10_30_50_70%/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/MixedSharingRatio10_30_50_70%/rps6-benchmark/without_bitsandbytes"
+    "${base_dir}/MixedSharingRatio10_30_50_70%/rps8-benchmark/without_bitsandbytes"
     # ########################################################
-    # "${base_dir}/mooncake/conversation-2/rps8-benchmark/without_bitsandbytes"
-    # "${base_dir}/mooncake/conversation-2/rps9-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/conversation-2/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/conversation-2/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/conversation-2/rps12-benchmark/without_bitsandbytes"
-    # ########################################################
-    "${base_dir}/mooncake/toolagent-2/rps8-benchmark/without_bitsandbytes"
-    # "${base_dir}/mooncake/toolagent-2/rps9-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/toolagent-2/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/toolagent-2/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/mooncake/toolagent-2/rps12-benchmark/without_bitsandbytes"
-    # ########################################################
-    "${base_dir}/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7/rps-1-benchmark/without_bitsandbytes"
-
-    "${base_dir}/mooncake/conversation_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
-
-    "${base_dir}/mooncake/toolagent_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
-
 )
+
+
+
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake"
+# target_dir_list=(
+#     ########################################################
+#     "${base_dir}/conversation-2/rps8-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps9-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps11-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps12-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/toolagent-2/rps8-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps9-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps11-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps12-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7/rps-1-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/conversation_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/toolagent_realistic_tokenized_rpsscale_1_numtokens_100/rps-1-benchmark/without_bitsandbytes"
+#     ########################################################
+# )
 
 
 
@@ -249,7 +250,8 @@ pids=()
 pid_to_dir=()
 for target_dir in "${target_dir_list[@]}"; do
     echo "Processing ${target_dir}"
-    python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 --iteration-upto 4 &
+    # python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 --iteration-upto 4 &
+    python compare_routing_strategies.py "${target_dir}" --iteration-from 2 &
     pids+=($!)
     pid_to_dir+=("${target_dir}")
     echo "Processed ${target_dir} with iteration from 2"
@@ -280,4 +282,4 @@ echo ""
 # Merge all metrics and create comparison plots (using only specified target directories)
 # python merge_and_plot_all_workloads_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}"
 
-python trendline_plot_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}"
+python trendline_plot_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}" --exclude e2e_latency_negative_linear
