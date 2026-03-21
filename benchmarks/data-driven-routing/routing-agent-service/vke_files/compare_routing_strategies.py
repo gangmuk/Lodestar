@@ -492,9 +492,12 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
             filtered_df = df[df['iteration'] >= iteration_from]
             if filtered_df.empty and not df.empty:
                 # Fallback: use the max available iteration to avoid empty plots
-                max_iter = df['iteration'].max()
-                print(f"  Warning: no rows with iteration >= {iteration_from} (max iteration = {max_iter}). Falling back to iteration == {max_iter}")
-                df = df[df['iteration'] == max_iter]
+                max_iter = df['iteration'].dropna().max()
+                if pd.notna(max_iter):
+                    print(f"  Warning: no rows with iteration >= {iteration_from} (max iteration = {int(max_iter)}). Falling back to iteration == {int(max_iter)}")
+                    df = df[df['iteration'] == max_iter]
+                else:
+                    print(f"  Warning: no valid iteration values found. Using all data.")
             else:
                 df = filtered_df
             after_count = len(df)

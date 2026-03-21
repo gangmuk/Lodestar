@@ -1,42 +1,116 @@
 #!/usr/bin/env python3
 """
-Plot trend line graphs from routing_strategy_metrics_from_client_log.csv files.
+Plot trend line graphs from routing_strategy_metrics_gateway.csv files
+(produced by compare_routing_strategies.py from gateway logs).
 
 For each workload group (same category + sharing ratio / subcategory, varying RPS),
-creates line plots with:
-  - X-axis: RPS (low to high, left to right)
-  - Different lines: different routing policies
-  - Separate subfigures for avg, p99, p999 of TTFT, TPOT, and E2E latency
+creates bar plots with:
+  - One subplot per RPS point
+  - Avg TTFT on left y-axis, P99 TTFT on right y-axis
+  - Bars grouped by routing policy
 
 Usage:
-    python trendline_plot_from_client_log.py <base_dir> [--output-dir <output_dir>]
-    python trendline_plot_from_client_log.py <base_dir> --target-dirs-file <file>
+    python trendline_plot_from_gateway_log.py <base_dir> [--output-dir <output_dir>]
+    python trendline_plot_from_gateway_log.py <base_dir> --target-dirs-file <file>
 
 Example:
-    python trendline_plot_from_client_log.py /path/to/workload-and-experiment_results/NVIDIA-A30
+    python trendline_plot_from_gateway_log.py /path/to/workload-and-experiment_results/NVIDIA-A30
 """
 
 import os
 import sys
 import re
 import argparse
+import glob
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
-# Reuse helpers from the bar chart script
+# Reuse non-color helpers from the bar chart script
 from merge_and_plot_all_workloads_from_client_log import (
-    find_metrics_files,
-    merge_metrics_files,
     extract_routing_policy,
     extract_rps_from_workload,
     order_policies,
-    generate_policy_colors,
     get_policy_sort_key,
-    POLICY_COLOR_FAMILIES,
-    DEFAULT_COLORS,
 )
+
+# ── Color logic mirrored from compare_routing_strategies.py ─────────────────
+# NOTE: contextual_bandit must be checked BEFORE random so that
+# "contextual_bandit_..._random" gets the red family, not the green one.
+_COLOR_RULES = [
+    ('rl_naive',                          ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db']),
+    ('latency_predictor_e2e_latency',     ['#8b008b', '#ba55d3', '#9932cc', '#8a2be2', '#c71585']),
+    ('latency_predictor_ttft',            ['#ff1493', '#ff69b4', '#dc143c', '#ff00ff', '#da70d6']),
+    ('latency_predictor_avg_tpot',        ['#8b0000', '#b22222', '#cd5c5c', '#f08080', '#fa8072']),
+    ('prefix_cache_1',                    ['#1f77b4', '#4682b4', '#6495ed', '#aec7e8', '#87ceeb']),
+    ('prefix_cache_2',                    ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']),
+    ('preble',                            ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']),
+    ('contextual_bandit',                 ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']),
+    ('prefix_hit_threshold_or_least_request', ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b']),
+    ('least_kv_cache',                    ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460']),
+    ('least_latency',                     ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']),
+    ('least_request',                     ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']),
+    ('random',                            ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']),
+]
+_DEFAULT_COLORS = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']
+
+
+def _get_base_color(policy_name: str, index_in_family: int = 0) -> str:
+    """Return the base bar color for a policy, matching compare_routing_strategies.py."""
+    pl = policy_name.lower()
+    for keyword, palette in _COLOR_RULES:
+        if keyword in pl:
+            return palette[index_in_family % len(palette)]
+    return _DEFAULT_COLORS[index_in_family % len(_DEFAULT_COLORS)]
+
+
+def generate_policy_colors(policies):
+    """Assign a base color to each policy using the same palette as compare_routing_strategies.py."""
+    family_counts = {}
+    colors = {}
+    for policy in policies:
+        pl = policy.lower()
+        family = next((kw for kw, _ in _COLOR_RULES if kw in pl), 'default')
+        idx = family_counts.get(family, 0)
+        family_counts[family] = idx + 1
+        colors[policy] = _get_base_color(policy, idx)
+    return colors
+
+GATEWAY_CSV_NAME = "routing_strategy_metrics_gateway.csv"
+
+
+def find_gateway_metrics_files(base_dir, target_dirs=None):
+    """Find routing_strategy_metrics_gateway.csv files."""
+    files = []
+    if target_dirs:
+        for d in target_dirs:
+            csv_path = os.path.join(d, GATEWAY_CSV_NAME)
+            if os.path.exists(csv_path):
+                files.append(csv_path)
+            else:
+                print(f"Warning: No CSV found in {d}")
+    else:
+        pattern = os.path.join(base_dir, "**", GATEWAY_CSV_NAME)
+        files = glob.glob(pattern, recursive=True)
+    return sorted(files)
+
+
+def merge_gateway_metrics_files(files):
+    """Load and merge gateway CSV files into a single DataFrame."""
+    dfs = []
+    for f in files:
+        try:
+            df = pd.read_csv(f)
+            print(f"Loaded {len(df)} rows from {f}")
+            dfs.append(df)
+        except Exception as e:
+            print(f"Warning: Failed to load {f}: {e}")
+    if not dfs:
+        return None
+    merged = pd.concat(dfs, ignore_index=True)
+    print(f"\nMerged {len(merged)} total rows from {len(dfs)} files")
+    return merged
 
 # ── Font sizes ──────────────────────────────────────────────────────────────
 TITLE_FONTSIZE = 22
@@ -143,7 +217,7 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
         ax.set_visible(False)
         return
 
-    avg_vals, p99_vals, bar_colors = [], [], []
+    avg_vals, p99_vals, base_colors = [], [], []
     for policy in policies:
         rows = df_group[
             (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
@@ -156,11 +230,14 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
 
         avg_vals.append(_mean(avg_col))
         p99_vals.append(_mean(p99_col))
-        bar_colors.append(policy_colors.get(policy, '#7f7f7f'))
+        base_colors.append(policy_colors.get(policy, '#7f7f7f'))
 
     if not any(v > 0 for v in avg_vals + p99_vals):
         ax.set_visible(False)
         return
+
+    # P99 uses a lightened version of the same base color (no hatch)
+    p99_colors = [_shade_color(c, 1.5) for c in base_colors]
 
     ax2 = ax.twinx()
 
@@ -170,18 +247,17 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     avg_x = group_centers - bar_w / 2
     p99_x = group_centers + bar_w / 2
 
-    # ── Avg bars on left axis ────────────────────────────────────────────────
+    # ── Avg bars on left axis (full color) ───────────────────────────────────
     avg_bars = []
-    for i, (x, val, color) in enumerate(zip(avg_x, avg_vals, bar_colors)):
+    for i, (x, val, color) in enumerate(zip(avg_x, avg_vals, base_colors)):
         b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8)
         b[0]._policy_name = policies[i]
         avg_bars.append(b[0])
 
-    # ── P99 bars on right axis (hatched) ─────────────────────────────────────
+    # ── P99 bars on right axis (lightened shade, no hatch) ───────────────────
     p99_bars = []
-    for i, (x, val, color) in enumerate(zip(p99_x, p99_vals, bar_colors)):
-        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black',
-                    linewidth=0.8, hatch='//', alpha=0.75)
+    for i, (x, val, color) in enumerate(zip(p99_x, p99_vals, p99_colors)):
+        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8)
         b[0]._policy_name = policies[i]
         p99_bars.append(b[0])
 
@@ -197,7 +273,7 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
                     bar_obj.get_height() + max_val * 0.02,
                     f'{val:.0f}',
                     ha='center', va='bottom',
-                    fontsize=SUBFIG_LEGEND_FONTSIZE, rotation=45,
+                    fontsize=SUBFIG_LEGEND_FONTSIZE, rotation=90,
                 )
 
     _annotate(ax,  avg_bars, avg_vals, max_avg)
@@ -220,9 +296,8 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     # Mini legend inside the subplot distinguishing Avg vs P99 style
     from matplotlib.patches import Patch
     legend_handles = [
-        Patch(facecolor='gray', edgecolor='black', label='Avg (left axis)'),
-        Patch(facecolor='gray', edgecolor='black', hatch='//', alpha=0.75,
-              label='P99 (right axis)'),
+        Patch(facecolor='#555555', edgecolor='black', label='Avg (left axis)'),
+        Patch(facecolor='#aaaaaa', edgecolor='black', label='P99 — lighter shade (right axis)'),
     ]
     ax.legend(handles=legend_handles, fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
               loc='upper left', framealpha=0.8)
@@ -358,7 +433,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None):
             print(f"  Excluded policies: {excluded}")
     policy_colors = generate_policy_colors(policies)
 
-    pdf_path = os.path.join(output_dir, 'trendline_from_client_log.pdf')
+    pdf_path = os.path.join(output_dir, 'trendline_from_gateway_log.pdf')
 
     with PdfPages(pdf_path) as pdf:
         for gk in sorted_group_keys:
@@ -434,6 +509,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None):
     print(f"Saved bar-chart PDF to {pdf_path}")
 
 
+
 # ── CSV export ──────────────────────────────────────────────────────────────
 
 def export_performance_csv(df, groups, output_dir):
@@ -490,7 +566,7 @@ def export_performance_csv(df, groups, output_dir):
     # Sort for readability
     out_df = out_df.sort_values(['workload_group', 'rps', 'routing_policy', 'run']).reset_index(drop=True)
 
-    csv_path = os.path.join(output_dir, 'performance_summary.csv')
+    csv_path = os.path.join(output_dir, 'performance_summary_gateway.csv')
     out_df.to_csv(csv_path, index=False)
     print(f"Saved performance summary CSV to {csv_path}  ({len(out_df)} rows)")
 
@@ -499,7 +575,8 @@ def export_performance_csv(df, groups, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot trend-line graphs from routing metrics (client logs)'
+        description='Plot trend-line graphs from gateway routing metrics '
+                    '(routing_strategy_metrics_gateway.csv produced by compare_routing_strategies.py)'
     )
     parser.add_argument(
         'base_dir',
@@ -537,19 +614,19 @@ def main():
             print(f"Error: Target dirs file not found: {args.target_dirs_file}")
             sys.exit(1)
 
-    # Find and merge metrics files
-    files = find_metrics_files(base_dir, target_dirs)
+    # Find and merge gateway CSV files
+    files = find_gateway_metrics_files(base_dir, target_dirs)
     if not files:
-        print("No routing_strategy_metrics_from_client_log.csv files found")
+        print(f"No {GATEWAY_CSV_NAME} files found")
         sys.exit(1)
 
     print(f"Found {len(files)} metrics files")
-    df = merge_metrics_files(files)
+    df = merge_gateway_metrics_files(files)
     if df is None or len(df) == 0:
         print("No data to process")
         sys.exit(1)
 
-    # Re-extract routing_policy
+    # Re-derive detailed routing_policy from strategy_full_name (same as client-log version)
     df['routing_policy'] = df['strategy_full_name'].apply(extract_routing_policy)
 
     os.makedirs(output_dir, exist_ok=True)

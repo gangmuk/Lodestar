@@ -25,22 +25,20 @@ marker_size = 50
 edgewidth=0.5
 
 def parse_log_file(filename):
-    with open(filename, 'r') as file:
-        content = file.read()
     data = []
-    lines = content.split('\n')
     invalid_count = 0
-    for line_num, line in enumerate(lines, 1):
-        line = line.strip()
-        if not line or "**@latency_metrics@" not in line:
-            continue
-        try:
-            entry = parse_metrics_line(line)
-            if entry:
-                data.append(entry)
-        except Exception as e:
-            print(f"Error parsing line {line_num}: {e}")
-            continue
+    with open(filename, 'r') as file:
+        for line_num, line in enumerate(file, 1):
+            line = line.strip()
+            if not line or "**@latency_metrics@" not in line:
+                continue
+            try:
+                entry = parse_metrics_line(line)
+                if entry:
+                    data.append(entry)
+            except Exception as e:
+                print(f"Error parsing line {line_num}: {e}")
+                continue
     
     # Filter out entries with invalid start times
     original_count = len(data)
@@ -386,7 +384,7 @@ def get_iteration_transitions(data):
     return transitions
 
 def calculate_ttft_reward(ttft, slo_ttft=500):
-    """Calculate TTFT reward based on the given formula"""
+    """Calculate TTFT reward based on the given formula (scalar version)"""
     if ttft <= 0:
         return 0.5
     elif 0 < ttft <= slo_ttft:
@@ -395,7 +393,7 @@ def calculate_ttft_reward(ttft, slo_ttft=500):
         return -0.1 - 0.4 * min(1, (ttft - slo_ttft) / slo_ttft)
 
 def calculate_tpot_reward(tpot, slo_tpot=50):
-    """Calculate TPOT reward based on the given formula"""
+    """Calculate TPOT reward based on the given formula (scalar version)"""
     if tpot <= 0:
         return -0.5
     elif 0 < tpot <= slo_tpot:
@@ -406,6 +404,34 @@ def calculate_tpot_reward(tpot, slo_tpot=50):
 def calculate_total_reward(ttft, tpot, slo_ttft=500, slo_tpot=50):
     """Calculate total reward as sum of TTFT and TPOT rewards"""
     return calculate_ttft_reward(ttft, slo_ttft) + calculate_tpot_reward(tpot, slo_tpot)
+
+def _calculate_ttft_reward_vec(ttft_arr, slo_ttft=500):
+    """Vectorized TTFT reward calculation using numpy."""
+    arr = np.asarray(ttft_arr, dtype=float)
+    result = np.where(
+        arr <= 0,
+        0.5,
+        np.where(
+            arr <= slo_ttft,
+            0.5 - 0.4 * (arr / slo_ttft),
+            -0.1 - 0.4 * np.minimum(1.0, (arr - slo_ttft) / slo_ttft)
+        )
+    )
+    return result
+
+def _calculate_tpot_reward_vec(tpot_arr, slo_tpot=50):
+    """Vectorized TPOT reward calculation using numpy."""
+    arr = np.asarray(tpot_arr, dtype=float)
+    result = np.where(
+        arr <= 0,
+        -0.5,
+        np.where(
+            arr <= slo_tpot,
+            0.1 + 0.4 * (1.0 - arr / slo_tpot),
+            -0.1 - 0.4 * np.minimum(1.0, (arr - slo_tpot) / slo_tpot)
+        )
+    )
+    return result
 
 def calculate_slo_satisfaction(df, slo_ttft=500, slo_tpot=50):
     """Calculate SLO satisfaction statistics"""
@@ -427,65 +453,11 @@ def calculate_slo_satisfaction(df, slo_ttft=500, slo_tpot=50):
 
 def calculate_cluster_wise_metrics(df):
     """
-    Calculate cluster-wise TTFT, TPOT, E2E, and Reward statistics for each second interval
+    Calculate cluster-wise TTFT, TPOT, E2E, and Reward statistics for each second interval.
+    NOTE: The return value is accepted by plot_main_metrics_subplots but not used there,
+    so we skip the expensive per-bin computation entirely.
     """
-    # Create time bins (1-second intervals)
-    df['time_bin'] = np.floor(df['relative_time']).astype(int)
-    
-    # Group by time bin and calculate statistics
-    cluster_stats = []
-    
-    for time_bin in sorted(df['time_bin'].unique()):
-        bin_data = df[df['time_bin'] == time_bin]
-        
-        # Overall statistics for this time bin
-        overall_stats = {
-            'time_bin': time_bin,
-            'total_requests': len(bin_data),
-            'mean_ttft': bin_data['ttft'].mean(),
-            'median_ttft': bin_data['ttft'].median(),
-            'std_ttft': bin_data['ttft'].std(),
-            'min_ttft': bin_data['ttft'].min(),
-            'max_ttft': bin_data['ttft'].max(),
-            'p95_ttft': bin_data['ttft'].quantile(0.95),
-            'p99_ttft': bin_data['ttft'].quantile(0.99),
-            'mean_tpot': bin_data['avg_tpot'].mean(),
-            'median_tpot': bin_data['avg_tpot'].median(),
-            'std_tpot': bin_data['avg_tpot'].std(),
-            'min_tpot': bin_data['avg_tpot'].min(),
-            'max_tpot': bin_data['avg_tpot'].max(),
-            'p95_tpot': bin_data['avg_tpot'].quantile(0.95),
-            'p99_tpot': bin_data['avg_tpot'].quantile(0.99),
-            'mean_e2e': bin_data['e2e'].mean(),
-            'min_e2e': bin_data['e2e'].min(),
-            'max_e2e': bin_data['e2e'].max(),
-            'mean_reward': bin_data['total_reward'].mean(),
-            'min_reward': bin_data['total_reward'].min(),
-            'max_reward': bin_data['total_reward'].max()
-        }
-        
-        # Pod-wise statistics for this time bin
-        pod_stats = {}
-        for pod in bin_data['selectedpod'].unique():
-            pod_data = bin_data[bin_data['selectedpod'] == pod]
-            pod_stats[f'pod_{pod}'] = {
-                'count': len(pod_data),
-                'mean_ttft': pod_data['ttft'].mean(),
-                'median_ttft': pod_data['ttft'].median(),
-                'std_ttft': pod_data['ttft'].std() if len(pod_data) > 1 else 0,
-                'min_ttft': pod_data['ttft'].min(),
-                'max_ttft': pod_data['ttft'].max(),
-                'mean_tpot': pod_data['avg_tpot'].mean(),
-                'median_tpot': pod_data['avg_tpot'].median(),
-                'std_tpot': pod_data['avg_tpot'].std() if len(pod_data) > 1 else 0,
-                'min_tpot': pod_data['avg_tpot'].min(),
-                'max_tpot': pod_data['avg_tpot'].max()
-            }
-        
-        overall_stats['pod_stats'] = pod_stats
-        cluster_stats.append(overall_stats)
-    
-    return cluster_stats
+    return []
 
 
 def prepare_plot_data(df, unique_pods):
@@ -508,71 +480,19 @@ def prepare_plot_data(df, unique_pods):
         print(f"Error: 'num_output_tokens' column not found in data. Cannot calculate total tokens per second.")
         exit()
     
-    # Calculate total waiting requests per second
-    waiting_requests_per_sec = []
-    for time_bin in sorted(df['time_bin'].unique()):
-        bin_data = df[df['time_bin'] == time_bin]
-        # Get the last entry in this time bin to get the most recent waiting count
-        if not bin_data.empty:
-            last_entry = bin_data.iloc[-1]
-            if last_entry['vllm_num_requests_waiting'] is not None:
-                val = last_entry['vllm_num_requests_waiting']
-                if isinstance(val, dict):
-                    total_waiting = sum(val.values())
-                else:
-                    total_waiting = 0
-                waiting_requests_per_sec.append({'time_bin': time_bin, 'total_waiting': total_waiting})
-    
-    waiting_requests_df = pd.DataFrame(waiting_requests_per_sec)
-    
-    # Calculate total running requests per second
-    running_requests_per_sec = []
-    for time_bin in sorted(df['time_bin'].unique()):
-        bin_data = df[df['time_bin'] == time_bin]
-        # Get the last entry in this time bin to get the most recent running count
-        if not bin_data.empty:
-            last_entry = bin_data.iloc[-1]
-            if last_entry['vllm_num_requests_running'] is not None:
-                val = last_entry['vllm_num_requests_running']
-                if isinstance(val, dict):
-                    total_running = sum(val.values())
-                else:
-                    total_running = 0
-                running_requests_per_sec.append({'time_bin': time_bin, 'total_running': total_running})
-    
-    running_requests_df = pd.DataFrame(running_requests_per_sec)
-    
-    # Calculate total prefill tokens per second across all pods
-    prefill_tokens_per_sec = []
-    for time_bin in sorted(df['time_bin'].unique()):
-        bin_data = df[df['time_bin'] == time_bin]
-        if not bin_data.empty:
-            last_entry = bin_data.iloc[-1]
-            if last_entry['num_prefill_tokens_for_all_pods'] is not None:
-                val = last_entry['num_prefill_tokens_for_all_pods']
-                if isinstance(val, dict):
-                    total_prefill = sum(val.values())
-                else:
-                    total_prefill = 0
-                prefill_tokens_per_sec.append({'time_bin': time_bin, 'total_prefill': total_prefill})
-    
-    prefill_tokens_df = pd.DataFrame(prefill_tokens_per_sec)
-    
-    # Calculate total decode tokens per second across all pods
-    decode_tokens_per_sec = []
-    for time_bin in sorted(df['time_bin'].unique()):
-        bin_data = df[df['time_bin'] == time_bin]
-        if not bin_data.empty:
-            last_entry = bin_data.iloc[-1]
-            if last_entry['num_decode_tokens_for_all_pods'] is not None:
-                val = last_entry['num_decode_tokens_for_all_pods']
-                if isinstance(val, dict):
-                    total_decode = sum(val.values())
-                else:
-                    total_decode = 0
-                decode_tokens_per_sec.append({'time_bin': time_bin, 'total_decode': total_decode})
-    
-    decode_tokens_df = pd.DataFrame(decode_tokens_per_sec)
+    def _last_dict_sum_per_bin(df, col, out_col):
+        """For each time_bin, grab the last row's dict-valued column and sum its values."""
+        last_per_bin = df.groupby('time_bin', sort=True)[col].last()
+        valid = last_per_bin[last_per_bin.notna()]
+        if valid.empty:
+            return pd.DataFrame(columns=['time_bin', out_col])
+        totals = valid.apply(lambda v: sum(v.values()) if isinstance(v, dict) else 0)
+        return pd.DataFrame({'time_bin': totals.index, out_col: totals.values})
+
+    waiting_requests_df = _last_dict_sum_per_bin(df, 'vllm_num_requests_waiting', 'total_waiting')
+    running_requests_df = _last_dict_sum_per_bin(df, 'vllm_num_requests_running', 'total_running')
+    prefill_tokens_df   = _last_dict_sum_per_bin(df, 'num_prefill_tokens_for_all_pods', 'total_prefill')
+    decode_tokens_df    = _last_dict_sum_per_bin(df, 'num_decode_tokens_for_all_pods', 'total_decode')
     
     # Requests per second by pod
     requests_per_pod_per_sec = df.groupby(['time_bin', 'selectedpod']).size().reset_index(name='requests')
@@ -590,170 +510,125 @@ def prepare_plot_data(df, unique_pods):
 
 def extract_pod_specific_data(df, unique_pods):
     """Extract pod-specific data for various metrics"""
-    # Extract KV cache hit ratios for selected pods and cluster-wide statistics
+    # Build all pod-level metric tables in a single pass to avoid repeatedly scanning df.
     kv_cache_data = []
-    for _, row in df.iterrows():
-        if row['all_pods_kv_cache_hit_ratios'] is not None and row['selectedpod'] is not None:
-            val = row['all_pods_kv_cache_hit_ratios']
-            if not isinstance(val, dict):
+    running_requests_data = []
+    prefill_tokens_data = []
+    decode_tokens_data = []
+    gpu_cache_usage_data = []
+    waiting_selected_pod_data = []
+
+    metric_specs = [
+        (
+            'all_pods_kv_cache_hit_ratios',
+            'selectedpod_kv_cache_hit_ratio',
+            'cluster_avg_kv_cache',
+            'cluster_min_kv_cache',
+            'cluster_max_kv_cache',
+            kv_cache_data,
+        ),
+        (
+            'vllm_num_requests_running',
+            'running_requests',
+            'cluster_avg_running',
+            'cluster_min_running',
+            'cluster_max_running',
+            running_requests_data,
+        ),
+        (
+            'num_prefill_tokens_for_all_pods',
+            'prefill_tokens',
+            'cluster_avg_prefill',
+            'cluster_min_prefill',
+            'cluster_max_prefill',
+            prefill_tokens_data,
+        ),
+        (
+            'num_decode_tokens_for_all_pods',
+            'decode_tokens',
+            'cluster_avg_decode',
+            'cluster_min_decode',
+            'cluster_max_decode',
+            decode_tokens_data,
+        ),
+        (
+            'vllm_gpu_kv_cache_usage',
+            'gpu_cache_usage',
+            'cluster_avg_gpu',
+            'cluster_min_gpu',
+            'cluster_max_gpu',
+            gpu_cache_usage_data,
+        ),
+        (
+            'vllm_num_requests_waiting',
+            'waiting_requests_selected',
+            'cluster_avg_waiting',
+            'cluster_min_waiting',
+            'cluster_max_waiting',
+            waiting_selected_pod_data,
+        ),
+    ]
+
+    for row in df.itertuples(index=False):
+        selectedpod = row.selectedpod
+        if selectedpod is None:
+            continue
+
+        relative_time = row.relative_time
+        for dict_col, selected_key, avg_key, min_key, max_key, target in metric_specs:
+            val = getattr(row, dict_col, None)
+            if val is None or not isinstance(val, dict):
                 continue
-            # Extract the hit ratio for the selected pod
-            selected_pod_hit_ratio = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
+
+            selected_val = val.get(selectedpod, 0)
+            if selected_val is None:
+                continue
+
             all_values = list(val.values())
             cluster_avg = sum(all_values) / len(all_values) if all_values else None
             cluster_min = min(all_values) if all_values else None
             cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_hit_ratio is not None:
-                kv_cache_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'selectedpod_kv_cache_hit_ratio': selected_pod_hit_ratio,
-                    'cluster_avg_kv_cache': cluster_avg,
-                    'cluster_min_kv_cache': cluster_min,
-                    'cluster_max_kv_cache': cluster_max
-                })
-    
+
+            target.append({
+                'relative_time': relative_time,
+                'selectedpod': selectedpod,
+                selected_key: selected_val,
+                avg_key: cluster_avg,
+                min_key: cluster_min,
+                max_key: cluster_max,
+            })
+
     kv_cache_df = pd.DataFrame(kv_cache_data)
 
     # Apply sliding window (time-based, 1-second window) to cluster avg/min/max kv cache
     if not kv_cache_df.empty:
         kv_cache_df = kv_cache_df.sort_values('relative_time').reset_index(drop=True)
-        kv_cache_df = kv_cache_df.set_index('relative_time')
+        # Use TimedeltaIndex so time-based rolling('1s') works with second-based relative_time.
+        kv_cache_df = kv_cache_df.set_index(pd.to_timedelta(kv_cache_df['relative_time'], unit='s'))
+        kv_cache_df.index.name = 'relative_time_delta'
         for col in ['cluster_avg_kv_cache', 'cluster_min_kv_cache', 'cluster_max_kv_cache']:
             kv_cache_df[col] = kv_cache_df[col].rolling(window='1s', min_periods=1).mean()
-        kv_cache_df = kv_cache_df.reset_index()
+        kv_cache_df = kv_cache_df.reset_index(drop=True)
 
-    # 1. vllmNumRequestsRunning for selected pod and cluster-wide statistics
-    running_requests_data = []
-    for _, row in df.iterrows():
-        if row['vllm_num_requests_running'] is not None and row['selectedpod'] is not None:
-            val = row['vllm_num_requests_running']
-            if not isinstance(val, dict):
-                continue
-            selected_pod_running = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
-            all_values = list(val.values())
-            cluster_avg = sum(all_values) / len(all_values) if all_values else None
-            cluster_min = min(all_values) if all_values else None
-            cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_running is not None:
-                running_requests_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'running_requests': selected_pod_running,
-                    'cluster_avg_running': cluster_avg,
-                    'cluster_min_running': cluster_min,
-                    'cluster_max_running': cluster_max
-                })
     running_requests_df = pd.DataFrame(running_requests_data)
     
     # 2. numPrefillTokensForAllPods for selected pod and cluster-wide statistics
-    prefill_tokens_data = []
-    for _, row in df.iterrows():
-        if row['num_prefill_tokens_for_all_pods'] is not None and row['selectedpod'] is not None:
-            val = row['num_prefill_tokens_for_all_pods']
-            if not isinstance(val, dict):
-                continue
-            selected_pod_prefill = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
-            all_values = list(val.values())
-            cluster_avg = sum(all_values) / len(all_values) if all_values else None
-            cluster_min = min(all_values) if all_values else None
-            cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_prefill is not None:
-                prefill_tokens_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'prefill_tokens': selected_pod_prefill,
-                    'cluster_avg_prefill': cluster_avg,
-                    'cluster_min_prefill': cluster_min,
-                    'cluster_max_prefill': cluster_max
-                })
     prefill_tokens_df = pd.DataFrame(prefill_tokens_data)
     
     # 3. numDecodeTokensForAllPods for selected pod and cluster-wide statistics
-    decode_tokens_data = []
-    for _, row in df.iterrows():
-        if row['num_decode_tokens_for_all_pods'] is not None and row['selectedpod'] is not None:
-            val = row['num_decode_tokens_for_all_pods']
-            if not isinstance(val, dict):
-                continue
-            selected_pod_decode = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
-            all_values = list(val.values())
-            cluster_avg = sum(all_values) / len(all_values) if all_values else None
-            cluster_min = min(all_values) if all_values else None
-            cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_decode is not None:
-                decode_tokens_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'decode_tokens': selected_pod_decode,
-                    'cluster_avg_decode': cluster_avg,
-                    'cluster_min_decode': cluster_min,
-                    'cluster_max_decode': cluster_max
-                })
     decode_tokens_df = pd.DataFrame(decode_tokens_data)
     
     # 4. vllmGPUKVCacheUsage for selected pod and cluster-wide statistics
-    gpu_cache_usage_data = []
-    for _, row in df.iterrows():
-        if row['vllm_gpu_kv_cache_usage'] is not None and row['selectedpod'] is not None:
-            val = row['vllm_gpu_kv_cache_usage']
-            if not isinstance(val, dict):
-                continue
-            selected_pod_gpu_usage = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
-            all_values = list(val.values())
-            cluster_avg = sum(all_values) / len(all_values) if all_values else None
-            cluster_min = min(all_values) if all_values else None
-            cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_gpu_usage is not None:
-                gpu_cache_usage_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'gpu_cache_usage': selected_pod_gpu_usage,
-                    'cluster_avg_gpu': cluster_avg,
-                    'cluster_min_gpu': cluster_min,
-                    'cluster_max_gpu': cluster_max
-                })
     gpu_cache_usage_df = pd.DataFrame(gpu_cache_usage_data)
     
     # 5. vllmNumRequestsWaiting for selected pod and cluster-wide statistics
-    waiting_selected_pod_data = []
-    for _, row in df.iterrows():
-        if row['vllm_num_requests_waiting'] is not None and row['selectedpod'] is not None:
-            val = row['vllm_num_requests_waiting']
-            if not isinstance(val, dict):
-                continue
-            selected_pod_waiting = val.get(row['selectedpod'], 0)
-            # Calculate cluster-wide statistics
-            all_values = list(val.values())
-            cluster_avg = sum(all_values) / len(all_values) if all_values else None
-            cluster_min = min(all_values) if all_values else None
-            cluster_max = max(all_values) if all_values else None
-            
-            if selected_pod_waiting is not None:
-                waiting_selected_pod_data.append({
-                    'relative_time': row['relative_time'],
-                    'selectedpod': row['selectedpod'],
-                    'waiting_requests_selected': selected_pod_waiting,
-                    'cluster_avg_waiting': cluster_avg,
-                    'cluster_min_waiting': cluster_min,
-                    'cluster_max_waiting': cluster_max
-                })
     waiting_selected_pod_df = pd.DataFrame(waiting_selected_pod_data)
     
     # Debug: Print info about waiting_selected_pod_df
     print(f"Waiting selected pod data points: {len(waiting_selected_pod_df)}")
-    # Save for debugging
-    waiting_selected_pod_df.to_csv('waiting_selected_pod_df.csv')
+    # Save debug dump only when explicitly requested.
+    if os.environ.get('PLOT_LATENCY_DEBUG_DUMPS') == '1':
+        waiting_selected_pod_df.to_csv('waiting_selected_pod_df.csv')
     
     return {
         'kv_cache_df': kv_cache_df,
@@ -863,14 +738,15 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
 
     # Add vertical lines for OOD fallback events with different colors per value
     if 'ood_fallback' in df.columns:
-        ood_fallback_df = df[df['ood_fallback'].notna()]
+        ood_fallback_df = df[df['ood_fallback'].notna()].copy()
         if not ood_fallback_df.empty:
-            # Define colors for different oodFallback values
             ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
-            for _, row in ood_fallback_df.iterrows():
-                ood_val = int(row['ood_fallback'])
-                color = ood_colors.get(ood_val, 'gray')  # default to gray for unknown values
-                ax1.axvline(x=row['relative_time'], color=color, linestyle='-', linewidth=0.3, alpha=0.3, zorder=0)
+            ood_fallback_df['_ood_int'] = ood_fallback_df['ood_fallback'].astype(int)
+            ymin, ymax = ax1.get_ylim()
+            for ood_val, group in ood_fallback_df.groupby('_ood_int'):
+                color = ood_colors.get(int(ood_val), 'gray')
+                ax1.vlines(group['relative_time'].values, ymin=ymin, ymax=ymax,
+                           colors=color, linestyles='-', linewidths=0.3, alpha=0.3, zorder=0)
 
     # NEW SUBPLOT: KV Cache Hit Ratio (ax_kv_cache)
     if not pod_data['kv_cache_df'].empty:
@@ -990,13 +866,13 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     add_transition_lines(ax3, train_transitions, flush_transitions, iteration_transitions)
     
     # Set titles and labels for main plots
-    ax1.set_title('Time to First Token (TTFT) for Each Request', fontsize=16, fontweight='bold', pad=10)
+    ax1.set_title('Time to First Token (TTFT) for Each Request', fontsize=16, fontweight='bold', pad=55)
     ax1.set_ylabel('TTFT (ms)', fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=alpha)
     ax1.tick_params(axis='both', which='major', labelsize=11)
     ax1.tick_params(axis='y', which='major', labelsize=11, labelleft=True)
     
-    # Add legend for TTFT - only meaningful metrics, no pod labels
+    # Add legend for TTFT above the axes (outside the plot area)
     legend_elements_ttft = []
     legend_labels_ttft = []
     legend_elements_ttft.extend([
@@ -1014,7 +890,9 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
             color = ood_colors.get(ood_val_int, 'gray')
             legend_elements_ttft.append(Line2D([0], [0], color=color, linewidth=0.8, alpha=0.5, label=f'oodFallback={ood_val_int}'))
             legend_labels_ttft.append(f'oodFallback={ood_val_int}')
-    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, loc='upper right', ncol=4)
+    ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, ncol=4,
+               loc='lower left', bbox_to_anchor=(0, 1.02, 1, 0.08),
+               mode='expand', borderaxespad=0, frameon=True)
     
     ax2.set_title('Average Time Per Output Token (TPOT) for Each Request', fontsize=16, fontweight='bold', pad=10)
     ax2.set_ylabel('Average TPOT (ms)', fontsize=14, fontweight='bold')
@@ -2142,9 +2020,9 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
         print(f"For non-learning policies (like prefix_cache), iteration=-99 is normal and should be allowed.")
         exit()
     
-    # Calculate reward columns first before cluster statistics
-    df['ttft_reward'] = df['ttft'].apply(lambda x: calculate_ttft_reward(x, slo_ttft))
-    df['tpot_reward'] = df['avg_tpot'].apply(lambda x: calculate_tpot_reward(x, slo_tpot))
+    # Calculate reward columns first before cluster statistics (vectorized)
+    df['ttft_reward'] = _calculate_ttft_reward_vec(df['ttft'].values, slo_ttft)
+    df['tpot_reward'] = _calculate_tpot_reward_vec(df['avg_tpot'].values, slo_tpot)
     df['total_reward'] = df['ttft_reward'] + df['tpot_reward']
     
     # Use iteration from data if available, otherwise create bins based on order
@@ -2381,13 +2259,15 @@ def create_simple_timeseries_plot(data, log_dir, slo_ttft, slo_tpot, routing_pol
 
     # Add vertical lines for OOD fallback events with different colors per value
     if 'ood_fallback' in df.columns:
-        ood_fallback_df = df[df['ood_fallback'].notna()]
+        ood_fallback_df = df[df['ood_fallback'].notna()].copy()
         if not ood_fallback_df.empty:
             ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
-            for _, row in ood_fallback_df.iterrows():
-                ood_val = int(row['ood_fallback'])
-                color = ood_colors.get(ood_val, 'gray')
-                ax_ttft.axvline(x=row['relative_time'], color=color, linestyle='-', linewidth=0.3, alpha=0.3, zorder=0)
+            ood_fallback_df['_ood_int'] = ood_fallback_df['ood_fallback'].astype(int)
+            ymin, ymax = ax_ttft.get_ylim()
+            for ood_val, group in ood_fallback_df.groupby('_ood_int'):
+                color = ood_colors.get(int(ood_val), 'gray')
+                ax_ttft.vlines(group['relative_time'].values, ymin=ymin, ymax=ymax,
+                               colors=color, linestyles='-', linewidths=0.3, alpha=0.3, zorder=0)
 
     ax_ttft.set_ylabel('TTFT (ms)', fontsize=14, fontweight='bold')
     ax_ttft.set_title('Time to First Token (TTFT) - 1-Second Sliding Window Average',
@@ -2629,6 +2509,7 @@ parser.add_argument('--setylim', type=int, default=0, help='Set y-axis limits')
 parser.add_argument('--slo_ttft', type=int, default=1000, help='SLO TTFT')
 parser.add_argument('--slo_tpot', type=int, default=50, help='SLO TPOT')
 parser.add_argument('--skip-first-seconds', type=float, default=0, help='Skip/truncate the first X seconds of data (default: 30s)')
+parser.add_argument('--upto_request', type=int, default=None, help='If given, only plot the first N requests (by arrival order)')
 
 
 if __name__ == "__main__":
@@ -2642,6 +2523,7 @@ if __name__ == "__main__":
     slo_ttft = args.slo_ttft
     slo_tpot = args.slo_tpot
     skip_first_seconds = args.skip_first_seconds
+    upto_request = args.upto_request
     
     # Extract routing policy from path structure more robustly
     path_parts = log_file.split('/')
@@ -2678,7 +2560,12 @@ if __name__ == "__main__":
         if not data:
             print(f"Error: No data remaining after skipping first {skip_first_seconds} seconds.")
             assert False
-    
+
+    # Limit to the first N requests by arrival order if requested
+    if upto_request is not None and len(data) > upto_request:
+        data = data[:upto_request]
+        print(f"Truncated to first {upto_request} requests (--upto_request)")
+
     # Create and save the enhanced plot
     fig = create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy)
     
