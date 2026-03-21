@@ -425,25 +425,59 @@ experiment_configs=(
     ## Mooncake conversation: 2713 ##
     #################################
 
-    # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|12|2"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|12|4"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|12|3"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2_rps12|mooncake|conversation-2|${target_gpu}|12|3"
-    # "least_request|mooncake|conversation-2|${target_gpu}|12|2"
 
+    # conversation-2-extended-ver1
+    "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
 
-    # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|10|4"
-    # "least_request|mooncake|conversation-2|${target_gpu}|10|4"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|conversation-2|${target_gpu}|10|4"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|conversation-2|${target_gpu}|10|4"
+    # toolagent-2-extended-ver1
+    "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|9|1"
+
+    # toolagent-2-extended-ver1
+    "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
+
+    # conversation-2-extended-ver1
+    # "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
+
+    # toolagent-2-extended-ver1
+    # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
 
     # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|11|4"
     # "least_request|mooncake|conversation-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|conversation-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|conversation-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|conversation-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|conversation-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|conversation-2|${target_gpu}|11|4"
 
 
     # "prefix_cache_1|mooncake|conversation-2|${target_gpu}|12|3"
@@ -469,11 +503,11 @@ experiment_configs=(
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|11|4"
     # "least_request|mooncake|toolagent-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2|${target_gpu}|11|4"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2|${target_gpu}|11|4"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2|${target_gpu}|11|4"
 
     # "prefix_cache_1|mooncake|toolagent-2|${target_gpu}|12|3"
     # "least_request|mooncake|toolagent-2|${target_gpu}|12|2"
@@ -484,11 +518,15 @@ experiment_configs=(
 
     # "prefix_cache_1|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
     # "least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_synthetic_realistic_tokenized_rpsscale_1_numtokens_100|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1"
+
+
+
+
 
     # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|20"
     # "prefix_hit_threshold_or_least_request|mooncake|synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed|${target_gpu}|-1|1|40"
@@ -785,7 +823,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
             max_input_tokens=25000
             input_tokens_std=0
             token_counting_mode="tiktoken"
-        elif [[ "${workload_name}" == "toolagent-2" || "${workload_name}" == "conversation-2" || "${workload_name}" == "synthetic-2" ]]; then
+        elif [[ "${workload_name}" == *"toolagent-2"* || "${workload_name}" == *"conversation-2"* || "${workload_name}" == *"synthetic-2"* ]]; then
             max_input_tokens=25000
             input_tokens_std=100
             token_counting_mode="tiktoken"

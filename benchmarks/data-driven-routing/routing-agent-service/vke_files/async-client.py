@@ -2505,6 +2505,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 logger.info(f"Sampling output tokens from Normal(mean={max_tokens}, std={max_tokens_std})")
             else:
                 logger.info(f"Using fixed output tokens: {max_tokens}")
+            if args.override_workload_output_length:
+                logger.info(f"Using override workload output length: {args.override_workload_output_length}")
 
             # First, collect all requests for this iteration (without target times yet)
             temp_requests = []
