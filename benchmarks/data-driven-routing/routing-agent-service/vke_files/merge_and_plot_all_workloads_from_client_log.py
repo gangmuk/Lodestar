@@ -202,22 +202,26 @@ def get_policy_sort_key(policy):
     policy_lower = policy.lower()
     datetime_str = extract_datetime_from_name(policy)
 
-    if 'random' in policy_lower:
+    if 'random' in policy_lower and 'contextual_bandit' not in policy_lower:
         return (0, datetime_str, policy)
     elif 'prefix_hit_threshold_or_least_request' in policy_lower:
-        return (0, datetime_str, policy)
-    elif 'least_request' in policy_lower:
         return (1, datetime_str, policy)
-    elif 'prefix_cache' in policy_lower:
+    elif 'least_request' in policy_lower:
         return (2, datetime_str, policy)
-    elif 'contextual_bandit' in policy_lower:
+    elif 'prefix_cache' in policy_lower:
         return (3, datetime_str, policy)
-    elif 'least_latency' in policy_lower:
+    elif 'contextual_bandit' in policy_lower and 'onlinelearning_0' in policy_lower:
         return (4, datetime_str, policy)
-    elif 'least_kv_cache' in policy_lower:
+    elif 'contextual_bandit' in policy_lower and 'onlinelearning_1' in policy_lower and 'random' in policy_lower:
         return (5, datetime_str, policy)
-    else:
+    elif 'contextual_bandit' in policy_lower:
         return (6, datetime_str, policy)
+    elif 'least_latency' in policy_lower:
+        return (7, datetime_str, policy)
+    elif 'least_kv_cache' in policy_lower:
+        return (8, datetime_str, policy)
+    else:
+        return (9, datetime_str, policy)
 
 
 def order_policies(policies):
@@ -318,22 +322,28 @@ def get_policy_color(policy, color_map):
 
 def extract_routing_policy(strategy_full_name):
     """
-    Extract routing policy from strategy_full_name.
-    
+    Extract routing policy from strategy_full_name, preserving the
+    onlinelearning_X suffix when present.
+
     Examples:
     - "contextual_bandit_perpodmodel_checkpoint_negative_linear-iter3-onlinelearning_1-20260202_203318"
-      -> "contextual_bandit_perpodmodel_checkpoint_negative_linear"
-    - "least_request-iter3-onlinelearning_1-20260202_193433" -> "least_request"
+      -> "contextual_bandit_perpodmodel_checkpoint_negative_linear-onlinelearning_1"
+    - "least_request-iter3-onlinelearning_0-20260202_193433"
+      -> "least_request-onlinelearning_0"
     - "random-iter1--20251122_131129" -> "random"
     """
+    # Extract onlinelearning_X suffix if present
+    ol_match = re.search(r'(onlinelearning_\d+)', strategy_full_name)
+    ol_suffix = '-' + ol_match.group(1) if ol_match else ''
+
     # Pattern: everything before "-iter" or before "-YYYYMMDD_HHMMSS"
     match = re.match(r'^(.+?)-iter\d+', strategy_full_name)
     if match:
-        return match.group(1)
+        return match.group(1) + ol_suffix
 
     match = re.match(r'^(.+?)-\d{8}_\d{6}', strategy_full_name)
     if match:
-        return match.group(1)
+        return match.group(1) + ol_suffix
 
     return strategy_full_name
 

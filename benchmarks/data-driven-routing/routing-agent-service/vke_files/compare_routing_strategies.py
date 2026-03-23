@@ -726,8 +726,9 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     strategy_centers = np.arange(n_strategies) * group_block_width
 
     stat_alphas = {'Avg': 0.9, 'P99': 0.7, 'P999': 0.5}
-    all_group_colors = dict(INPUT_LENGTH_COLORS)
-    all_group_colors['All'] = '#555555'  # Gray for aggregated
+    # Use different alphas for token range groups to distinguish them,
+    # while using routing policy colors from color_dict for consistency across subfigures
+    group_alphas = {'Short (0-1K)': 1.0, 'Medium (1K-5K)': 0.7, 'Long (5K+)': 0.45, 'All': 0.25}
 
     # Compute separate max values for left (Avg) and right (P99/P999) axes
     avg_vals = [v[3] for v in all_bar_values if v[2] == 'Avg' and np.isfinite(v[3])]
@@ -741,9 +742,11 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     for si, strategy in enumerate(strategies):
         base_x = strategy_centers[si] - (n_all_groups * sub_group_width) / 2
 
+        strategy_color = color_dict.get(strategy, '#888888')
+
         for gi, group in enumerate(all_groups):
-            group_color = all_group_colors[group]
             sub_base = base_x + gi * sub_group_width
+            g_alpha = group_alphas[group]
 
             # Use hatch patterns: '///' for onlinelearning_0, 'xx' for contextual_bandit with random init
             sl = strategy.lower()
@@ -756,17 +759,17 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
                         val = v[3]
                         break
                 pos = sub_base + stat_idx * bar_width
-                alpha = stat_alphas[stat_label]
+                alpha = stat_alphas[stat_label] * g_alpha
 
                 # Avg on left axis, P99/P999 on right axis
                 if stat_label == 'Avg':
-                    ax.bar(pos, val, bar_width, color=group_color, edgecolor='black',
+                    ax.bar(pos, val, bar_width, color=strategy_color, edgecolor='black',
                            linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
                     if np.isfinite(val) and val > 0:
                         ax.text(pos, val + max_avg * 0.01, f'{val:.0f}', rotation=90,
                                 ha='center', va='bottom', fontsize=7, fontweight='bold', color='#222266')
                 else:
-                    ax2.bar(pos, val, bar_width, color=group_color, edgecolor='black',
+                    ax2.bar(pos, val, bar_width, color=strategy_color, edgecolor='black',
                             linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
                     if np.isfinite(val) and val > 0:
                         ax2.text(pos, val + max_tail * 0.01, f'{val:.0f}', rotation=90,
@@ -804,9 +807,9 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
             ax.text(strategy_centers[si], -max_avg * 0.12,
                     ', '.join(counts), ha='center', va='top', fontsize=7, color='gray')
 
-    # Legends
-    group_legend = [Patch(facecolor=all_group_colors[g], edgecolor='black', alpha=0.8,
-                          label=g) for g in groups]  # Exclude 'All' gray patch
+    # Legends: show token range groups distinguished by alpha
+    group_legend = [Patch(facecolor='gray', edgecolor='black', alpha=group_alphas[g],
+                          label=g) for g in all_groups]
     ax.legend(handles=group_legend, loc='upper left', fontsize=10, ncol=len(group_legend))
 
     ax.set_ylabel(f'{ylabel_text} — Avg', fontsize=ylabel_fontsize, color='#222266')

@@ -690,7 +690,6 @@ def plot_request_rate_subplots(fig, gs, plot_data, train_transitions, flush_tran
     ax_pod_rate.set_title('Requests Per Second by Pod', fontsize=16, fontweight='bold', pad=10)
     ax_pod_rate.set_ylabel('Requests/sec', fontsize=14, fontweight='bold')
     ax_pod_rate.grid(True, alpha=alpha)
-    ax_pod_rate.legend(fontsize=10, loc='upper right')
     ax_pod_rate.tick_params(axis='both', which='major', labelsize=11)
 
     
@@ -758,21 +757,21 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
                 if not pod_kv_data_clean.empty:
                     ax_kv_cache.scatter(pod_kv_data_clean['relative_time'], pod_kv_data_clean['selectedpod_kv_cache_hit_ratio'], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha) #, label=f'Pod: {pod}')
         
-        # Plot cluster-wide statistics
-        ax_kv_cache.plot(pod_data['kv_cache_df']['relative_time'], pod_data['kv_cache_df']['cluster_avg_kv_cache'], label='Cluster Avg KV Cache', linewidth=linewidth, alpha=alpha, color='blue')
-        ax_kv_cache.plot(pod_data['kv_cache_df']['relative_time'], pod_data['kv_cache_df']['cluster_min_kv_cache'], label='Cluster Min KV Cache', linewidth=linewidth, alpha=alpha, color='green')
-        ax_kv_cache.plot(pod_data['kv_cache_df']['relative_time'], pod_data['kv_cache_df']['cluster_max_kv_cache'], label='Cluster Max KV Cache', linewidth=linewidth, alpha=alpha, color='orange')
-        
-    # Add average KV cache hit ratio per second for selected pod
-    if not pod_data['kv_cache_df'].empty:
-        # Create time bins for KV cache data
-        pod_data['kv_cache_df']['time_bin'] = np.floor(pod_data['kv_cache_df']['relative_time']).astype(int)
-        
-        # Calculate average KV cache hit ratio per second for selected pod
-        avg_kv_cache_per_sec = pod_data['kv_cache_df'].groupby('time_bin')['selectedpod_kv_cache_hit_ratio'].mean().reset_index()
-        
-        # Plot the average line for selected pod
-        ax_kv_cache.plot(avg_kv_cache_per_sec['time_bin'], avg_kv_cache_per_sec['selectedpod_kv_cache_hit_ratio'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg Selected Pod KV Cache (per sec)')
+        # Plot cluster-wide statistics using non-overlapping sliding window of 10 seconds
+        kv_df = pod_data['kv_cache_df'].copy()
+        kv_df['time_bin_10'] = (np.floor(kv_df['relative_time']) // 10 * 10).astype(int)
+        kv_win = kv_df.groupby('time_bin_10').agg(
+            cluster_avg_kv_cache=('cluster_avg_kv_cache', 'mean'),
+            cluster_min_kv_cache=('cluster_min_kv_cache', 'mean'),
+            cluster_max_kv_cache=('cluster_max_kv_cache', 'mean'),
+            selectedpod_kv_cache=('selectedpod_kv_cache_hit_ratio', 'mean')
+        ).reset_index()
+        ax_kv_cache.plot(kv_win['time_bin_10'], kv_win['cluster_avg_kv_cache'], label='Cluster Avg KV Cache (per 10s)', linewidth=linewidth, alpha=alpha, color='blue')
+        ax_kv_cache.plot(kv_win['time_bin_10'], kv_win['cluster_min_kv_cache'], label='Cluster Min KV Cache (per 10s)', linewidth=linewidth, alpha=alpha, color='green')
+        ax_kv_cache.plot(kv_win['time_bin_10'], kv_win['cluster_max_kv_cache'], label='Cluster Max KV Cache (per 10s)', linewidth=linewidth, alpha=alpha, color='orange')
+
+        # Plot the average line for selected pod using same 10s window
+        ax_kv_cache.plot(kv_win['time_bin_10'], kv_win['selectedpod_kv_cache'], 'red', '-', linewidth=linewidth, alpha=alpha, label='Avg Selected Pod KV Cache (per 10s)')
 
     pod_data['kv_cache_df'].to_csv('kv_cache_df.csv')
     add_transition_lines(ax_kv_cache, train_transitions, flush_transitions, iteration_transitions)
@@ -786,21 +785,21 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     legend_object.set_zorder(10)
 
     # Plot other metrics subplots (Running Requests, Prefill Tokens, etc.)
-    _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests', 
-                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, 
-                           train_transitions, flush_transitions, iteration_transitions)
-    
+    _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests',
+                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors,
+                           train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
+
     _plot_pod_metric_subplot(ax_prefill, pod_data['prefill_tokens_df'], 'prefill_tokens', 'Prefill Tokens',
                            'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions, iteration_transitions)
-    
+                           train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
+
     _plot_pod_metric_subplot(ax_decode, pod_data['decode_tokens_df'], 'decode_tokens', 'Decode Tokens',
                            'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions, iteration_transitions)
-    
+                           train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
+
     _plot_pod_metric_subplot(ax_gpu_usage, pod_data['gpu_cache_usage_df'], 'gpu_cache_usage', 'GPU Cache Usage',
                            'vllmGPUKVCacheUsage for Selected Pod per Request', unique_pods, pod_colors,
-                           train_transitions, flush_transitions, iteration_transitions, ylim=(0, 1.1), show_legend=False)
+                           train_transitions, flush_transitions, iteration_transitions, ylim=(0, 1.1), window_size=10)
     
     if not pod_data['waiting_selected_pod_df'].empty:
         for pod in unique_pods:
@@ -934,9 +933,9 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     ax_running_total.tick_params(axis='both', which='major', labelsize=11)
     
     # Running Requests for Selected Pod (ax_running)
-    _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests', 
-                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
-    
+    _plot_pod_metric_subplot(ax_running, pod_data['running_requests_df'], 'running_requests', 'Running Requests',
+                           'vllmNumRequestsRunning for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
+
     # Total Prefill Tokens (ax_prefill_total)
     if 'prefill_tokens_df' in plot_data and not plot_data['prefill_tokens_df'].empty:
         ax_prefill_total.plot(plot_data['prefill_tokens_df']['time_bin'], plot_data['prefill_tokens_df']['total_prefill'], 
@@ -948,8 +947,8 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     ax_prefill_total.tick_params(axis='both', which='major', labelsize=11)
     
     # Prefill Tokens for Selected Pod (ax_prefill)
-    _plot_pod_metric_subplot(ax_prefill, pod_data['prefill_tokens_df'], 'prefill_tokens', 'Prefill Tokens', 
-                           'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
+    _plot_pod_metric_subplot(ax_prefill, pod_data['prefill_tokens_df'], 'prefill_tokens', 'Prefill Tokens',
+                           'numPrefillTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
 
     # Total Decode Tokens (ax_decode_total)
     if 'decode_tokens_df' in plot_data and not plot_data['decode_tokens_df'].empty:
@@ -962,8 +961,8 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     ax_decode_total.tick_params(axis='both', which='major', labelsize=11)
     
     # Decode Tokens for Selected Pod (ax_decode)
-    _plot_pod_metric_subplot(ax_decode, pod_data['decode_tokens_df'], 'decode_tokens', 'Decode Tokens', 
-                           'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions)
+    _plot_pod_metric_subplot(ax_decode, pod_data['decode_tokens_df'], 'decode_tokens', 'Decode Tokens',
+                           'numDecodeTokensForAllPods for Selected Pod per Request', unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions, skip_aggregate_lines=True)
 
     # Total Waiting Requests (ax_waiting)
     if 'waiting_requests_df' in plot_data and not plot_data['waiting_requests_df'].empty:
@@ -981,8 +980,13 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     return ax1, ax2, ax3, ax_kv_cache, ax_running_total, ax_running, ax_prefill_total, ax_prefill, ax_decode_total, ax_decode, ax_gpu_usage, ax_waiting, ax_waiting_selected
 
-def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions=None, ylim=None, show_legend=True):
-    """Helper function to plot pod metric subplots"""
+def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique_pods, pod_colors, train_transitions, flush_transitions, iteration_transitions=None, ylim=None, show_legend=True, skip_aggregate_lines=False, window_size=None):
+    """Helper function to plot pod metric subplots
+
+    Args:
+        skip_aggregate_lines: If True, skip cluster avg/min/max and avg selected pod lines entirely.
+        window_size: If set (e.g. 10), use non-overlapping window of this many seconds for aggregate lines.
+    """
     # Define cluster column names first
     if metric_col == 'waiting_requests_selected':
         cluster_avg_col = 'cluster_avg_waiting'
@@ -1010,7 +1014,7 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
         cluster_avg_col = f'cluster_avg_{suffix}'
         cluster_min_col = f'cluster_min_{suffix}'
         cluster_max_col = f'cluster_max_{suffix}'
-    
+
     if not data_df.empty:
         for pod in unique_pods:
             pod_data = data_df[data_df['selectedpod'] == pod]
@@ -1020,21 +1024,45 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
                 if not pod_data_clean.empty:
                     ax.scatter(pod_data_clean['relative_time'], pod_data_clean[metric_col], s=marker_size, color=pod_colors[pod], edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha)
 
-        # Plot cluster-wide statistics
-        
-        if cluster_avg_col in data_df.columns:
-            ax.plot(data_df['relative_time'], data_df[cluster_avg_col], label=f'Cluster Avg {metric_name}', linewidth=linewidth, alpha=alpha, color='blue')
-        if cluster_min_col in data_df.columns:
-            ax.plot(data_df['relative_time'], data_df[cluster_min_col], label=f'Cluster Min {metric_name}', linewidth=linewidth, alpha=alpha, color='green')
-        if cluster_max_col in data_df.columns:
-            ax.plot(data_df['relative_time'], data_df[cluster_max_col], label=f'Cluster Max {metric_name}', linewidth=linewidth, alpha=alpha, color='orange')
-        
-        # Add average per second for selected pod
-        data_df['time_bin'] = np.floor(data_df['relative_time']).astype(int)
-        avg_per_sec = data_df.groupby('time_bin')[metric_col].mean().reset_index()
-        ax.plot(avg_per_sec['time_bin'], avg_per_sec[metric_col], 
-               'red', '-', linewidth=linewidth, alpha=alpha, label=f'Avg Selected Pod {metric_name} (per sec)', zorder=10)
-    
+        if not skip_aggregate_lines:
+            if window_size:
+                # Use non-overlapping window
+                data_df_copy = data_df.copy()
+                data_df_copy['time_bin_win'] = (np.floor(data_df_copy['relative_time']) // window_size * window_size).astype(int)
+                agg_cols = {}
+                if cluster_avg_col in data_df_copy.columns:
+                    agg_cols[cluster_avg_col] = (cluster_avg_col, 'mean')
+                if cluster_min_col in data_df_copy.columns:
+                    agg_cols[cluster_min_col] = (cluster_min_col, 'mean')
+                if cluster_max_col in data_df_copy.columns:
+                    agg_cols[cluster_max_col] = (cluster_max_col, 'mean')
+                agg_cols[metric_col] = (metric_col, 'mean')
+                win_df = data_df_copy.groupby('time_bin_win').agg(**agg_cols).reset_index()
+
+                suffix_label = f'(per {window_size}s)'
+                if cluster_avg_col in win_df.columns:
+                    ax.plot(win_df['time_bin_win'], win_df[cluster_avg_col], label=f'Cluster Avg {metric_name} {suffix_label}', linewidth=linewidth, alpha=alpha, color='blue')
+                if cluster_min_col in win_df.columns:
+                    ax.plot(win_df['time_bin_win'], win_df[cluster_min_col], label=f'Cluster Min {metric_name} {suffix_label}', linewidth=linewidth, alpha=alpha, color='green')
+                if cluster_max_col in win_df.columns:
+                    ax.plot(win_df['time_bin_win'], win_df[cluster_max_col], label=f'Cluster Max {metric_name} {suffix_label}', linewidth=linewidth, alpha=alpha, color='orange')
+                ax.plot(win_df['time_bin_win'], win_df[metric_col],
+                       'red', '-', linewidth=linewidth, alpha=alpha, label=f'Avg Selected Pod {metric_name} {suffix_label}', zorder=10)
+            else:
+                # Plot cluster-wide statistics per request
+                if cluster_avg_col in data_df.columns:
+                    ax.plot(data_df['relative_time'], data_df[cluster_avg_col], label=f'Cluster Avg {metric_name}', linewidth=linewidth, alpha=alpha, color='blue')
+                if cluster_min_col in data_df.columns:
+                    ax.plot(data_df['relative_time'], data_df[cluster_min_col], label=f'Cluster Min {metric_name}', linewidth=linewidth, alpha=alpha, color='green')
+                if cluster_max_col in data_df.columns:
+                    ax.plot(data_df['relative_time'], data_df[cluster_max_col], label=f'Cluster Max {metric_name}', linewidth=linewidth, alpha=alpha, color='orange')
+
+                # Add average per second for selected pod
+                data_df['time_bin'] = np.floor(data_df['relative_time']).astype(int)
+                avg_per_sec = data_df.groupby('time_bin')[metric_col].mean().reset_index()
+                ax.plot(avg_per_sec['time_bin'], avg_per_sec[metric_col],
+                       'red', '-', linewidth=linewidth, alpha=alpha, label=f'Avg Selected Pod {metric_name} (per sec)', zorder=10)
+
     add_transition_lines(ax, train_transitions, flush_transitions, iteration_transitions)
     ax.set_title(title, fontsize=16, fontweight='bold', pad=10)
     ax.set_ylabel(metric_name, fontsize=14, fontweight='bold')
@@ -1042,18 +1070,19 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
         ax.set_ylim(ylim)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', which='major', labelsize=11)
-    
+
     # Add legend - only cluster metrics, no pod labels (if show_legend is True)
-    if show_legend:
+    if show_legend and not skip_aggregate_lines:
         legend_elements = []
+        suffix_label = f'(per {window_size}s)' if window_size else ''
         if cluster_avg_col in data_df.columns:
-            legend_elements.append(Line2D([0], [0], color='blue', linewidth=linewidth, label=f'Cluster Avg {metric_name}'))
+            legend_elements.append(Line2D([0], [0], color='blue', linewidth=linewidth, label=f'Cluster Avg {metric_name} {suffix_label}'))
         if cluster_min_col in data_df.columns:
-            legend_elements.append(Line2D([0], [0], color='green', linewidth=linewidth, label=f'Cluster Min {metric_name}'))
+            legend_elements.append(Line2D([0], [0], color='green', linewidth=linewidth, label=f'Cluster Min {metric_name} {suffix_label}'))
         if cluster_max_col in data_df.columns:
-            legend_elements.append(Line2D([0], [0], color='orange', linewidth=linewidth, label=f'Cluster Max {metric_name}'))
+            legend_elements.append(Line2D([0], [0], color='orange', linewidth=linewidth, label=f'Cluster Max {metric_name} {suffix_label}'))
         if len(legend_elements) > 0:
-            legend_elements.append(Line2D([0], [0], color='red', linewidth=linewidth, label=f'Avg Selected Pod {metric_name} (per sec)'))
+            legend_elements.append(Line2D([0], [0], color='red', linewidth=linewidth, label=f'Avg Selected Pod {metric_name} {suffix_label}'))
             ax.legend(legend_elements, [elem.get_label() for elem in legend_elements], fontsize=10, loc='upper right')
 
 def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors):
@@ -2061,11 +2090,11 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
         n_rows = 30  # Includes numTrains analysis + iteration analysis + prediction plots (removed reward plot, so 31->30)
         # Rows: 0-2 (request rate), 3-5 (TTFT/TPOT/E2E), 6-15 (pod metrics), 16-17 (analysis/CDF), 19-21 (numTrains), 22-24 (pred by numTrains), 25-27 (iterations), 28-29 (pred by iterations)
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Rows 23 & 29 (scatter plots) are 3.0
+        height_ratios = [0.8, 0.8, 1.2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Rows 23 & 29 (scatter plots) are 3.0; row 2 enlarged for spacing
         fig_height = 75
     else:
         n_rows = 23  # Includes iteration analysis only (no numTrains or prediction plots, removed reward plot, so 24->23)
-        height_ratios = [0.8, 0.8, 0.8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 20-22
+        height_ratios = [0.8, 0.8, 1.2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 20-22; row 2 enlarged for spacing
         fig_height = 57
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
