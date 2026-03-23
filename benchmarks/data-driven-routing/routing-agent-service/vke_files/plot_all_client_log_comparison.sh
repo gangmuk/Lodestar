@@ -72,19 +72,29 @@ set -e
 
 
 
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake"
+# target_dir_list=(
+#     ########################################################
+#     "${base_dir}/conversation-2/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps11-benchmark/without_bitsandbytes"
+#     "${base_dir}/conversation-2/rps12-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/toolagent-2/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps11-benchmark/without_bitsandbytes"
+#     "${base_dir}/toolagent-2/rps12-benchmark/without_bitsandbytes"
+#     ########################################################
+#     "${base_dir}/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed/rps-1-benchmark/without_bitsandbytes"
+#     ########################################################
+# )
+
 base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake"
 target_dir_list=(
-    ########################################################
-    "${base_dir}/conversation-2/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/conversation-2/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/conversation-2/rps12-benchmark/without_bitsandbytes"
-    ########################################################
-    "${base_dir}/toolagent-2/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2/rps12-benchmark/without_bitsandbytes"
-    ########################################################
-    "${base_dir}/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed/rps-1-benchmark/without_bitsandbytes"
-    ########################################################
+    "${base_dir}/conversation-2-extended-ver1/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/conversation-2-extended-ver1/rps11-benchmark/without_bitsandbytes"
+    "${base_dir}/toolagent-2-extended-ver1/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/toolagent-2-extended-ver1/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/toolagent-2-extended-ver1/rps11-benchmark/without_bitsandbytes"
+    "${base_dir}/toolagent-2-extended-ver1/rps12-benchmark/without_bitsandbytes"
 )
 
 

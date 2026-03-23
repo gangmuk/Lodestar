@@ -26,6 +26,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
+import preprocess
 
 # Reuse non-color helpers from the bar chart script
 from merge_and_plot_all_workloads_from_client_log import (
@@ -77,6 +78,7 @@ def generate_policy_colors(policies):
         colors[policy] = _get_base_color(policy, idx)
     return colors
 
+RAW_LOG_NAME = "filtered-aibrix-gateway-plugins.log.csv"
 GATEWAY_CSV_NAME = "routing_strategy_metrics_gateway.csv"
 
 
@@ -111,6 +113,79 @@ def merge_gateway_metrics_files(files):
     merged = pd.concat(dfs, ignore_index=True)
     print(f"\nMerged {len(merged)} total rows from {len(dfs)} files")
     return merged
+
+
+def _build_csv_dir_map(csv_files):
+    """Build a map from CSV file path to its parent directory.
+
+    Returns: {csv_path: parent_dir}
+    """
+    return {f: os.path.dirname(f) for f in csv_files}
+
+
+def load_raw_request_data(csv_files, df_aggregated):
+    """Load per-request data from raw gateway log files.
+
+    For each strategy_full_name in df_aggregated, find the corresponding raw
+    log file in the same directory tree as the aggregated CSV.
+
+    Returns:
+        dict: {strategy_full_name: DataFrame} with per-request data including
+              'ttft' and 'request_index' columns.
+    """
+    csv_dirs = _build_csv_dir_map(csv_files)
+    raw_data = {}
+
+    # Collect unique (csv_parent_dir, strategy_full_name) pairs
+    seen = set()
+    for _, row in df_aggregated.iterrows():
+        sfn = row.get('strategy_full_name', '')
+        if not sfn or sfn in raw_data:
+            continue
+
+        # Find which CSV directory this strategy belongs to
+        for csv_path, parent_dir in csv_dirs.items():
+            log_path = os.path.join(parent_dir, sfn, RAW_LOG_NAME)
+            if os.path.exists(log_path) and log_path not in seen:
+                seen.add(log_path)
+                try:
+                    df_raw, _ = preprocess.parse_log_file(log_path)
+                    if 'ttft' in df_raw.columns and 'request_start_time' in df_raw.columns:
+                        df_raw['ttft'] = pd.to_numeric(df_raw['ttft'], errors='coerce')
+                        df_raw = df_raw.dropna(subset=['ttft'])
+                        df_raw = df_raw.sort_values('request_start_time').reset_index(drop=True)
+                        df_raw['request_index'] = range(len(df_raw))
+                        raw_data[sfn] = df_raw
+                except Exception as e:
+                    print(f"  Warning: Failed to load raw log {log_path}: {e}")
+                break
+
+    print(f"Loaded per-request data for {len(raw_data)} strategies")
+    return raw_data
+
+
+def compute_windowed_avg_ttft(df_raw, window_size=100):
+    """Compute non-overlapping window average TTFT.
+
+    Args:
+        df_raw: DataFrame with 'ttft' and 'request_index' columns, sorted by request order.
+        window_size: number of requests per window (non-overlapping).
+
+    Returns:
+        (window_centers, window_avgs): lists of x-positions (request index of window center)
+                                        and corresponding average TTFT values.
+    """
+    ttft_vals = df_raw['ttft'].values
+    n = len(ttft_vals)
+    centers = []
+    avgs = []
+    for start in range(0, n, window_size):
+        end = min(start + window_size, n)
+        chunk = ttft_vals[start:end]
+        avgs.append(np.mean(chunk))
+        centers.append((start + end - 1) / 2.0)
+    return centers, avgs
+
 
 # ── Font sizes ──────────────────────────────────────────────────────────────
 TITLE_FONTSIZE = 22
@@ -247,17 +322,28 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     avg_x = group_centers - bar_w / 2
     p99_x = group_centers + bar_w / 2
 
+    # ── Determine hatch pattern per policy ────────────────────────────────────
+    def _hatch_for_policy(policy_name):
+        pl = policy_name.lower()
+        if 'onlinelearning_0' in pl:
+            return 'xx'
+        if 'contextual_bandit' in pl and 'random' in pl:
+            return '//'
+        return None
+
     # ── Avg bars on left axis (full color) ───────────────────────────────────
     avg_bars = []
     for i, (x, val, color) in enumerate(zip(avg_x, avg_vals, base_colors)):
-        b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8)
+        hatch = _hatch_for_policy(policies[i])
+        b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8, hatch=hatch)
         b[0]._policy_name = policies[i]
         avg_bars.append(b[0])
 
-    # ── P99 bars on right axis (lightened shade, no hatch) ───────────────────
+    # ── P99 bars on right axis (lightened shade) ─────────────────────────────
     p99_bars = []
     for i, (x, val, color) in enumerate(zip(p99_x, p99_vals, p99_colors)):
-        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8)
+        hatch = _hatch_for_policy(policies[i])
+        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8, hatch=hatch)
         b[0]._policy_name = policies[i]
         p99_bars.append(b[0])
 
@@ -404,7 +490,80 @@ def _plot_trendlines_for_group(
     ax.legend(fontsize=SUBFIG_LEGEND_FONTSIZE, loc='best', framealpha=0.8)
 
 
-def plot_trendlines(df, output_dir, exclude_patterns=None):
+def _plot_timeseries_windowed_ttft(
+    ax, df_group, rps_workload_pair, policies, policy_colors, raw_data,
+    window_size=100,
+):
+    """Plot non-overlapping windowed average TTFT time series for one RPS point.
+
+    Each policy is a separate line. Multiple runs of the same policy are
+    plotted with progressively lighter shades.
+
+    Args:
+        ax: matplotlib Axes (full width for this RPS)
+        df_group: aggregated DataFrame for this workload group
+        rps_workload_pair: (rps_int, workload_str)
+        policies: ordered list of policies to plot
+        policy_colors: {policy: color}
+        raw_data: {strategy_full_name: DataFrame} with per-request data
+        window_size: non-overlapping window size in number of requests
+    """
+    rps, workload = rps_workload_pair
+
+    policy_style_idx = {}
+
+    for pi, policy in enumerate(policies):
+        color = policy_colors.get(policy, '#7f7f7f')
+        if color not in policy_style_idx:
+            policy_style_idx[color] = 0
+        style_idx = policy_style_idx[color]
+        policy_style_idx[color] += 1
+
+        linestyle = LINE_STYLES[style_idx % len(LINE_STYLES)]
+
+        # Find all strategy_full_names for this policy + workload
+        rows = df_group[
+            (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
+        ].copy()
+        rows['_sort_dt'] = rows['strategy_full_name'].str.extract(
+            r'(\d{8}_\d{6})$', expand=False
+        ).fillna('')
+        rows = rows.sort_values('_sort_dt')
+
+        sfn_list = rows['strategy_full_name'].tolist()
+        n_runs = len(sfn_list)
+
+        for run_idx, sfn in enumerate(sfn_list):
+            if sfn not in raw_data:
+                continue
+            df_raw = raw_data[sfn]
+            centers, avgs = compute_windowed_avg_ttft(df_raw, window_size)
+            if not centers:
+                continue
+
+            if n_runs > 1:
+                shade_factor = 1.0 + run_idx * (0.6 / max(n_runs - 1, 1))
+                run_color = _shade_color(color, shade_factor)
+                label = f'{policy} (run{run_idx+1})'
+            else:
+                run_color = color
+                label = policy
+
+            ax.plot(
+                centers, avgs,
+                color=run_color, linestyle=linestyle, linewidth=1.5,
+                label=label, alpha=0.85,
+            )
+
+    ax.set_xlabel('Request index', fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_title(f'Windowed Avg TTFT (window={window_size})  —  RPS {rps}',
+                 fontsize=SUBTITLE_FONTSIZE)
+    ax.tick_params(labelsize=TICK_FONTSIZE)
+    ax.grid(alpha=0.3)
+
+
+def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None):
     """Generate TTFT bar-chart plots and save to a single PDF.
 
     Layout: one page per workload group.
@@ -433,6 +592,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None):
             print(f"  Excluded policies: {excluded}")
     policy_colors = generate_policy_colors(policies)
 
+    has_raw = raw_data is not None and len(raw_data) > 0
     pdf_path = os.path.join(output_dir, 'trendline_from_gateway_log.pdf')
 
     with PdfPages(pdf_path) as pdf:
@@ -445,46 +605,67 @@ def plot_trendlines(df, output_dir, exclude_patterns=None):
             if 'avg_ttft' not in df_group.columns and 'p99_ttft' not in df_group.columns:
                 continue
 
-            # 1 row, one subplot per RPS point
             n_cols = len(rps_workload_pairs)
             group_policies = [p for p in policies if p in df_group['routing_policy'].values]
             n_policies = len(group_policies)
 
-            # Layout (top → bottom, in inches):
-            #   title_in   : one line suptitle
-            #   gap_in     : breathing room between title and legend
-            #   legend_in  : legend box (ncol=1, one row per policy)
-            #   gap2_in    : gap between legend and subplots
-            #   bar_in     : actual bar-chart area
+            # ── Layout (top → bottom, in inches) ────────────────────────────
+            #   title_in   : suptitle
+            #   gap_in     : breathing room
+            #   legend_in  : legend box
+            #   gap2_in    : gap between legend and bar row
+            #   bar_in     : bar-chart row
+            #   ts_in * N  : one time-series row per RPS point (full width)
             ncol_legend = 1
-            n_legend_rows = n_policies   # one row per policy with ncol=1
+            n_legend_rows = n_policies
             title_in   = 0.55
             gap_in     = 0.35
-            legend_in  = n_legend_rows * 0.38 + 0.45   # ~0.38 in/row + title/pad
+            legend_in  = n_legend_rows * 0.38 + 0.45
             gap2_in    = 0.30
             bar_in     = 5.5
-            fig_height = title_in + gap_in + legend_in + gap2_in + bar_in
+            ts_in      = 4.0   # height per time-series row
+            n_ts_rows  = n_cols if has_raw else 0
+            fig_height = title_in + gap_in + legend_in + gap2_in + bar_in + n_ts_rows * ts_in
 
-            fig, axes = plt.subplots(
-                1, n_cols,
-                figsize=(max(6, 6 * n_cols), fig_height),
-                squeeze=False,
+            fig_width = max(6, 6 * n_cols)
+
+            # Use GridSpec: row 0 has n_cols columns (bar charts),
+            # rows 1..n_cols each have 1 column spanning full width (time series).
+            from matplotlib.gridspec import GridSpec
+            n_grid_rows = 1 + n_ts_rows
+            height_ratios = [bar_in] + [ts_in] * n_ts_rows
+
+            # Reserve top space for title + legend outside the gridspec
+            header_frac = (title_in + gap_in + legend_in + gap2_in) / fig_height
+            subplot_top = 1.0 - header_frac
+
+            gs = GridSpec(
+                n_grid_rows, n_cols,
+                figure=None,
+                height_ratios=height_ratios,
+                hspace=0.45,
             )
 
-            # Compute figure-coordinate fractions (origin = bottom-left).
-            title_y     = 1.0 - (title_in / 2) / fig_height
-            legend_y    = 1.0 - (title_in + gap_in) / fig_height
-            subplot_top = 1.0 - (title_in + gap_in + legend_in + gap2_in) / fig_height
+            fig = plt.figure(figsize=(fig_width, fig_height))
+
+            # ── Bar chart row (row 0, one subplot per RPS) ──────────────────
+            bar_axes = []
+            for ci in range(n_cols):
+                ax = fig.add_subplot(gs[0, ci])
+                bar_axes.append(ax)
+
+            title_y = 1.0 - (title_in / 2) / fig_height
+            legend_y = 1.0 - (title_in + gap_in) / fig_height
 
             short_label = _short_group_label(gk)
             fig.suptitle(f'TTFT — {short_label}', fontsize=TITLE_FONTSIZE, y=title_y)
 
             for ci, rps_pair in enumerate(rps_workload_pairs):
                 _plot_bars_twin_y(
-                    axes[0][ci], df_group, rps_pair, group_policies, policy_colors,
+                    bar_axes[ci], df_group, rps_pair, group_policies, policy_colors,
                 )
 
-            # Shared policy-color legend: numbered indices matching x-axis ticks.
+            # Shared policy-color legend
             legend_labels = [f'{i+1}. {p}' for i, p in enumerate(group_policies)]
             legend_colors = [policy_colors.get(p, '#7f7f7f') for p in group_policies]
             from matplotlib.patches import Patch
@@ -502,7 +683,16 @@ def plot_trendlines(df, output_dir, exclude_patterns=None):
                     title_fontsize=LEGEND_FONTSIZE,
                 )
 
-            fig.tight_layout(rect=[0, 0, 1, subplot_top])
+            # ── Time-series rows (one per RPS, full width) ──────────────────
+            if has_raw:
+                for ri, rps_pair in enumerate(rps_workload_pairs):
+                    ax_ts = fig.add_subplot(gs[1 + ri, :])  # span all columns
+                    _plot_timeseries_windowed_ttft(
+                        ax_ts, df_group, rps_pair, group_policies,
+                        policy_colors, raw_data,
+                    )
+
+            gs.tight_layout(fig, rect=[0, 0, 1, subplot_top])
             pdf.savefig(fig, bbox_inches='tight', dpi=300)
             plt.close(fig)
 
@@ -646,11 +836,15 @@ def main():
     # Export performance summary CSV (full data, no exclusions)
     export_performance_csv(df, groups, output_dir)
 
+    # Load per-request raw data for time series plots
+    print("\nLoading per-request raw data for time series plots...")
+    raw_data = load_raw_request_data(files, df)
+
     # Generate plots (with optional policy exclusions)
     exclude_patterns = args.exclude
     if exclude_patterns:
         print(f"\nExcluding from plots policies matching: {exclude_patterns}")
-    plot_trendlines(df, output_dir, exclude_patterns=exclude_patterns)
+    plot_trendlines(df, output_dir, exclude_patterns=exclude_patterns, raw_data=raw_data)
     print("Done!")
 
 

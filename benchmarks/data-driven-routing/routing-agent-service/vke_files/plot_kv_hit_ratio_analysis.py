@@ -656,6 +656,85 @@ def main():
     fig.savefig(png_path, bbox_inches='tight')
     print(f'Saved to {png_path}')
 
+    # --- Separate PDFs for paper figures (no titles, larger fonts) ---
+    base_dir = os.path.dirname(output_path)
+
+    def _enlarge_ax(ax, label_fs=16, tick_fs=14, legend_fs=14):
+        """Bump font sizes on a standalone axis for paper readability."""
+        ax.xaxis.label.set_fontsize(label_fs)
+        ax.yaxis.label.set_fontsize(label_fs)
+        ax.tick_params(axis='both', labelsize=tick_fs)
+        leg = ax.get_legend()
+        if leg is not None:
+            for t in leg.get_texts():
+                t.set_fontsize(legend_fs)
+        # Enlarge the "More KV cache hit benefit" arrow text if present
+        for child in ax.get_children():
+            if hasattr(child, 'get_text') and 'KV cache' in str(child.get_text()):
+                child.set_fontsize(14)
+        # Enlarge arrow patch (FancyArrow) if present
+        from matplotlib.patches import FancyArrow
+        for p in ax.patches:
+            if isinstance(p, FancyArrow):
+                # Remove old arrow, redraw bigger
+                p.set_alpha(0.30)
+
+    def _redraw_arrow_bigger(ax):
+        """Replace the arrow drawn by _draw_vertical_arrow with a bigger version."""
+        from matplotlib.patches import FancyArrow
+        # Remove existing arrows and arrow text
+        to_remove = []
+        for child in ax.get_children():
+            if isinstance(child, FancyArrow):
+                to_remove.append(child)
+            elif hasattr(child, 'get_text') and 'KV cache' in str(child.get_text()):
+                to_remove.append(child)
+        for c in to_remove:
+            c.remove()
+        # Redraw with bigger sizes — thicker arrow, 3-line text
+        x_frac, y_top, y_bot = 0.95, 0.50, 0.05
+        width = 0.22
+        arrow = FancyArrow(
+            x_frac, y_top, 0, -(y_top - y_bot),
+            width=width, head_width=width * 1.8, head_length=0.04,
+            transform=ax.transAxes, fc=C_GREY, ec='white',
+            alpha=0.25, zorder=10, linewidth=0.5)
+        ax.add_patch(arrow)
+        ax.text(x_frac, (y_top + y_bot) / 2 + 0.02, 'More\nKV cache\nhit benefit',
+                transform=ax.transAxes, fontsize=14, color='#444444',
+                ha='center', va='center', rotation=90, fontweight='bold')
+
+    # (a) KV hit vs TTFT
+    fig_a, ax_a_sep = plt.subplots(figsize=(4.5, 3.5))
+    panel_a(ax_a_sep, sel_kv, ttft)
+    ax_a_sep.set_title('')
+    _enlarge_ax(ax_a_sep)
+    path_a = os.path.join(base_dir, 'fig_kv_hit_vs_ttft.pdf')
+    fig_a.savefig(path_a, bbox_inches='tight')
+    plt.close(fig_a)
+    print(f'Saved separate: {path_a}')
+
+    # (b) System load vs TTFT
+    fig_b, ax_b_sep = plt.subplots(figsize=(4.5, 3.5))
+    panel_b_load(ax_b_sep, sel_waiting, ttft)
+    ax_b_sep.set_title('')
+    _enlarge_ax(ax_b_sep)
+    path_b = os.path.join(base_dir, 'fig_system_load_vs_ttft.pdf')
+    fig_b.savefig(path_b, bbox_inches='tight')
+    plt.close(fig_b)
+    print(f'Saved separate: {path_b}')
+
+    # (e) KV hit effect by load AND request length
+    fig_e, ax_e_sep = plt.subplots(figsize=(4.5, 3.5))
+    panel_g(ax_e_sep, sel_kv, ttft, sel_waiting, input_tokens)
+    ax_e_sep.set_title('')
+    _enlarge_ax(ax_e_sep)
+    _redraw_arrow_bigger(ax_e_sep)
+    path_e = os.path.join(base_dir, 'fig_kv_hit_by_load_and_length.pdf')
+    fig_e.savefig(path_e, bbox_inches='tight')
+    plt.close(fig_e)
+    print(f'Saved separate: {path_e}')
+
     # Print summary statistics used in the paper paragraph
     print('\n' + '=' * 70)
     print('SUMMARY STATISTICS FOR PAPER')
