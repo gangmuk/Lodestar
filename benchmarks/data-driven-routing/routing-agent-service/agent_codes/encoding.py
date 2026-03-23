@@ -143,7 +143,8 @@ class DataEncoder:
             'waiting_requests',
             'prefill_tokens',
             'decode_tokens',
-            'kv_hit_ratio'
+            'kv_hit_ratio',
+            'kv_differential',
         ]
         excluded_set = set(excluded)
         all_numeric = [f for f in base_features_list if f not in excluded_set]
@@ -368,6 +369,7 @@ class DataEncoder:
             'inflight_prefill_requests', # Current inflight prefill requests (NEW)
             'inflight_decode_requests',  # Current inflight decode requests (NEW)
             'kv_hit_ratio',              # Current cache performance
+            'kv_differential',           # Per-pod KV hit advantage over other pods
             'gpu_kv_cache',              # Current GPU memory usage
             'cpu_kv_cache',              # Current CPU cache usage
             'running_requests',          # Currently processing

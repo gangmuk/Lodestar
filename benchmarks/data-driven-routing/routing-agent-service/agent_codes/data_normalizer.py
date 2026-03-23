@@ -491,7 +491,7 @@ def _get_normalizable_features(processed_df, no_normalize_features: list):
         return _NORMALIZABLE_FEATURES_CACHE[cache_key]
 
     # Compute (same logic as before)
-    normalizable_features = ['input_tokens', 'output_tokens', 'total_tokens']
+    normalizable_features = ['input_tokens', 'output_tokens', 'total_tokens', 'kv_concentration']
     pod_feature_types = set()  # Track unique pod feature types (e.g., "kv_hit_ratio")
     all_pod_columns = []  # Track all pod columns for validation
 

@@ -1405,6 +1405,27 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     if 'GPU' not in excluded_pod_features:
         gpu_model_features = extract_pod_features_fast(all_gpu_models, sorted_pods, 'GPU-L3c')
         base_data.update({f"{pod_id}-GPU": gpu_model_features[pod_id] for pod_id in sorted_pods})
+
+    # === Derived features: kv_differential (per-pod) and kv_concentration (per-request) ===
+    # These are computed from existing kv_hit_ratio columns, no new data collection needed.
+    if 'kv_hit_ratio' not in excluded_pod_features and 'kv_differential' not in excluded_pod_features:
+        # Stack kv_hit_ratios: [num_rows, num_pods]
+        kv_matrix = np.column_stack([base_data[f"{pod_id}-kv_hit_ratio"] for pod_id in sorted_pods])
+        # kv_differential: this_pod_kv - mean(other_pods_kv) for each pod
+        kv_mean_all = kv_matrix.mean(axis=1, keepdims=True)  # [num_rows, 1]
+        num_pods = len(sorted_pods)
+        # mean of OTHER pods = (sum_all - this_pod) / (num_pods - 1)
+        kv_sum_all = kv_matrix.sum(axis=1, keepdims=True)  # [num_rows, 1]
+        for pod_idx, pod_id in enumerate(sorted_pods):
+            this_pod_kv = kv_matrix[:, pod_idx]
+            if num_pods > 1:
+                other_mean = (kv_sum_all.squeeze() - this_pod_kv) / (num_pods - 1)
+            else:
+                other_mean = np.zeros_like(this_pod_kv)
+            base_data[f"{pod_id}-kv_differential"] = this_pod_kv - other_mean
+        # kv_concentration: std of kv_hit_ratios across pods (request-level feature)
+        base_data["kv_concentration"] = kv_matrix.std(axis=1)
+
     get_value_overhead = time.time() - get_value_start_time # 0ms
     num_rows = len(base_data['request_id'])
     pod_index_start_time = time.time()

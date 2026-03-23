@@ -23,9 +23,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Inference/runtime tuning flags (env overrides)
 CB_LOAD_METADATA_ON_INFER = int(os.getenv("CB_LOAD_METADATA_ON_INFER", "0"))
-CB_RETURN_ARRAY_OUTPUTS = int(os.getenv("CB_RETURN_ARRAY_OUTPUTS", "0"))
-CB_RETURN_POD_PROBABILITIES = int(os.getenv("CB_RETURN_POD_PROBABILITIES", "0"))
-CB_RETURN_PREDICTED_REWARDS = int(os.getenv("CB_RETURN_PREDICTED_REWARDS", "0"))
 
 
 class RewardNetwork(nn.Module):
@@ -273,11 +270,17 @@ class NeuralContextualBandit:
                 explored = False
             
             elif self.exploration_method == 'epsilon_greedy':
-                # Epsilon-greedy exploration
-                # Use actual number of pods from input, not self.action_dim (which may differ if trained on different pod count)
+                # Epsilon-greedy exploration with PC1-biased strategy
+                # Instead of random pod, explore by selecting the pod with highest KV hit ratio.
+                # This bootstraps prefix concentration signal for the differential KV feature.
                 actual_num_pods = len(predicted_rewards)
                 if np.random.random() < self.epsilon:
-                    action = np.random.randint(0, actual_num_pods)
+                    # PC1-biased exploration: pick pod with highest KV hit ratio
+                    if kv_hit_ratios is not None and kv_hit_ratios.numel() > 0:
+                        kv_values = kv_hit_ratios.squeeze(0).squeeze(-1).cpu().numpy()  # [num_pods]
+                        action = int(np.argmax(kv_values))
+                    else:
+                        action = np.random.randint(0, actual_num_pods)
                     explored = True
                 else:
                     action = int(np.argmax(predicted_rewards))
@@ -677,11 +680,17 @@ def preload_agent_from_metadata(final_model_dir, HYPERPARAMETERS, num_pods=None)
             final_model_dir=final_model_dir
         )
 
-        if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
+        # Skip loading pretrained weights when LOAD_PRETRAINED_MODEL=0 or RETRAIN_AT_STARTUP=1
+        # (dimensions may differ due to new features, or user wants to start from scratch)
+        load_pretrained = HYPERPARAMETERS.get('LOAD_PRETRAINED_MODEL', 1)
+        retrain_at_startup = HYPERPARAMETERS.get('RETRAIN_AT_STARTUP', False)
+        skip_weights = (not load_pretrained) or retrain_at_startup
+        if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')) and not skip_weights:
             new_agent.load_model(final_model_dir, load_metadata=True)
+        elif skip_weights:
+            logger.info(f"Preload: Skipping pretrained weights (LOAD_PRETRAINED_MODEL={load_pretrained}, RETRAIN_AT_STARTUP={retrain_at_startup}), using random weights")
         else:
-            logger.error(f"Preload failed: reward_net.pth not found in {final_model_dir}")
-            return False
+            logger.warning(f"Preload: reward_net.pth not found in {final_model_dir}, using random weights")
 
         _cached_agent = new_agent
         _cached_metadata = config_snapshot
@@ -775,9 +784,15 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
                 )
                 
                 # Try to load existing model
-                if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
+                # Skip if LOAD_PRETRAINED_MODEL=0 or RETRAIN_AT_STARTUP=1 (dimensions may differ from new features)
+                load_pretrained = HYPERPARAMETERS.get('LOAD_PRETRAINED_MODEL', 1)
+                retrain_at_startup = HYPERPARAMETERS.get('RETRAIN_AT_STARTUP', False)
+                skip_weights = (not load_pretrained) or retrain_at_startup
+                if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')) and not skip_weights:
                     load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
                     new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+                elif skip_weights:
+                    logger.info(f"Skipping pretrained model load (LOAD_PRETRAINED_MODEL={load_pretrained}, RETRAIN_AT_STARTUP={retrain_at_startup}), using random weights")
 
                 # Preserve epsilon and total_steps from previous agent to avoid
                 # resetting exploration state on model reload (e.g., after online training)
@@ -815,7 +830,13 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
                 )
                 if os.path.exists(os.path.join(final_model_dir, 'reward_net.pth')):
                     load_metadata_on_infer = bool(HYPERPARAMETERS.get('LOAD_METADATA_ON_INFER', False) or CB_LOAD_METADATA_ON_INFER)
-                    new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+                    try:
+                        new_agent.load_model(final_model_dir, load_metadata=load_metadata_on_infer)
+                    except RuntimeError as e:
+                        if "size mismatch" in str(e):
+                            logger.warning(f"Async reload: dimension mismatch loading saved model, using random weights: {e}")
+                        else:
+                            raise
 
                 # Preserve epsilon and total_steps from previous agent
                 new_agent.epsilon = _prev_epsilon
@@ -874,40 +895,26 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     overhead_summary['inference'] = time.time() - inference_start
     
     result_formatting_start = time.time()
-    return_arrays = bool(HYPERPARAMETERS.get('RETURN_ARRAY_OUTPUTS', False) or CB_RETURN_ARRAY_OUTPUTS)
-    return_probabilities = bool(HYPERPARAMETERS.get('RETURN_POD_PROBABILITIES', True) and CB_RETURN_POD_PROBABILITIES)
-    return_predicted_rewards = bool(HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True) and CB_RETURN_PREDICTED_REWARDS)
-    
-    # Format predicted rewards (optional)
-    if return_predicted_rewards:
-        predicted_rewards_formatted = predicted_rewards.tolist()
-    else:
-        predicted_rewards_formatted = None
+    # Always keep predicted_rewards as numpy array. JSON serialization happens in routing_agent_service.py.
     chosen_pod_predicted_reward = float(predicted_rewards[action])
     
     # Prepare probabilities (optional)
     pod_probabilities = None
-    if return_probabilities:
+    if HYPERPARAMETERS.get('RETURN_POD_PROBABILITIES', 0) >= 1:
         # Use numerically stable softmax; vectorized for speed
         rewards_array = np.asarray(predicted_rewards, dtype=np.float64)
         max_reward = np.max(rewards_array)
         exp_rewards = np.exp(rewards_array - max_reward)
         sum_exp_rewards = np.sum(exp_rewards)
         if sum_exp_rewards == 0.0 or not np.isfinite(sum_exp_rewards):
-            if return_arrays:
-                pod_probabilities = (np.ones(len(sorted_all_pod_ids)) / len(sorted_all_pod_ids)).tolist()
-            else:
-                pod_probabilities = {pod_id: 1.0 / len(sorted_all_pod_ids) for pod_id in sorted_all_pod_ids}
+            pod_probabilities = {pod_id: 1.0 / len(sorted_all_pod_ids) for pod_id in sorted_all_pod_ids}
         else:
             probs = exp_rewards / sum_exp_rewards
-            if return_arrays:
-                pod_probabilities = probs.tolist()
-            else:
-                pod_probabilities = {sorted_all_pod_ids[i]: float(probs[i]) for i in range(len(sorted_all_pod_ids))}
+            pod_probabilities = {sorted_all_pod_ids[i]: float(probs[i]) for i in range(len(sorted_all_pod_ids))}
     
     result = {
         'selected_pod_index': int(action),
-        'predicted_rewards': predicted_rewards_formatted,
+        'predicted_rewards': predicted_rewards,
         'chosen_pod_predicted_reward': chosen_pod_predicted_reward,
         'pod_probabilities': pod_probabilities,
         'confidence': chosen_pod_predicted_reward,  # Keep for backward compatibility
@@ -915,8 +922,6 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         'total_steps': _cached_agent.total_steps,
         'explored': explored
     }
-    if return_arrays:
-        result['pod_order'] = sorted_all_pod_ids
     overhead_summary['result_formatting'] = time.time() - result_formatting_start
     overhead_summary['total_inference'] = time.time() - infer_start_time
     

@@ -108,15 +108,15 @@ COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_reali
 COPY workload-and-experiment_results/workload-generator/mooncake/toolagent_realistic_workload_tokenized-rpsscale_2-numtokens_200-outputscale_1-duration_600 /app/workload/mooncake/toolagent_realistic_tokenized_rpsscale_2_numtokens_200
 
 
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7 /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7
-
-COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7-smoothed /app/workload/mooncake/synthetic_realistic_tokenized_rpsscale_1_numtokens_100_head_1.5x_tail_11.0x_after0.7_smoothed
-
 COPY workload-and-experiment_results/mooncake/extended_workload/ver0/conversation-2 /app/workload/mooncake/conversation-2-extended-ver0
 COPY workload-and-experiment_results/mooncake/extended_workload/ver0/toolagent-2 /app/workload/mooncake/toolagent-2-extended-ver0
 
 COPY workload-and-experiment_results/mooncake/extended_workload/conversation-2 /app/workload/mooncake/conversation-2-extended-ver1
 COPY workload-and-experiment_results/mooncake/extended_workload/toolagent-2 /app/workload/mooncake/toolagent-2-extended-ver1
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7 /app/workload/mooncake/synthetic-2-extended-ver1
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_4000-head_1.7x-tail_10.0x-after0.85 /app/workload/mooncake/synthetic-2-extended-ver2
 
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

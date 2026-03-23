@@ -591,7 +591,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					routing_agent_failed = 1
 				}
 				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet
+				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
 				if routeResponse.OODFallback >= 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
@@ -663,7 +663,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 			} else {
 				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet
+				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
 				if routeResponse.OODFallback >= 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)

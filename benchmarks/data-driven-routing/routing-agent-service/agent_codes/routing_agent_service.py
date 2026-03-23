@@ -150,6 +150,7 @@ ONLINE_TRAIN_FROM_SCRATCH = int(os.getenv("ONLINE_TRAIN_FROM_SCRATCH", 1))  # 1=
 CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR at start of each online training round (default ON)
 RECENCY_DECAY_WEIGHT_FACTOR = float(os.environ.get('RECENCY_DECAY_WEIGHT_FACTOR', '1.0'))
 ENABLE_FALLBACK = int(os.getenv("ENABLE_FALLBACK", 1))
+RETRAIN_AT_STARTUP = int(os.getenv("RETRAIN_AT_STARTUP", 0))  # 1=load offline data but skip pretrained weights, retrain at first training round
 NORMALIZATION_MODE = os.getenv("NORMALIZATION_MODE", "zscore")  # "zscore" (data-dependent) or "fixed_range" (domain-knowledge bounds, immune to distribution shift)
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
@@ -174,6 +175,8 @@ FIXED_RANGE_BOUNDS = {
     'inflight_prefill_requests': 30,  # practical max
     'inflight_decode_requests': 30,   # practical max
     'cpu_kv_cache': 1.0,              # ratio [0, 1]
+    'kv_differential': 100,           # range [-100, 100] (this_pod_kv - mean_others, percentage)
+    'kv_concentration': 50,           # std of kv_hit_ratios across pods [0, ~50]
 }
 
 def apply_fixed_range_normalization(stats_inst):
@@ -192,6 +195,27 @@ def apply_fixed_range_normalization(stats_inst):
     logger.info(f"Applied fixed-range normalization for {len(FIXED_RANGE_BOUNDS)} features")
 
 BROKER_LOCK = RWLock()
+
+
+def _augment_df_with_derived_features(df):
+    """Compute kv_differential (per-pod) and kv_concentration (per-request) from existing kv_hit_ratio columns.
+    Modifies the DataFrame in-place. Safe to call on DataFrames that already have these columns."""
+    kv_cols = sorted([c for c in df.columns if c.endswith('-kv_hit_ratio')])
+    if not kv_cols:
+        return
+    kv_matrix = df[kv_cols].values.astype(np.float64)  # [n_samples, n_pods]
+    num_pods = kv_matrix.shape[1]
+    kv_sum = kv_matrix.sum(axis=1, keepdims=True)
+    for col_idx, kv_col in enumerate(kv_cols):
+        pod_prefix = kv_col.replace('-kv_hit_ratio', '')
+        this_kv = kv_matrix[:, col_idx]
+        if num_pods > 1:
+            other_mean = (kv_sum.squeeze() - this_kv) / (num_pods - 1)
+        else:
+            other_mean = np.zeros_like(this_kv)
+        df[f'{pod_prefix}-kv_differential'] = this_kv - other_mean
+    df['kv_concentration'] = kv_matrix.std(axis=1)
+
 
 # request_features_train will be set dynamically after loading HYPERPARAMETERS
 # to respect EXCLUDED_REQUEST_FEATURES from the offline trained model
@@ -588,25 +612,25 @@ def handle_infer():
                         handle_infer_overhead_summary["contextual_bandit_create"] = time.time() - contextual_bandit_create_start
             # Inference with the neural contextual bandit
             contextual_bandit_infer_start = time.time()
-            if 'perpodmodel_advanced' in subAlgorithm:
-                result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_advanced.infer_from_tensor(
-                    tensor_data=tensor_data,
-                    request_id=request_id,
-                    model_updated=MODEL_UPDATED,
-                    HYPERPARAMETERS=HYPERPARAMETERS,
-                    final_model_dir=final_model_dir,
-                    sorted_all_pod_ids=sorted_all_pod_ids
-                )
-            elif 'policygradient' in subAlgorithm:
-                result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_policygradient.infer_from_tensor(
-                    tensor_data=tensor_data,
-                    request_id=request_id,
-                    model_updated=MODEL_UPDATED,
-                    HYPERPARAMETERS=HYPERPARAMETERS,
-                    final_model_dir=final_model_dir,
-                    sorted_all_pod_ids=sorted_all_pod_ids
-                )
-            elif 'perpodmodel_checkpoint' in subAlgorithm or subAlgorithm in {'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'random', 'prefix_hit_threshold_or_least_request'}:
+            # if 'perpodmodel_advanced' in subAlgorithm:
+            #     result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_advanced.infer_from_tensor(
+            #         tensor_data=tensor_data,
+            #         request_id=request_id,
+            #         model_updated=MODEL_UPDATED,
+            #         HYPERPARAMETERS=HYPERPARAMETERS,
+            #         final_model_dir=final_model_dir,
+            #         sorted_all_pod_ids=sorted_all_pod_ids
+            #     )
+            # elif 'policygradient' in subAlgorithm:
+            #     result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_policygradient.infer_from_tensor(
+            #         tensor_data=tensor_data,
+            #         request_id=request_id,
+            #         model_updated=MODEL_UPDATED,
+            #         HYPERPARAMETERS=HYPERPARAMETERS,
+            #         final_model_dir=final_model_dir,
+            #         sorted_all_pod_ids=sorted_all_pod_ids
+            #     )
+            if 'perpodmodel_checkpoint' in subAlgorithm or subAlgorithm in {'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'random', 'prefix_hit_threshold_or_least_request'}:
                 result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_checkpoint.infer_from_tensor(
                     tensor_data=tensor_data,
                     request_id=request_id,
@@ -836,12 +860,31 @@ def handle_infer():
         if pod_order is not None:
             response["predicted_rewards_pod_order"] = pod_order
         
+        # PC1 fallback when predicted rewards are similar across pods (saturation regime)
+        # ood_fallback=3: rewards within threshold → defer to prefix_cache_1 heuristic
+        # When all pods look similar to the model, prefix locality is a better tiebreaker
+        REWARD_SIMILARITY_THRESHOLD = float(os.getenv("REWARD_SIMILARITY_THRESHOLD", "0.1"))  # 10% relative range
+        predicted_rewards_for_tiebreak = result.get('predicted_rewards', None)
+        if predicted_rewards_for_tiebreak is not None and hasattr(predicted_rewards_for_tiebreak, '__len__') and len(predicted_rewards_for_tiebreak) > 1:
+            rewards_arr = np.array(predicted_rewards_for_tiebreak, dtype=np.float64)
+            reward_range = rewards_arr.max() - rewards_arr.min()
+            reward_scale = max(abs(rewards_arr.max()), abs(rewards_arr.min()), 1e-6)
+            relative_range = reward_range / reward_scale
+            if relative_range < REWARD_SIMILARITY_THRESHOLD:
+                response["ood_fallback"] = 3
+                response["fallback_reason"] = f"reward_similarity_{relative_range:.4f}"
+                logger.info(f"Reward similarity fallback: relative_range={relative_range:.4f} < threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
+
         # Fallback routing if using random weights (no online training completed yet)
-        # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet
+        # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
         # Model still runs inference (for data collection) but gateway should use its own heuristic
         if LOAD_PRETRAINED_MODEL == 0 and NUM_TRAINS == 0:
             response["ood_fallback"] = 2
             response["fallback_reason"] = "model_not_trained"
+        # RETRAIN_AT_STARTUP: random weights until first training round retrains on offline data with new features
+        elif RETRAIN_AT_STARTUP and NUM_TRAINS == 0:
+            response["ood_fallback"] = 2
+            response["fallback_reason"] = "retrain_at_startup_pending"
         # When switching to fixed-range normalization with a pretrained z-score model,
         # the pretrained weights are incompatible with the new normalization scale.
         # Force fallback until the first online training round retrains from scratch.
@@ -1917,13 +1960,15 @@ def initialize():
         HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = bool(CB_RESET_LR_PER_ROUND)
         HYPERPARAMETERS['RECENCY_DECAY_WEIGHT_FACTOR'] = RECENCY_DECAY_WEIGHT_FACTOR
         HYPERPARAMETERS['ENABLE_FALLBACK'] = bool(ENABLE_FALLBACK)
+        HYPERPARAMETERS['RETRAIN_AT_STARTUP'] = bool(RETRAIN_AT_STARTUP)
+        HYPERPARAMETERS['LOAD_PRETRAINED_MODEL'] = LOAD_PRETRAINED_MODEL
         HYPERPARAMETERS['RETURN_POD_PROBABILITIES'] = RETURN_POD_PROBABILITIES
         HYPERPARAMETERS['RETURN_PREDICTED_REWARDS'] = RETURN_PREDICTED_REWARDS
         HYPERPARAMETERS['RETURN_ARRAY_OUTPUTS'] = RETURN_ARRAY_OUTPUTS
         
         # 🔧 CRITICAL: Apply EXCLUDED_REQUEST_FEATURES to match offline trained model architecture
         global request_features_train
-        all_request_features = ['input_tokens', 'output_tokens', 'total_tokens']
+        all_request_features = ['input_tokens', 'output_tokens', 'total_tokens', 'kv_concentration']
         excluded_features = set(HYPERPARAMETERS.get('EXCLUDED_REQUEST_FEATURES', []))
         # Filter out 'none' placeholder
         if 'none' in excluded_features:
@@ -1995,6 +2040,20 @@ def initialize():
                     if NORMALIZATION_MODE == "fixed_range":
                         logger.info(f"   NORMALIZATION_MODE=fixed_range: Overriding loaded stats with domain-knowledge bounds")
                         apply_fixed_range_normalization(stats_instance)
+                    # Initialize default normalization stats for new derived features
+                    # These features didn't exist in the offline training, so they have no saved stats.
+                    # Use sensible defaults: mean=0, std=practical_range for z-score normalization.
+                    for new_feat, default_std in [('kv_differential', 50.0), ('kv_concentration', 25.0)]:
+                        if new_feat not in stats_instance.feature_stats:
+                            rs = data_normalizer.RunningStats(feature_names=new_feat)
+                            rs.count = 1
+                            rs.mean = np.array([0.0])
+                            rs.std = np.array([default_std])
+                            rs.min = np.array([-100.0 if 'differential' in new_feat else 0.0])
+                            rs.max = np.array([100.0 if 'differential' in new_feat else 50.0])
+                            rs.sum_sq_diff = np.array([0.0])
+                            stats_instance.feature_stats[new_feat] = rs
+                            logger.info(f"   Initialized default normalization stats for new feature '{new_feat}': mean=0, std={default_std}")
                     if LOAD_PRETRAINED_MODEL == 0:
                         logger.info(f"   LOAD_PRETRAINED_MODEL=0: Will train model from scratch but use GPU-L3c normalization baseline")
                 else:
@@ -2020,20 +2079,28 @@ def initialize():
     logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
     logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
     if 'contextual_bandit' in ROUTING_STRATEGY:
-        preload_start = time.time()
-        try:
-            num_pods = len(sorted_running_pod_ips)
-            CONTEXTUAL_BANDIT_PRELOADED = neural_contextual_bandit_perpodmodel_checkpoint.preload_agent_from_metadata(
-                final_model_dir=final_model_dir,
-                HYPERPARAMETERS=HYPERPARAMETERS,
-                num_pods=num_pods
-            )
-            if CONTEXTUAL_BANDIT_PRELOADED:
-                logger.info(f"Contextual bandit preload completed in {time.time() - preload_start:.3f}s (num_pods={num_pods})")
-            else:
-                logger.error("Contextual bandit preload failed; /infer will return 503 until ready")
-        except Exception:
-            logger.exception("Contextual bandit preload failed; /infer will return 503 until ready")
+        # Skip preload when using new features with random weights — metadata dimensions
+        # are from the old model and will mismatch. Let the first request create the agent
+        # with correct dimensions from actual tensor data.
+        if LOAD_PRETRAINED_MODEL == 0 or RETRAIN_AT_STARTUP:
+            logger.info(f"Skipping contextual bandit preload (LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, RETRAIN_AT_STARTUP={RETRAIN_AT_STARTUP})")
+            logger.info("Agent will be lazily initialized on first request with correct feature dimensions")
+            CONTEXTUAL_BANDIT_PRELOADED = True  # Mark as ready so /infer doesn't return 503
+        else:
+            preload_start = time.time()
+            try:
+                num_pods = len(sorted_running_pod_ips)
+                CONTEXTUAL_BANDIT_PRELOADED = neural_contextual_bandit_perpodmodel_checkpoint.preload_agent_from_metadata(
+                    final_model_dir=final_model_dir,
+                    HYPERPARAMETERS=HYPERPARAMETERS,
+                    num_pods=num_pods
+                )
+                if CONTEXTUAL_BANDIT_PRELOADED:
+                    logger.info(f"Contextual bandit preload completed in {time.time() - preload_start:.3f}s (num_pods={num_pods})")
+                else:
+                    logger.error("Contextual bandit preload failed; /infer will return 503 until ready")
+            except Exception:
+                logger.exception("Contextual bandit preload failed; /infer will return 503 until ready")
             CONTEXTUAL_BANDIT_PRELOADED = False
     else:
         CONTEXTUAL_BANDIT_PRELOADED = True
@@ -2139,8 +2206,8 @@ def initialize():
     # Load offline training data for online learning
     global OFFLINE_DF, ONLINE_DF, OFFLINE_DATA_SIZE, ONLINE_SEQ
     if ENABLE_ONLINE_LEARNING:
-        # Skip loading offline data if LOAD_PRETRAINED_MODEL=0 (pure online learning from scratch)
-        if LOAD_PRETRAINED_MODEL == 0:
+        # Skip loading offline data if LOAD_PRETRAINED_MODEL=0 and NOT retrain-at-startup
+        if LOAD_PRETRAINED_MODEL == 0 and not RETRAIN_AT_STARTUP:
             logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0: Skipping offline training data")
             logger.warning(f"⚠️  Will train from scratch using ONLY online data")
             logger.warning(f"⚠️  Inference will use RANDOM WEIGHTS until first training completes ({MIN_NUM_TRAINING_DATA} samples)")
@@ -2158,6 +2225,9 @@ def initialize():
                     ONLINE_SEQ = 0
                     logger.info(f"✅ Loaded offline training data: {len(OFFLINE_DF)} samples from {offline_csv_path}")
                     logger.info(f"   Columns: {list(OFFLINE_DF.columns[:10])}...")  # Show first 10 columns
+                    # Compute derived features (kv_differential, kv_concentration) from existing kv_hit_ratio columns
+                    _augment_df_with_derived_features(OFFLINE_DF)
+                    logger.info(f"✅ Augmented OFFLINE_DF with derived features (kv_differential, kv_concentration)")
             except Exception as e:
                 logger.error(f"Failed to load offline training data: {e}")
                 OFFLINE_DF = pd.DataFrame()
