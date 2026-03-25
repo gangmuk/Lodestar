@@ -10,6 +10,8 @@ from datetime import datetime
 import logging
 import argparse
 import csv
+import io
+from concurrent.futures import ProcessPoolExecutor, as_completed
 # import training.preprocess as preprocess
 import preprocess
 from matplotlib.gridspec import GridSpec
@@ -520,6 +522,18 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
     return metrics, df
 
 
+def _process_log_file_captured(args):
+    """Top-level wrapper for parallel execution. Captures stdout per worker process."""
+    log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request = args
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    try:
+        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
+    finally:
+        sys.stdout = old_stdout
+    return log_file, result, captured.getvalue()
+
 
 def calculate_ttft_reward(ttft, slo_ttft=500):
     """Calculate TTFT reward based on the given formula"""
@@ -634,6 +648,8 @@ def get_strategy_color(strategy_name, index_in_category):
         base_colors = ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']  # Dark green/Lime family
     elif preble_routing in strategy_name.lower():
         base_colors = ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']  # Orange/Gold family
+    elif contextual_bandit_routing in strategy_name.lower() and 'random' in strategy_name.lower():
+        base_colors = ['#ff8c00', '#ffa500', '#ff7f00', '#e08600', '#ffb347']  # Orange family (CB random init)
     elif contextual_bandit_routing in strategy_name.lower():
         base_colors = ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']  # Red family
     elif random_routing in strategy_name.lower():
@@ -882,6 +898,9 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         elif preble_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[preble_routing])
             category_counts[preble_routing] += 1
+        elif contextual_bandit_routing in strategy.lower() and 'random' in strategy.lower():
+            color_dict[strategy] = get_strategy_color(strategy, category_counts.get('contextual_bandit_random', 0))
+            category_counts['contextual_bandit_random'] = category_counts.get('contextual_bandit_random', 0) + 1
         elif contextual_bandit_routing in strategy.lower():
             color_dict[strategy] = get_strategy_color(strategy, category_counts[contextual_bandit_routing])
             category_counts[contextual_bandit_routing] += 1
@@ -975,11 +994,11 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
         # Plot 8: TTFT Time Series (full width, row 6)
         ax = fig.add_subplot(gs[6, :])
-        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1s averages)', 'TTFT (ms)')
+        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1000-request window averages)', 'TTFT (ms)', show_legend=True)
 
         # Plot 9: Avg TPOT Time Series (full width, row 7)
         ax = fig.add_subplot(gs[7, :])
-        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1s averages)', 'Avg TPOT (ms)')
+        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1000-request window averages)', 'Avg TPOT (ms)', show_legend=False)
     else:
         # If no CSV data provided, show placeholder text for all plots
         for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
@@ -1506,31 +1525,36 @@ def plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, column, titl
 
 
 # New function to plot latency time series with 1-second averages
-def plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, column, title, ylabel):
-    """Plot time series with 1-second window averages for a given latency column for each strategy."""
+def plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, column, title, ylabel, show_legend=True, window_size=1000):
+    """Plot time series with non-overlapping sliding window averages for a given latency column for each strategy."""
     for strategy in strategy_order:
         if strategy in csv_data_dict and column in csv_data_dict[strategy].columns:
             df = csv_data_dict[strategy]
-            
-            # Create 1-second time bins
-            df_copy = df.copy()
-            df_copy['time_bin'] = np.floor(df_copy['relative_time']).astype(int)
-            
-            # Calculate average latency for each 1-second bin
-            latency_stats = df_copy.groupby('time_bin')[column].agg(['mean', 'count']).reset_index()
-            latency_stats = latency_stats[latency_stats['count'] > 0]  # Only bins with data
-            
+
+            # Sort by relative_time and compute non-overlapping window averages
+            df_sorted = df.sort_values('relative_time').reset_index(drop=True)
+            n = len(df_sorted)
+            window_means = []
+            window_times = []
+            for start in range(0, n, window_size):
+                end = min(start + window_size, n)
+                chunk = df_sorted.iloc[start:end]
+                window_means.append(chunk[column].mean())
+                window_times.append(chunk['relative_time'].mean())
+
             # Shorten strategy name for legend
             legend_label = strategy.split('-')[0]
-            
+
             # Plot the time series
-            ax.plot(latency_stats['time_bin'], latency_stats['mean'], 
-                   color=color_dict[strategy], linewidth=2, alpha=0.8, label=legend_label)
-    
-    ax.set_title(title, fontsize=subtitle_fontsize)
+            ax.plot(window_times, window_means,
+                   color=color_dict[strategy], linewidth=2, alpha=0.8, label=legend_label,
+                   marker='o', markersize=5)
+
+    ax.set_title(title, fontsize=subtitle_fontsize, pad=20 if show_legend else 6)
     ax.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
     ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
-    ax.legend(fontsize=16, loc='upper right')
+    if show_legend:
+        ax.legend(fontsize=16, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=1, frameon=True)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
 
@@ -1578,16 +1602,34 @@ if __name__ == "__main__":
         print(f"No log files found in {base_dir}")
         sys.exit(1)
     
-    # Process each log file - MODIFIED to collect both metrics and DataFrames
+    # Process each log file in parallel - collect both metrics and DataFrames
     all_metrics = []
-    csv_data_dict = {}  # ADD: Dictionary to store DataFrames
-    
+    csv_data_dict = {}  # Dictionary to store DataFrames
+
+    worker_args = [
+        (log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
+        for log_file in log_files
+    ]
+    num_workers = min(len(log_files), os.cpu_count() or 4)
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        future_to_file = {
+            executor.submit(_process_log_file_captured, args): args[0]
+            for args in worker_args
+        }
+        # Collect results as they complete
+        results_by_file = {}
+        for future in as_completed(future_to_file):
+            log_file = future_to_file[future]
+            results_by_file[log_file] = future.result()
+
+    # Print output and collect results in original log_files order
     for log_file in log_files:
-        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
+        log_file_key, result, output = results_by_file[log_file]
+        print(output, end='')
         if result:
-            metrics, df = result  # UNPACK both metrics and DataFrame
+            metrics, df = result
             all_metrics.append(metrics)
-            csv_data_dict[metrics['strategy']] = df  # STORE DataFrame by strategy name
+            csv_data_dict[metrics['strategy']] = df
     
     # Keep a copy of the original per-experiment csv_data_dict before averaging
     csv_data_dict_individual = dict(csv_data_dict)
