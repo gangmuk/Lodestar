@@ -175,8 +175,6 @@ FIXED_RANGE_BOUNDS = {
     'inflight_prefill_requests': 30,  # practical max
     'inflight_decode_requests': 30,   # practical max
     'cpu_kv_cache': 1.0,              # ratio [0, 1]
-    'kv_differential': 100,           # range [-100, 100] (this_pod_kv - mean_others, percentage)
-    'kv_concentration': 50,           # std of kv_hit_ratios across pods [0, ~50]
 }
 
 def apply_fixed_range_normalization(stats_inst):
@@ -197,26 +195,6 @@ def apply_fixed_range_normalization(stats_inst):
 BROKER_LOCK = RWLock()
 
 
-def _augment_df_with_derived_features(df):
-    """Compute kv_differential (per-pod) and kv_concentration (per-request) from existing kv_hit_ratio columns.
-    Modifies the DataFrame in-place. Safe to call on DataFrames that already have these columns."""
-    kv_cols = sorted([c for c in df.columns if c.endswith('-kv_hit_ratio')])
-    if not kv_cols:
-        return
-    kv_matrix = df[kv_cols].values.astype(np.float64)  # [n_samples, n_pods]
-    num_pods = kv_matrix.shape[1]
-    kv_sum = kv_matrix.sum(axis=1, keepdims=True)
-    for col_idx, kv_col in enumerate(kv_cols):
-        pod_prefix = kv_col.replace('-kv_hit_ratio', '')
-        this_kv = kv_matrix[:, col_idx]
-        if num_pods > 1:
-            other_mean = (kv_sum.squeeze() - this_kv) / (num_pods - 1)
-        else:
-            other_mean = np.zeros_like(this_kv)
-        df[f'{pod_prefix}-kv_differential'] = this_kv - other_mean
-    df['kv_concentration'] = kv_matrix.std(axis=1)
-
-
 # request_features_train will be set dynamically after loading HYPERPARAMETERS
 # to respect EXCLUDED_REQUEST_FEATURES from the offline trained model
 request_features_train = None
@@ -230,6 +208,7 @@ def handle_flush():
     log_data = request.json
     try:
         logger.info(f"Received log data with {len(log_data) if log_data else 0} entries")
+
         if not os.path.exists("raw_training_data"):
             os.mkdir("raw_training_data")
         raw_data_path = f"raw_training_data/batch_{NUM_FLUSH}.csv"
@@ -662,7 +641,7 @@ def handle_infer():
             # Use the actual exploration flag from the agent, not just whether epsilon > 0
             result['explore_mask'] = 1 if result.get('explored', False) else 0
             
-            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['chosen_pod_predicted_reward']}, infer_overhead_in_ms={(time.time() - infer_from_tensor_start_time)*1000:.0f}")
+            logger.info(f"Neural CB inference for {request_id}: pod={result['selected_pod_index']}, predicted_rewards={result['predicted_rewards']}, chosen_pod_predicted_reward={result['chosen_pod_predicted_reward']}, eps_eff={result.get('epsilon_effective', -1):.3f}, explored={result.get('explored', False)}, infer_overhead_in_ms={(time.time() - infer_from_tensor_start_time)*1000:.0f}")
             
         # elif subAlgorithm == 'rl_agent':
         #     from rl_routing_agent_sb3 import create_rl_routing_agent_sb3, infer_rl_agent
@@ -860,6 +839,12 @@ def handle_infer():
         if pod_order is not None:
             response["predicted_rewards_pod_order"] = pod_order
         
+        # PC1-biased exploration: when the agent explored, delegate routing to gateway's PC1 fallback
+        # ood_fallback=4: exploration triggered → gateway uses prefix_cache_1 (which considers both prefix hits AND load)
+        if result.get('explored', False):
+            response["ood_fallback"] = 4
+            response["fallback_reason"] = "pc1_biased_exploration"
+
         # PC1 fallback when predicted rewards are similar across pods (saturation regime)
         # ood_fallback=3: rewards within threshold → defer to prefix_cache_1 heuristic
         # When all pods look similar to the model, prefix locality is a better tiebreaker
@@ -870,10 +855,11 @@ def handle_infer():
             reward_range = rewards_arr.max() - rewards_arr.min()
             reward_scale = max(abs(rewards_arr.max()), abs(rewards_arr.min()), 1e-6)
             relative_range = reward_range / reward_scale
+            logger.info(f"tiebreaker test, Reward similarity fallback: relative_range={relative_range:.4f},  threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
             if relative_range < REWARD_SIMILARITY_THRESHOLD:
                 response["ood_fallback"] = 3
                 response["fallback_reason"] = f"reward_similarity_{relative_range:.4f}"
-                logger.info(f"Reward similarity fallback: relative_range={relative_range:.4f} < threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
+                logger.info(f"Tiebreaker happens! ood_fallback=3")
 
         # Fallback routing if using random weights (no online training completed yet)
         # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
@@ -1954,6 +1940,12 @@ def initialize():
         HYPERPARAMETERS = utils.load_hyperparameter_file(hyperparameter_file_path)
         HYPERPARAMETERS['TTFT_REWARD_WEIGHT'] = TTFT_REWARD_WEIGHT
         HYPERPARAMETERS['EXPLORATION_ENABLED'] = EXPLORATION_ENABLED
+        # Override CB epsilon from EXPLORATION_RATE env var
+        # Env var is the single source of truth — overrides model_config.json
+        HYPERPARAMETERS['initial_epsilon'] = EXPLORATION_RATE
+        HYPERPARAMETERS['epsilon_min'] = EXPLORATION_RATE
+        HYPERPARAMETERS['epsilon_decay'] = 1.0  # No decay, constant rate
+        logger.info(f"CB epsilon set from EXPLORATION_RATE env var: epsilon={EXPLORATION_RATE} (constant, no decay)")
         HYPERPARAMETERS['ENABLE_ONLINE_LEARNING'] = ENABLE_ONLINE_LEARNING
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
         HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)
@@ -1968,7 +1960,7 @@ def initialize():
         
         # 🔧 CRITICAL: Apply EXCLUDED_REQUEST_FEATURES to match offline trained model architecture
         global request_features_train
-        all_request_features = ['input_tokens', 'output_tokens', 'total_tokens', 'kv_concentration']
+        all_request_features = ['input_tokens', 'output_tokens', 'total_tokens']
         excluded_features = set(HYPERPARAMETERS.get('EXCLUDED_REQUEST_FEATURES', []))
         # Filter out 'none' placeholder
         if 'none' in excluded_features:
@@ -2040,20 +2032,6 @@ def initialize():
                     if NORMALIZATION_MODE == "fixed_range":
                         logger.info(f"   NORMALIZATION_MODE=fixed_range: Overriding loaded stats with domain-knowledge bounds")
                         apply_fixed_range_normalization(stats_instance)
-                    # Initialize default normalization stats for new derived features
-                    # These features didn't exist in the offline training, so they have no saved stats.
-                    # Use sensible defaults: mean=0, std=practical_range for z-score normalization.
-                    for new_feat, default_std in [('kv_differential', 50.0), ('kv_concentration', 25.0)]:
-                        if new_feat not in stats_instance.feature_stats:
-                            rs = data_normalizer.RunningStats(feature_names=new_feat)
-                            rs.count = 1
-                            rs.mean = np.array([0.0])
-                            rs.std = np.array([default_std])
-                            rs.min = np.array([-100.0 if 'differential' in new_feat else 0.0])
-                            rs.max = np.array([100.0 if 'differential' in new_feat else 50.0])
-                            rs.sum_sq_diff = np.array([0.0])
-                            stats_instance.feature_stats[new_feat] = rs
-                            logger.info(f"   Initialized default normalization stats for new feature '{new_feat}': mean=0, std={default_std}")
                     if LOAD_PRETRAINED_MODEL == 0:
                         logger.info(f"   LOAD_PRETRAINED_MODEL=0: Will train model from scratch but use GPU-L3c normalization baseline")
                 else:
@@ -2205,7 +2183,7 @@ def initialize():
 
     # Load offline training data for online learning
     global OFFLINE_DF, ONLINE_DF, OFFLINE_DATA_SIZE, ONLINE_SEQ
-    if ENABLE_ONLINE_LEARNING:
+    if ENABLE_ONLINE_LEARNING or RETRAIN_AT_STARTUP:
         # Skip loading offline data if LOAD_PRETRAINED_MODEL=0 and NOT retrain-at-startup
         if LOAD_PRETRAINED_MODEL == 0 and not RETRAIN_AT_STARTUP:
             logger.warning(f"⚠️  LOAD_PRETRAINED_MODEL=0: Skipping offline training data")
@@ -2224,10 +2202,7 @@ def initialize():
                     OFFLINE_DATA_SIZE = len(OFFLINE_DF)
                     ONLINE_SEQ = 0
                     logger.info(f"✅ Loaded offline training data: {len(OFFLINE_DF)} samples from {offline_csv_path}")
-                    logger.info(f"   Columns: {list(OFFLINE_DF.columns[:10])}...")  # Show first 10 columns
-                    # Compute derived features (kv_differential, kv_concentration) from existing kv_hit_ratio columns
-                    _augment_df_with_derived_features(OFFLINE_DF)
-                    logger.info(f"✅ Augmented OFFLINE_DF with derived features (kv_differential, kv_concentration)")
+                    logger.info(f"   Columns: {list(OFFLINE_DF.columns[:10])}...")
             except Exception as e:
                 logger.error(f"Failed to load offline training data: {e}")
                 OFFLINE_DF = pd.DataFrame()
@@ -2245,8 +2220,23 @@ def initialize():
         # Initialize scalable RL agent if configured
         TOTAL_NUM_NEW_DATA = (len(OFFLINE_DF) if OFFLINE_DF is not None else 0) + (len(ONLINE_DF) if ONLINE_DF is not None else 0)
     else:
-        logger.info("Online learning disabled, skipping offline data load")
-    
+        logger.info("Online learning disabled and RETRAIN_AT_STARTUP=0, skipping offline data load")
+
+    # RETRAIN_AT_STARTUP: trigger one training round on offline data during init
+    # This ensures the model has real weights before the first request, even with ENABLE_ONLINE_LEARNING=0
+    if RETRAIN_AT_STARTUP and OFFLINE_DF is not None and len(OFFLINE_DF) > 0:
+        logger.info(f"RETRAIN_AT_STARTUP: Triggering initial training on {len(OFFLINE_DF)} offline samples")
+        # Temporarily set TOTAL_NUM_NEW_DATA high enough to pass the MIN_NUM_TRAINING_DATA check
+        TOTAL_NUM_NEW_DATA = max(TOTAL_NUM_NEW_DATA, MIN_NUM_TRAINING_DATA + 1)
+        NUM_NEW_DATA = TOTAL_NUM_NEW_DATA
+        try:
+            online_train_routine()
+            logger.info(f"RETRAIN_AT_STARTUP: Initial training completed, NUM_TRAINS={NUM_TRAINS}")
+        except Exception as e:
+            logger.error(f"RETRAIN_AT_STARTUP: Initial training failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     logger.info(f"{BLUE_COLOR}model_type: {HYPERPARAMETERS['MODEL_TYPE']}{RESET_COLOR}")
 
     # # if HYPERPARAMETERS['MODEL_TYPE'] == 'scalable_rl_agent':

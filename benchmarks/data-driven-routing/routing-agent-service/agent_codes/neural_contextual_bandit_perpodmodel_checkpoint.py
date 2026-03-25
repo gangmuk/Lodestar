@@ -240,13 +240,13 @@ class NeuralContextualBandit:
     def choose_action(self, pod_features, kv_hit_ratios, request_features, evaluate=False):
         """
         Select action (pod) based on current policy
-        
+
         Args:
             pod_features: [1, num_pods, pod_feat_dim]
             kv_hit_ratios: [1, num_pods, kv_dim]
             request_features: [1, req_feat_dim]
             evaluate: If True, use pure exploitation
-        
+
         Returns:
             action: Selected pod index
             predicted_rewards: Expected rewards for all pods (for logging)
@@ -255,32 +255,33 @@ class NeuralContextualBandit:
         with torch.no_grad():
             # Create per-pod contexts: [num_pods, per_pod_context_dim]
             contexts = self._create_per_pod_contexts(pod_features, kv_hit_ratios, request_features)
-            
+
             # Get reward for each pod independently: [num_pods, 1]
             predicted_rewards_batch = self.reward_net(contexts)
-            
+
             # Reshape to [num_pods] for easier handling
             predicted_rewards = predicted_rewards_batch.squeeze(1).cpu().numpy()  # [num_pods]
-            
+
             explored = False  # Track if we explored or exploited
-            
+            epsilon_effective = self.epsilon
+
             if evaluate or self.exploration_method == 'greedy':
                 # Pure exploitation
                 action = int(np.argmax(predicted_rewards))
                 explored = False
-            
+
             elif self.exploration_method == 'epsilon_greedy':
                 # Epsilon-greedy exploration with PC1-biased strategy
                 # Instead of random pod, explore by selecting the pod with highest KV hit ratio.
                 # This bootstraps prefix concentration signal for the differential KV feature.
                 actual_num_pods = len(predicted_rewards)
-                if np.random.random() < self.epsilon:
-                    # PC1-biased exploration: pick pod with highest KV hit ratio
-                    if kv_hit_ratios is not None and kv_hit_ratios.numel() > 0:
-                        kv_values = kv_hit_ratios.squeeze(0).squeeze(-1).cpu().numpy()  # [num_pods]
-                        action = int(np.argmax(kv_values))
-                    else:
-                        action = np.random.randint(0, actual_num_pods)
+                if np.random.random() < epsilon_effective:
+                    # PC1-biased exploration: delegate to gateway's PC1 fallback routing
+                    # Instead of reimplementing PC1 here (which caused single-pod overloading),
+                    # we pick any pod and signal the gateway to override with its own PC1 logic
+                    # (which considers both prefix hits AND load balance).
+                    # The gateway handles this via ood_fallback=4 → fallbackRouting_with_prefix_cache_1.
+                    action = int(np.argmax(predicted_rewards))  # placeholder, gateway will override
                     explored = True
                 else:
                     action = int(np.argmax(predicted_rewards))
@@ -319,6 +320,9 @@ class NeuralContextualBandit:
             if action < len(self.action_counts):
                 self.action_counts[action] += 1
             self.total_steps += 1
+
+            # Store for logging by infer_from_tensor
+            self._last_epsilon_effective = epsilon_effective
 
             return action, predicted_rewards, explored
     
@@ -889,7 +893,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     # Inference
     inference_start = time.time()
     action, predicted_rewards, explored = _cached_agent.choose_action(
-        pod_features, kv_hit_ratios, request_features, 
+        pod_features, kv_hit_ratios, request_features,
         evaluate=not HYPERPARAMETERS.get('explore', True)
     )
     overhead_summary['inference'] = time.time() - inference_start
@@ -915,6 +919,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
     result = {
         'selected_pod_index': int(action),
         'predicted_rewards': predicted_rewards,
+        'epsilon_effective': getattr(_cached_agent, '_last_epsilon_effective', _cached_agent.epsilon),
         'chosen_pod_predicted_reward': chosen_pod_predicted_reward,
         'pod_probabilities': pod_probabilities,
         'confidence': chosen_pod_predicted_reward,  # Keep for backward compatibility

@@ -500,10 +500,58 @@ def calculate_rewards_negative_linear(ttft_values, tpot_values, ttft_reward_weig
         'combined_rewards': calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight), }
 
 
+def calculate_rewards_negative_linear_and_prefix_locality(ttft_values, tpot_values, ttft_reward_weight,
+                                                           selected_pods, base_data, hyperparameters):
+    """
+    Negative linear reward + prefix locality bonus.
+
+    reward = -TTFT/1000 + α * (selected_pod_kv_differential / 100)
+
+    The prefix locality bonus teaches the model to MAINTAIN prefix concentration
+    that exploration/fallback creates. It rewards routing to pods that already have
+    high prefix affinity (high kv_differential) relative to other pods.
+
+    Examples (α=0.5):
+    - TTFT=500ms, kv_diff=+40% → reward = -0.5 + 0.5*0.4 = -0.3 (bonus for concentrated pod)
+    - TTFT=500ms, kv_diff=0%   → reward = -0.5 + 0.0     = -0.5 (neutral)
+    - TTFT=5000ms, kv_diff=+40% → reward = -5.0 + 0.2    = -4.8 (TTFT dominates when high)
+
+    Args:
+        ttft_values: Actual TTFT in ms
+        tpot_values: Actual TPOT in ms
+        ttft_reward_weight: Weight for TTFT vs TPOT
+        selected_pods: array of selected pod IDs per sample
+        base_data: dict containing pod_XXXX-kv_differential columns
+        hyperparameters: dict with PREFIX_LOCALITY_WEIGHT
+    """
+    ttft_rewards = -ttft_values / 1000.0
+    tpot_rewards = -tpot_values / 1000.0
+    combined_rewards = calculate_combined_rewards(ttft_rewards, tpot_rewards, ttft_reward_weight)
+
+    prefix_locality_weight = float(hyperparameters.get('PREFIX_LOCALITY_WEIGHT', 0.5))
+    locality_bonus = np.zeros(len(selected_pods), dtype=np.float64)
+    for i, pod in enumerate(selected_pods):
+        diff_key = f"{pod}-kv_differential"
+        if diff_key in base_data:
+            locality_bonus[i] = base_data[diff_key][i] / 100.0
+
+    combined_with_locality = combined_rewards + prefix_locality_weight * locality_bonus
+
+    logger.info(f"negative_linear_and_prefix_locality: weight={prefix_locality_weight}, "
+                f"locality_bonus(mean={locality_bonus.mean():.4f}, std={locality_bonus.std():.4f}), "
+                f"reward_before={combined_rewards.mean():.4f}, reward_after={combined_with_locality.mean():.4f}")
+
+    return {
+        'ttft_rewards': ttft_rewards,
+        'tpot_rewards': tpot_rewards,
+        'combined_rewards': combined_with_locality,
+    }
+
+
 def calculate_rewards_negative_squared(ttft_values, tpot_values, ttft_reward_weight):
     """
     Negative squared reward: reward = -(latency / K)^2
-    
+
     Philosophy: Heavily penalize high latencies (tail latencies are REALLY bad).
     
     Why this might work:
@@ -1406,26 +1454,6 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         gpu_model_features = extract_pod_features_fast(all_gpu_models, sorted_pods, 'GPU-L3c')
         base_data.update({f"{pod_id}-GPU": gpu_model_features[pod_id] for pod_id in sorted_pods})
 
-    # === Derived features: kv_differential (per-pod) and kv_concentration (per-request) ===
-    # These are computed from existing kv_hit_ratio columns, no new data collection needed.
-    if 'kv_hit_ratio' not in excluded_pod_features and 'kv_differential' not in excluded_pod_features:
-        # Stack kv_hit_ratios: [num_rows, num_pods]
-        kv_matrix = np.column_stack([base_data[f"{pod_id}-kv_hit_ratio"] for pod_id in sorted_pods])
-        # kv_differential: this_pod_kv - mean(other_pods_kv) for each pod
-        kv_mean_all = kv_matrix.mean(axis=1, keepdims=True)  # [num_rows, 1]
-        num_pods = len(sorted_pods)
-        # mean of OTHER pods = (sum_all - this_pod) / (num_pods - 1)
-        kv_sum_all = kv_matrix.sum(axis=1, keepdims=True)  # [num_rows, 1]
-        for pod_idx, pod_id in enumerate(sorted_pods):
-            this_pod_kv = kv_matrix[:, pod_idx]
-            if num_pods > 1:
-                other_mean = (kv_sum_all.squeeze() - this_pod_kv) / (num_pods - 1)
-            else:
-                other_mean = np.zeros_like(this_pod_kv)
-            base_data[f"{pod_id}-kv_differential"] = this_pod_kv - other_mean
-        # kv_concentration: std of kv_hit_ratios across pods (request-level feature)
-        base_data["kv_concentration"] = kv_matrix.std(axis=1)
-
     get_value_overhead = time.time() - get_value_start_time # 0ms
     num_rows = len(base_data['request_id'])
     pod_index_start_time = time.time()
@@ -1512,6 +1540,12 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
             elif reward_function == "negative_linear":
                 reward = calculate_rewards_negative_linear(
                     ttft_values, tpot_values, ttft_reward_weight
+                )
+            elif reward_function == "negative_linear_and_prefix_locality":
+                selected_pods = np.array(base_data['selected_pod'])
+                reward = calculate_rewards_negative_linear_and_prefix_locality(
+                    ttft_values, tpot_values, ttft_reward_weight,
+                    selected_pods, base_data, hyperparameters
                 )
             elif reward_function == "negative_squared":
                 reward = calculate_rewards_negative_squared(
