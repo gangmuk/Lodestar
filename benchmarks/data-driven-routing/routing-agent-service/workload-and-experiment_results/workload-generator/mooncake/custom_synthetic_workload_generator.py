@@ -24,27 +24,77 @@ from realistic_workload_generator import load_vocab_csv, load_trace, generate_wo
 from plot import plot_timeseries_analysis
 
 
-def build_session_pool(entries):
-    """Build a session pool from entries.
+def _analyze_region(region_entries):
+    """Analyze a region to extract empirical distributions for synthesis.
 
-    A session is identified by the first hash_id. Returns:
-      sessions: dict mapping first_hid -> {template, count}
+    Returns a dict with:
+      - group_sizes: list of prefix-group sizes
+      - block_counts: list of block counts per request
+      - trailing_diffs: list of how many trailing blocks differ between
+            consecutive requests in the same group (typically 1)
+      - intra_iats: list of intra-group inter-arrival times (ms)
+      - output_lengths: list of output_length values
     """
-    sessions = defaultdict(lambda: {"template": None, "count": 0})
-    for e in entries:
-        hids = e['hash_ids']
-        if not hids:
+    # Group by prefix_group (first 3 hash_ids)
+    pg_members = defaultdict(list)
+    for e in region_entries:
+        pg = tuple(e['hash_ids'][:3])
+        pg_members[pg].append(e)
+    for pg in pg_members:
+        pg_members[pg].sort(key=lambda e: e['timestamp'])
+
+    group_sizes = [len(v) for v in pg_members.values()]
+    block_counts = [len(e['hash_ids']) for e in region_entries]
+    output_lengths = [e['output_length'] for e in region_entries]
+
+    # Trailing diffs: how many trailing blocks differ between consecutive
+    # requests in the same group.  In the Mooncake synthetic trace this is
+    # typically 1 (the last block changes) or 0 (full duplicate).
+    trailing_diffs = []
+    intra_iats = []
+    for pg, members in pg_members.items():
+        if len(members) < 2:
             continue
-        key = hids[0]
-        sessions[key]["count"] += 1
-        if sessions[key]["template"] is None or len(hids) > len(sessions[key]["template"]):
-            sessions[key]["template"] = list(hids)
-    return sessions
+        for i in range(len(members) - 1):
+            hids_a = members[i]['hash_ids']
+            hids_b = members[i + 1]['hash_ids']
+            shared = 0
+            for a, b in zip(hids_a, hids_b):
+                if a == b:
+                    shared += 1
+                else:
+                    break
+            diff = len(hids_b) - shared
+            trailing_diffs.append(max(1, diff))  # at least 1 block differs
+            iat = members[i + 1]['timestamp'] - members[i]['timestamp']
+            intra_iats.append(max(1, iat))
+
+    # Fallbacks for regions with few multi-request groups
+    if not trailing_diffs:
+        trailing_diffs = [1]
+    if not intra_iats:
+        intra_iats = [30_000]  # 30s default
+
+    return {
+        "group_sizes": group_sizes,
+        "block_counts": block_counts,
+        "trailing_diffs": trailing_diffs,
+        "intra_iats": intra_iats,
+        "output_lengths": output_lengths,
+    }
 
 
-def _synthesize_fill(region_entries, all_entries_for_hid, stretch_factor,
+def _synthesize_fill(region_entries, stretch_factor,
                      region_start_ts, region_label, rng, np_rng, next_unique_id):
     """Stretch a region and synthesize fill requests to maintain RPS.
+
+    Synthesized requests are organized into NEW prefix groups with entirely
+    fresh hash_ids.  Each group has:
+      - A shared prefix of (block_count - K) blocks (all fresh unique IDs)
+      - Each request gets K unique trailing blocks (K sampled from the
+        empirical trailing-diff distribution, typically 1)
+    This ensures synthesized requests do NOT inflate prefix hit ratios by
+    reusing hash_ids from existing entries.
 
     Returns (stretched_entries, new_entries, next_unique_id).
     """
@@ -59,7 +109,7 @@ def _synthesize_fill(region_entries, all_entries_for_hid, stretch_factor,
     if original_duration <= 0:
         return stretched, [], next_unique_id
 
-    # Stretch timestamps
+    # Stretch timestamps of existing entries
     for e in stretched:
         e['timestamp'] = region_start_ts + (e['timestamp'] - region_start_ts) * stretch_factor
 
@@ -71,53 +121,80 @@ def _synthesize_fill(region_entries, all_entries_for_hid, stretch_factor,
     print(f"  {region_label}:")
     print(f"    Entries: {len(stretched)}, Original duration: {original_duration/1000:.1f}s")
     print(f"    Stretched duration: {stretched_duration/1000:.1f}s, Original RPS: {original_rps:.2f}")
-    print(f"    Extra time: {extra_time_ms/1000:.1f}s, New requests: {num_new}")
+    print(f"    Extra time: {extra_time_ms/1000:.1f}s, New requests to fill: {num_new}")
 
     if num_new <= 0:
         return stretched, [], next_unique_id
 
-    # Build session pool from this region
-    sessions = build_session_pool(region_entries)
-    session_keys = list(sessions.keys())
-    session_weights = [sessions[k]["count"] for k in session_keys]
-    total_weight = sum(session_weights)
-    session_weights = [w / total_weight for w in session_weights]
+    # Analyze the region to extract empirical distributions
+    region_stats = _analyze_region(region_entries)
+    group_sizes = region_stats["group_sizes"]
+    block_counts = region_stats["block_counts"]
+    trailing_diffs = region_stats["trailing_diffs"]
+    intra_iats = region_stats["intra_iats"]
+    output_lengths = region_stats["output_lengths"]
 
-    # Output length distribution from this region
-    output_lengths = [e['output_length'] for e in region_entries]
-
-    # Assign requests to sessions, then cluster
-    assigned = rng.choices(session_keys, weights=session_weights, k=num_new)
-    session_groups = defaultdict(list)
-    for idx, key in enumerate(assigned):
-        session_groups[key].append(idx)
-
-    cluster_window_ms = 30_000
     stretched_start = region_start_ts
     stretched_end = region_start_ts + stretched_duration
 
+    # Generate new groups until we've filled the target number of requests
     new_entries = []
-    for session_key, indices in session_groups.items():
-        template = sessions[session_key]["template"]
-        anchor = np_rng.uniform(stretched_start, stretched_end)
+    num_groups_created = 0
 
-        for idx in indices:
-            offset = np_rng.uniform(-cluster_window_ms / 2, cluster_window_ms / 2)
-            ts = max(stretched_start, min(stretched_end, anchor + offset))
+    while len(new_entries) < num_new:
+        remaining = num_new - len(new_entries)
 
-            if len(template) > 1:
-                new_hash_ids = template[:-1] + [next_unique_id]
-            else:
-                new_hash_ids = [next_unique_id]
+        # Sample group size from empirical distribution, cap to remaining
+        gs = rng.choice(group_sizes)
+        gs = min(gs, remaining)
+
+        # Sample block count for this group
+        bc = rng.choice(block_counts)
+        bc = max(1, bc)
+
+        # Sample trailing diff for this group (how many blocks differ per request)
+        K = rng.choice(trailing_diffs)
+        K = min(K, bc)  # can't differ more blocks than total
+        shared_len = bc - K
+
+        # Create fresh shared prefix with entirely new hash_ids
+        shared_prefix = []
+        for _ in range(shared_len):
+            shared_prefix.append(next_unique_id)
             next_unique_id += 1
 
+        # Pick a start time for this group within the stretched window
+        group_start_ts = np_rng.uniform(stretched_start, stretched_end)
+        current_ts = group_start_ts
+
+        for pos in range(gs):
+            if pos > 0:
+                iat = rng.choice(intra_iats)
+                current_ts += iat
+
+            # Skip entries that fall outside the stretched window
+            # (instead of clamping, which causes spike at the boundary)
+            if current_ts > stretched_end or current_ts < stretched_start:
+                continue
+
+            # Each request: shared prefix + K unique trailing blocks
+            hash_ids = list(shared_prefix)
+            for _ in range(K):
+                hash_ids.append(next_unique_id)
+                next_unique_id += 1
+
             new_entries.append({
-                "timestamp": float(ts),
-                "hash_ids": new_hash_ids,
+                "timestamp": float(current_ts),
+                "hash_ids": hash_ids,
                 "output_length": rng.choice(output_lengths),
             })
 
-    print(f"    Synthesized {len(new_entries)} requests ({len(session_groups)} session clusters)")
+        num_groups_created += 1
+
+    # Trim to exact target
+    new_entries = new_entries[:num_new]
+
+    print(f"    Synthesized {len(new_entries)} requests in {num_groups_created} new groups")
     return stretched, new_entries, next_unique_id
 
 
@@ -147,7 +224,7 @@ def stretch_and_fill(entries, stretch_after_pct, head_stretch_factor, tail_stret
     # Stretch head
     head_start_ts = head_raw[0]['timestamp'] if head_raw else 0
     head_stretched, head_new, next_unique_id = _synthesize_fill(
-        head_raw, entries, head_stretch_factor,
+        head_raw, head_stretch_factor,
         head_start_ts, "Head", rng, np_rng, next_unique_id
     )
 
@@ -174,7 +251,7 @@ def stretch_and_fill(entries, stretch_after_pct, head_stretch_factor, tail_stret
 
     # Stretch tail
     tail_stretched, tail_new, next_unique_id = _synthesize_fill(
-        tail_shifted, entries, tail_stretch_factor,
+        tail_shifted, tail_stretch_factor,
         new_tail_start_ts, "Tail", rng, np_rng, next_unique_id
     )
 

@@ -37,31 +37,73 @@ from merge_and_plot_all_workloads_from_client_log import (
 )
 
 # ── Color logic mirrored from compare_routing_strategies.py ─────────────────
-# NOTE: contextual_bandit must be checked BEFORE random so that
-# "contextual_bandit_..._random" gets the red family, not the green one.
+# Each entry is (keyword_or_tuple, palette).
+#   - str keyword: matches if keyword is in the policy name.
+#   - tuple of str: matches if ALL keywords are in the policy name.
+# More-specific (compound) rules MUST come before broader ones so that e.g.
+# "contextual_bandit_..._random" hits the CB-random teal palette, not the
+# generic contextual_bandit red palette.
+# Palette design: each family occupies a distinct hue band so no two
+# families can be confused even at a glance.  Shades within a family
+# are ordered dark → light for multi-run gradation.
+#
+# Hue allocation (approximate):
+#   rl_naive .................. royal blue    (hue 225)
+#   latency_pred_e2e ......... magenta/plum  (hue 300)
+#   latency_pred_ttft ........ hot pink      (hue 330)
+#   latency_pred_tpot ........ dark red      (hue   0)
+#   prefix_cache_1 ........... steel blue    (hue 210)
+#   prefix_cache_2 ........... forest green  (hue 120)
+#   preble ................... orange        (hue  30)
+#   CB + random .............. teal-green    (hue 160)  ← distinct from least_request cyan
+#   onlinelearning_0 ......... purple        (hue 280)
+#   contextual_bandit (other)  red           (hue  10)
+#   prefix_hit_thresh ........ olive/khaki   (hue  80)
+#   least_kv_cache ........... brown/sienna  (hue  25)
+#   least_latency ............ slate indigo  (hue 250)
+#   least_request ............ cyan          (hue 190)  ← clearly bluer than CB-random teal
+#   random ................... lime green    (hue 100)
 _COLOR_RULES = [
-    ('rl_naive',                          ['#4169e1', '#483d8b', '#6a5acd', '#7b68ee', '#9370db']),
-    ('latency_predictor_e2e_latency',     ['#8b008b', '#ba55d3', '#9932cc', '#8a2be2', '#c71585']),
-    ('latency_predictor_ttft',            ['#ff1493', '#ff69b4', '#dc143c', '#ff00ff', '#da70d6']),
-    ('latency_predictor_avg_tpot',        ['#8b0000', '#b22222', '#cd5c5c', '#f08080', '#fa8072']),
-    ('prefix_cache_1',                    ['#1f77b4', '#4682b4', '#6495ed', '#aec7e8', '#87ceeb']),
-    ('prefix_cache_2',                    ['#006400', '#228b22', '#32cd32', '#00ff00', '#7cfc00']),
-    ('preble',                            ['#ff8c00', '#ffa500', '#ffd700', '#ff6347', '#ff4500']),
-    ('contextual_bandit',                 ['#ff0000', '#dc143c', '#ff6347', '#ff4500', '#ff7f50']),
-    ('prefix_hit_threshold_or_least_request', ['#556b2f', '#6b8e23', '#808000', '#9acd32', '#bdb76b']),
-    ('least_kv_cache',                    ['#d2691e', '#cd853f', '#daa520', '#b8860b', '#f4a460']),
-    ('least_latency',                     ['#483d8b', '#6a5acd', '#7b68ee', '#9370db', '#8470ff']),
-    ('least_request',                     ['#008b8b', '#20b2aa', '#48d1cc', '#40e0d0', '#00ced1']),
-    ('random',                            ['#2ca02c', '#32cd32', '#00ff00', '#00ff7f', '#98df8a']),
+    ('rl_naive',                          ['#2b5cd9', '#3a6be8', '#4a7af5', '#6b93f7', '#8dabf9']),
+    ('latency_predictor_e2e_latency',     ['#8b008b', '#a020a0', '#b838b8', '#c850d0', '#d870e8']),
+    ('latency_predictor_ttft',            ['#e91e63', '#f06292', '#f48fb1', '#f8bbd0', '#fce4ec']),
+    ('latency_predictor_avg_tpot',        ['#8b0000', '#b71c1c', '#d32f2f', '#e57373', '#ef9a9a']),
+    ('prefix_cache_1',                    ['#1565c0', '#1976d2', '#2196f3', '#64b5f6', '#90caf9']),
+    ('prefix_cache_2',                    ['#1b5e20', '#2e7d32', '#43a047', '#66bb6a', '#a5d6a7']),
+    ('preble',                            ['#e65100', '#f57c00', '#ff9800', '#ffb74d', '#ffcc80']),
+    # — CB random (orange) — matches compare_routing_strategies.py; must come BEFORE generic contextual_bandit
+    (('contextual_bandit', 'random'),     ['#ff8c00', '#ffa500', '#ff7f00', '#e08600', '#ffb347']),
+    # — onlinelearning_0 (purple hue ~280) — must come BEFORE generic contextual_bandit
+    ('onlinelearning_0',                  ['#6a1b9a', '#7b1fa2', '#9c27b0', '#ab47bc', '#ce93d8']),
+    ('contextual_bandit',                 ['#c62828', '#d32f2f', '#e53935', '#ef5350', '#ff7043']),
+    ('prefix_hit_threshold_or_least_request', ['#5d6b1f', '#7c8b23', '#9e9d24', '#c0ca33', '#d4e157']),
+    ('least_kv_cache',                    ['#8d6e00', '#a68500', '#bf9b30', '#d4ad48', '#e8c560']),
+    ('least_latency',                     ['#4527a0', '#5e35b1', '#7e57c2', '#9575cd', '#b39ddb']),
+    ('least_request',                     ['#006064', '#00838f', '#0097a7', '#00acc1', '#4dd0e1']),
+    ('random',                            ['#33691e', '#558b2f', '#689f38', '#8bc34a', '#aed581']),
 ]
 _DEFAULT_COLORS = ['#7f7f7f', '#696969', '#a9a9a9', '#c7c7c7', '#d3d3d3']
+
+
+def _match_rule(keyword, policy_lower):
+    """Check if a rule keyword (str or tuple of str) matches a lowered policy name."""
+    if isinstance(keyword, tuple):
+        return all(k in policy_lower for k in keyword)
+    return keyword in policy_lower
+
+
+def _rule_key(keyword):
+    """Return a hashable family key for a rule keyword (str or tuple)."""
+    if isinstance(keyword, tuple):
+        return '&'.join(keyword)
+    return keyword
 
 
 def _get_base_color(policy_name: str, index_in_family: int = 0) -> str:
     """Return the base bar color for a policy, matching compare_routing_strategies.py."""
     pl = policy_name.lower()
     for keyword, palette in _COLOR_RULES:
-        if keyword in pl:
+        if _match_rule(keyword, pl):
             return palette[index_in_family % len(palette)]
     return _DEFAULT_COLORS[index_in_family % len(_DEFAULT_COLORS)]
 
@@ -72,7 +114,7 @@ def generate_policy_colors(policies):
     colors = {}
     for policy in policies:
         pl = policy.lower()
-        family = next((kw for kw, _ in _COLOR_RULES if kw in pl), 'default')
+        family = next((_rule_key(kw) for kw, _ in _COLOR_RULES if _match_rule(kw, pl)), 'default')
         idx = family_counts.get(family, 0)
         family_counts[family] = idx + 1
         colors[policy] = _get_base_color(policy, idx)
@@ -164,7 +206,7 @@ def load_raw_request_data(csv_files, df_aggregated):
     return raw_data
 
 
-def compute_windowed_avg_ttft(df_raw, window_size=100):
+def compute_windowed_avg_ttft(df_raw, window_size=1000):
     """Compute non-overlapping window average TTFT.
 
     Args:
@@ -292,19 +334,25 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
         ax.set_visible(False)
         return
 
-    avg_vals, p99_vals, base_colors = [], [], []
+    avg_vals, avg_errs, p99_vals, p99_errs, base_colors = [], [], [], [], []
     for policy in policies:
         rows = df_group[
             (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
         ]
-        def _mean(col):
+        def _mean_std(col):
             if col not in df_group.columns:
-                return 0
+                return 0, 0
             vs = [v for v in rows[col].dropna().tolist() if v > 0]
-            return np.mean(vs) if vs else 0
+            if not vs:
+                return 0, 0
+            return np.mean(vs), (np.std(vs, ddof=1) if len(vs) > 1 else 0)
 
-        avg_vals.append(_mean(avg_col))
-        p99_vals.append(_mean(p99_col))
+        avg_mean, avg_std = _mean_std(avg_col)
+        p99_mean, p99_std = _mean_std(p99_col)
+        avg_vals.append(avg_mean)
+        avg_errs.append(avg_std)
+        p99_vals.append(p99_mean)
+        p99_errs.append(p99_std)
         base_colors.append(policy_colors.get(policy, '#7f7f7f'))
 
     if not any(v > 0 for v in avg_vals + p99_vals):
@@ -335,7 +383,9 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     avg_bars = []
     for i, (x, val, color) in enumerate(zip(avg_x, avg_vals, base_colors)):
         hatch = _hatch_for_policy(policies[i])
-        b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8, hatch=hatch)
+        err = avg_errs[i] if avg_errs[i] > 0 else None
+        b = ax.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8,
+                   hatch=hatch, yerr=err, capsize=3, error_kw=dict(elinewidth=1.2, capthick=1.2, color='black'))
         b[0]._policy_name = policies[i]
         avg_bars.append(b[0])
 
@@ -343,27 +393,30 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     p99_bars = []
     for i, (x, val, color) in enumerate(zip(p99_x, p99_vals, p99_colors)):
         hatch = _hatch_for_policy(policies[i])
-        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8, hatch=hatch)
+        err = p99_errs[i] if p99_errs[i] > 0 else None
+        b = ax2.bar(x, val, width=bar_w, color=color, edgecolor='black', linewidth=0.8,
+                    hatch=hatch, yerr=err, capsize=3, error_kw=dict(elinewidth=1.2, capthick=1.2, color='black'))
         b[0]._policy_name = policies[i]
         p99_bars.append(b[0])
 
     # ── Annotations ─────────────────────────────────────────────────────────
-    max_avg = max(avg_vals) if avg_vals else 1
-    max_p99 = max(p99_vals) if p99_vals else 1
+    max_avg = max(v + e for v, e in zip(avg_vals, avg_errs)) if avg_vals else 1
+    max_p99 = max(v + e for v, e in zip(p99_vals, p99_errs)) if p99_vals else 1
 
-    def _annotate(axis, bars, vals, max_val):
-        for bar_obj, val in zip(bars, vals):
+    def _annotate(axis, bars, vals, errs, max_val):
+        for bar_obj, val, err in zip(bars, vals, errs):
             if val > 0:
+                top = val + err  # place text above error bar cap
                 axis.text(
                     bar_obj.get_x() + bar_obj.get_width() / 2,
-                    bar_obj.get_height() + max_val * 0.02,
+                    top + max_val * 0.02,
                     f'{val:.0f}',
                     ha='center', va='bottom',
                     fontsize=SUBFIG_LEGEND_FONTSIZE, rotation=90,
                 )
 
-    _annotate(ax,  avg_bars, avg_vals, max_avg)
-    _annotate(ax2, p99_bars, p99_vals, max_p99)
+    _annotate(ax,  avg_bars, avg_vals, avg_errs, max_avg)
+    _annotate(ax2, p99_bars, p99_vals, p99_errs, max_p99)
 
     ax.set_ylim(0, max_avg * 1.4)
     ax2.set_ylim(0, max_p99 * 1.4)
@@ -490,9 +543,86 @@ def _plot_trendlines_for_group(
     ax.legend(fontsize=SUBFIG_LEGEND_FONTSIZE, loc='best', framealpha=0.8)
 
 
+def _draw_best_policy_strip(ax, first_run_data, policy_colors, window_size):
+    """Draw a colored strip along the bottom of *ax* showing the best policy per window.
+
+    For each window position where at least two policies have data, the strip
+    is colored by the policy with the lowest windowed-avg TTFT.  The strip is
+    rendered in axes-transform y so it stays fixed at the bottom regardless of
+    zoom / y-limits.
+
+    Args:
+        ax: matplotlib Axes that already has the time-series lines plotted.
+        first_run_data: {policy: (centers, avgs)} — first-run windowed data.
+        policy_colors: {policy: color}.
+        window_size: used to compute the width of each rectangle.
+    """
+    from matplotlib.patches import Rectangle
+    import matplotlib.transforms as mtransforms
+
+    # Build a unified set of window centers across all policies
+    all_centers = sorted({c for centers, _ in first_run_data.values() for c in centers})
+    if not all_centers:
+        return
+
+    # For each center, find the policy with the lowest avg TTFT
+    # Build lookup: {policy: {center: avg}}
+    policy_lookup = {}
+    for policy, (centers, avgs) in first_run_data.items():
+        policy_lookup[policy] = dict(zip(centers, avgs))
+
+    best_segments = []  # [(x_start, x_end, policy)]
+    half_w = window_size / 2.0
+
+    for center in all_centers:
+        candidates = {}
+        for policy, lookup in policy_lookup.items():
+            if center in lookup:
+                candidates[policy] = lookup[center]
+        if not candidates:
+            continue
+        best_policy = min(candidates, key=candidates.get)
+        x_start = center - half_w
+        x_end = center + half_w
+        best_segments.append((x_start, x_end, best_policy))
+
+    if not best_segments:
+        return
+
+    # Merge adjacent segments with the same policy
+    merged = [best_segments[0]]
+    for x_start, x_end, policy in best_segments[1:]:
+        prev_start, prev_end, prev_policy = merged[-1]
+        if policy == prev_policy and abs(x_start - prev_end) < 1e-6:
+            merged[-1] = (prev_start, x_end, policy)
+        else:
+            merged.append((x_start, x_end, policy))
+
+    # Draw the strip using a blended transform: x in data coords, y in axes coords
+    trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    strip_height = 0.03  # 3% of axes height
+    for x_start, x_end, policy in merged:
+        color = policy_colors.get(policy, '#7f7f7f')
+        rect = Rectangle(
+            (x_start, 0), x_end - x_start, strip_height,
+            transform=trans, color=color, alpha=0.85,
+            clip_on=True, zorder=5,
+        )
+        ax.add_patch(rect)
+
+    # Add a thin label on the left edge
+    ax.text(
+        0.0, strip_height / 2, ' best policy ',
+        transform=ax.transAxes, fontsize=SUBFIG_LEGEND_FONTSIZE - 2,
+        va='center', ha='left', color='white',
+        bbox=dict(boxstyle='round,pad=0.15', facecolor='black', alpha=0.6),
+        zorder=6,
+    )
+
+
 def _plot_timeseries_windowed_ttft(
     ax, df_group, rps_workload_pair, policies, policy_colors, raw_data,
-    window_size=100,
+    window_size=1000,
 ):
     """Plot non-overlapping windowed average TTFT time series for one RPS point.
 
@@ -511,6 +641,9 @@ def _plot_timeseries_windowed_ttft(
     rps, workload = rps_workload_pair
 
     policy_style_idx = {}
+    # Collect mean windowed data per policy for the "best policy" strip
+    # {policy: (centers, mean_avgs)}
+    first_run_data = {}
 
     for pi, policy in enumerate(policies):
         color = policy_colors.get(policy, '#7f7f7f')
@@ -531,29 +664,62 @@ def _plot_timeseries_windowed_ttft(
         rows = rows.sort_values('_sort_dt')
 
         sfn_list = rows['strategy_full_name'].tolist()
-        n_runs = len(sfn_list)
 
-        for run_idx, sfn in enumerate(sfn_list):
+        # Collect windowed data from all runs
+        all_run_data = []  # list of (centers, avgs) per run
+        for sfn in sfn_list:
             if sfn not in raw_data:
                 continue
             df_raw = raw_data[sfn]
             centers, avgs = compute_windowed_avg_ttft(df_raw, window_size)
-            if not centers:
-                continue
+            if centers:
+                all_run_data.append((np.array(centers), np.array(avgs)))
 
-            if n_runs > 1:
-                shade_factor = 1.0 + run_idx * (0.6 / max(n_runs - 1, 1))
-                run_color = _shade_color(color, shade_factor)
-                label = f'{policy} (run{run_idx+1})'
-            else:
-                run_color = color
-                label = policy
+        if not all_run_data:
+            continue
 
+        marker = MARKERS[pi % len(MARKERS)]
+
+        if len(all_run_data) == 1:
+            # Single run: just draw the line with markers
+            centers, avgs = all_run_data[0]
             ax.plot(
                 centers, avgs,
-                color=run_color, linestyle=linestyle, linewidth=1.5,
-                label=label, alpha=0.85,
+                color=color, linestyle=linestyle, linewidth=1.8,
+                marker=marker, markersize=10, markerfacecolor='none',
+                markeredgecolor=color, markeredgewidth=1.8,
+                label=policy, alpha=0.9, zorder=3,
             )
+            first_run_data[policy] = (centers.tolist(), avgs.tolist())
+        else:
+            # Multiple runs: compute mean + min/max envelope across runs.
+            # Align runs on the shortest common length.
+            min_len = min(len(a) for _, a in all_run_data)
+            centers = all_run_data[0][0][:min_len]
+            stacked = np.stack([a[:min_len] for _, a in all_run_data], axis=0)  # (n_runs, n_windows)
+
+            mean_vals = np.mean(stacked, axis=0)
+            min_vals = np.min(stacked, axis=0)
+            max_vals = np.max(stacked, axis=0)
+
+            # Shaded band: min–max envelope
+            ax.fill_between(
+                centers, min_vals, max_vals,
+                color=color, alpha=0.18, zorder=1,
+            )
+            # Mean line with markers
+            ax.plot(
+                centers, mean_vals,
+                color=color, linestyle=linestyle, linewidth=1.8,
+                marker=marker, markersize=10, markerfacecolor='none',
+                markeredgecolor=color, markeredgewidth=1.8,
+                label=f'{policy} (mean, n={len(all_run_data)})', alpha=0.9, zorder=3,
+            )
+            first_run_data[policy] = (centers.tolist(), mean_vals.tolist())
+
+    # ── "Best policy" colored strip along the bottom of the x-axis ────────
+    if first_run_data:
+        _draw_best_policy_strip(ax, first_run_data, policy_colors, window_size)
 
     ax.set_xlabel('Request index', fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE)
@@ -563,7 +729,7 @@ def _plot_timeseries_windowed_ttft(
     ax.grid(alpha=0.3)
 
 
-def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None):
+def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None, window_size=1000):
     """Generate TTFT bar-chart plots and save to a single PDF.
 
     Layout: one page per workload group.
@@ -689,7 +855,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None):
                     ax_ts = fig.add_subplot(gs[1 + ri, :])  # span all columns
                     _plot_timeseries_windowed_ttft(
                         ax_ts, df_group, rps_pair, group_policies,
-                        policy_colors, raw_data,
+                        policy_colors, raw_data, window_size=window_size,
                     )
 
             gs.tight_layout(fig, rect=[0, 0, 1, subplot_top])
@@ -781,6 +947,10 @@ def main():
         help='File containing list of target directories (one per line).',
     )
     parser.add_argument(
+        '--window-size', '-w', type=int, default=1000,
+        help='Window size (number of requests) for the windowed avg TTFT time-series plot (default: 1000).',
+    )
+    parser.add_argument(
         '--exclude', '-e', nargs='+', default=[],
         metavar='PATTERN',
         help='Exclude routing policies whose name contains any of these substrings '
@@ -844,7 +1014,7 @@ def main():
     exclude_patterns = args.exclude
     if exclude_patterns:
         print(f"\nExcluding from plots policies matching: {exclude_patterns}")
-    plot_trendlines(df, output_dir, exclude_patterns=exclude_patterns, raw_data=raw_data)
+    plot_trendlines(df, output_dir, exclude_patterns=exclude_patterns, raw_data=raw_data, window_size=args.window_size)
     print("Done!")
 
 

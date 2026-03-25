@@ -248,14 +248,20 @@ def verify_prompt_text_sharing(entries_sorted, sample_size=200):
 def main():
     print("Loading data...")
     workload = load_workload()
-    training_rows = load_training_data()
-    runs = separate_training_runs(training_rows)
-    runs = [r for r in runs if len(r["rows"]) > 100]
 
-    print(f"Workload: {len(workload)} requests")
-    print(f"Training: {len(training_rows)} rows, {len(runs)} runs (>100 rows each):")
-    for r in runs:
-        print(f"  {r['label']}: {len(r['rows'])} rows")
+    has_training = os.path.isfile(TRAINING_FILE)
+    if has_training:
+        training_rows = load_training_data()
+        runs = separate_training_runs(training_rows)
+        runs = [r for r in runs if len(r["rows"]) > 100]
+        print(f"Workload: {len(workload)} requests")
+        print(f"Training: {len(training_rows)} rows, {len(runs)} runs (>100 rows each):")
+        for r in runs:
+            print(f"  {r['label']}: {len(r['rows'])} rows")
+    else:
+        training_rows, runs = [], []
+        print(f"Workload: {len(workload)} requests")
+        print(f"No training data found ({TRAINING_FILE}), plotting workload only.")
 
     # --- Extract data ---
     wl_input = [e["input_tokens"] for e in workload]
@@ -263,14 +269,15 @@ def main():
     wl_times_ms = sorted(e["timestamp_ms"] for e in workload)
     wl_iat_ms = [wl_times_ms[i + 1] - wl_times_ms[i] for i in range(len(wl_times_ms) - 1)]
 
-    tr_input = [int(r["input_tokens"]) for r in training_rows]
-    tr_output = [int(r["output_tokens"]) for r in training_rows]
+    if has_training:
+        tr_input = [int(r["input_tokens"]) for r in training_rows]
+        tr_output = [int(r["output_tokens"]) for r in training_rows]
 
-    # Per-run inter-arrival times
-    run_iats = {}
-    for run in runs:
-        times_us = [float(r["request_start_time"]) for r in run["rows"]]
-        run_iats[run["label"]] = compute_inter_arrival_times_ms(times_us)
+        # Per-run inter-arrival times
+        run_iats = {}
+        for run in runs:
+            times_us = [float(r["request_start_time"]) for r in run["rows"]]
+            run_iats[run["label"]] = compute_inter_arrival_times_ms(times_us)
 
     # --- Prefix sharing ---
     print("Computing prefix hit ratios (temporal ordering)...")
@@ -295,9 +302,13 @@ def main():
 
     # 1. Input token distribution
     ax = axes[0]
-    bins_in = np.linspace(0, max(max(wl_input), max(tr_input)), 60)
-    ax.hist(wl_input, bins=bins_in, alpha=0.6, label=f"workload (n={len(wl_input)})", density=True)
-    ax.hist(tr_input, bins=bins_in, alpha=0.6, label=f"training (n={len(tr_input)})", density=True)
+    if has_training:
+        bins_in = np.linspace(0, max(max(wl_input), max(tr_input)), 60)
+        ax.hist(wl_input, bins=bins_in, alpha=0.6, label=f"workload (n={len(wl_input)})", density=True)
+        ax.hist(tr_input, bins=bins_in, alpha=0.6, label=f"training (n={len(tr_input)})", density=True)
+    else:
+        bins_in = np.linspace(0, max(wl_input), 60)
+        ax.hist(wl_input, bins=bins_in, alpha=0.6, label=f"n={len(wl_input)}", density=True)
     ax.set_xlabel("Input Tokens")
     ax.set_ylabel("Density")
     ax.set_title("Input Token Distribution")
@@ -305,38 +316,49 @@ def main():
 
     # 2. Output token distribution
     ax = axes[1]
-    bins_out = np.linspace(0, max(max(wl_output), max(tr_output)), 60)
-    ax.hist(wl_output, bins=bins_out, alpha=0.6, label=f"workload (n={len(wl_output)})", density=True)
-    ax.hist(tr_output, bins=bins_out, alpha=0.6, label=f"training (n={len(tr_output)})", density=True)
+    if has_training:
+        bins_out = np.linspace(0, max(max(wl_output), max(tr_output)), 60)
+        ax.hist(wl_output, bins=bins_out, alpha=0.6, label=f"workload (n={len(wl_output)})", density=True)
+        ax.hist(tr_output, bins=bins_out, alpha=0.6, label=f"training (n={len(tr_output)})", density=True)
+    else:
+        bins_out = np.linspace(0, max(wl_output), 60)
+        ax.hist(wl_output, bins=bins_out, alpha=0.6, label=f"n={len(wl_output)}", density=True)
     ax.set_xlabel("Output Tokens")
     ax.set_ylabel("Density")
     ax.set_title("Output Token Distribution")
     ax.legend()
 
-    # 3. Inter-arrival time (training, per run)
+    # 3. Inter-arrival time
     ax = axes[2]
-    colors = plt.cm.tab10(np.linspace(0, 1, len(runs)))
-    all_training_iat = []
-    for i, run in enumerate(runs):
-        iat = run_iats[run["label"]]
-        if iat:
-            all_training_iat.extend(iat)
-            ax.hist(iat, bins=80, alpha=0.4, label=run["label"], density=True, color=colors[i])
+    if has_training:
+        colors = plt.cm.tab10(np.linspace(0, 1, len(runs)))
+        all_training_iat = []
+        for i, run in enumerate(runs):
+            iat = run_iats[run["label"]]
+            if iat:
+                all_training_iat.extend(iat)
+                ax.hist(iat, bins=80, alpha=0.4, label=run["label"], density=True, color=colors[i])
+        ax.set_title("Inter-arrival Time: Training (per run)")
+        if all_training_iat:
+            ax.set_xlim(0, np.percentile(all_training_iat, 99))
+        ax.legend(fontsize=10)
+    else:
+        if wl_iat_ms:
+            ax.hist(wl_iat_ms, bins=80, alpha=0.6, density=True)
+            ax.set_xlim(0, np.percentile(wl_iat_ms, 99))
+        ax.set_title("Inter-arrival Time (workload)")
     ax.set_xlabel("Inter-arrival Time (ms)")
     ax.set_ylabel("Density")
-    ax.set_title("Inter-arrival Time: Training (per run)")
-    if all_training_iat:
-        ax.set_xlim(0, np.percentile(all_training_iat, 99))
-    ax.legend(fontsize=10)
 
     # 4. Prefix hit ratio over time (rolling mean)
     ax = axes[3]
+    ax.scatter(range(len(wl_hit_ratios)), wl_hit_ratios, alpha=0.15, s=8, color="C2",
+               label="per-request hit ratio")
     if hit_ratio_rolling:
         roll_x = [r[0] for r in hit_ratio_rolling]
         roll_y = [r[1] for r in hit_ratio_rolling]
-        # ax.plot(roll_x, roll_y, color="black", alpha=0.8, linewidth=1.2, label=f"rolling mean (window={window_size})")
-    ax.scatter(range(len(wl_hit_ratios)), wl_hit_ratios, alpha=0.15, s=8, color="C2",
-               label="per-request hit ratio")
+        ax.plot(roll_x, roll_y, color="red", alpha=0.8, linewidth=1.2,
+                label=f"sliding window avg (window={window_size})")
     ax.set_xlabel("Request Index")
     ax.set_ylabel("Prefix Hit Ratio")
     ax.set_title("Prefix Hit Ratio Over Time")
@@ -351,43 +373,13 @@ def main():
     ax.set_ylabel("Unique Prefix Groups")
     ax.set_title("Unique Prefix Groups (30s window)")
 
-    plt.suptitle(f"Workload vs Training Data Distribution ({os.path.basename(TARGET_DIR)})", fontsize=20, y=1.02)
+    title = "Workload vs Training Data Distribution" if has_training else "Workload Distribution"
+    plt.suptitle(f"{title} ({os.path.basename(TARGET_DIR)})", fontsize=20, y=1.02)
     plt.tight_layout()
     plt.savefig(OUTPUT_BASE + ".png", dpi=150, bbox_inches="tight")
     plt.savefig(OUTPUT_BASE + ".pdf", dpi=150, bbox_inches="tight")
     print(f"\nSaved plot to {OUTPUT_BASE}.png")
     print(f"Saved plot to {OUTPUT_BASE}.pdf")
-
-    # --- Summary stats ---
-    print("\n=== Token Distribution Summary ===")
-    fmt = "{:30s} | {:>12s} | {:>12s}"
-    print(fmt.format("", "Workload", "Training"))
-    print(f"{'-'*30}-+-{'-'*12}-+-{'-'*12}")
-    print(fmt.format("Count", str(len(wl_input)), str(len(tr_input))))
-    print(fmt.format("Input tokens (mean)", f"{statistics.mean(wl_input):.0f}", f"{statistics.mean(tr_input):.0f}"))
-    print(fmt.format("Input tokens (median)", f"{statistics.median(wl_input):.0f}", f"{statistics.median(tr_input):.0f}"))
-    print(fmt.format("Output tokens (mean)", f"{statistics.mean(wl_output):.0f}", f"{statistics.mean(tr_output):.0f}"))
-    print(fmt.format("Output tokens (median)", f"{statistics.median(wl_output):.0f}", f"{statistics.median(tr_output):.0f}"))
-
-    print("\n=== Prefix Hit Ratio Summary (workload, temporal) ===")
-    hr = wl_hit_ratios
-    print(f"  Requests with hit > 0: {sum(1 for r in hr if r > 0)} / {len(hr)} ({100*sum(1 for r in hr if r > 0)/len(hr):.1f}%)")
-    print(f"  Mean:   {statistics.mean(hr):.3f}")
-    print(f"  Median: {statistics.median(hr):.3f}")
-    pcts = [0, 10, 25, 50, 75, 90, 95, 99, 100]
-    sorted_hr = sorted(hr)
-    print(f"  Percentiles: " + ", ".join(
-        f"p{p}={sorted_hr[min(int(p/100*len(sorted_hr)), len(sorted_hr)-1)]:.3f}" for p in pcts))
-
-    # Histogram
-    bins_hr = [(0, 0.01), (0.01, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5),
-               (0.5, 0.7), (0.7, 0.9), (0.9, 1.01)]
-    print(f"\n  Hit ratio histogram:")
-    for lo, hi in bins_hr:
-        count = sum(1 for r in hr if lo <= r < hi)
-        pct = 100 * count / len(hr)
-        bar = '#' * int(pct)
-        print(f"    [{lo:.2f}, {hi:.2f}): {count:5d} ({pct:5.1f}%) {bar}")
 
 
 if __name__ == "__main__":

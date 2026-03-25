@@ -87,15 +87,115 @@ set -e
 #     ########################################################
 # )
 
-base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake"
+##############################
+# Function to process one base_dir + target_dir_list
+##############################
+process_one_basedir() {
+    local base_dir="$1"
+    shift
+    local target_dir_list=("$@")
+
+    echo ""
+    echo "############################################################"
+    echo "# Processing base_dir: ${base_dir}"
+    echo "############################################################"
+
+    # Verify all directories exist
+    for target_dir in "${target_dir_list[@]}"; do
+        if [ ! -d "${target_dir}" ]; then
+            echo "Target directory ${target_dir} does not exist."
+            return 1
+        fi
+    done
+
+    echo "=== Step 1: Processing individual workloads ==="
+    echo ""
+
+    # Write target directories to a temp file for the merge script
+    target_dirs_file="${base_dir}/target_dirs.txt"
+    printf "%s\n" "${target_dir_list[@]}" > "${target_dirs_file}"
+    echo "Wrote ${#target_dir_list[@]} target directories to ${target_dirs_file}"
+
+    # Process each workload (in parallel), tracking PIDs to catch failures
+    pids=()
+    pid_to_dir=()
+    for target_dir in "${target_dir_list[@]}"; do
+        echo "Processing ${target_dir}"
+        # python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 --iteration-upto 4 &
+        python compare_routing_strategies.py "${target_dir}" &
+        pids+=($!)
+        pid_to_dir+=("${target_dir}")
+        echo "Processed ${target_dir} with iteration from 2"
+    done
+
+    # Wait for all background jobs and check for failures
+    failed_dirs=()
+    for i in "${!pids[@]}"; do
+        if ! wait "${pids[$i]}"; then
+            echo "ERROR: Failed to process ${pid_to_dir[$i]}"
+            failed_dirs+=("${pid_to_dir[$i]}")
+        fi
+    done
+
+    if [ "${#failed_dirs[@]}" -gt 0 ]; then
+        echo ""
+        echo "${#failed_dirs[@]} workload(s) failed in ${base_dir}:"
+        for d in "${failed_dirs[@]}"; do
+            echo "  - ${d}"
+        done
+        return 1
+    fi
+
+    echo ""
+    echo "=== Step 2: Merging and plotting all workloads ==="
+    echo ""
+
+    # python merge_and_plot_all_workloads_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}"
+    # python trendline_plot_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}" --exclude e2e_latency_negative_linear
+    python trendline_plot_from_gateway_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}" --exclude e2e_latency_negative_linear
+}
+
+##############################
+# Define all base_dir experiments here
+##############################
+
+# --- Experiment 1: conversation-2-extended-ver1 ---
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/conversation-2-extended-ver1"
 target_dir_list=(
-    "${base_dir}/conversation-2-extended-ver1/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/conversation-2-extended-ver1/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2-extended-ver1/rps9-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2-extended-ver1/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2-extended-ver1/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/toolagent-2-extended-ver1/rps12-benchmark/without_bitsandbytes"
+    "${base_dir}/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/rps11-benchmark/without_bitsandbytes"
 )
+process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+# --- Experiment 2: toolagent-2-extended-ver1 ---
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/toolagent-2-extended-ver1"
+target_dir_list=(
+    "${base_dir}/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/rps10-benchmark/without_bitsandbytes"
+    "${base_dir}/rps11-benchmark/without_bitsandbytes"
+    "${base_dir}/rps12-benchmark/without_bitsandbytes"
+)
+process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+# --- Experiment 2: synthetic-2-extended-ver2 ---
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/synthetic-2-extended-ver2"
+target_dir_list=(
+    "${base_dir}/rps-1-benchmark/without_bitsandbytes"
+    "${base_dir}/rps8-benchmark/without_bitsandbytes"
+    "${base_dir}/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/rps10-benchmark/without_bitsandbytes"
+)
+process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+
+
+# --- Experiment 3: add your third base_dir here ---
+# base_dir="..."
+# target_dir_list=(
+#     "${base_dir}/..."
+# )
+# process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
 
 
 
@@ -228,58 +328,4 @@ target_dir_list=(
 #     # ########################################################
 # )
 
-# Verify all directories exist
-for target_dir in "${target_dir_list[@]}"; do
-    if [ ! -d "${target_dir}" ]; then
-        echo "Target directory ${target_dir} does not exist."
-        exit 1
-    fi
-done
-
-echo "=== Step 1: Processing individual workloads ==="
-echo ""
-
-# Write target directories to a temp file for the merge script
-target_dirs_file="${base_dir}/target_dirs.txt"
-printf "%s\n" "${target_dir_list[@]}" > "${target_dirs_file}"
-echo "Wrote ${#target_dir_list[@]} target directories to ${target_dirs_file}"
-
-# Process each workload (in parallel), tracking PIDs to catch failures
-pids=()
-pid_to_dir=()
-for target_dir in "${target_dir_list[@]}"; do
-    echo "Processing ${target_dir}"
-    # python compare_routing_strategies_with_client_log.py "${target_dir}" --iteration-from 2 --iteration-upto 4 &
-    python compare_routing_strategies.py "${target_dir}" &
-    pids+=($!)
-    pid_to_dir+=("${target_dir}")
-    echo "Processed ${target_dir} with iteration from 2"
-done
-
-# Wait for all background jobs and check for failures
-failed_dirs=()
-for i in "${!pids[@]}"; do
-    if ! wait "${pids[$i]}"; then
-        echo "ERROR: Failed to process ${pid_to_dir[$i]}"
-        failed_dirs+=("${pid_to_dir[$i]}")
-    fi
-done
-
-if [ "${#failed_dirs[@]}" -gt 0 ]; then
-    echo ""
-    echo "Aborting. ${#failed_dirs[@]} workload(s) failed:"
-    for d in "${failed_dirs[@]}"; do
-        echo "  - ${d}"
-    done
-    exit 1
-fi
-
-echo ""
-echo "=== Step 2: Merging and plotting all workloads ==="
-echo ""
-
-# Merge all metrics and create comparison plots (using only specified target directories)
-# python merge_and_plot_all_workloads_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}"
-
-# python trendline_plot_from_client_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}" --exclude e2e_latency_negative_linear
-python trendline_plot_from_gateway_log.py "${base_dir}" --target-dirs-file "${target_dirs_file}" --exclude e2e_latency_negative_linear
+echo "All experiments completed."
