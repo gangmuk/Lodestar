@@ -502,6 +502,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			timingHeaders, logMessage := s.calculateTimingMetrics(timing, currentTime, routerCtx, stream, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 			utils.AddRequestLogMessage(routerCtx.RequestID, logMessage)
 			utils.CleanupKVCacheHitRatio(routerCtx.RequestID)
+			utils.CleanupKVCacheLastAccess(routerCtx.RequestID)
+			utils.CleanupPrefixGroupHashForRequest(routerCtx.RequestID)
 			utils.CleanupInflightRequests(routerCtx.RequestID)
 			utils.CleanupvLLMGPUKVCacheUsage(routerCtx.RequestID)
 			// utils.CleanupvLLMCPUKVCacheUsage(routerCtx.RequestID)
@@ -851,6 +853,14 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(routerCtx.RequestID)
 	headers, jsonStrings["allPodsKvCacheHitRatios"] = addMetricToHeaders(headers, HeaderKVCacheHitRatioAllPods, allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
 
+	// 1b. KV cache last-access timestamps (for time-weighted freshness in RL routing)
+	allPodsKvCacheLastAccess := utils.GetAllPodsKVCacheLastAccess(routerCtx.RequestID)
+	if lastAccessJSON, err := json.Marshal(allPodsKvCacheLastAccess); err == nil {
+		jsonStrings["allPodsKvCacheLastAccess"] = string(lastAccessJSON)
+	} else {
+		jsonStrings["allPodsKvCacheLastAccess"] = "{}"
+	}
+
 	// 2. Inflight requests
 	numInflightRequestsAllPods := utils.GetSnapshotInflightRequestsForRequest(routerCtx.RequestID)
 	headers, jsonStrings["numInflightRequestsAllPods"] = addMetricToHeaders(headers, HeaderNumInflightRequestsForAllPods, numInflightRequestsAllPods, utils.GetrequestInflightMutex())
@@ -960,7 +970,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 
 	oodFallback := utils.GetOODFallbackForRequest(routerCtx.RequestID)
 	failureFallback := utils.GetFailureFallbackForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d@EndToEndOverhead@%d",
+	hashOfMatchedPrefix := utils.GetPrefixGroupHashForRequest(routerCtx.RequestID)
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d@EndToEndOverhead@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -973,6 +984,8 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		numOutputTokens,
 		numTotalTokens,
 		jsonStrings["allPodsKvCacheHitRatios"],
+		jsonStrings["allPodsKvCacheLastAccess"],
+		hashOfMatchedPrefix,
 		jsonStrings["numInflightRequestsAllPods"],
 		jsonStrings["numInflightPrefillRequestsAllPods"],
 		jsonStrings["numInflightDecodeRequestsAllPods"],

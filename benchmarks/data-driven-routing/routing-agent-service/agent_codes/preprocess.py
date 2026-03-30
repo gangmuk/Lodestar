@@ -1151,6 +1151,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     # Pre-parse all JSON columns once to avoid repeated parsing
     json_columns = [
         'allPodsKvCacheHitRatios',
+        'allPodsKvCacheLastAccess',  # Per-pod prefix last-access timestamps (unix millis)
         'numInflightRequestsAllPods',
         'numInflightPrefillRequestsAllPods',  # Per-pod inflight prefill requests
         'numInflightDecodeRequestsAllPods',   # Per-pod inflight decode requests
@@ -1303,6 +1304,7 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     
     # Pre-extract all JSON data to avoid repeated parsing
     all_kv_cache = safe_get_column(parsed_df, 'allPodsKvCacheHitRatios', {})
+    all_kv_cache_last_access = safe_get_column(parsed_df, 'allPodsKvCacheLastAccess', {})
     all_inflight = safe_get_column(parsed_df, 'numInflightRequestsAllPods', {})
     all_inflight_prefill = safe_get_column(parsed_df, 'numInflightPrefillRequestsAllPods', {})  # NEW: Per-pod inflight prefill requests
     all_inflight_decode = safe_get_column(parsed_df, 'numInflightDecodeRequestsAllPods', {})   # NEW: Per-pod inflight decode requests
@@ -1410,6 +1412,33 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
     if 'kv_hit_ratio' not in excluded_pod_features:
         kv_cache_features = extract_pod_features_fast(all_kv_cache, sorted_pods, 0)
         base_data.update({f"{pod_id}-kv_hit_ratio": kv_cache_features[pod_id] for pod_id in sorted_pods})
+
+    # Time-weighted KV hit ratio: kv_hit_ratio * exp(-ln2 * age / half_life)
+    # Reflects actual vLLM cache freshness — recent blocks are likely still cached,
+    # old blocks are likely evicted. Gives meaningful per-pod variance even under uniform routing.
+    if 'kv_hit_ratio_fresh' not in excluded_pod_features and 'kv_hit_ratio' not in excluded_pod_features:
+        kv_freshness_half_life = float(hyperparameters.get('KV_FRESHNESS_HALF_LIFE', 15.0)) if hyperparameters else 15.0
+        last_access_features = extract_pod_features_fast(all_kv_cache_last_access, sorted_pods, 0)
+        request_times = np.array(base_data.get('request_start_time', np.zeros(num_rows)), dtype=np.float64)
+        for pod_id in sorted_pods:
+            raw_hit = base_data[f"{pod_id}-kv_hit_ratio"]
+            last_access_ms = np.array(last_access_features[pod_id], dtype=np.float64)
+            # request_start_time is in microseconds since first request; last_access_ms is unix millis
+            # Compute age: when last_access > 0, use current time minus last_access
+            # For infer path (single row): use wall clock time
+            if num_rows == 1 and not is_training:
+                import time as _time
+                now_ms = _time.time() * 1000
+                age_seconds = np.where(last_access_ms > 0, (now_ms - last_access_ms) / 1000.0, 999.0)
+            else:
+                # For training/batch: approximate age using request_start_time differences
+                # request_start_time is microseconds since first request, last_access_ms is unix millis
+                # Both are relative measures; compute age as difference converted to seconds
+                age_seconds = np.where(last_access_ms > 0,
+                                       np.maximum(0, (request_times / 1000.0 - last_access_ms) / 1000.0),
+                                       999.0)
+            weight = np.exp(-0.693147 * np.clip(age_seconds, 0, 999) / max(kv_freshness_half_life, 0.1))
+            base_data[f"{pod_id}-kv_hit_ratio_fresh"] = raw_hit * weight
 
     if 'inflight_requests' not in excluded_pod_features:
         inflight_features = extract_pod_features_fast(all_inflight, sorted_pods, 0)

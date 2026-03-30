@@ -97,57 +97,65 @@ def plot_timeseries_analysis(df, workload_name, save_path=None, num_tokens_per_h
     axes[1, 0].grid(True, alpha=0.3)
     axes[1, 0].set_xlim(0, max_time)
 
-    # 4. Prefix sharing ratio over time (1-minute windows with radix tree approach)
-    def calculate_prefix_sharing_ratio(requests_with_timestamps):
+    # 4. Prefix sharing ratio over time (10-second windows + per-request)
+    def find_longest_common_prefix(seq1, seq2):
+        min_len = min(len(seq1), len(seq2))
+        for i in range(min_len):
+            if seq1[i] != seq2[i]:
+                return i
+        return min_len
+
+    def calculate_prefix_sharing_ratios(requests_with_timestamps):
+        """Return (window_avg, list_of_(timestamp, ratio) pairs)."""
         if len(requests_with_timestamps) <= 1:
-            return 0.0
+            return 0.0, []
 
-        def find_longest_common_prefix(seq1, seq2):
-            min_len = min(len(seq1), len(seq2))
-            for i in range(min_len):
-                if seq1[i] != seq2[i]:
-                    return i
-            return min_len
-
-        sharing_ratios = []
-
-        for i, (_, current_hash_ids) in enumerate(requests_with_timestamps):
+        per_request = []
+        for i, (ts, current_hash_ids) in enumerate(requests_with_timestamps):
             if len(current_hash_ids) == 0:
                 continue
-
             max_prefix_length = 0
-
             for j in range(i):
                 _, prev_hash_ids = requests_with_timestamps[j]
                 prefix_length = find_longest_common_prefix(current_hash_ids, prev_hash_ids)
                 max_prefix_length = max(max_prefix_length, prefix_length)
+            ratio = max_prefix_length / len(current_hash_ids)
+            per_request.append((ts, ratio))
 
-            sharing_ratio = max_prefix_length / len(current_hash_ids) if len(current_hash_ids) > 0 else 0.0
-            sharing_ratios.append(sharing_ratio)
+        ratios = [r for _, r in per_request]
+        avg = sum(ratios) / len(ratios) if ratios else 0.0
+        return avg, per_request
 
-        return sum(sharing_ratios) / len(sharing_ratios) if sharing_ratios else 0.0
+    window_sec = 10
+    max_window = int(df['timestamp_seconds'].max() / window_sec) + 1
+    window_bins = range(0, max_window + 1)
 
-    max_minute = int(df['timestamp_seconds'].max() / 60) + 1
-    minute_bins = range(0, max_minute + 1)
+    window_ratios = []
+    window_timestamps = []
+    per_request_times = []
+    per_request_ratios = []
 
-    prefix_ratios_by_minute = []
-    minute_timestamps = []
+    for w in window_bins:
+        t_start = w * window_sec
+        t_end = (w + 1) * window_sec
+        window_data = df[(df['timestamp_seconds'] >= t_start) & (df['timestamp_seconds'] < t_end)]
+        if len(window_data) > 1:
+            window_data_sorted = window_data.sort_values('timestamp_seconds')
+            requests_with_timestamps = list(zip(window_data_sorted['timestamp_seconds'], window_data_sorted['hash_ids']))
+            avg, per_req = calculate_prefix_sharing_ratios(requests_with_timestamps)
+            window_ratios.append(avg)
+            window_timestamps.append(t_start + window_sec / 2)
+            per_request_times.extend([ts for ts, _ in per_req])
+            per_request_ratios.extend([r for _, r in per_req])
 
-    for minute in minute_bins:
-        minute_data = df[(df['timestamp_seconds'] >= minute * 60) & (df['timestamp_seconds'] < (minute + 1) * 60)]
-        if len(minute_data) > 1:
-            minute_data_sorted = minute_data.sort_values('timestamp_seconds')
-            requests_with_timestamps = list(zip(minute_data_sorted['timestamp_seconds'], minute_data_sorted['hash_ids']))
-            ratio = calculate_prefix_sharing_ratio(requests_with_timestamps)
-            prefix_ratios_by_minute.append(ratio)
-            minute_timestamps.append(minute)
-
-    axes[1, 1].plot(minute_timestamps, prefix_ratios_by_minute, linewidth=2, alpha=0.8, color='purple', marker='o', markersize=4)
-    axes[1, 1].set_xlabel('Time (minutes)')
+    axes[1, 1].scatter(per_request_times, per_request_ratios, s=2, alpha=0.15, color='violet', label='Per-request')
+    axes[1, 1].plot(window_timestamps, window_ratios, linewidth=2, alpha=0.8, color='purple', marker='o', markersize=3, label=f'{window_sec}s window avg')
+    axes[1, 1].set_xlabel('Time (seconds)')
     axes[1, 1].set_ylabel('Prefix Sharing Ratio')
-    axes[1, 1].set_title('Prefix Cache Hit Ratio Over Time (1-minute windows)')
+    axes[1, 1].set_title(f'Prefix Cache Hit Ratio Over Time ({window_sec}s windows)')
+    axes[1, 1].legend(fontsize=7)
     axes[1, 1].grid(True, alpha=0.3)
-    axes[1, 1].set_xlim(0, max_minute)
+    axes[1, 1].set_xlim(0, max_time)
     axes[1, 1].set_ylim(0, 1)
 
     # 5. Token blocks per request distribution
