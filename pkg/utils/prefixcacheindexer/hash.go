@@ -180,6 +180,57 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 	return isMatch
 }
 
+// GetPodPrefixLastAccess returns the last-access timestamp (unix millis) of each
+// pod's DEEPEST matched prefix block. Read-only — does not modify any shared state.
+//
+// The deepest block is the most conversation-specific one. Its timestamp reflects
+// when THIS pod last handled a request from the same conversation prefix, which
+// is the best proxy for whether vLLM still has those KV cache blocks.
+//
+// The shallow blocks (system prompt) are shared by all conversations and accessed
+// frequently — their timestamps are uninformative for routing decisions.
+func (c *PrefixHashTable) GetPodPrefixLastAccess(prefixHashes []uint64, model string, readyPods map[string]struct{}) map[string]int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Track the deepest matched block's timestamp per pod.
+	// We walk blocks in order (0, 1, 2, ...) and overwrite on each match,
+	// so the final value is the deepest block's timestamp.
+	podLastAccess := make(map[string]int64)
+
+	for i := 0; i < len(prefixHashes); i++ {
+		block, ok := c.store.Get(prefixHashes[i])
+		if !ok {
+			break
+		}
+		modelPods, ok := block.modelToPods[model]
+		if !ok || len(modelPods) == 0 {
+			break
+		}
+
+		anyMatch := false
+		for pod := range readyPods {
+			if lastAccess, exists := modelPods[pod]; exists {
+				// Overwrite (not max) — last write is the deepest block
+				podLastAccess[pod] = lastAccess.UnixMilli()
+				anyMatch = true
+			}
+		}
+		if !anyMatch {
+			break
+		}
+	}
+
+	// Fill non-matching pods with 0
+	for pod := range readyPods {
+		if _, exists := podLastAccess[pod]; !exists {
+			podLastAccess[pod] = 0
+		}
+	}
+
+	return podLastAccess
+}
+
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 	numBlocks := len(tokens) / prefixCacheBlockSize
 	prefixHashes := make([]uint64, 0, numBlocks)

@@ -924,12 +924,12 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 44))  # Increased height for 8 rows
+    fig = plt.figure(figsize=(18, 54))  # Increased height for 8 rows + secondary axes
 
     # GridSpec: 8 rows (CDFs, TTFT bar, TTFT by token range, TPOT bar, TPOT by token range, overhead, time series x2)
     gs = GridSpec(8, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1, 1],
-                  hspace=0.9,
+                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8],
+                  hspace=1.1,
                   wspace=0.35)
     
     # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
@@ -1525,38 +1525,155 @@ def plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, column, titl
 
 
 # New function to plot latency time series with 1-second averages
+_TS_LINE_STYLES = ['-', '--', '-.', ':']
+_TS_MARKERS = ['o', 's', '^', 'D', 'v', 'P', 'X', '*']
+
+
+def _draw_best_policy_strip(ax, run_data, color_dict, window_size):
+    """Draw a colored strip along the bottom of *ax* showing the best (lowest) policy per window."""
+    from matplotlib.patches import Rectangle
+    import matplotlib.transforms as mtransforms
+
+    all_centers = sorted({c for centers, _ in run_data.values() for c in centers})
+    if not all_centers:
+        return
+
+    policy_lookup = {}
+    for policy, (centers, avgs) in run_data.items():
+        policy_lookup[policy] = dict(zip(centers, avgs))
+
+    best_segments = []
+    half_w = window_size / 2.0
+    for center in all_centers:
+        candidates = {}
+        for policy, lookup in policy_lookup.items():
+            if center in lookup:
+                candidates[policy] = lookup[center]
+        if not candidates:
+            continue
+        best_policy = min(candidates, key=candidates.get)
+        best_segments.append((center - half_w, center + half_w, best_policy))
+
+    if not best_segments:
+        return
+
+    # Merge adjacent segments with the same policy
+    merged = [best_segments[0]]
+    for x_start, x_end, policy in best_segments[1:]:
+        prev_start, prev_end, prev_policy = merged[-1]
+        if policy == prev_policy and abs(x_start - prev_end) < 1e-6:
+            merged[-1] = (prev_start, x_end, policy)
+        else:
+            merged.append((x_start, x_end, policy))
+
+    trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    strip_height = 0.03
+    for x_start, x_end, policy in merged:
+        color = color_dict.get(policy, '#7f7f7f')
+        rect = Rectangle(
+            (x_start, 0), x_end - x_start, strip_height,
+            transform=trans, color=color, alpha=0.85,
+            clip_on=True, zorder=5,
+        )
+        ax.add_patch(rect)
+
+    ax.text(
+        0.0, strip_height / 2, ' best policy ',
+        transform=ax.transAxes, fontsize=tick_fontsize - 8,
+        va='center', ha='left', color='white',
+        bbox=dict(boxstyle='round,pad=0.15', facecolor='black', alpha=0.6),
+        zorder=6,
+    )
+
+
 def plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, column, title, ylabel, show_legend=True, window_size=1000):
     """Plot time series with non-overlapping sliding window averages for a given latency column for each strategy."""
-    for strategy in strategy_order:
-        if strategy in csv_data_dict and column in csv_data_dict[strategy].columns:
-            df = csv_data_dict[strategy]
+    run_data = {}  # {strategy_label: (centers_list, avgs_list)}
+    # Track index-to-time mapping for secondary x-axis (use the longest strategy)
+    best_index_to_time = {}
 
-            # Sort by relative_time and compute non-overlapping window averages
-            df_sorted = df.sort_values('relative_time').reset_index(drop=True)
-            n = len(df_sorted)
-            window_means = []
-            window_times = []
-            for start in range(0, n, window_size):
-                end = min(start + window_size, n)
-                chunk = df_sorted.iloc[start:end]
-                window_means.append(chunk[column].mean())
-                window_times.append(chunk['relative_time'].mean())
+    for si, strategy in enumerate(strategy_order):
+        if strategy not in csv_data_dict or column not in csv_data_dict[strategy].columns:
+            continue
+        df = csv_data_dict[strategy]
 
-            # Shorten strategy name for legend
-            legend_label = strategy.split('-')[0]
+        # Sort by relative_time and compute non-overlapping window averages
+        df_sorted = df.sort_values('relative_time').reset_index(drop=True)
+        vals = df_sorted[column].values
+        times = df_sorted['relative_time'].values
+        n = len(vals)
+        window_means = []
+        window_indices = []
+        window_times = []
+        for start in range(0, n, window_size):
+            end = min(start + window_size, n)
+            window_means.append(np.mean(vals[start:end]))
+            window_indices.append((start + end - 1) / 2.0)
+            window_times.append(np.mean(times[start:end]))
 
-            # Plot the time series
-            ax.plot(window_times, window_means,
-                   color=color_dict[strategy], linewidth=2, alpha=0.8, label=legend_label,
-                   marker='o', markersize=5)
+        # Keep the longest mapping for the secondary axis
+        if len(window_indices) > len(best_index_to_time):
+            best_index_to_time = dict(zip(window_indices, window_times))
 
-    ax.set_title(title, fontsize=subtitle_fontsize, pad=20 if show_legend else 6)
-    ax.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
+        # Shorten strategy name for legend
+        legend_label = strategy.split('-')[0]
+
+        color = color_dict[strategy]
+        marker = _TS_MARKERS[si % len(_TS_MARKERS)]
+        linestyle = _TS_LINE_STYLES[si % len(_TS_LINE_STYLES)]
+
+        ax.plot(window_indices, window_means,
+                color=color, linestyle=linestyle, linewidth=1.8,
+                marker=marker, markersize=10, markerfacecolor='none',
+                markeredgecolor=color, markeredgewidth=1.8,
+                label=legend_label, alpha=0.9, zorder=3)
+
+        run_data[strategy] = (window_indices, window_means)
+
+    # Draw best-policy colored strip along the bottom
+    if run_data:
+        _draw_best_policy_strip(ax, run_data, color_dict, window_size)
+
+    ax.set_title(title, fontsize=subtitle_fontsize, pad=10)
     ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
     if show_legend:
-        ax.legend(fontsize=16, loc='lower center', bbox_to_anchor=(0.5, 1.02), ncol=1, frameon=True)
+        ax.legend(fontsize=14, loc='upper left', frameon=True, framealpha=0.9)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+    # Secondary x-axis on the bottom showing time (seconds)
+    if best_index_to_time:
+        # Primary axis: no xlabel text — tick numbers (0, 2000, ...) are self-explanatory
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize, labelpad=6)
+        # Create secondary axis well below the primary ticks + label
+        ax2 = ax.secondary_xaxis(-0.30)
+        # Compute time labels aligned to the primary tick positions
+        primary_ticks = ax.get_xticks()
+        sorted_indices = sorted(best_index_to_time.keys())
+        time_ticks = []
+        time_labels = []
+        for idx in primary_ticks:
+            if not sorted_indices:
+                continue
+            if idx <= sorted_indices[0]:
+                t = best_index_to_time[sorted_indices[0]]
+            elif idx >= sorted_indices[-1]:
+                t = best_index_to_time[sorted_indices[-1]]
+            else:
+                for i in range(len(sorted_indices) - 1):
+                    if sorted_indices[i] <= idx <= sorted_indices[i + 1]:
+                        frac = (idx - sorted_indices[i]) / (sorted_indices[i + 1] - sorted_indices[i])
+                        t = best_index_to_time[sorted_indices[i]] + frac * (
+                            best_index_to_time[sorted_indices[i + 1]] - best_index_to_time[sorted_indices[i]])
+                        break
+            time_ticks.append(idx)
+            time_labels.append(f'{t:.0f}s')
+        ax2.set_xticks(time_ticks)
+        ax2.set_xticklabels(time_labels)
+        ax2.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
+        ax2.tick_params(axis='x', labelsize=tick_fontsize - 4)
+    else:
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize)
 
 
 if __name__ == "__main__":

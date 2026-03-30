@@ -118,6 +118,15 @@ COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_reali
 
 COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_4000-head_1.7x-tail_10.0x-after0.85 /app/workload/mooncake/synthetic-2-extended-ver2
 
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-duration_2000-head_1.5x-tail_11.0x-after0.7-smoothed /app/workload/mooncake/synthetic_realistic_workload_tokenized-rpsscale_1-numtokens_100-outputscale_1.0-head_1.5x-tail_11.0x-after0.7-smoothed
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_3x-numtokens_100 /app/workload/mooncake/synthetic_3x-numtokens_100
+
+COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_3x-numtokens_200 /app/workload/mooncake/synthetic_3x-numtokens_200
+
+COPY workload-and-experiment_results/mooncake/overhead_test /app/workload/mooncake/overhead_test
+
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

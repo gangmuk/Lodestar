@@ -43,6 +43,12 @@ def static_hash(input_str: str) -> str:
     """Generate a 64-character unique hash for the given input"""
     return hashlib.sha256(input_str.encode()).hexdigest()  # Returns 64 hex characters
 
+_run_salt = os.urandom(16).hex()  # unique per experiment run
+
+def random_hash(input_str: str) -> str:
+    """Generate a 64-character hash that is deterministic for the same input within a run, but differs across runs"""
+    return hashlib.sha256((_run_salt + input_str).encode()).hexdigest()
+
 def sample_output_tokens(mean: int, std: float) -> int:
     """
     Sample output tokens from a normal distribution.
@@ -270,29 +276,7 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
             current_time = time.time()
             if current_time < target_time:
                 schedule_delay = target_time - current_time
-                # logger.info(f"Request {request_id}: Scheduled for {time.strftime('%H:%M:%S.%f', time.localtime(target_time))[:-3]}, waiting {schedule_delay:.3f}s")
                 await asyncio.sleep(schedule_delay)
-            
-        #     # Record the actual start time after waiting
-        #     actual_start_time = time.time()
-        #     scheduling_accuracy = actual_start_time - target_time
-        #     logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]}, "
-        #               f"scheduling accuracy: {scheduling_accuracy:.6f}s")
-        # else:
-        #     logger.info(f"Request {request_id} at episode {iteration}: Starting streaming request at {time.strftime('%H:%M:%S.%f', time.localtime(actual_start_time))[:-3]} (no scheduled time)")
-        
-        # # Double-check prompt format
-        # if not isinstance(prompt, list):
-        #     # Convert to list format for chat completions
-        #     prompt = [{"role": "user", "content": str(static_hash(str(iteration))) + " " + str(prompt)}]
-        # else:
-        #     assert prompt, "Prompt list should not be empty"
-        
-        # # Ensure each item in the list has role and content
-        # for i, msg in enumerate(prompt):
-        #     if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
-        #         prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
-        
         # Format validation logging
         logger.debug(f"Request {request_id}: Formatted prompt for streaming: {prompt}")
         
@@ -303,8 +287,6 @@ async def send_request_streaming(client, model, prompt, output_file, request_id,
         extra_headers["request-id"] = str(request_id)
         extra_headers["subAlgorithm"] = args.subAlgorithm
         
-        # Patch the client to capture headers
-
         # Send streaming request
         request_params = {
             "model": model,
@@ -590,18 +572,24 @@ async def send_request_with_token_ids(client, model, token_ids, output_file, req
         return error_result
 
 
-async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = None, iteration: Optional[int] = None) -> List[Dict[str, str]]:
+async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = None, iteration: Optional[int] = None, total_iterations: int = 1) -> List[Dict[str, str]]:
     """Prepare prompt with session history if needed and ensure it's in the correct format"""
     # Convert string prompts to proper chat format
     formatted_prompt = []
-    
+
+    # Only prepend hash ID when there are multiple iterations
+    prepend_hash = total_iterations > 1
+
     # If prompt is a string, convert it to a proper chat message
     if isinstance(prompt, str):
         # Check if the prompt starts with a number (as seen in error logs)
         if prompt and prompt[0].isdigit():
             # Remove the first character if it's a digit
             prompt = prompt[1:]
-        formatted_prompt = [{"role": "user", "content": "iteration: " + str(static_hash(str(iteration))) + "-" + str(prompt)}]
+        if prepend_hash:
+            formatted_prompt = [{"role": "user", "content": "iteration: " + random_hash(str(iteration)) + "-" + str(prompt)}]
+        else:
+            formatted_prompt = [{"role": "user", "content": str(prompt)}]
     elif isinstance(prompt, list):
         # If it's already a list, make sure each item has role and content
         formatted_prompt = prompt
@@ -609,7 +597,10 @@ async def prepare_prompt(prompt: Union[str, List], session_id: Optional[str] = N
         for i, msg in enumerate(formatted_prompt):
             if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
                 # Convert invalid messages to proper format
-                formatted_prompt[i] = {"role": "user", "content": str(static_hash(str(iteration))) + " " + str(msg)}
+                if prepend_hash:
+                    formatted_prompt[i] = {"role": "user", "content": random_hash(str(iteration)) + " " + str(msg)}
+                else:
+                    formatted_prompt[i] = {"role": "user", "content": str(msg)}
         
     # Note: Session history handling is done in the calling function for token-ids mode
     
@@ -1200,7 +1191,82 @@ def build_gradual_increase_target_times(num_requests: int, base_time: float, max
             rps_level += 0.5
 
     return target_times
-    
+
+
+def build_multi_rps_target_times(num_requests: int, base_time: float, rps_schedule: List[float],
+                                  poisson_arrivals: bool = False,
+                                  rps_change_rate: float = 0.1) -> List[float]:
+    """
+    Generate target times for a multi-RPS schedule.
+
+    Requests are split into equal segments. Each segment runs at constant RPS,
+    with a short ramp at the end transitioning to the next segment's RPS
+    at rps_change_rate RPS/second (default 0.1).
+
+    Example: [4, 8, 4] with 10,000 requests:
+      - ~3,334 requests at 4 RPS, last ~240 ramp 4→8 (40s at 0.1/s)
+      - ~3,333 requests at 8 RPS, last ~240 ramp 8→4 (40s at 0.1/s)
+      - ~3,333 requests at 4 RPS (no ramp, last segment)
+    """
+    if not rps_schedule or any(r <= 0 for r in rps_schedule):
+        raise ValueError("Multi-RPS schedule requires all positive RPS values.")
+
+    num_segments = len(rps_schedule)
+    base_count = num_requests // num_segments
+    remainder = num_requests % num_segments
+    segment_counts = []
+    for i in range(num_segments):
+        segment_counts.append(base_count + (1 if i < remainder else 0))
+
+    target_times: List[float] = []
+    current_offset = 0.0
+
+    for seg_idx, (seg_rps, seg_count) in enumerate(zip(rps_schedule, segment_counts)):
+        is_last = (seg_idx == num_segments - 1)
+
+        # Calculate how many requests are in the transition ramp
+        # rps_change_rate=0 means instant transition (no ramp)
+        ramp_request_count = 0
+        next_rps = seg_rps
+        if not is_last and rps_change_rate > 0:
+            next_rps = rps_schedule[seg_idx + 1]
+            rps_diff = abs(next_rps - seg_rps)
+            if rps_diff > 0:
+                ramp_duration_sec = rps_diff / rps_change_rate
+                avg_ramp_rps = (seg_rps + next_rps) / 2
+                ramp_request_count = int(ramp_duration_sec * avg_ramp_rps)
+                ramp_request_count = min(ramp_request_count, seg_count - 1)
+
+        steady_count = seg_count - ramp_request_count
+
+        # Steady part: constant RPS
+        for req_idx in range(steady_count):
+            if poisson_arrivals:
+                inter_arrival = np.random.exponential(1.0 / seg_rps)
+            else:
+                inter_arrival = 1.0 / seg_rps
+
+            if len(target_times) == 0:
+                target_times.append(base_time)
+            else:
+                current_offset += inter_arrival
+                target_times.append(base_time + current_offset)
+
+        # Ramp part: linearly change RPS from seg_rps to next_rps
+        for req_idx in range(ramp_request_count):
+            t = (req_idx + 1) / ramp_request_count
+            effective_rps = seg_rps + (next_rps - seg_rps) * t
+
+            if poisson_arrivals:
+                inter_arrival = np.random.exponential(1.0 / effective_rps)
+            else:
+                inter_arrival = 1.0 / effective_rps
+
+            current_offset += inter_arrival
+            target_times.append(base_time + current_offset)
+
+    return target_times
+
 def _estimate_input_tokens_from_prompt(prompt: Union[str, List, Dict[str, Any]]) -> int:
     """Estimate input tokens for a prompt (chat format or token-ids placeholder)."""
     if isinstance(prompt, str):
@@ -1957,7 +2023,8 @@ async def schedule_task_token_ids(delay, target_time, request_id, client, model,
 async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tokens_std,
                                     input_tokens_std, max_input_tokens,
                                     input_token_length_scaling, output_token_length_scaling,
-                                    shuffle_requests_between_iterations, prompt_type, override_workload_output_length):
+                                    shuffle_requests_between_iterations, prompt_type, override_workload_output_length,
+                                    total_iterations=1):
     """
     Prepare all requests for a single iteration.
 
@@ -2002,7 +2069,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                     raise
             else:
                 token_ids = None
-                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+                prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration, total_iterations=total_iterations)
 
             # Apply input token length scaling
             if input_token_length_scaling != 1.0:
@@ -2041,7 +2108,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                     if target_tokens < current_estimated_tokens:
                         truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
                         if isinstance(request["prompt"], str):
-                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration, total_iterations=total_iterations)
                         else:
                             truncated_prompt = request["prompt"].copy()
                             if isinstance(truncated_prompt, list) and truncated_prompt:
@@ -2058,7 +2125,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                         expanded_text = original_prompt_text + padding_text
 
                         if isinstance(request["prompt"], str):
-                            prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
+                            prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration, total_iterations=total_iterations)
                         else:
                             expanded_prompt = request["prompt"].copy()
                             if isinstance(expanded_prompt, list) and expanded_prompt:
@@ -2081,7 +2148,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                     if estimated_tokens > max_input_tokens:
                         truncated_text = truncate_text_to_tokens(original_prompt_text, max_input_tokens)
                         if isinstance(request["prompt"], str):
-                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                            prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration, total_iterations=total_iterations)
                         else:
                             truncated_prompt = request["prompt"].copy()
                             if isinstance(truncated_prompt, list) and truncated_prompt:
@@ -2404,6 +2471,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 shuffle_requests_between_iterations=shuffle_requests_between_iterations,
                 prompt_type=args.prompt_type,
                 override_workload_output_length=args.override_workload_output_length,
+                total_iterations=iterations,
             )
             all_iteration_requests.append(iter_requests)
             logger.info(f"Prepared {len(iter_requests)} requests for iteration {iteration}")
@@ -2549,7 +2617,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                             raise
                     else:
                         token_ids = None
-                        prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration)
+                        prompt = await prepare_prompt(prompt=request["prompt"], session_id=session_id, iteration=iteration, total_iterations=iterations)
 
                     # Apply input token length scaling before any further sampling/truncation
                     if input_token_length_scaling != 1.0:
@@ -2597,7 +2665,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                                 # Truncate text to match target tokens
                                 truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
                                 if isinstance(request["prompt"], str):
-                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration, total_iterations=iterations)
                                 else:
                                     # For list format, replace the content
                                     truncated_prompt = request["prompt"].copy()
@@ -2621,7 +2689,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                                 expanded_text = original_prompt_text + padding_text
 
                                 if isinstance(request["prompt"], str):
-                                    prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration)
+                                    prompt = await prepare_prompt(prompt=expanded_text, session_id=session_id, iteration=iteration, total_iterations=iterations)
                                 else:
                                     # For list format, append to the last user message
                                     expanded_prompt = request["prompt"].copy()
@@ -2656,7 +2724,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
 
                                 # Update the prompt with truncated text
                                 if isinstance(request["prompt"], str):
-                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration)
+                                    prompt = await prepare_prompt(prompt=truncated_text, session_id=session_id, iteration=iteration, total_iterations=iterations)
                                 else:
                                     # For list format, replace the content
                                     truncated_prompt = request["prompt"].copy()
@@ -2729,8 +2797,11 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 logger.info(f"gradual_increase workload: scheduled {len(gradual_increase_target_times)} target times.")
 
             # Pre-calculate ramp target times if ramp is enabled
+            # Skip ramp when multi-RPS schedule is active (multi-RPS has its own transitions)
             ramp_target_times = None
-            if (not profiling_mode) and rps and args.iteration_ramp_duration > 0:
+            rps_schedule = getattr(args, "rps_schedule", None)
+            has_multi_rps = rps_schedule and len(rps_schedule) > 1
+            if (not profiling_mode) and rps and args.iteration_ramp_duration > 0 and not has_multi_rps:
                 ramp_target_times = calculate_ramp_target_times(
                     num_requests=total_num_requests_per_iter,
                     base_time=iteration_base_time,
@@ -2740,6 +2811,18 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                     poisson_arrivals=poisson_arrivals,
                 )
                 logger.info(f"Iteration {iteration}: Using ramp-up schedule ({args.iteration_ramp_duration:.1f}s from {args.iteration_ramp_start_fraction:.0%} to 100% RPS, poisson={poisson_arrivals})")
+
+            # Pre-calculate multi-RPS schedule if multiple RPS values were specified
+            multi_rps_target_times = None
+            if (not profiling_mode) and has_multi_rps:
+                multi_rps_target_times = build_multi_rps_target_times(
+                    num_requests=total_num_requests_per_iter,
+                    base_time=iteration_base_time,
+                    rps_schedule=rps_schedule,
+                    poisson_arrivals=poisson_arrivals,
+                    rps_change_rate=args.rps_change_rate,
+                )
+                logger.info(f"Multi-RPS schedule: {rps_schedule}, {len(multi_rps_target_times)} target times across {len(rps_schedule)} segments (rps_change_rate={args.rps_change_rate}).")
 
             # Now assign target times and create final tasks
             cumulative_time = 0.0  # For Poisson arrivals
@@ -2753,6 +2836,9 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 elif ramp_target_times is not None:
                     # Ramp-up mode: use precomputed ramp schedule (Poisson already applied)
                     target_time = ramp_target_times[idx]
+                elif multi_rps_target_times is not None:
+                    # Multi-RPS mode: use precomputed multi-phase schedule
+                    target_time = multi_rps_target_times[idx]
                 elif rps:
                     if poisson_arrivals:
                         # Use exponential distribution for Poisson process
@@ -2946,8 +3032,10 @@ if __name__ == "__main__":
                        help="Prompt format: 'chat' for messages or 'token-ids' for direct token IDs from workload file")
     parser.add_argument("--token_counting_mode", type=str, default="tiktoken", choices=["tiktoken", "char", "word"],
                        help="Token counting method for input truncation: 'tiktoken' (cl100k_base), 'char' (fast, 1 token ≈ 4 chars), or 'word' (fast, 1 word ≈ 1.33 tokens)")
-    parser.add_argument("--rps", type=float, default=None, 
-                       help="Requests per second (RPS). If specified, requests are sent at this rate instead of using workload timestamps.")
+    parser.add_argument("--rps", type=str, default=None,
+                       help="Requests per second (RPS). Single value (e.g., '4') or comma-separated for multi-phase "
+                            "(e.g., '4,8' splits duration in half; '4,8,12' splits in thirds). "
+                            "If specified, requests are sent at this rate instead of using workload timestamps.")
     parser.add_argument("--shuffle_requests_between_iterations", type=int, default=0,
                        help="Shuffle the order of requests for each iteration (makes iterations non-identical). 0: no shuffle, 1: shuffle")
     parser.add_argument("--poisson_arrivals", action="store_true",
@@ -2965,6 +3053,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tweak_workload", type=str, default=None,
                        help="Optional workload tweak. 'gradual_increase' ramps RPS from 1 to --rps by +1 RPS every 10 seconds in benchmark mode.")
+    parser.add_argument("--rps_change_rate", type=float, default=0.1,
+                       help="Rate of RPS change between segments in multi-RPS schedule (RPS/second). "
+                            "E.g., 0.1 means RPS increases/decreases by 0.1 per second during transitions. "
+                            "Higher values make transitions faster. Default: 0.1")
     parser.add_argument("--iteration_overlap_ratio", type=float, default=0.0,
                        help="Fraction of requests to overlap between consecutive iterations (0.0-0.5). "
                             "Creates smooth transitions between iteration boundaries instead of abrupt changes. "
@@ -2983,10 +3075,22 @@ if __name__ == "__main__":
     set_token_counting_mode(args.token_counting_mode)
     logger.info(f"Token counting mode: {args.token_counting_mode}")
 
+    # Parse --rps: supports single value ("4") or comma-separated multi-phase ("4,8" or "4,8,12")
+    args.rps_schedule = None  # Will be set to list of floats if multi-RPS
+    if args.rps is not None:
+        rps_parts = [float(x.strip()) for x in args.rps.split(",")]
+        if len(rps_parts) == 1:
+            args.rps = rps_parts[0]
+        else:
+            args.rps_schedule = rps_parts
+            args.rps = rps_parts[0]  # Use first value for validation and logging
+            logger.info(f"Multi-RPS schedule: {args.rps_schedule} (requests split into {len(rps_parts)} equal segments)")
+
     # Treat --rps -1 (or any negative value) as "use workload timestamps"
     if args.rps is not None and args.rps < 0:
         logger.info(f"--rps={args.rps} interpreted as 'use workload timestamps'. Setting rps=None.")
         args.rps = None
+        args.rps_schedule = None
 
     # Validation: profiling-style workload mode requires --rps
     if args.workload_mode == "profiling" and not args.rps:

@@ -341,6 +341,8 @@ func (s *Server) cleanupPerRequestState(routerCtx *types.RoutingContext, request
 
 	// Per-request metric snapshots
 	utils.CleanupKVCacheHitRatio(requestID)
+	utils.CleanupKVCacheLastAccess(requestID)
+	utils.CleanupPrefixGroupHashForRequest(requestID)
 	utils.CleanupInflightRequests(requestID)
 	utils.CleanupvLLMGPUKVCacheUsage(requestID)
 	utils.CleanupvLLMNumRequestsRunning(requestID)

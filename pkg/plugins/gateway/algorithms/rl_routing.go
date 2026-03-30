@@ -29,6 +29,10 @@ var (
 	received_the_first_request = false
 	allPodIPs                  = []string{}
 	numFlush                   = 0
+	// Depth threshold for prefix group identity hash.
+	// Uses allPrefixHashes[depth] as the group fingerprint.
+	// Should be larger than typical system prompt blocks (3-5) to distinguish conversations.
+	prefixGroupDepthThreshold = utils.LoadEnvInt("PREFIX_GROUP_DEPTH_THRESHOLD", 10)
 )
 
 var (
@@ -340,6 +344,18 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// predict output!
 	hash_of_matchedprefix := utils.HashPrefixHashes(matchedPrefixHashes)
 	utils.SetHashOfPrefixHashesForRequest(ctx.RequestID, hash_of_matchedprefix)
+
+	// Prefix group identity: use the chained hash at a specific depth in allPrefixHashes.
+	// At depth D, allPrefixHashes[D] encodes the first D blocks (deterministic, conversation-specific).
+	// This distinguishes conversations that share only a short system prompt.
+	var prefixGroupHash uint64
+	if len(allPrefixHashes) > prefixGroupDepthThreshold {
+		prefixGroupHash = allPrefixHashes[prefixGroupDepthThreshold]
+	} else if len(allPrefixHashes) > 0 {
+		prefixGroupHash = allPrefixHashes[len(allPrefixHashes)-1]
+	} else {
+		prefixGroupHash = 0
+	}
 	expectedNumOutputTokens, exist := utils.GetNumOutputTokensForPrefix(hash_of_matchedprefix)
 	expectedNumOutputTokens = 100
 	// expectedNumOutputTokens = 1
@@ -357,6 +373,16 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 	}
 	utils.SetSnapShotForKVCacheHitRatio(ctx.RequestID, podIPsWithMatchingRatios)
+	utils.SetPrefixGroupHashForRequest(ctx.RequestID, prefixGroupHash)
+
+	// Extract per-pod prefix last-access timestamps for time-weighted KV hit ratio.
+	// Uses a fresh readyPods set since matchPods may have mutated the original.
+	readyPodsMapForLastAccess := map[string]struct{}{}
+	for _, pod := range readyPods {
+		readyPodsMapForLastAccess[pod.Status.PodIP] = struct{}{}
+	}
+	podIPsWithLastAccess := r.prefixCacheIndexer.GetPodPrefixLastAccess(allPrefixHashes, ctx.Model, readyPodsMapForLastAccess)
+	utils.SetSnapShotForKVCacheLastAccess(ctx.RequestID, podIPsWithLastAccess)
 
 	if len(readyPods) == 0 {
 		klog.Errorf("requestID: %s, No ready pods available for routing", ctx.RequestID)
@@ -375,6 +401,10 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	allPodsKvCacheHitRatios := utils.GetAllPodsKVCacheHitRatios(ctx.RequestID)
 	jsonStrings["allPodsKvCacheHitRatios"] = jsonStringify(allPodsKvCacheHitRatios, utils.GetrequestAllPodsKVCacheMutex())
 	klog.V(5).Infof("allPodsKvCacheHitRatios: %s", jsonStrings["allPodsKvCacheHitRatios"])
+
+	// 1b. KV cache last-access timestamps (for time-weighted freshness in RL routing)
+	allPodsKvCacheLastAccess := utils.GetAllPodsKVCacheLastAccess(ctx.RequestID)
+	jsonStrings["allPodsKvCacheLastAccess"] = jsonStringify(allPodsKvCacheLastAccess, utils.GetKVCacheLastAccessMutex())
 
 	// 2. Inflight requests
 	numInflightRequestsAllPods := utils.GetInflightRequestsForAllPods(ctx.RequestID)
@@ -508,7 +538,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	// exploration, explorationEnabled := utils.GetExploration(ctx.RequestID)
 	normalized_request_start_time := time.Now().UnixMicro() - utils.FirstRequestStartTime
-	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
+	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
 	logMessage = fmt.Sprintf(
 		logFormat,
 		ctx.RequestID,
@@ -517,6 +547,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		expectedNumOutputTokens,
 		numTotalTokens,
 		jsonStrings["allPodsKvCacheHitRatios"],
+		jsonStrings["allPodsKvCacheLastAccess"],
+		prefixGroupHash,
 		jsonStrings["numInflightRequestsAllPods"],
 		jsonStrings["numInflightPrefillRequestsAllPods"],
 		jsonStrings["numInflightDecodeRequestsAllPods"],
@@ -675,7 +707,6 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 
 	if len(allPrefixHashes) > 0 && targetPod != nil {
-		klog.V(5).Infof("Adding prefix hashes to cache. pod: %s", targetPod.Status.PodIP)
 		r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
 	} else {
 		if len(allPrefixHashes) == 0 {
@@ -887,6 +918,10 @@ func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []
 		targetPod := r.fallbackRouting_with_least_kv_cache(ctx, readyPods)
 		return targetPod
 	} else if subAlgorithm == "prefix_cache_1" || strings.Contains(subAlgorithm, "contextual_bandit") {
+		targetPod := r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+		return targetPod
+	} else if subAlgorithm == "lmetric" {
+		// LMETRIC fallback: use prefix_cache_1 (closest heuristic — considers both KV hits and load)
 		targetPod := r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
 		return targetPod
 	} else {

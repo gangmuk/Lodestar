@@ -144,6 +144,7 @@ class DataEncoder:
             'prefill_tokens',
             'decode_tokens',
             'kv_hit_ratio',
+            'kv_hit_ratio_fresh',
         ]
         excluded_set = set(excluded)
         all_numeric = [f for f in base_features_list if f not in excluded_set]
@@ -289,36 +290,6 @@ class DataEncoder:
     #     return pos_encoding_features
 
 
-    ## not used currently
-    # def add_staleness_features(self, pod_features, timestamps, feature_timing, feature_indices_map):
-    #     """Add staleness indicators for historical features - OPTIMIZED."""
-    #     # OPTIMIZATION: Pre-compute historical feature indices
-    #     historical_features = [f for f, timing in feature_timing.items() if timing == 'historical']
-    #     historical_indices = [
-    #         idx for feature, idx in feature_indices_map.items() 
-    #         if feature in historical_features
-    #     ]
-    #     if not historical_indices or len(timestamps) == 0 or np.all(timestamps == 0):
-    #         logger.info("No historical features or valid timestamps, skipping staleness")
-    #         staleness_features = np.zeros((pod_features.shape[0], pod_features.shape[1], 1))
-    #         return np.concatenate([pod_features, staleness_features], axis=2)
-    #     # OPTIMIZATION: Vectorized staleness calculation
-    #     max_staleness = 60.0
-    #     sorted_indices = np.argsort(timestamps)
-    #     sorted_timestamps = timestamps[sorted_indices]
-    #     time_diffs = np.diff(sorted_timestamps, prepend=sorted_timestamps[0])
-    #     time_diffs = np.maximum(time_diffs, 0)
-    #     # OPTIMIZATION: Use advanced indexing for reordering
-    #     staleness = np.zeros_like(timestamps)
-    #     staleness[sorted_indices] = time_diffs
-    #     staleness = np.clip(staleness / max_staleness, 0, 1)
-    #     # OPTIMIZATION: Broadcasting instead of loop
-    #     staleness_features = np.broadcast_to(
-    #         staleness[:, np.newaxis, np.newaxis], 
-    #         (pod_features.shape[0], pod_features.shape[1], 1)
-    #     ).copy()
-    #     logger.info(f"Added staleness indicator for {len(historical_indices)} historical features")
-    #     return np.concatenate([pod_features, staleness_features], axis=2)
 
 
     
@@ -368,6 +339,7 @@ class DataEncoder:
             'inflight_prefill_requests', # Current inflight prefill requests (NEW)
             'inflight_decode_requests',  # Current inflight decode requests (NEW)
             'kv_hit_ratio',              # Current cache performance
+            'kv_hit_ratio_fresh',        # Time-weighted cache freshness
             'gpu_kv_cache',              # Current GPU memory usage
             'cpu_kv_cache',              # Current CPU cache usage
             'running_requests',          # Currently processing
@@ -889,14 +861,10 @@ class DataEncoder:
             input_tokens_for_plotting = input_tokens_normalized
             logger.debug("raw_input_tokens not available, using potentially normalized values for plotting")
 
-        # STEP 10: MINIMAL positional encoding
+        # STEP 10: positional encoding and cross-attention setup
         positional_encoding_start = time.time()
         positional_encodings = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
-        staleness_features = np.zeros((pod_features_array.shape[0], pod_features_array.shape[1], 1), dtype=np.float32)
-        pod_features_with_staleness = np.concatenate([pod_features_array, staleness_features], axis=2)
-        logger.debug(f"pod_features_array.shape: {pod_features_array.shape}")
-        logger.debug(f"staleness_features.shape: {staleness_features.shape}")
-        logger.debug(f"pod_features_with_staleness.shape: {pod_features_with_staleness.shape}")
+        pod_features_with_staleness = pod_features_array  # No staleness dimension; kept key name for compatibility
         cross_attention_inputs = {'query': pod_features_with_staleness, 'key_value': kv_hit_norm}
         overhead_summary['positional_encoding'] = time.time() - positional_encoding_start
         
@@ -1182,6 +1150,26 @@ class DataEncoder:
         # Update metadata to reflect sampled dataset size
         sampled_dataset_size = max_samples_for_reference if sample_indices is not None else n_samples
 
+        # Build the complete ordered feature name list matching the model input tensor:
+        #   [pod_features_with_staleness, kv_hit_ratios, request_features]
+        # This is the ground truth for analyze_model_evolution.py and any XAI tool.
+        pod_feat_names = list(processed_data.get('pod_features_list', []))
+        kv_dim = processed_data['kv_hit_ratios'].shape[2]
+        kv_feat_names = ['kv_hit_ratio'] if kv_dim == 1 else [f'kv_hit_ratio_{i}' for i in range(kv_dim)]
+        req_feat_names = list(processed_data.get('numeric_request_features', []))
+        model_input_feature_names = pod_feat_names + kv_feat_names + req_feat_names
+        expected_dim = (processed_data['pod_features_with_staleness'].shape[2]
+                        + processed_data['kv_hit_ratios'].shape[2]
+                        + processed_data['request_features'].shape[1])
+        if len(model_input_feature_names) != expected_dim:
+            logger.warning(
+                f"model_input_feature_names has {len(model_input_feature_names)} entries but "
+                f"model input dim is {expected_dim}. "
+                f"pod_features_list ({len(pod_feat_names)}) may be missing runtime-appended features. "
+                f"pod_features_with_staleness dim={processed_data['pod_features_with_staleness'].shape[2]}, "
+                f"pod_features dim={processed_data['pod_features'].shape[2]}."
+            )
+
         metadata = {
             'dataset_size': sampled_dataset_size,
             'original_dataset_size': n_samples,
@@ -1191,6 +1179,7 @@ class DataEncoder:
             'pod_features_list': processed_data.get('pod_features_list', []),
             'numeric_request_features': processed_data.get('numeric_request_features', []),
             'categorical_request_features': processed_data.get('categorical_request_features', []),
+            'model_input_feature_names': model_input_feature_names,
             'pod_ids': processed_data.get('pod_ids', []),
             'feature_dimensions': {
                 'pod_features': processed_data['pod_features'].shape[2],

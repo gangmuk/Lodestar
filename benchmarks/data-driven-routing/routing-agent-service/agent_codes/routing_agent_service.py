@@ -44,6 +44,27 @@ import distribution_shift_detector
 from distribution_shift_detector import PerSampleOODDetector, OODAction
 
 
+# Prefix-group hash filtering: restricts CB's pod selection to K candidate pods
+# when the cluster is stressed, to preserve prefix concentration.
+ENABLE_PREFIX_FILTERING = int(os.getenv("ENABLE_PREFIX_FILTERING", "1"))
+GPU_KV_SATURATION_THRESHOLD = float(os.getenv("GPU_KV_SATURATION_THRESHOLD", "0.75"))
+PREFIX_SHARING_MIN_BENEFIT_THRESHOLD = float(os.getenv("PREFIX_SHARING_MIN_BENEFIT_THRESHOLD", "300"))
+CANDIDATE_K = int(os.getenv("CANDIDATE_K", "3"))
+logger.info(f"Prefix filtering config: ENABLE_PREFIX_FILTERING={ENABLE_PREFIX_FILTERING}, "
+            f"GPU_KV_SATURATION_THRESHOLD={GPU_KV_SATURATION_THRESHOLD}, "
+            f"PREFIX_SHARING_MIN_BENEFIT_THRESHOLD={PREFIX_SHARING_MIN_BENEFIT_THRESHOLD}, CANDIDATE_K={CANDIDATE_K}")
+
+
+def _select_candidate_pods(prefix_hash, all_pod_ids, k):
+    """Select K candidate pods deterministically from prefix hash.
+    Uses modular arithmetic to pick a starting pod, then takes K consecutive
+    pods (wrapping around). Same prefix always maps to the same candidates."""
+    n = len(all_pod_ids)
+    k = min(k, n)
+    start = abs(prefix_hash) % n
+    return [all_pod_ids[(start + i) % n] for i in range(k)]
+
+
 # GPU features are now always included as one-hot encoded features
 INIT_DONE=False
 CONTEXTUAL_BANDIT_PRELOADED = False
@@ -175,6 +196,7 @@ FIXED_RANGE_BOUNDS = {
     'inflight_prefill_requests': 30,  # practical max
     'inflight_decode_requests': 30,   # practical max
     'cpu_kv_cache': 1.0,              # ratio [0, 1]
+    'kv_hit_ratio_fresh': 100,        # time-weighted kv_hit_ratio [0, 100]
 }
 
 def apply_fixed_range_normalization(stats_inst):
@@ -423,6 +445,76 @@ def handle_infer():
 
         handle_infer_overhead_summary["ood_check"] = time.time() - ood_check_start
 
+        # Extract raw features BEFORE normalization for prefix filtering and LMETRIC
+        raw_features_for_filtering = None
+        raw_features_for_lmetric = None
+        if True:  # Always extract raw features (needed by LMETRIC and prefix filtering)
+            try:
+                raw_kv_hit_per_pod_lmetric = {}
+                raw_running_per_pod = {}
+                raw_waiting_per_pod = {}
+                for pid in sorted_all_pod_ids:
+                    kvh_col = f"{pid}-kv_hit_ratio"
+                    run_col = f"{pid}-running_requests"
+                    wait_col = f"{pid}-waiting_requests"
+                    if is_dict_input:
+                        raw_kv_hit_per_pod_lmetric[pid] = float(processed_df.get(kvh_col, 0))
+                        raw_running_per_pod[pid] = float(processed_df.get(run_col, 0))
+                        raw_waiting_per_pod[pid] = float(processed_df.get(wait_col, 0))
+                    else:
+                        raw_kv_hit_per_pod_lmetric[pid] = float(processed_df[kvh_col].iloc[0]) if kvh_col in processed_columns else 0.0
+                        raw_running_per_pod[pid] = float(processed_df[run_col].iloc[0]) if run_col in processed_columns else 0.0
+                        raw_waiting_per_pod[pid] = float(processed_df[wait_col].iloc[0]) if wait_col in processed_columns else 0.0
+                raw_input_tokens_lmetric = float(processed_df.get('input_tokens', 0) if is_dict_input
+                                                 else processed_df['input_tokens'].iloc[0])
+                raw_features_for_lmetric = {
+                    'kv_hit_per_pod': raw_kv_hit_per_pod_lmetric,
+                    'running_per_pod': raw_running_per_pod,
+                    'waiting_per_pod': raw_waiting_per_pod,
+                    'input_tokens': raw_input_tokens_lmetric,
+                }
+            except Exception as e:
+                logger.warning(f"Failed to extract raw features for LMETRIC: {e}")
+                raw_features_for_lmetric = None
+
+        if ENABLE_PREFIX_FILTERING:
+            try:
+                raw_gpu_kv_per_pod = {}
+                raw_kv_hit_per_pod = {}
+                for pid in sorted_all_pod_ids:
+                    gkv_col = f"{pid}-gpu_kv_cache"
+                    kvh_col = f"{pid}-kv_hit_ratio"
+                    if is_dict_input:
+                        raw_gpu_kv_per_pod[pid] = float(processed_df.get(gkv_col, 0))
+                        raw_kv_hit_per_pod[pid] = float(processed_df.get(kvh_col, 0))
+                    elif gkv_col in processed_columns and kvh_col in processed_columns:
+                        raw_gpu_kv_per_pod[pid] = float(processed_df[gkv_col].iloc[0])
+                        raw_kv_hit_per_pod[pid] = float(processed_df[kvh_col].iloc[0])
+                    else:
+                        raw_gpu_kv_per_pod[pid] = 0.0
+                        raw_kv_hit_per_pod[pid] = 0.0
+                raw_input_tokens = float(processed_df.get('input_tokens', 0) if is_dict_input
+                                         else processed_df['input_tokens'].iloc[0])
+                # Get prefix hash from gateway (hashOfMatchedPrefix field)
+                # Extract directly from raw log_message since preprocess doesn't carry it to processed_df
+                prefix_hash_val = 0
+                if '@hashOfMatchedPrefix@' in log_message:
+                    try:
+                        hash_start = log_message.index('@hashOfMatchedPrefix@') + len('@hashOfMatchedPrefix@')
+                        hash_end = log_message.index('@', hash_start)
+                        prefix_hash_val = int(log_message[hash_start:hash_end])
+                    except (ValueError, IndexError):
+                        prefix_hash_val = 0
+                raw_features_for_filtering = {
+                    'gpu_kv_per_pod': raw_gpu_kv_per_pod,
+                    'kv_hit_per_pod': raw_kv_hit_per_pod,
+                    'input_tokens': raw_input_tokens,
+                    'prefix_hash': prefix_hash_val,
+                }
+            except Exception as e:
+                logger.warning(f"Failed to extract raw features for prefix filtering: {e}")
+                raw_features_for_filtering = None
+
         normalize_start = time.time()
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
@@ -460,7 +552,7 @@ def handle_infer():
         handle_infer_overhead_summary["normalize"] = time.time() - normalize_start
         
         # 🔍 CHECKPOINT 2: Log NORMALIZED values (for request_id % 10 == 0)
-        if int(request_id) % 10 == 0:
+        if int(request_id) % 100 == 0:
             logger.info(f"🔍 CHECKPOINT 2 - AFTER NORMALIZATION (requestID {request_id}):")
             input_tokens_val = processed_df['input_tokens'] if is_dict_input else processed_df['input_tokens'].iloc[0]
             output_tokens_val = processed_df['output_tokens'] if is_dict_input else processed_df['output_tokens'].iloc[0]
@@ -759,6 +851,78 @@ def handle_infer():
         #     }
             
         #     logger.info(f"scalable_rl_routing_agent, requestID: {request_id}, action={pod_idx}, prev_reward={prev_reward:.2f}, confidence={confidence:.3f}, num_pods={num_pods}")
+        elif subAlgorithm == 'lmetric':
+            # === LMETRIC: Multiplication-based scheduling (Zhang et al., 2026) ===
+            # Score_i = P_tokens_i × BS_i, route to argmin(score)
+            # P_tokens = new prefill tokens if routed to pod i = input_tokens * (1 - kv_hit_ratio/100)
+            # BS = running_requests + waiting_requests (batch size on the pod)
+            # No ML model, no normalization, no training needed.
+            lmetric_start = time.time()
+            infer_from_tensor_overhead_summary = {}
+
+            if raw_features_for_lmetric is None:
+                logger.error(f"LMETRIC: raw features not available for request {request_id}")
+                assert False
+
+            input_tokens = raw_features_for_lmetric['input_tokens']
+            kv_hit_per_pod = raw_features_for_lmetric['kv_hit_per_pod']
+            running_per_pod = raw_features_for_lmetric['running_per_pod']
+            waiting_per_pod = raw_features_for_lmetric['waiting_per_pod']
+
+            num_pods = len(sorted_all_pod_ids)
+            scores = np.zeros(num_pods, dtype=np.float64)
+            p_tokens_arr = np.zeros(num_pods, dtype=np.float64)
+            bs_arr = np.zeros(num_pods, dtype=np.float64)
+
+            for i, pid in enumerate(sorted_all_pod_ids):
+                # P_tokens: new prefill tokens = input_tokens * (1 - kv_hit_ratio / 100)
+                # kv_hit_ratio is 0-100 percentage
+                kv_hit = kv_hit_per_pod.get(pid, 0.0)
+                p_tokens = input_tokens * (1.0 - kv_hit / 100.0)
+                # BS: batch size = running + waiting (queued) requests
+                bs = running_per_pod.get(pid, 0.0) + waiting_per_pod.get(pid, 0.0)
+                p_tokens_arr[i] = p_tokens
+                bs_arr[i] = bs
+                scores[i] = p_tokens * bs
+
+            # Route to pod with minimum score (argmin)
+            # Tiebreaker: if multiple pods have score=0, pick the one with lowest BS
+            # (score=0 means either full cache hit or empty pod — both are ideal)
+            min_score = scores.min()
+            min_indices = np.where(scores == min_score)[0]
+            if len(min_indices) == 1:
+                selected_pod_index = int(min_indices[0])
+            else:
+                # Tiebreak by lowest batch size among tied pods
+                tied_bs = bs_arr[min_indices]
+                selected_pod_index = int(min_indices[np.argmin(tied_bs)])
+
+            lmetric_overhead = time.time() - lmetric_start
+            infer_from_tensor_overhead_summary['inference'] = lmetric_overhead
+            infer_from_tensor_overhead_summary['total_inference'] = lmetric_overhead
+
+            # Build result in the same format as other subalgorithms
+            # Use negative scores as "predicted_rewards" (higher = better, so negate the score)
+            predicted_rewards = -scores
+            result = {
+                'selected_pod_index': selected_pod_index,
+                'predicted_rewards': predicted_rewards,
+                'chosen_pod_predicted_reward': float(predicted_rewards[selected_pod_index]),
+                'pod_probabilities': {sorted_all_pod_ids[i]: 1.0 / num_pods for i in range(num_pods)},
+                'confidence': 1.0,
+                'explore_mask': 0,
+                'explored': False,
+                'epsilon_effective': 0.0,
+            }
+
+            logger.info(
+                f"LMETRIC for {request_id}: pod={selected_pod_index} "
+                f"(score={scores[selected_pod_index]:.1f}, "
+                f"P_tokens={p_tokens_arr[selected_pod_index]:.0f}, "
+                f"BS={bs_arr[selected_pod_index]:.0f}), "
+                f"all_scores=[{', '.join(f'{s:.0f}' for s in scores)}], "
+                f"overhead={lmetric_overhead*1000:.1f}ms"
+            )
         else:
             logger.error(f"Unknown subAlgorithm: {subAlgorithm}")
             assert False
@@ -767,7 +931,36 @@ def handle_infer():
         remaining_work_start = time.time()
         result["requestID"] = request_id
         result["num_trains"] = NUM_TRAINS
-        
+
+        # Prefix-group hash filtering: restrict CB's selection to K candidate pods
+        # when the cluster is stressed and the prefix benefit justifies concentration.
+        result['prefix_filtered'] = False
+        if ENABLE_PREFIX_FILTERING and raw_features_for_filtering is not None and not result.get('explored', False):
+            try:
+                gpu_kv_values = list(raw_features_for_filtering['gpu_kv_per_pod'].values())
+                kv_hit_values = list(raw_features_for_filtering['kv_hit_per_pod'].values())
+                cluster_gpu_kv = np.mean(gpu_kv_values) if gpu_kv_values else 0
+                best_kv_hit = max(kv_hit_values) if kv_hit_values else 0
+                input_tokens_raw = raw_features_for_filtering['input_tokens']
+                prefix_benefit = best_kv_hit / 100.0 * input_tokens_raw
+                prefix_hash_val = raw_features_for_filtering['prefix_hash']
+
+                if cluster_gpu_kv > GPU_KV_SATURATION_THRESHOLD and prefix_benefit > PREFIX_SHARING_MIN_BENEFIT_THRESHOLD and prefix_hash_val != 0:
+                    candidates = _select_candidate_pods(prefix_hash_val, sorted_all_pod_ids, CANDIDATE_K)
+                    rewards = result['predicted_rewards']
+                    candidate_indices = [sorted_all_pod_ids.index(p) for p in candidates]
+                    best_candidate_idx = max(candidate_indices, key=lambda i: float(rewards[i]))
+
+                    original_idx = result['selected_pod_index']
+                    if original_idx not in candidate_indices:
+                        result['selected_pod_index'] = best_candidate_idx
+                        result['prefix_filtered'] = True
+                        logger.info(f"Prefix filtering: req={request_id}, gpu_kv={cluster_gpu_kv:.3f}, "
+                                    f"benefit={prefix_benefit:.0f}, candidates={candidates}, "
+                                    f"original=pod_{original_idx}, filtered=pod_{best_candidate_idx}")
+            except Exception as e:
+                logger.warning(f"Prefix filtering failed: {e}")
+
         # Map the pod index back to the actual pod ID
         selected_pod_index = result['selected_pod_index']
         if selected_pod_index >= len(sorted_all_pod_ids):
@@ -797,7 +990,8 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
         
-        if handle_infer_overhead_summary.get('handle_infer_end_to_end', 0) > 20:
+        # if request id % 10 == 0, log the overhead_log
+        if int(request_id) % 10 == 0:
             logger.info(f"overhead_log: {overhead_log}")
         
         return_predicted_rewards = HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True)
@@ -839,44 +1033,47 @@ def handle_infer():
         if pod_order is not None:
             response["predicted_rewards_pod_order"] = pod_order
         
-        # PC1-biased exploration: when the agent explored, delegate routing to gateway's PC1 fallback
-        # ood_fallback=4: exploration triggered → gateway uses prefix_cache_1 (which considers both prefix hits AND load)
-        if result.get('explored', False):
-            response["ood_fallback"] = 4
-            response["fallback_reason"] = "pc1_biased_exploration"
+        # LMETRIC is a deterministic heuristic — skip all model-specific fallback overrides.
+        # OOD detection, reward similarity tiebreaks, and untrained-model guards don't apply.
+        if subAlgorithm != 'lmetric':
+            # PC1-biased exploration: when the agent explored, delegate routing to gateway's PC1 fallback
+            # ood_fallback=4: exploration triggered → gateway uses prefix_cache_1 (which considers both prefix hits AND load)
+            if result.get('explored', False):
+                response["ood_fallback"] = 4
+                response["fallback_reason"] = "pc1_biased_exploration"
 
-        # PC1 fallback when predicted rewards are similar across pods (saturation regime)
-        # ood_fallback=3: rewards within threshold → defer to prefix_cache_1 heuristic
-        # When all pods look similar to the model, prefix locality is a better tiebreaker
-        REWARD_SIMILARITY_THRESHOLD = float(os.getenv("REWARD_SIMILARITY_THRESHOLD", "0.1"))  # 10% relative range
-        predicted_rewards_for_tiebreak = result.get('predicted_rewards', None)
-        if predicted_rewards_for_tiebreak is not None and hasattr(predicted_rewards_for_tiebreak, '__len__') and len(predicted_rewards_for_tiebreak) > 1:
-            rewards_arr = np.array(predicted_rewards_for_tiebreak, dtype=np.float64)
-            reward_range = rewards_arr.max() - rewards_arr.min()
-            reward_scale = max(abs(rewards_arr.max()), abs(rewards_arr.min()), 1e-6)
-            relative_range = reward_range / reward_scale
-            logger.info(f"tiebreaker test, Reward similarity fallback: relative_range={relative_range:.4f},  threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
-            if relative_range < REWARD_SIMILARITY_THRESHOLD:
-                response["ood_fallback"] = 3
-                response["fallback_reason"] = f"reward_similarity_{relative_range:.4f}"
-                logger.info(f"Tiebreaker happens! ood_fallback=3")
+            # PC1 fallback when predicted rewards are similar across pods (saturation regime)
+            # ood_fallback=3: rewards within threshold → defer to prefix_cache_1 heuristic
+            # When all pods look similar to the model, prefix locality is a better tiebreaker
+            REWARD_SIMILARITY_THRESHOLD = float(os.getenv("REWARD_SIMILARITY_THRESHOLD", "0.1"))  # 10% relative range
+            predicted_rewards_for_tiebreak = result.get('predicted_rewards', None)
+            if predicted_rewards_for_tiebreak is not None and hasattr(predicted_rewards_for_tiebreak, '__len__') and len(predicted_rewards_for_tiebreak) > 1:
+                rewards_arr = np.array(predicted_rewards_for_tiebreak, dtype=np.float64)
+                reward_range = rewards_arr.max() - rewards_arr.min()
+                reward_scale = max(abs(rewards_arr.max()), abs(rewards_arr.min()), 1e-6)
+                relative_range = reward_range / reward_scale
+                logger.info(f"tiebreaker test, Reward similarity fallback: relative_range={relative_range:.4f},  threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
+                if relative_range < REWARD_SIMILARITY_THRESHOLD:
+                    response["ood_fallback"] = 3
+                    response["fallback_reason"] = f"reward_similarity_{relative_range:.4f}"
+                    logger.info(f"Tiebreaker happens! ood_fallback=3")
 
-        # Fallback routing if using random weights (no online training completed yet)
-        # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
-        # Model still runs inference (for data collection) but gateway should use its own heuristic
-        if LOAD_PRETRAINED_MODEL == 0 and NUM_TRAINS == 0:
-            response["ood_fallback"] = 2
-            response["fallback_reason"] = "model_not_trained"
-        # RETRAIN_AT_STARTUP: random weights until first training round retrains on offline data with new features
-        elif RETRAIN_AT_STARTUP and NUM_TRAINS == 0:
-            response["ood_fallback"] = 2
-            response["fallback_reason"] = "retrain_at_startup_pending"
-        # When switching to fixed-range normalization with a pretrained z-score model,
-        # the pretrained weights are incompatible with the new normalization scale.
-        # Force fallback until the first online training round retrains from scratch.
-        elif NORMALIZATION_MODE == "fixed_range" and LOAD_PRETRAINED_MODEL == 1 and NUM_TRAINS == 0:
-            response["ood_fallback"] = 2
-            response["fallback_reason"] = "normalization_mode_mismatch_until_retrained"
+            # Fallback routing if using random weights (no online training completed yet)
+            # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
+            # Model still runs inference (for data collection) but gateway should use its own heuristic
+            if LOAD_PRETRAINED_MODEL == 0 and NUM_TRAINS == 0:
+                response["ood_fallback"] = 2
+                response["fallback_reason"] = "model_not_trained"
+            # RETRAIN_AT_STARTUP: random weights until first training round retrains on offline data with new features
+            elif RETRAIN_AT_STARTUP and NUM_TRAINS == 0:
+                response["ood_fallback"] = 2
+                response["fallback_reason"] = "retrain_at_startup_pending"
+            # When switching to fixed-range normalization with a pretrained z-score model,
+            # the pretrained weights are incompatible with the new normalization scale.
+            # Force fallback until the first online training round retrains from scratch.
+            elif NORMALIZATION_MODE == "fixed_range" and LOAD_PRETRAINED_MODEL == 1 and NUM_TRAINS == 0:
+                response["ood_fallback"] = 2
+                response["fallback_reason"] = "normalization_mode_mismatch_until_retrained"
             
         return jsonify(response), 200
         
@@ -1194,6 +1391,13 @@ def online_train_routine():
             encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, HYPERPARAMETERS)
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
 
+            # Overwrite pretrained metadata with current feature info
+            fresh_metadata = os.path.join(encoded_training_dir, "metadata.json")
+            pretrained_metadata = os.path.join(final_model_dir, "encoded_data", "batch_1", "metadata.json")
+            if os.path.exists(fresh_metadata) and os.path.exists(os.path.dirname(pretrained_metadata)):
+                import shutil
+                shutil.copy2(fresh_metadata, pretrained_metadata)
+
             # Train on the encoded dataset
             # Pass NUM_NEW_DATA so the training function can evaluate separately on new samples
             train_start_time = time.time()
@@ -1457,7 +1661,14 @@ def online_train_routine():
             encoded_training_dir = os.path.join(ENCODED_DATA_DIR, "full_training_data")
             encoding.encode_for_train(sorted_all_pod_ids, training_df_copy, encoded_training_dir, request_features_train, HYPERPARAMETERS)
             logger.info(f"Encoded {total_samples} samples to {encoded_training_dir}, encode time: {time.time() - encode_start_time} seconds")
-            
+
+            # Update pretrained metadata with current feature list so analysis tools see correct features
+            fresh_metadata = os.path.join(encoded_training_dir, "metadata.json")
+            pretrained_metadata = os.path.join(final_model_dir, "encoded_data", "batch_1", "metadata.json")
+            if os.path.exists(fresh_metadata) and os.path.exists(os.path.dirname(pretrained_metadata)):
+                import shutil
+                shutil.copy2(fresh_metadata, pretrained_metadata)
+
             # --- Compute replay buffer for NEXT round using current (previous) model ---
             # At round 0 (NUM_TRAINS=0), prev_agent=None triggers random fallback selection
             if REPLAY_SIZE > 0:
@@ -1878,7 +2089,9 @@ def initialize():
     global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, CONTEXTUAL_BANDIT_PRELOADED
     
     # Model directory and offline data are GPU-specific
-    if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY:
+    # LMETRIC is a heuristic but still needs hyperparameters/normalization stats for the
+    # preprocessing pipeline, so it reuses the contextual_bandit directory layout.
+    if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY or ROUTING_STRATEGY == "lmetric":
         if TARGET_GPU_MODEL == "NVIDIA-A10" and 'latency_predictor' in ROUTING_STRATEGY:
                 final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
@@ -1892,6 +2105,20 @@ def initialize():
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
                 offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+            elif ROUTING_STRATEGY == "lmetric":
+                # LMETRIC is a heuristic — no model of its own, but reuses a CB config dir
+                # for hyperparameters and normalization stats needed by the preprocessing pipeline.
+                # Use LMETRIC_BASE_MODEL_DIR env var if set, otherwise fall back to a default CB dir.
+                lmetric_base = os.getenv("LMETRIC_BASE_MODEL_DIR", "")
+                if lmetric_base:
+                    final_model_dir = lmetric_base
+                else:
+                    final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                offline_csv_path = f"{final_model_dir}/data-processed.csv"
+                hyperparameter_file_path = f"{final_model_dir}/model_config.json"
+                feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
+                offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
+                logger.info(f"LMETRIC: borrowing config from {final_model_dir}")
             else:
                 logger.error(f"Unknown routing strategy: {ROUTING_STRATEGY} in TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
                 assert False
@@ -2032,6 +2259,17 @@ def initialize():
                     if NORMALIZATION_MODE == "fixed_range":
                         logger.info(f"   NORMALIZATION_MODE=fixed_range: Overriding loaded stats with domain-knowledge bounds")
                         apply_fixed_range_normalization(stats_instance)
+                    # Initialize default stats for kv_hit_ratio_fresh (new feature, not in saved stats)
+                    if 'kv_hit_ratio_fresh' not in stats_instance.feature_stats:
+                        rs = data_normalizer.RunningStats(feature_names='kv_hit_ratio_fresh')
+                        rs.count = 1
+                        rs.mean = np.array([0.0])
+                        rs.std = np.array([30.0])  # Expected range ~0-100, std ~30
+                        rs.min = np.array([0.0])
+                        rs.max = np.array([100.0])
+                        rs.sum_sq_diff = np.array([0.0])
+                        stats_instance.feature_stats['kv_hit_ratio_fresh'] = rs
+                        logger.info(f"   Initialized default normalization stats for kv_hit_ratio_fresh")
                     if LOAD_PRETRAINED_MODEL == 0:
                         logger.info(f"   LOAD_PRETRAINED_MODEL=0: Will train model from scratch but use GPU-L3c normalization baseline")
                 else:

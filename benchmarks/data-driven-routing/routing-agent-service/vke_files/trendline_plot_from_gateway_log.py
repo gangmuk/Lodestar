@@ -123,6 +123,10 @@ def generate_policy_colors(policies):
 RAW_LOG_NAME = "filtered-aibrix-gateway-plugins.log.csv"
 GATEWAY_CSV_NAME = "routing_strategy_metrics_gateway.csv"
 
+# Number of initial requests to skip for CB-random "post-warmup" annotation.
+# The first N requests use a fallback policy until the online model is trained.
+CB_RANDOM_WARMUP_REQUESTS = 5000
+
 
 def find_gateway_metrics_files(base_dir, target_dirs=None):
     """Find routing_strategy_metrics_gateway.csv files."""
@@ -318,12 +322,18 @@ def _short_group_label(group_key: str) -> str:
 
 # ── Plotting ────────────────────────────────────────────────────────────────
 
-def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
+def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors,
+                      raw_data=None):
     """Plot Avg TTFT and P99 TTFT for each policy in one subplot with twin y-axes.
 
     Layout per policy group: [Avg bar | P99 bar]
     Left y-axis  (ax)  → Avg TTFT  (solid bars)
     Right y-axis (ax2) → P99 TTFT  (hatched bars)
+
+    For contextual_bandit+random policies, a horizontal diamond marker is drawn
+    on each bar showing the avg/p99 TTFT computed only from requests after the
+    first CB_RANDOM_WARMUP_REQUESTS (post-warmup, i.e. after the online model
+    has been trained).
     """
     rps, workload = rps_workload_pair
     avg_col, p99_col = 'avg_ttft', 'p99_ttft'
@@ -418,6 +428,58 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
     _annotate(ax,  avg_bars, avg_vals, avg_errs, max_avg)
     _annotate(ax2, p99_bars, p99_vals, p99_errs, max_p99)
 
+    # ── Post-warmup annotation for CB-random policies ────────────────────
+    # For contextual_bandit+random, compute avg/p99 TTFT from requests after
+    # the first CB_RANDOM_WARMUP_REQUESTS.  Draw a bold horizontal line
+    # across the bar at the post-warmup value so the viewer can see:
+    #   bar top  = all-requests metric  (includes warmup/fallback penalty)
+    #   line     = post-warmup metric   (after online model kicks in)
+    #   gap      = warmup penalty
+    if raw_data:
+        for i, policy in enumerate(policies):
+            pl = policy.lower()
+            if not ('contextual_bandit' in pl and 'random' in pl):
+                continue
+            # Find strategy_full_names for this policy + workload
+            rows = df_group[
+                (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
+            ]
+            sfn_list = rows['strategy_full_name'].dropna().tolist()
+            # Collect post-warmup TTFT values across all runs
+            post_warmup_ttfts = []
+            for sfn in sfn_list:
+                if sfn not in raw_data:
+                    continue
+                df_raw = raw_data[sfn]
+                if 'ttft' not in df_raw.columns:
+                    continue
+                post = df_raw.iloc[CB_RANDOM_WARMUP_REQUESTS:]
+                if len(post) > 0:
+                    post_warmup_ttfts.append(post['ttft'].values)
+            if not post_warmup_ttfts:
+                continue
+            all_ttft = np.concatenate(post_warmup_ttfts)
+            pw_avg = np.mean(all_ttft)
+            pw_p99 = np.percentile(all_ttft, 99)
+
+            # Horizontal line across the Avg bar (left axis)
+            # avg_x[i] is the left edge of the bar; bar spans [avg_x[i], avg_x[i] + bar_w]
+            ax.hlines(pw_avg, avg_x[i], avg_x[i] + bar_w,
+                      colors='black', linewidths=2.5, zorder=10)
+            ax.text(avg_x[i] + bar_w / 2, pw_avg + max_avg * 0.02,
+                    f'{pw_avg:.0f}',
+                    ha='center', va='bottom', fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
+                    color='black', fontweight='bold')
+
+            # Horizontal line across the P99 bar (right axis)
+            # p99_x[i] is the left edge of the bar; bar spans [p99_x[i], p99_x[i] + bar_w]
+            ax2.hlines(pw_p99, p99_x[i], p99_x[i] + bar_w,
+                       colors='black', linewidths=2.5, zorder=10)
+            ax2.text(p99_x[i] + bar_w / 2, pw_p99 + max_p99 * 0.02,
+                     f'{pw_p99:.0f}',
+                     ha='center', va='bottom', fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
+                     color='black', fontweight='bold')
+
     ax.set_ylim(0, max_avg * 1.4)
     ax2.set_ylim(0, max_p99 * 1.4)
 
@@ -434,9 +496,12 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors):
 
     # Mini legend inside the subplot distinguishing Avg vs P99 style
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
     legend_handles = [
         Patch(facecolor='#555555', edgecolor='black', label='Avg (left axis)'),
         Patch(facecolor='#aaaaaa', edgecolor='black', label='P99 — lighter shade (right axis)'),
+        Line2D([], [], color='black', linewidth=2.5, linestyle='-',
+               label=f'CB-random after {CB_RANDOM_WARMUP_REQUESTS} reqs'),
     ]
     ax.legend(handles=legend_handles, fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
               loc='upper left', framealpha=0.8)
@@ -721,12 +786,63 @@ def _plot_timeseries_windowed_ttft(
     if first_run_data:
         _draw_best_policy_strip(ax, first_run_data, policy_colors, window_size)
 
-    ax.set_xlabel('Request index', fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_xlabel('Request Index', fontsize=AXIS_LABEL_FONTSIZE, labelpad=6)
     ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_title(f'Windowed Avg TTFT (window={window_size})  —  RPS {rps}',
                  fontsize=SUBTITLE_FONTSIZE)
     ax.tick_params(labelsize=TICK_FONTSIZE)
     ax.grid(alpha=0.3)
+
+    # ── Secondary x-axis on the bottom showing time (seconds) ─────────
+    # Build index-to-time mapping from the longest raw data series
+    best_index_to_time = {}
+    for sfn_list_policy in [rows['strategy_full_name'].tolist()
+                            for _, rows in df_group[df_group['workload'] == workload]
+                            .groupby('routing_policy')]:
+        for sfn in sfn_list_policy:
+            if sfn not in raw_data:
+                continue
+            df_raw = raw_data[sfn]
+            if 'request_start_time' not in df_raw.columns:
+                continue
+            times = df_raw['request_start_time'].values.astype(float)
+            t0 = times[0]
+            rel_times = times - t0
+            n = len(rel_times)
+            idx_to_time = {}
+            for start in range(0, n, window_size):
+                end = min(start + window_size, n)
+                center = (start + end - 1) / 2.0
+                idx_to_time[center] = np.mean(rel_times[start:end])
+            if len(idx_to_time) > len(best_index_to_time):
+                best_index_to_time = idx_to_time
+
+    if best_index_to_time:
+        ax2 = ax.secondary_xaxis(-0.30)
+        primary_ticks = ax.get_xticks()
+        sorted_indices = sorted(best_index_to_time.keys())
+        time_ticks = []
+        time_labels = []
+        for idx in primary_ticks:
+            if not sorted_indices:
+                continue
+            if idx <= sorted_indices[0]:
+                t = best_index_to_time[sorted_indices[0]]
+            elif idx >= sorted_indices[-1]:
+                t = best_index_to_time[sorted_indices[-1]]
+            else:
+                for i in range(len(sorted_indices) - 1):
+                    if sorted_indices[i] <= idx <= sorted_indices[i + 1]:
+                        frac = (idx - sorted_indices[i]) / (sorted_indices[i + 1] - sorted_indices[i])
+                        t = best_index_to_time[sorted_indices[i]] + frac * (
+                            best_index_to_time[sorted_indices[i + 1]] - best_index_to_time[sorted_indices[i]])
+                        break
+            time_ticks.append(idx)
+            time_labels.append(f'{t:.0f}s')
+        ax2.set_xticks(time_ticks)
+        ax2.set_xticklabels(time_labels)
+        ax2.set_xlabel('Time (seconds)', fontsize=AXIS_LABEL_FONTSIZE)
+        ax2.tick_params(axis='x', labelsize=TICK_FONTSIZE - 2)
 
 
 def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None, window_size=1000):
@@ -789,7 +905,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None, window
             legend_in  = n_legend_rows * 0.38 + 0.45
             gap2_in    = 0.30
             bar_in     = 5.5
-            ts_in      = 4.0   # height per time-series row
+            ts_in      = 5.0   # height per time-series row (extra space for secondary x-axis)
             n_ts_rows  = n_cols if has_raw else 0
             fig_height = title_in + gap_in + legend_in + gap2_in + bar_in + n_ts_rows * ts_in
 
@@ -809,7 +925,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None, window
                 n_grid_rows, n_cols,
                 figure=None,
                 height_ratios=height_ratios,
-                hspace=0.45,
+                hspace=0.65,
             )
 
             fig = plt.figure(figsize=(fig_width, fig_height))
@@ -829,6 +945,7 @@ def plot_trendlines(df, output_dir, exclude_patterns=None, raw_data=None, window
             for ci, rps_pair in enumerate(rps_workload_pairs):
                 _plot_bars_twin_y(
                     bar_axes[ci], df_group, rps_pair, group_policies, policy_colors,
+                    raw_data=raw_data,
                 )
 
             # Shared policy-color legend

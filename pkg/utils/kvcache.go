@@ -690,6 +690,9 @@ var (
 	requestAllPodsKVCacheMutex sync.RWMutex
 	requestAllPodsKVCache      map[string]map[string]int // requestID -> (podIP -> hit ratio)
 
+	requestAllPodsKVCacheLastAccessMutex sync.RWMutex
+	requestAllPodsKVCacheLastAccess      map[string]map[string]int64 // requestID -> (podIP -> last access unix millis)
+
 	requestInflightMutex sync.RWMutex
 	requestInflight      map[string]map[string]int // requestID -> (podIP -> num inflight requests)
 
@@ -717,6 +720,9 @@ var (
 
 	requestToHashOfPrefixHashesMutex sync.RWMutex
 	requestToHashOfPrefixHashes      map[string]uint64 // requestID -> hash of prefix hashes (used to track output tokens)
+
+	requestToPrefixGroupHashMutex sync.RWMutex
+	requestToPrefixGroupHash      map[string]uint64 // requestID -> depth-based prefix group identity hash
 
 	hashToNumOutputTokensMutex sync.RWMutex
 	hashToNumOutputTokens      = make(map[uint64]int) // hash value of message -> num output tokens
@@ -829,6 +835,9 @@ func init() {
 	requestAllPodsKVCacheMutex = sync.RWMutex{}
 	requestAllPodsKVCache = make(map[string]map[string]int)
 
+	requestAllPodsKVCacheLastAccessMutex = sync.RWMutex{}
+	requestAllPodsKVCacheLastAccess = make(map[string]map[string]int64)
+
 	requestInflightMutex = sync.RWMutex{}
 	requestInflight = make(map[string]map[string]int)
 
@@ -852,6 +861,7 @@ func init() {
 
 	requestToHashOfPrefixHashesMutex = sync.RWMutex{}
 	requestToHashOfPrefixHashes = make(map[string]uint64) // requestID -> hash of prefix hashes
+	requestToPrefixGroupHash = make(map[string]uint64)    // requestID -> depth-based prefix group hash
 
 	hashToNumOutputTokensMutex = sync.RWMutex{}
 	hashToNumOutputTokens = make(map[uint64]int) // hash value of message -> num output tokens
@@ -1799,6 +1809,37 @@ func CleanupKVCacheHitRatio(requestID string) {
 	delete(requestAllPodsKVCache, requestID)
 }
 
+// --- KV Cache Last Access Timestamps (for time-weighted hit ratio) ---
+
+func SetSnapShotForKVCacheLastAccess(requestID string, podLastAccess map[string]int64) {
+	requestAllPodsKVCacheLastAccessMutex.Lock()
+	defer requestAllPodsKVCacheLastAccessMutex.Unlock()
+	requestAllPodsKVCacheLastAccess[requestID] = podLastAccess
+}
+
+func GetAllPodsKVCacheLastAccess(requestID string) map[string]int64 {
+	requestAllPodsKVCacheLastAccessMutex.RLock()
+	defer requestAllPodsKVCacheLastAccessMutex.RUnlock()
+	if ts, ok := requestAllPodsKVCacheLastAccess[requestID]; ok {
+		result := make(map[string]int64, len(ts))
+		for k, v := range ts {
+			result[k] = v
+		}
+		return result
+	}
+	return make(map[string]int64)
+}
+
+func CleanupKVCacheLastAccess(requestID string) {
+	requestAllPodsKVCacheLastAccessMutex.Lock()
+	defer requestAllPodsKVCacheLastAccessMutex.Unlock()
+	delete(requestAllPodsKVCacheLastAccess, requestID)
+}
+
+func GetKVCacheLastAccessMutex() *sync.RWMutex {
+	return &requestAllPodsKVCacheLastAccessMutex
+}
+
 func SetSnapshotForRequestToPodIP(requestID string, podIP string) {
 	requestToPodIPMutex.Lock()
 	defer requestToPodIPMutex.Unlock()
@@ -1862,6 +1903,26 @@ func GetHashOfPrefixHashesForRequest(requestID string) (uint64, bool) {
 	}
 	klog.V(5).Infof("GetHashOfPrefixHashesForRequest, Retrieved hash for request ID %s: %d", requestID, hash)
 	return hash, true
+}
+
+// --- Prefix Group Hash (depth-based identity for candidate filtering) ---
+
+func SetPrefixGroupHashForRequest(requestID string, hash uint64) {
+	requestToPrefixGroupHashMutex.Lock()
+	defer requestToPrefixGroupHashMutex.Unlock()
+	requestToPrefixGroupHash[requestID] = hash
+}
+
+func GetPrefixGroupHashForRequest(requestID string) uint64 {
+	requestToPrefixGroupHashMutex.RLock()
+	defer requestToPrefixGroupHashMutex.RUnlock()
+	return requestToPrefixGroupHash[requestID] // returns 0 if not found
+}
+
+func CleanupPrefixGroupHashForRequest(requestID string) {
+	requestToPrefixGroupHashMutex.Lock()
+	defer requestToPrefixGroupHashMutex.Unlock()
+	delete(requestToPrefixGroupHash, requestID)
 }
 
 func CleanupHashOfPrefixHashesForRequest(requestID string) {

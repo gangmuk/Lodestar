@@ -159,42 +159,49 @@ process_one_basedir() {
 # Define all base_dir experiments here
 ##############################
 
-# --- Experiment 1: conversation-2-extended-ver1 ---
-base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/conversation-2-extended-ver1"
-target_dir_list=(
-    "${base_dir}/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/rps11-benchmark/without_bitsandbytes"
-)
-process_one_basedir "${base_dir}" "${target_dir_list[@]}"
-
-# --- Experiment 2: toolagent-2-extended-ver1 ---
-base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/toolagent-2-extended-ver1"
-target_dir_list=(
-    "${base_dir}/rps9-benchmark/without_bitsandbytes"
-    "${base_dir}/rps10-benchmark/without_bitsandbytes"
-    "${base_dir}/rps11-benchmark/without_bitsandbytes"
-    "${base_dir}/rps12-benchmark/without_bitsandbytes"
-)
-process_one_basedir "${base_dir}" "${target_dir_list[@]}"
-
-# --- Experiment 2: synthetic-2-extended-ver2 ---
-base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/synthetic-2-extended-ver2"
-target_dir_list=(
-    "${base_dir}/rps-1-benchmark/without_bitsandbytes"
-    "${base_dir}/rps8-benchmark/without_bitsandbytes"
-    "${base_dir}/rps9-benchmark/without_bitsandbytes"
-    "${base_dir}/rps10-benchmark/without_bitsandbytes"
-)
-process_one_basedir "${base_dir}" "${target_dir_list[@]}"
-
-
-
-# --- Experiment 3: add your third base_dir here ---
-# base_dir="..."
+# # --- Experiment 1: conversation-2-extended-ver1 ---
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/conversation-2-extended-ver1"
 # target_dir_list=(
-#     "${base_dir}/..."
+#     "${base_dir}/rps8-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps9-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps11-benchmark/without_bitsandbytes"
 # )
 # process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+# # --- Experiment 2: toolagent-2-extended-ver1 ---
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/toolagent-2-extended-ver1"
+# target_dir_list=(
+#     "${base_dir}/rps8-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps9-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps10-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps11-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps12-benchmark/without_bitsandbytes"
+# )
+# process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+
+# # --- Experiment 2: synthetic-2-extended-ver2 ---
+# base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/synthetic-2-extended-ver2"
+# target_dir_list=(
+#     "${base_dir}/rps-1-benchmark/without_bitsandbytes"
+#     # "${base_dir}/rps7-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps8-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps9-benchmark/without_bitsandbytes"
+#     "${base_dir}/rps10-benchmark/without_bitsandbytes"
+# )
+# process_one_basedir "${base_dir}" "${target_dir_list[@]}"
+
+
+# --- Experiment 2: synthetic-2-extended-ver2 ---
+base_dir="/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/synthetic_3x-numtokens_100"
+target_dir_list=(
+    "${base_dir}/rps5-benchmark/without_bitsandbytes"
+    "${base_dir}/rps7-benchmark/without_bitsandbytes"
+    "${base_dir}/rps9-benchmark/without_bitsandbytes"
+    "${base_dir}/rps10-benchmark/without_bitsandbytes"
+)
+process_one_basedir "${base_dir}" "${target_dir_list[@]}"
 
 
 
