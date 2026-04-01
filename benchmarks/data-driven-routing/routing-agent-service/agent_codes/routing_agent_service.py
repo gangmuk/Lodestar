@@ -2317,7 +2317,7 @@ def initialize():
                     logger.error("Contextual bandit preload failed; /infer will return 503 until ready")
             except Exception:
                 logger.exception("Contextual bandit preload failed; /infer will return 503 until ready")
-            CONTEXTUAL_BANDIT_PRELOADED = False
+                CONTEXTUAL_BANDIT_PRELOADED = False
     else:
         CONTEXTUAL_BANDIT_PRELOADED = True
     logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
@@ -2703,13 +2703,13 @@ if __name__ == "__main__":
     # NEW CODE: Add error handling around app.run()
     try:
         logger.info(f"Starting Flask app on port {port}")
-        app.run(host="0.0.0.0", port=port, debug=False)
+        app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
     except OSError as e:
         if "Address already in use" in str(e):
             logger.error(f"Port {port} is still in use. Trying to wait and retry...")
             time.sleep(5)
             if utils.wait_for_port_available(port, max_wait=30):
-                app.run(host="0.0.0.0", port=port, debug=False)
+                app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
             else:
                 logger.error("Failed to start Flask app - port conflict persists")
                 sys.exit(1)
