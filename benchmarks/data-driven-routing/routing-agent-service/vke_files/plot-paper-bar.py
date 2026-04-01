@@ -288,7 +288,7 @@ def export_paper_csv(df, output_dir, exclude_patterns=None):
 def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_colors, annotate_values=False):
     """Paper-focused bar plotting: cleaner visuals and less subplot clutter."""
     _, workload = rps_workload_pair
-    avg_vals, avg_errs, p99_vals, p99_errs, p999_vals, p999_errs, colors = [], [], [], [], [], [], []
+    avg_vals, avg_errs, p99_vals, p99_errs, colors = [], [], [], [], []
 
     for policy in policies:
         rows = df_group[
@@ -296,29 +296,25 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
         ]
         avg_mean, avg_std = _mean_std_positive(rows["avg_ttft"]) if "avg_ttft" in rows.columns else (0, 0)
         p99_mean, p99_std = _mean_std_positive(rows["p99_ttft"]) if "p99_ttft" in rows.columns else (0, 0)
-        p999_mean, p999_std = _mean_std_positive(rows["p999_ttft"]) if "p999_ttft" in rows.columns else (0, 0)
         avg_vals.append(avg_mean)
         avg_errs.append(avg_std)
         p99_vals.append(p99_mean)
         p99_errs.append(p99_std)
-        p999_vals.append(p999_mean)
-        p999_errs.append(p999_std)
         colors.append(policy_colors.get(policy, "#7f7f7f"))
 
-    if not any(v > 0 for v in avg_vals + p99_vals + p999_vals):
+    if not any(v > 0 for v in avg_vals + p99_vals):
         ax.set_visible(False)
         return None
 
     ax2 = ax.twinx()
     n = len(policies)
-    # Make bars much thicker and keep substantial spacing between policy groups.
-    x = np.arange(n) * 2.35
-    width = 0.84
+    # Two bars per policy group (Avg / P99), centred around each tick.
+    x = np.arange(n) * 1.85
+    width = 0.44
     p99_colors = [_lighten(c, 1.45) for c in colors]
-    p999_colors = [_lighten(c, 1.75) for c in colors]
 
     b1 = ax.bar(
-        x - width,
+        x - width / 2,
         avg_vals,
         width=width,
         color=colors,
@@ -330,7 +326,7 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
         zorder=3,
     )
     b2 = ax2.bar(
-        x,
+        x + width / 2,
         p99_vals,
         width=width,
         color=p99_colors,
@@ -341,27 +337,12 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
         error_kw={"elinewidth": 1.0, "capthick": 1.0, "color": "black"},
         zorder=2,
     )
-    b3 = ax2.bar(
-        x + width,
-        p999_vals,
-        width=width,
-        color=p999_colors,
-        edgecolor="black",
-        linewidth=0.6,
-        yerr=[e if e > 0 else np.nan for e in p999_errs],
-        capsize=2,
-        error_kw={"elinewidth": 1.0, "capthick": 1.0, "color": "black"},
-        zorder=1,
-    )
 
     max_avg = max((v + e for v, e in zip(avg_vals, avg_errs)), default=1.0)
-    max_tail = max(
-        [v + e for v, e in zip(p99_vals, p99_errs)] + [v + e for v, e in zip(p999_vals, p999_errs)],
-        default=1.0,
-    )
+    max_right = max((v + e for v, e in zip(p99_vals, p99_errs)), default=1.0)
     ylim_scale = 1.34 if annotate_values else 1.22
     ax.set_ylim(0, max(1.0, max_avg * ylim_scale))
-    ax2.set_ylim(0, max(1.0, max_tail * ylim_scale))
+    ax2.set_ylim(0, max(1.0, max_right * ylim_scale))
 
     if annotate_values:
         prefix_idx = next((i for i, p in enumerate(policies) if _is_prefix_cache_1_policy(p)), None)
@@ -412,23 +393,11 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
                     label = f"{v:.0f}({ratio_label_p99})"
                 ax2.text(
                     bar.get_x() + bar.get_width() / 2,
-                    v + e + max_tail * 0.015,
+                    v + e + max_right * 0.015,
                     label,
                     ha="center",
                     va="bottom",
-                    fontsize=10,
-                    rotation=90,
-                    color="dimgray",
-                )
-        for bar, v, e in zip(b3, p999_vals, p999_errs):
-            if v > 0:
-                ax2.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    v + e + max_tail * 0.015,
-                    f"{v:.0f}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=10,
+                    fontsize=8,
                     rotation=90,
                     color="dimgray",
                 )
@@ -437,7 +406,7 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
     ax.set_xticklabels([str(i + 1) for i in range(n)])
     ax.set_xlabel("Policy index")
     ax.set_ylabel("Avg TTFT (ms)")
-    ax2.set_ylabel("P99/P999 TTFT (ms)", color="dimgray")
+    ax2.set_ylabel("P99 TTFT (ms)", color="dimgray")
     ax2.tick_params(axis="y", labelcolor="dimgray")
     ax.grid(axis="y", alpha=0.25, zorder=0)
     return ax2
@@ -484,26 +453,25 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
             if not group_policies:
                 continue
 
-            n_rows = len(rps_workload_pairs)
+            n_cols = len(rps_workload_pairs)
             n_policies = len(group_policies)
 
             # Layout tuned for publication readability.
             ncol_policy_legend = min(4, max(2, int(np.ceil(np.sqrt(n_policies)))))
             n_legend_rows = int(np.ceil(n_policies / ncol_policy_legend))
-            # One RPS per row for better readability with thicker bars.
-            fig_height = (3.9 * n_rows) + 2.4 + max(0, n_legend_rows - 1) * 0.30
-            fig_width = 14.5
+            fig_height = 5.70 + max(0, n_legend_rows - 1) * 0.32
+            fig_width = max(11.5, 6.60 * n_cols)
 
-            fig, axes = plt.subplots(n_rows, 1, figsize=(fig_width, fig_height))
-            if n_rows == 1:
+            fig, axes = plt.subplots(1, n_cols, figsize=(fig_width, fig_height))
+            if n_cols == 1:
                 axes = [axes]
 
             short_label = _short_group_label(gk)
             fig.suptitle(f"TTFT Comparison Across RPS - {short_label}", y=0.985)
 
-            for ri, rps_pair in enumerate(rps_workload_pairs):
+            for ci, rps_pair in enumerate(rps_workload_pairs):
                 ax2 = _plot_bars_twin_y_paper(
-                    axes[ri],
+                    axes[ci],
                     df_group,
                     rps_pair,
                     group_policies,
@@ -511,7 +479,11 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
                     annotate_values=annotate_values,
                 )
                 rps, _ = rps_pair
-                axes[ri].set_title(f"RPS {rps}")
+                axes[ci].set_title(f"RPS {rps}")
+                if ci > 0:
+                    axes[ci].set_ylabel("")
+                if ax2 is not None and ci < n_cols - 1:
+                    ax2.set_ylabel("")
 
             from matplotlib.patches import Patch
 
@@ -519,12 +491,11 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
             metric_handles = [
                 Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
                 Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
-                Patch(facecolor="#d9d9d9", edgecolor="black", label="P999 TTFT (right axis, lightest shade)"),
             ]
             fig.legend(
                 handles=metric_handles,
                 loc="upper center",
-                ncol=3,
+                ncol=2,
                 bbox_to_anchor=(0.5, 0.955),
                 framealpha=0.9,
                 title="Bar semantics",
@@ -548,9 +519,9 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
                 )
 
             # Leave compact top space and bottom space for policy legend.
-            bottom_frac = 0.095 + max(0, n_legend_rows - 1) * 0.03
-            fig.tight_layout(rect=[0.03, bottom_frac, 0.995, 0.925])
-            fig.subplots_adjust(hspace=0.38)
+            bottom_frac = 0.135 + max(0, n_legend_rows - 1) * 0.035
+            fig.tight_layout(rect=[0.02, bottom_frac, 0.995, 0.885])
+            fig.subplots_adjust(wspace=0.40)
             pdf.savefig(fig, bbox_inches="tight", dpi=300)
             plt.close(fig)
 
