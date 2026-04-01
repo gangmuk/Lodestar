@@ -1422,20 +1422,24 @@ def preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_t
         request_times = np.array(base_data.get('request_start_time', np.zeros(num_rows)), dtype=np.float64)
         for pod_id in sorted_pods:
             raw_hit = base_data[f"{pod_id}-kv_hit_ratio"]
-            last_access_ms = np.array(last_access_features[pod_id], dtype=np.float64)
-            # request_start_time is in microseconds since first request; last_access_ms is unix millis
-            # Compute age: when last_access > 0, use current time minus last_access
-            # For infer path (single row): use wall clock time
+            # Both request_start_time and last_access are in microseconds since
+            # first request (gateway normalizes last_access to the same epoch).
+            # age = (request_time - last_access) converted to seconds.
+            last_access_us = np.array(last_access_features[pod_id], dtype=np.float64)
             if num_rows == 1 and not is_training:
+                # Infer path: request_times may not be set yet; use 0 as "now"
+                # relative to FirstRequestStartTime (the gateway just computed
+                # last_access moments ago, so age ≈ 0 is a safe fallback).
                 import time as _time
-                now_ms = _time.time() * 1000
-                age_seconds = np.where(last_access_ms > 0, (now_ms - last_access_ms) / 1000.0, 999.0)
+                # Approximate: current request's relative timestamp
+                current_us = request_times[0] if len(request_times) > 0 else 0
+                age_seconds = np.where(last_access_us > 0,
+                                       np.maximum(0, (current_us - last_access_us) / 1e6),
+                                       999.0)
             else:
-                # For training/batch: approximate age using request_start_time differences
-                # request_start_time is microseconds since first request, last_access_ms is unix millis
-                # Both are relative measures; compute age as difference converted to seconds
-                age_seconds = np.where(last_access_ms > 0,
-                                       np.maximum(0, (request_times / 1000.0 - last_access_ms) / 1000.0),
+                # Training/batch path: both are in microseconds since first request
+                age_seconds = np.where(last_access_us > 0,
+                                       np.maximum(0, (request_times - last_access_us) / 1e6),
                                        999.0)
             weight = np.exp(-0.693147 * np.clip(age_seconds, 0, 999) / max(kv_freshness_half_life, 0.1))
             base_data[f"{pod_id}-kv_hit_ratio_fresh"] = raw_hit * weight
