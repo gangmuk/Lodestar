@@ -427,7 +427,7 @@ experiment_configs=(
     ##############################################################################
     ##############################################################################
 
-    ## conversation-2-extended-ver1
+    ##extended-ver1
     # "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
     # "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
@@ -477,10 +477,16 @@ experiment_configs=(
     ##############################################################################
     ## toolagent-2-extended-ver1
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|6,11,8|1"
-    # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|6,11,8|1"
-    # "lmetric|mooncake|toolagent-2-extended-ver1|${target_gpu}|6,11,8|1"
-    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|6,11,8|1"
-    
+
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1"
+    # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1"
+    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|8,12|1|80"
+
     # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
     # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
@@ -488,11 +494,15 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1|80"
 
     ## toolagent-2-extended-ver1
     # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
-    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
+    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1" ## 
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1" ## 
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
@@ -500,7 +510,7 @@ experiment_configs=(
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1|20"
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1|40"
     # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1|60"
-    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1|80"
+    # "prefix_hit_threshold_or_least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1|80" ## 
 
 
     ## toolagent-2-extended-ver1
@@ -540,62 +550,62 @@ experiment_configs=(
 
     ##############################################################################
     ##############################################################################
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|10|1"
-
     ## synthetic_3x-numtokens_100
     # "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
     # "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1"
     "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|20"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|40"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|60"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|80"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|9|1|80"
 
     ## synthetic_3x-numtokens_100
-    "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
-    "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
+    # "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
+    # "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|20"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|40"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|60"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|80"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|8|1|80"
 
     ## synthetic_3x-numtokens_100
     # "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
     # "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
-    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|20"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|40"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|60"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|80"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_conversation_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|7|1|80"
 
     ## synthetic_3x-numtokens_100
-    "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
-    "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
+    # "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
+    # "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|20"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|40"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|60"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|80"
+    # <------------------------------------------------------------------------------------------>
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|6|1|80"
 
     ## synthetic_3x-numtokens_100
     # "prefix_cache_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
     # "least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
-    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_1|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_toolagent_2-onlinelearning_0|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|20"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|40"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|60"
-    "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|80"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|20"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|40"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|60"
+    # "prefix_hit_threshold_or_least_request|mooncake|synthetic_3x-numtokens_100|${target_gpu}|5|1|80"
 
     ##############################################################################
     ##############################################################################
@@ -606,6 +616,8 @@ experiment_configs=(
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_0|mooncake|overhead_test|${target_gpu}|30|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_0|mooncake|overhead_test|${target_gpu}|40|1"
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_0|mooncake|overhead_test|${target_gpu}|50|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_0|mooncake|overhead_test|${target_gpu}|80|1"
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_0|mooncake|overhead_test|${target_gpu}|100|1"
 )
 
 ship_model=0
@@ -672,7 +684,7 @@ QUANTIZATION_METHOD="bitsandbytes"  # quantization method (only used if ENABLE_Q
 ENABLE_CHUNKED_PREFILL=1  # 0=disable, 1=enable
 ENABLE_PREFIX_CACHING=1  # 0=disable, 1=enable
 ########################################
-rps_change_rate=0.1
+rps_change_rate=0.5
 
 
 # vllm_config="quantization_${ENABLE_QUANTIZATION}_quantization_method_${QUANTIZATION_METHOD}_chunked_prefill_${ENABLE_CHUNKED_PREFILL}_prefix_caching_${ENABLE_PREFIX_CACHING}"
@@ -687,8 +699,10 @@ api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi"
 
 # Fetch IP address with retry
 ipaddr=""
-for attempt in $(seq 1 5); do
-    ipaddr=$(kubectl get svc -n envoy-gateway-system envoy-aibrix-system-aibrix-eg-903790dc -o jsonpath='{.spec.clusterIP}' 2>/dev/null) && break
+for attempt in {1..5}; do
+    if ipaddr=$(kubectl get svc -n envoy-gateway-system envoy-aibrix-system-aibrix-eg-903790dc -o jsonpath='{.spec.clusterIP}' 2>/dev/null); then
+        break
+    fi
     echo "⚠️  Failed to get service IP (attempt $attempt/5). Retrying in 5s..."
     sleep 5
 done
@@ -1000,7 +1014,7 @@ for experiment_idx in $(seq 0 $((num_experiments-1))); do
     #     python kubectl_cp_from_host_to_pod.py ${scalable_rl_agent_init_model_dir} /app/final_model routing-agent-service default
     # fi
 
-    python kubectl_cp_from_host_to_pod.py async-client.py /app client-service default
+    # python kubectl_cp_from_host_to_pod.py async-client.py /app client-service default
 
     ship_end_time=$(date +%s)
     ship_took=$((ship_end_time - ship_start_time))
