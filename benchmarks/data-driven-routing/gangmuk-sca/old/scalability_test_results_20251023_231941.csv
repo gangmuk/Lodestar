@@ -1,4 +1,0 @@
-num_pods,target_rps,actual_rps,total_requests,successful,errors,success_rate,latency_avg_ms,latency_min_ms,latency_max_ms,latency_p50_ms,latency_p95_ms,latency_p99_ms,duration_sec
-5,10,0,50,0,0,0,0,0,0,0,0,0,5.008688688278198
-5,50,0,250,0,0,0,0,0,0,0,0,0,18.458136320114136
-5,100,0,500,0,0,0,0,0,0,0,0,0,34.54737424850464
