@@ -1,0 +1,92 @@
+#!/bin/bash
+#
+# compare2.sh — Run the full compare + trendline pipeline on a workload category directory.
+#
+# Usage:
+#   ./compare2.sh [BASE_DIR]          # defaults to current directory
+#   ./compare2.sh .                   # explicit current directory
+#   ./compare2.sh /path/to/conversation-2-extended-ver1
+#
+# It auto-discovers rps*-benchmark/without_bitsandbytes subdirectories,
+# runs compare_routing_strategies.py on each (in parallel), then runs
+# trendline_plot_from_gateway_log.py to produce the cross-RPS trend plot.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+BASE_DIR="${1:-.}"
+BASE_DIR="$(cd "$BASE_DIR" && pwd)"
+
+echo "============================================================"
+echo "compare2: base_dir = ${BASE_DIR}"
+echo "============================================================"
+
+# Auto-discover target directories: rps*-benchmark/without_bitsandbytes
+target_dir_list=()
+for d in "${BASE_DIR}"/rps*-benchmark/without_bitsandbytes; do
+    if [ -d "$d" ]; then
+        target_dir_list+=("$d")
+    fi
+done
+
+if [ "${#target_dir_list[@]}" -eq 0 ]; then
+    echo "ERROR: No rps*-benchmark/without_bitsandbytes directories found under ${BASE_DIR}"
+    exit 1
+fi
+
+# Sort by RPS number for consistent ordering
+IFS=$'\n' target_dir_list=($(printf '%s\n' "${target_dir_list[@]}" | sort -t/ -k1 -V)); unset IFS
+
+echo "Found ${#target_dir_list[@]} workload directories:"
+for d in "${target_dir_list[@]}"; do
+    echo "  - ${d}"
+done
+echo ""
+
+# === Step 1: Run compare_routing_strategies.py on each (in parallel) ===
+echo "=== Step 1: Processing individual workloads (parallel) ==="
+echo ""
+
+pids=()
+pid_to_dir=()
+for target_dir in "${target_dir_list[@]}"; do
+    echo "  Starting: ${target_dir}"
+    python "${SCRIPT_DIR}/compare_routing_strategies.py" "${target_dir}" &
+    pids+=($!)
+    pid_to_dir+=("${target_dir}")
+done
+
+# Wait and check for failures
+failed_dirs=()
+for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+        echo "  ERROR: Failed ${pid_to_dir[$i]}"
+        failed_dirs+=("${pid_to_dir[$i]}")
+    fi
+done
+
+if [ "${#failed_dirs[@]}" -gt 0 ]; then
+    echo ""
+    echo "${#failed_dirs[@]} workload(s) failed:"
+    for d in "${failed_dirs[@]}"; do
+        echo "  - ${d}"
+    done
+    exit 1
+fi
+
+echo ""
+echo "=== Step 2: Merging and plotting trendlines ==="
+echo ""
+
+# Write target_dirs.txt for trendline script
+target_dirs_file="${BASE_DIR}/target_dirs.txt"
+printf "%s\n" "${target_dir_list[@]}" > "${target_dirs_file}"
+
+python "${SCRIPT_DIR}/trendline_plot_from_gateway_log.py" \
+    "${BASE_DIR}" \
+    --target-dirs-file "${target_dirs_file}" \
+    --exclude e2e_latency_negative_linear
+
+echo ""
+echo "Done. Output in: ${BASE_DIR}"

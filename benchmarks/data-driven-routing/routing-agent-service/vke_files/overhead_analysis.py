@@ -341,6 +341,8 @@ def main() -> None:
     parser.add_argument('--output', '-o', type=pathlib.Path,
                        default=None,
                        help='Output PDF path (default: same directory as log, named overhead_analysis.pdf)')
+    parser.add_argument('--skip-first', type=int, default=0,
+                       help='Number of initial overhead entries to skip (e.g. warmup requests)')
 
     args = parser.parse_args()
 
@@ -354,6 +356,11 @@ def main() -> None:
         return
 
     print(f"Found {len(entries)} requests with overhead data")
+
+    if args.skip_first > 0:
+        skipped = min(args.skip_first, len(entries))
+        entries = entries[skipped:]
+        print(f"Skipped first {skipped} entries (warmup), {len(entries)} remaining")
 
     # Compute statistics
     print("Computing statistics...")

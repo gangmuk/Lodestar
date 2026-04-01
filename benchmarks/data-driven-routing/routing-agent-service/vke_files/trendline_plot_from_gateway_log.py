@@ -125,7 +125,7 @@ GATEWAY_CSV_NAME = "routing_strategy_metrics_gateway.csv"
 
 # Number of initial requests to skip for CB-random "post-warmup" annotation.
 # The first N requests use a fallback policy until the online model is trained.
-CB_RANDOM_WARMUP_REQUESTS = 5000
+CB_RANDOM_WARMUP_REQUESTS = 1000
 
 
 def find_gateway_metrics_files(base_dir, target_dirs=None):
@@ -144,12 +144,37 @@ def find_gateway_metrics_files(base_dir, target_dirs=None):
     return sorted(files)
 
 
+def _infer_workload_from_path(csv_path: str) -> str:
+    """Derive the workload label from a CSV file path.
+
+    Extracts the portion of the path after 'workload-and-experiment_results/',
+    up to (but not including) the CSV filename itself.
+    Falls back to the parent directory name if the marker is not found.
+    """
+    abs_path = os.path.abspath(csv_path)
+    parent_dir = os.path.dirname(abs_path)
+    marker = "workload-and-experiment_results" + os.sep
+    idx = parent_dir.find(marker)
+    if idx != -1:
+        return parent_dir[idx + len(marker):]
+    return parent_dir
+
+
 def merge_gateway_metrics_files(files):
     """Load and merge gateway CSV files into a single DataFrame."""
     dfs = []
     for f in files:
         try:
             df = pd.read_csv(f)
+            # If the workload column is missing or entirely empty, infer it from
+            # the file path so that rows are not silently dropped by callers that
+            # filter on a non-empty workload field.
+            if "workload" not in df.columns or df["workload"].isna().all() or (df["workload"].astype(str).str.strip() == "").all():
+                df["workload"] = _infer_workload_from_path(f)
+            else:
+                mask = df["workload"].isna() | (df["workload"].astype(str).str.strip() == "")
+                if mask.any():
+                    df.loc[mask, "workload"] = _infer_workload_from_path(f)
             print(f"Loaded {len(df)} rows from {f}")
             dfs.append(df)
         except Exception as e:
@@ -264,6 +289,12 @@ LINE_STYLES = ['-', '--', '-.', ':']
 MARKERS = ['o', 's', '^', 'D', 'v', 'P', 'X', '*']
 
 
+def _extract_rps_label(workload: str) -> str:
+    """Extract the full RPS label from a workload string (e.g. '6,11,8' from 'rps6,11,8-benchmark')."""
+    match = re.search(r'rps([\d,]+)', workload, re.IGNORECASE)
+    return match.group(1) if match else '?'
+
+
 # ── Workload grouping helpers ───────────────────────────────────────────────
 
 def _remove_rps_segment(workload: str) -> str:
@@ -278,7 +309,7 @@ def _remove_rps_segment(workload: str) -> str:
     """
     # Remove path segments that match rps<digits>... (whole segment)
     parts = workload.split('/')
-    filtered = [p for p in parts if not re.match(r'^rps\d+', p, re.IGNORECASE)]
+    filtered = [p for p in parts if not re.match(r'^rps[\d,]+', p, re.IGNORECASE)]
     return '/'.join(filtered)
 
 
@@ -349,16 +380,46 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors,
         rows = df_group[
             (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
         ]
-        def _mean_std(col):
-            if col not in df_group.columns:
-                return 0, 0
-            vs = [v for v in rows[col].dropna().tolist() if v > 0]
-            if not vs:
-                return 0, 0
-            return np.mean(vs), (np.std(vs, ddof=1) if len(vs) > 1 else 0)
 
-        avg_mean, avg_std = _mean_std(avg_col)
-        p99_mean, p99_std = _mean_std(p99_col)
+        pl = policy.lower()
+        is_cb_random = 'contextual_bandit' in pl and 'random' in pl
+
+        # For CB-random policies, compute metrics from post-warmup raw data only
+        if is_cb_random and raw_data:
+            sfn_list = rows['strategy_full_name'].dropna().tolist()
+            post_warmup_ttfts = []
+            for sfn in sfn_list:
+                if sfn not in raw_data:
+                    continue
+                df_raw = raw_data[sfn]
+                if 'ttft' not in df_raw.columns:
+                    continue
+                post = df_raw.iloc[CB_RANDOM_WARMUP_REQUESTS:]
+                if len(post) > 0:
+                    post_warmup_ttfts.append(post['ttft'].values)
+            if post_warmup_ttfts:
+                # Compute per-run avg/p99, then take mean/std across runs
+                per_run_avgs = [float(np.mean(t)) for t in post_warmup_ttfts]
+                per_run_p99s = [float(np.percentile(t, 99)) for t in post_warmup_ttfts]
+                avg_mean = float(np.mean(per_run_avgs))
+                avg_std = float(np.std(per_run_avgs, ddof=1)) if len(per_run_avgs) > 1 else 0.0
+                p99_mean = float(np.mean(per_run_p99s))
+                p99_std = float(np.std(per_run_p99s, ddof=1)) if len(per_run_p99s) > 1 else 0.0
+            else:
+                avg_mean, avg_std = 0, 0
+                p99_mean, p99_std = 0, 0
+        else:
+            def _mean_std(col):
+                if col not in df_group.columns:
+                    return 0, 0
+                vs = [v for v in rows[col].dropna().tolist() if v > 0]
+                if not vs:
+                    return 0, 0
+                return np.mean(vs), (np.std(vs, ddof=1) if len(vs) > 1 else 0)
+
+            avg_mean, avg_std = _mean_std(avg_col)
+            p99_mean, p99_std = _mean_std(p99_col)
+
         avg_vals.append(avg_mean)
         avg_errs.append(avg_std)
         p99_vals.append(p99_mean)
@@ -428,58 +489,6 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors,
     _annotate(ax,  avg_bars, avg_vals, avg_errs, max_avg)
     _annotate(ax2, p99_bars, p99_vals, p99_errs, max_p99)
 
-    # ── Post-warmup annotation for CB-random policies ────────────────────
-    # For contextual_bandit+random, compute avg/p99 TTFT from requests after
-    # the first CB_RANDOM_WARMUP_REQUESTS.  Draw a bold horizontal line
-    # across the bar at the post-warmup value so the viewer can see:
-    #   bar top  = all-requests metric  (includes warmup/fallback penalty)
-    #   line     = post-warmup metric   (after online model kicks in)
-    #   gap      = warmup penalty
-    if raw_data:
-        for i, policy in enumerate(policies):
-            pl = policy.lower()
-            if not ('contextual_bandit' in pl and 'random' in pl):
-                continue
-            # Find strategy_full_names for this policy + workload
-            rows = df_group[
-                (df_group['workload'] == workload) & (df_group['routing_policy'] == policy)
-            ]
-            sfn_list = rows['strategy_full_name'].dropna().tolist()
-            # Collect post-warmup TTFT values across all runs
-            post_warmup_ttfts = []
-            for sfn in sfn_list:
-                if sfn not in raw_data:
-                    continue
-                df_raw = raw_data[sfn]
-                if 'ttft' not in df_raw.columns:
-                    continue
-                post = df_raw.iloc[CB_RANDOM_WARMUP_REQUESTS:]
-                if len(post) > 0:
-                    post_warmup_ttfts.append(post['ttft'].values)
-            if not post_warmup_ttfts:
-                continue
-            all_ttft = np.concatenate(post_warmup_ttfts)
-            pw_avg = np.mean(all_ttft)
-            pw_p99 = np.percentile(all_ttft, 99)
-
-            # Horizontal line across the Avg bar (left axis)
-            # avg_x[i] is the left edge of the bar; bar spans [avg_x[i], avg_x[i] + bar_w]
-            ax.hlines(pw_avg, avg_x[i], avg_x[i] + bar_w,
-                      colors='black', linewidths=2.5, zorder=10)
-            ax.text(avg_x[i] + bar_w / 2, pw_avg + max_avg * 0.02,
-                    f'{pw_avg:.0f}',
-                    ha='center', va='bottom', fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
-                    color='black', fontweight='bold')
-
-            # Horizontal line across the P99 bar (right axis)
-            # p99_x[i] is the left edge of the bar; bar spans [p99_x[i], p99_x[i] + bar_w]
-            ax2.hlines(pw_p99, p99_x[i], p99_x[i] + bar_w,
-                       colors='black', linewidths=2.5, zorder=10)
-            ax2.text(p99_x[i] + bar_w / 2, pw_p99 + max_p99 * 0.02,
-                     f'{pw_p99:.0f}',
-                     ha='center', va='bottom', fontsize=SUBFIG_LEGEND_FONTSIZE - 1,
-                     color='black', fontweight='bold')
-
     ax.set_ylim(0, max_avg * 1.4)
     ax2.set_ylim(0, max_p99 * 1.4)
 
@@ -490,7 +499,8 @@ def _plot_bars_twin_y(ax, df_group, rps_workload_pair, policies, policy_colors,
     ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE, color='black')
     ax2.set_ylabel('P99 TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE, color='dimgray')
     ax2.tick_params(axis='y', labelcolor='dimgray')
-    ax.set_title(f'TTFT  (RPS {rps})', fontsize=SUBTITLE_FONTSIZE)
+    rps_label = _extract_rps_label(workload)
+    ax.set_title(f'TTFT  (RPS {rps_label})', fontsize=SUBTITLE_FONTSIZE)
     ax.tick_params(axis='y', labelsize=TICK_FONTSIZE)
     ax.grid(axis='y', alpha=0.3)
 
@@ -788,7 +798,8 @@ def _plot_timeseries_windowed_ttft(
 
     ax.set_xlabel('Request Index', fontsize=AXIS_LABEL_FONTSIZE, labelpad=6)
     ax.set_ylabel('Avg TTFT (ms)', fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_title(f'Windowed Avg TTFT (window={window_size})  —  RPS {rps}',
+    rps_label = _extract_rps_label(workload)
+    ax.set_title(f'Windowed Avg TTFT (window={window_size})  —  RPS {rps_label}',
                  fontsize=SUBTITLE_FONTSIZE)
     ax.tick_params(labelsize=TICK_FONTSIZE)
     ax.grid(alpha=0.3)
@@ -1074,6 +1085,10 @@ def main():
              '(plot only; excluded policies are still saved in the CSV). '
              'Example: --exclude e2e_latency_negative_linear',
     )
+    parser.add_argument(
+        '--no-timeseries', action='store_true', default=False,
+        help='Skip loading raw per-request data and generating time-series plots. Much faster.',
+    )
 
     args = parser.parse_args()
 
@@ -1109,8 +1124,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Print summary
-    print(f"\nWorkloads: {sorted(df['workload'].unique().tolist())}")
-    print(f"Routing policies: {sorted(df['routing_policy'].unique().tolist())}")
+    print(f"\nWorkloads: {sorted(df['workload'].dropna().unique().tolist())}")
+    print(f"Routing policies: {sorted(df['routing_policy'].dropna().unique().tolist())}")
     print(f"Total rows: {len(df)}")
 
     # Group info
@@ -1123,9 +1138,13 @@ def main():
     # Export performance summary CSV (full data, no exclusions)
     export_performance_csv(df, groups, output_dir)
 
-    # Load per-request raw data for time series plots
-    print("\nLoading per-request raw data for time series plots...")
-    raw_data = load_raw_request_data(files, df)
+    # Load per-request raw data for time series plots (skip if --no-timeseries)
+    raw_data = None
+    if not args.no_timeseries:
+        print("\nLoading per-request raw data for time series plots...")
+        raw_data = load_raw_request_data(files, df)
+    else:
+        print("\nSkipping time-series data loading (--no-timeseries)")
 
     # Generate plots (with optional policy exclusions)
     exclude_patterns = args.exclude
