@@ -679,6 +679,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 				} else if ctx.SubAlgorithm == "prefix_cache_2" {
 					targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
+				} else if ctx.SubAlgorithm == "least_prefill_tokens" {
+					klog.Infof("subAlgorithm, least_prefill_tokens routing, request_id: %s", ctx.RequestID)
+					targetPod = selectTargetPodWithLeastPrefillTokens(ctx, readyPods)
+					if targetPod == nil {
+						klog.Errorf("least_prefill_tokens routing, No suitable pod found for least prefill tokens routing, requestID: %s", ctx.RequestID)
+					} else {
+						klog.Infof("least_prefill_tokens routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+					}
 				} else if ctx.SubAlgorithm == "prefix_hit_threshold_or_least_request" {
 					klog.Infof("subAlgorithm, prefix_hit_threshold_or_least_request routing (threshold-based), request_id: %s", ctx.RequestID)
 					targetPod = routePrefixHitThresholdOrLeastRequest(ctx, r.cache, readyPods, podIPsWithMatchingRatios)
@@ -865,6 +873,12 @@ func (r *rlOnlineRouter) fallbackRouting_with_least_request(ctx *types.RoutingCo
 	return targetPod
 }
 
+func (r *rlOnlineRouter) fallbackRouting_with_least_prefill_tokens(ctx *types.RoutingContext, readyPods []*v1.Pod) *v1.Pod {
+	klog.Infof("Using fallback routing (least_prefill_tokens) for request %s", ctx.RequestID)
+	targetPod := selectTargetPodWithLeastPrefillTokens(ctx, readyPods)
+	return targetPod
+}
+
 func (r *rlOnlineRouter) fallbackRouting_with_least_kv_cache(ctx *types.RoutingContext, readyPods []*v1.Pod) *v1.Pod {
 	klog.Infof("Using fallback routing (least_kv_cache) for request %s", ctx.RequestID)
 	targetPod := selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
@@ -932,6 +946,9 @@ func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []
 		return targetPod
 	} else if subAlgorithm == "prefix_cache_1" || strings.Contains(subAlgorithm, "contextual_bandit") {
 		targetPod := r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+		return targetPod
+	} else if subAlgorithm == "least_prefill_tokens" {
+		targetPod := r.fallbackRouting_with_least_prefill_tokens(ctx, readyPods)
 		return targetPod
 	} else if subAlgorithm == "lmetric" {
 		// LMETRIC fallback: use prefix_cache_1 (closest heuristic — considers both KV hits and load)
