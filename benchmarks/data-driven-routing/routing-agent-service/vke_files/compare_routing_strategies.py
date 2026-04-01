@@ -625,37 +625,64 @@ def get_strategy_priority(strategy_name):
     strategy_lower = strategy_name.lower()
     datetime_str = extract_datetime_from_strategy(strategy_name)
 
+    # 1) prefix_hit_threshold_or_least_request_threshold_20/40/60/80 first
+    if prefix_hit_threshold_or_least_request_routing in strategy_lower:
+        threshold_match = re.search(r'threshold[_-]?(\d+)', strategy_lower)
+        threshold = int(threshold_match.group(1)) if threshold_match else 9999
+        threshold_rank_map = {20: 0, 40: 1, 60: 2, 80: 3}
+        threshold_rank = threshold_rank_map.get(threshold, 4)
+        return (0, threshold_rank, datetime_str, strategy_name)
+
+    # 2) least_request next
+    if least_request_routing in strategy_lower:
+        return (1, 0, datetime_str, strategy_name)
+
+    # 3) prefix_cache_1 right after least_request
+    if prefix_cache_1_routing in strategy_lower:
+        return (2, 0, datetime_str, strategy_name)
+
+    # 4) contextual_bandit variants
     if contextual_bandit_routing in strategy_lower:
+        # onlinelearning_0 first
+        if 'onlinelearning_0' in strategy_lower and 'random' not in strategy_lower:
+            return (3, 0, datetime_str, strategy_name)
+        # then onlinelearning_1 with toolagent_2 or conversation_2
+        if (
+            'onlinelearning_1' in strategy_lower
+            and 'random' not in strategy_lower
+            and ('toolagent_2' in strategy_lower or 'conversation_2' in strategy_lower)
+        ):
+            return (3, 1, datetime_str, strategy_name)
+        # then contextual_bandit random onlinelearning_1
+        if 'onlinelearning_1' in strategy_lower and 'random' in strategy_lower:
+            return (3, 2, datetime_str, strategy_name)
+        # remaining contextual_bandit variants
+        if 'onlinelearning_1' in strategy_lower:
+            return (3, 3, datetime_str, strategy_name)
         if 'random' in strategy_lower:
-            return (7, 0, datetime_str, strategy_name)  # random init first
-        elif 'onlinelearning' in strategy_lower:
-            return (7, 2, datetime_str, strategy_name)  # online learning last
-        else:
-            return (7, 1, datetime_str, strategy_name)  # no online learning middle
-    elif random_routing in strategy_lower:
-        return (0, datetime_str, strategy_name)
-    elif least_request_routing in strategy_lower:
-        return (1, datetime_str, strategy_name)
-    elif least_kv_cache_routing in strategy_lower:
-        return (2, datetime_str, strategy_name)
-    elif least_latency_routing in strategy_lower:
-        return (3, datetime_str, strategy_name)
-    elif prefix_cache_1_routing in strategy_lower:
-        return (4, datetime_str, strategy_name)
-    elif prefix_cache_2_routing in strategy_lower:
-        return (5, datetime_str, strategy_name)
-    elif preble_routing in strategy_lower:
-        return (6, datetime_str, strategy_name)
-    elif rl_naive_routing in strategy_lower:
-        return (8, datetime_str, strategy_name)
-    elif e2e_latency_predictor_routing in strategy_lower:
-        return (9, datetime_str, strategy_name)
-    elif ttft_latency_predictor_routing in strategy_lower:
-        return (10, datetime_str, strategy_name)
-    elif avg_tpot_latency_predictor_routing in strategy_lower:
-        return (11, datetime_str, strategy_name)
-    else:
-        return (12, datetime_str, strategy_name)
+            return (3, 4, datetime_str, strategy_name)
+        return (3, 5, datetime_str, strategy_name)
+
+    # 5) all remaining strategies
+    if random_routing in strategy_lower:
+        return (4, 0, datetime_str, strategy_name)
+    if least_kv_cache_routing in strategy_lower:
+        return (5, 0, datetime_str, strategy_name)
+    if least_latency_routing in strategy_lower:
+        return (6, 0, datetime_str, strategy_name)
+    if prefix_cache_2_routing in strategy_lower:
+        return (7, 0, datetime_str, strategy_name)
+    if preble_routing in strategy_lower:
+        return (8, 0, datetime_str, strategy_name)
+    if rl_naive_routing in strategy_lower:
+        return (9, 0, datetime_str, strategy_name)
+    if e2e_latency_predictor_routing in strategy_lower:
+        return (10, 0, datetime_str, strategy_name)
+    if ttft_latency_predictor_routing in strategy_lower:
+        return (11, 0, datetime_str, strategy_name)
+    if avg_tpot_latency_predictor_routing in strategy_lower:
+        return (12, 0, datetime_str, strategy_name)
+    return (13, 0, datetime_str, strategy_name)
 
 
 # Set up colors by category
@@ -866,7 +893,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
-def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None):
+def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None, window_size=500):
     """Create bar charts comparing performance metrics across routing strategies."""
     if not metrics_list:
         print("No metrics to plot.")
@@ -951,11 +978,11 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 74))  # 11 rows: original 8 + 3 extra time series
+    fig = plt.figure(figsize=(18, 82))  # 12 rows: original 8 + 4 extra time series
 
-    # GridSpec: 11 rows (CDFs, bars, and time series x5)
-    gs = GridSpec(11, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6],
+    # GridSpec: 12 rows (CDFs, bars, and time series x6)
+    gs = GridSpec(12, 9, figure=fig,
+                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6, 1.6],
                   hspace=1.1,
                   wspace=0.35)
     
@@ -1031,40 +1058,54 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         ax = fig.add_subplot(gs[8, :])
         plot_selectedpod_metric_timeseries(
             ax, csv_data_dict, strategy_order, color_dict,
-            metric_title='KV Hit Ratio Time Series (100-request window averages)',
+            metric_title=f'KV Hit Ratio Time Series ({window_size}-request window averages)',
             ylabel='KV Hit Ratio',
             direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
             dict_candidates=['allPodsKvCacheHitRatios'],
             per_pod_suffix='-kv_hit_ratio',
-            window_size=100,
+            window_size=window_size,
             normalize_to_ratio=True,
             show_legend=False,
         )
 
-        # Plot 11: Prefill Tokens Time Series (full width, row 9)
+        # Plot 11: KV Hit Ratio Time Series with P25/P99 (full width, row 9)
         ax = fig.add_subplot(gs[9, :])
+        plot_selectedpod_metric_timeseries_percentiles(
+            ax, csv_data_dict, strategy_order, color_dict,
+            metric_title=f'KV Hit Ratio Time Series ({window_size}-request window P25/P50/P99)',
+            ylabel='KV Hit Ratio',
+            direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
+            dict_candidates=['allPodsKvCacheHitRatios'],
+            per_pod_suffix='-kv_hit_ratio',
+            window_size=window_size,
+            normalize_to_ratio=True,
+            show_legend=True,
+        )
+
+        # Plot 12: Prefill Tokens Time Series (full width, row 10)
+        ax = fig.add_subplot(gs[10, :])
         plot_selectedpod_metric_timeseries(
             ax, csv_data_dict, strategy_order, color_dict,
-            metric_title='Prefill Tokens Time Series (100-request window averages)',
+            metric_title=f'Prefill Tokens Time Series ({window_size}-request window averages)',
             ylabel='Prefill Tokens',
             direct_candidates=['prefill_tokens'],
             dict_candidates=['numPrefillTokensForAllPods'],
             per_pod_suffix='-prefill_tokens',
-            window_size=100,
+            window_size=window_size,
             normalize_to_ratio=False,
             show_legend=False,
         )
 
-        # Plot 12: Inflight Prefill Requests Time Series (full width, row 10)
-        ax = fig.add_subplot(gs[10, :])
+        # Plot 13: Inflight Prefill Requests Time Series (full width, row 11)
+        ax = fig.add_subplot(gs[11, :])
         plot_selectedpod_metric_timeseries(
             ax, csv_data_dict, strategy_order, color_dict,
-            metric_title='Inflight Prefill Requests Time Series (100-request window averages)',
+            metric_title=f'Inflight Prefill Requests Time Series ({window_size}-request window averages)',
             ylabel='Inflight Prefill Requests',
             direct_candidates=['inflight_prefill_requests', 'selected_inflight_prefill_requests'],
             dict_candidates=['numInflightPrefillRequestsAllPods'],
             per_pod_suffix='-inflight_prefill_requests',
-            window_size=100,
+            window_size=window_size,
             normalize_to_ratio=False,
             show_legend=False,
         )
@@ -1073,7 +1114,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
                                    (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)]),
                                    (6, [slice(None)]), (7, [slice(None)]), (8, [slice(None)]),
-                                   (9, [slice(None)]), (10, [slice(None)])]:
+                                   (9, [slice(None)]), (10, [slice(None)]), (11, [slice(None)])]:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -1851,6 +1892,153 @@ def plot_selectedpod_metric_timeseries(
         ax.legend(fontsize=14, loc='upper left', frameon=True, framealpha=0.9)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+    if best_index_to_time:
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize, labelpad=6)
+        ax2 = ax.secondary_xaxis(-0.30)
+        primary_ticks = ax.get_xticks()
+        sorted_indices = sorted(best_index_to_time.keys())
+        time_ticks = []
+        time_labels = []
+        for idx in primary_ticks:
+            if not sorted_indices:
+                continue
+            if idx <= sorted_indices[0]:
+                t = best_index_to_time[sorted_indices[0]]
+            elif idx >= sorted_indices[-1]:
+                t = best_index_to_time[sorted_indices[-1]]
+            else:
+                for i in range(len(sorted_indices) - 1):
+                    if sorted_indices[i] <= idx <= sorted_indices[i + 1]:
+                        frac = (idx - sorted_indices[i]) / (sorted_indices[i + 1] - sorted_indices[i])
+                        t = best_index_to_time[sorted_indices[i]] + frac * (
+                            best_index_to_time[sorted_indices[i + 1]] - best_index_to_time[sorted_indices[i]])
+                        break
+            time_ticks.append(idx)
+            time_labels.append(f'{t:.0f}s')
+        ax2.set_xticks(time_ticks)
+        ax2.set_xticklabels(time_labels)
+        ax2.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
+        ax2.tick_params(axis='x', labelsize=tick_fontsize - 4)
+    else:
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize)
+
+
+def plot_selectedpod_metric_timeseries_percentiles(
+    ax, csv_data_dict, strategy_order, color_dict,
+    metric_title, ylabel, direct_candidates, dict_candidates, per_pod_suffix,
+    window_size=100, normalize_to_ratio=False, show_legend=False
+):
+    """Plot selected-pod metric time series with non-overlapping request windows using P25/P50/P99."""
+    best_index_to_time = {}
+    p25_handle = None
+    p50_handle = None
+    p99_handle = None
+
+    for si, strategy in enumerate(strategy_order):
+        if strategy not in csv_data_dict:
+            continue
+        df = csv_data_dict[strategy]
+        if 'relative_time' not in df.columns:
+            continue
+
+        df_sorted = df.sort_values('relative_time').reset_index(drop=True)
+        metric_series = _extract_selectedpod_series(
+            df_sorted, direct_candidates, dict_candidates, per_pod_suffix
+        )
+        vals = pd.to_numeric(metric_series, errors='coerce').to_numpy(dtype=float)
+        times = pd.to_numeric(df_sorted['relative_time'], errors='coerce').to_numpy(dtype=float)
+        n = len(vals)
+        if n == 0:
+            continue
+
+        p25_values = []
+        p50_values = []
+        p99_values = []
+        window_indices = []
+        window_times = []
+        for start in range(0, n, window_size):
+            end = min(start + window_size, n)
+            seg_vals = vals[start:end]
+            seg_times = times[start:end]
+            seg_vals = seg_vals[np.isfinite(seg_vals)]
+            if len(seg_vals) == 0:
+                continue
+            p25_values.append(np.nanpercentile(seg_vals, 25))
+            p50_values.append(np.nanpercentile(seg_vals, 50))
+            p99_values.append(np.nanpercentile(seg_vals, 99))
+            window_indices.append((start + end - 1) / 2.0)
+            window_times.append(np.nanmean(seg_times))
+
+        if not window_indices:
+            continue
+
+        if normalize_to_ratio:
+            p25_arr = np.array(p25_values, dtype=float)
+            p50_arr = np.array(p50_values, dtype=float)
+            p99_arr = np.array(p99_values, dtype=float)
+            max_seen = np.nanmax(np.concatenate([p25_arr, p50_arr, p99_arr])) if (np.isfinite(p25_arr).any() or np.isfinite(p50_arr).any() or np.isfinite(p99_arr).any()) else np.nan
+            if np.isfinite(max_seen) and max_seen > 1.0:
+                p25_arr = p25_arr / 100.0
+                p50_arr = p50_arr / 100.0
+                p99_arr = p99_arr / 100.0
+            p25_values = p25_arr.tolist()
+            p50_values = p50_arr.tolist()
+            p99_values = p99_arr.tolist()
+
+        if len(window_indices) > len(best_index_to_time):
+            best_index_to_time = dict(zip(window_indices, window_times))
+
+        marker = _TS_MARKERS[si % len(_TS_MARKERS)]
+        linestyle = _TS_LINE_STYLES[si % len(_TS_LINE_STYLES)]
+        color = color_dict[strategy]
+
+        # P25 line for each strategy
+        line_p25, = ax.plot(
+            window_indices, p25_values,
+            color=color, linestyle=linestyle, linewidth=1.5,
+            marker=marker, markersize=8, markerfacecolor='none',
+            markeredgecolor=color, markeredgewidth=1.5,
+            alpha=0.55
+        )
+        # P50 line for each strategy
+        line_p50, = ax.plot(
+            window_indices, p50_values,
+            color=color, linestyle=linestyle, linewidth=1.8,
+            marker=marker, markersize=8, markerfacecolor='none',
+            markeredgecolor=color, markeredgewidth=1.5,
+            alpha=0.75
+        )
+        # P99 line for each strategy
+        line_p99, = ax.plot(
+            window_indices, p99_values,
+            color=color, linestyle=linestyle, linewidth=2.2,
+            marker=marker, markersize=8, markerfacecolor='none',
+            markeredgecolor=color, markeredgewidth=1.5,
+            alpha=0.95
+        )
+
+        if p25_handle is None:
+            p25_handle = line_p25
+        if p50_handle is None:
+            p50_handle = line_p50
+        if p99_handle is None:
+            p99_handle = line_p99
+
+    ax.set_title(metric_title, fontsize=subtitle_fontsize, pad=10)
+    ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+    if show_legend and p25_handle is not None and p50_handle is not None and p99_handle is not None:
+        ax.legend(
+            handles=[p25_handle, p50_handle, p99_handle],
+            labels=['P25', 'P50', 'P99'],
+            fontsize=12,
+            loc='upper left',
+            frameon=True,
+            framealpha=0.9
+        )
 
     if best_index_to_time:
         ax.set_xlabel('Request Index', fontsize=ylabel_fontsize, labelpad=6)
