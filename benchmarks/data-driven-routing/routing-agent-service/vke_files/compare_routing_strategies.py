@@ -433,7 +433,14 @@ def normalize_time(df):
     df.reset_index(drop=True, inplace=True)
     return df
 
-def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from, upto_request=None):
+def process_log_file(
+    file_path,
+    warmup_seconds,
+    cut_last_seconds,
+    iteration_from,
+    from_request=0,
+    upto_request=None,
+):
     """Process a single log file and return its performance metrics AND the processed DataFrame."""
     print(f"Processing {file_path}...")
     df, json_columns = preprocess.parse_log_file(file_path)
@@ -507,6 +514,19 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
         else:
             print("  Warning: iteration column not found; skipping iteration filter")
 
+    # Skip the first N requests by arrival order if requested
+    if from_request is not None and from_request > 0:
+        before_count = len(df)
+        if before_count > from_request:
+            df = df.iloc[from_request:]
+            print(f"  Skipped first {from_request} requests (--from-request)")
+        else:
+            # Keep empty df (consistent semantics: nothing left after skipping)
+            df = df.iloc[0:0]
+            print(
+                f"  Warning: --from-request {from_request} >= available requests ({before_count}); no rows left"
+            )
+
     # Limit to the first N requests by arrival order if requested
     if upto_request is not None and len(df) > upto_request:
         df = df.iloc[:upto_request]
@@ -524,12 +544,19 @@ def process_log_file(file_path, warmup_seconds, cut_last_seconds, iteration_from
 
 def _process_log_file_captured(args):
     """Top-level wrapper for parallel execution. Captures stdout per worker process."""
-    log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request = args
+    log_file, warmup_seconds, cut_last_seconds, iteration_from, from_request, upto_request = args
     captured = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = captured
     try:
-        result = process_log_file(log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
+        result = process_log_file(
+            log_file,
+            warmup_seconds,
+            cut_last_seconds,
+            iteration_from,
+            from_request,
+            upto_request,
+        )
     finally:
         sys.stdout = old_stdout
     return log_file, result, captured.getvalue()
@@ -924,11 +951,11 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 54))  # Increased height for 8 rows + secondary axes
+    fig = plt.figure(figsize=(18, 74))  # 11 rows: original 8 + 3 extra time series
 
-    # GridSpec: 8 rows (CDFs, TTFT bar, TTFT by token range, TPOT bar, TPOT by token range, overhead, time series x2)
-    gs = GridSpec(8, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8],
+    # GridSpec: 11 rows (CDFs, bars, and time series x5)
+    gs = GridSpec(11, 9, figure=fig,
+                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6],
                   hspace=1.1,
                   wspace=0.35)
     
@@ -999,11 +1026,54 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         # Plot 9: Avg TPOT Time Series (full width, row 7)
         ax = fig.add_subplot(gs[7, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1000-request window averages)', 'Avg TPOT (ms)', show_legend=False)
+
+        # Plot 10: KV Hit Ratio Time Series (full width, row 8)
+        ax = fig.add_subplot(gs[8, :])
+        plot_selectedpod_metric_timeseries(
+            ax, csv_data_dict, strategy_order, color_dict,
+            metric_title='KV Hit Ratio Time Series (100-request window averages)',
+            ylabel='KV Hit Ratio',
+            direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
+            dict_candidates=['allPodsKvCacheHitRatios'],
+            per_pod_suffix='-kv_hit_ratio',
+            window_size=100,
+            normalize_to_ratio=True,
+            show_legend=False,
+        )
+
+        # Plot 11: Prefill Tokens Time Series (full width, row 9)
+        ax = fig.add_subplot(gs[9, :])
+        plot_selectedpod_metric_timeseries(
+            ax, csv_data_dict, strategy_order, color_dict,
+            metric_title='Prefill Tokens Time Series (100-request window averages)',
+            ylabel='Prefill Tokens',
+            direct_candidates=['prefill_tokens'],
+            dict_candidates=['numPrefillTokensForAllPods'],
+            per_pod_suffix='-prefill_tokens',
+            window_size=100,
+            normalize_to_ratio=False,
+            show_legend=False,
+        )
+
+        # Plot 12: Inflight Prefill Requests Time Series (full width, row 10)
+        ax = fig.add_subplot(gs[10, :])
+        plot_selectedpod_metric_timeseries(
+            ax, csv_data_dict, strategy_order, color_dict,
+            metric_title='Inflight Prefill Requests Time Series (100-request window averages)',
+            ylabel='Inflight Prefill Requests',
+            direct_candidates=['inflight_prefill_requests', 'selected_inflight_prefill_requests'],
+            dict_candidates=['numInflightPrefillRequestsAllPods'],
+            per_pod_suffix='-inflight_prefill_requests',
+            window_size=100,
+            normalize_to_ratio=False,
+            show_legend=False,
+        )
     else:
         # If no CSV data provided, show placeholder text for all plots
         for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
                                    (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)]),
-                                   (6, [slice(None)]), (7, [slice(None)])]:
+                                   (6, [slice(None)]), (7, [slice(None)]), (8, [slice(None)]),
+                                   (9, [slice(None)]), (10, [slice(None)])]:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -1676,6 +1746,143 @@ def plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, colum
         ax.set_xlabel('Request Index', fontsize=ylabel_fontsize)
 
 
+def _extract_selectedpod_series(df, direct_candidates, dict_candidates, per_pod_suffix):
+    """
+    Extract selected-pod metric as a per-request numeric series.
+    Priority: direct column -> dict column keyed by selectedpod -> per-pod flat columns.
+    """
+    # 1) direct scalar columns
+    for col in direct_candidates:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors='coerce')
+
+    # 2) dict columns keyed by pod/ip
+    if 'selectedpod' in df.columns:
+        for dict_col in dict_candidates:
+            if dict_col not in df.columns:
+                continue
+            out = []
+            for _, row in df.iterrows():
+                pod = str(row.get('selectedpod', '')).split(':')[0]
+                pod_map = row.get(dict_col, {})
+                if isinstance(pod_map, dict):
+                    out.append(pod_map.get(pod, np.nan))
+                else:
+                    out.append(np.nan)
+            return pd.to_numeric(pd.Series(out, index=df.index), errors='coerce')
+
+    # 3) per-pod flattened columns like "<pod>-kv_hit_ratio"
+    if 'selectedpod' in df.columns:
+        pod_cols = [c for c in df.columns if c.endswith(per_pod_suffix)]
+        if pod_cols:
+            out = []
+            for _, row in df.iterrows():
+                pod = str(row.get('selectedpod', '')).split(':')[0]
+                col = f"{pod}{per_pod_suffix}"
+                out.append(row.get(col, np.nan) if col in df.columns else np.nan)
+            return pd.to_numeric(pd.Series(out, index=df.index), errors='coerce')
+
+    return pd.Series(np.nan, index=df.index)
+
+
+def plot_selectedpod_metric_timeseries(
+    ax, csv_data_dict, strategy_order, color_dict,
+    metric_title, ylabel, direct_candidates, dict_candidates, per_pod_suffix,
+    window_size=100, normalize_to_ratio=False, show_legend=False
+):
+    """Plot selected-pod metric time series with non-overlapping request windows."""
+    best_index_to_time = {}
+
+    for si, strategy in enumerate(strategy_order):
+        if strategy not in csv_data_dict:
+            continue
+        df = csv_data_dict[strategy]
+        if 'relative_time' not in df.columns:
+            continue
+
+        df_sorted = df.sort_values('relative_time').reset_index(drop=True)
+        metric_series = _extract_selectedpod_series(
+            df_sorted, direct_candidates, dict_candidates, per_pod_suffix
+        )
+        vals = pd.to_numeric(metric_series, errors='coerce').to_numpy(dtype=float)
+        times = pd.to_numeric(df_sorted['relative_time'], errors='coerce').to_numpy(dtype=float)
+        n = len(vals)
+        if n == 0:
+            continue
+
+        window_means = []
+        window_indices = []
+        window_times = []
+        for start in range(0, n, window_size):
+            end = min(start + window_size, n)
+            seg_vals = vals[start:end]
+            seg_times = times[start:end]
+            if len(seg_vals) == 0:
+                continue
+            window_means.append(np.nanmean(seg_vals))
+            window_indices.append((start + end - 1) / 2.0)
+            window_times.append(np.nanmean(seg_times))
+
+        if not window_indices:
+            continue
+
+        if normalize_to_ratio:
+            arr = np.array(window_means, dtype=float)
+            if np.isfinite(arr).any() and np.nanmax(arr) > 1.0:
+                arr = arr / 100.0
+            window_means = arr.tolist()
+
+        if len(window_indices) > len(best_index_to_time):
+            best_index_to_time = dict(zip(window_indices, window_times))
+
+        marker = _TS_MARKERS[si % len(_TS_MARKERS)]
+        linestyle = _TS_LINE_STYLES[si % len(_TS_LINE_STYLES)]
+        ax.plot(
+            window_indices, window_means,
+            color=color_dict[strategy], linestyle=linestyle, linewidth=1.8,
+            marker=marker, markersize=10, markerfacecolor='none',
+            markeredgecolor=color_dict[strategy], markeredgewidth=1.8,
+            label=strategy.split('-')[0], alpha=0.9
+        )
+
+    ax.set_title(metric_title, fontsize=subtitle_fontsize, pad=10)
+    ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
+    if show_legend:
+        ax.legend(fontsize=14, loc='upper left', frameon=True, framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+
+    if best_index_to_time:
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize, labelpad=6)
+        ax2 = ax.secondary_xaxis(-0.30)
+        primary_ticks = ax.get_xticks()
+        sorted_indices = sorted(best_index_to_time.keys())
+        time_ticks = []
+        time_labels = []
+        for idx in primary_ticks:
+            if not sorted_indices:
+                continue
+            if idx <= sorted_indices[0]:
+                t = best_index_to_time[sorted_indices[0]]
+            elif idx >= sorted_indices[-1]:
+                t = best_index_to_time[sorted_indices[-1]]
+            else:
+                for i in range(len(sorted_indices) - 1):
+                    if sorted_indices[i] <= idx <= sorted_indices[i + 1]:
+                        frac = (idx - sorted_indices[i]) / (sorted_indices[i + 1] - sorted_indices[i])
+                        t = best_index_to_time[sorted_indices[i]] + frac * (
+                            best_index_to_time[sorted_indices[i + 1]] - best_index_to_time[sorted_indices[i]])
+                        break
+            time_ticks.append(idx)
+            time_labels.append(f'{t:.0f}s')
+        ax2.set_xticks(time_ticks)
+        ax2.set_xticklabels(time_labels)
+        ax2.set_xlabel('Time (seconds)', fontsize=ylabel_fontsize)
+        ax2.tick_params(axis='x', labelsize=tick_fontsize - 4)
+    else:
+        ax.set_xlabel('Request Index', fontsize=ylabel_fontsize)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Compare routing strategies performance')
     parser.add_argument('base_directory', help='Base directory containing log files')
@@ -1685,6 +1892,8 @@ if __name__ == "__main__":
                        help='Seconds to exclude from end')
     parser.add_argument('--iteration-from', type=int, default=0,
                        help='Only include rows with iteration >= this value for ML policies')
+    parser.add_argument('--from-request', type=int, default=0,
+                       help='Skip the first N requests (by arrival order) before computing metrics/plots')
     parser.add_argument('--average-duplicates', action='store_true',
                        help='Average multiple experiments for the same routing policy')
     parser.add_argument('--upto_request', type=int, default=None,
@@ -1696,6 +1905,7 @@ if __name__ == "__main__":
     warmup_seconds = args.warmup_seconds
     cut_last_seconds = args.cut_last_seconds
     iteration_from = args.iteration_from
+    from_request = args.from_request
     average_duplicates = args.average_duplicates
     upto_request = args.upto_request
     
@@ -1706,6 +1916,8 @@ if __name__ == "__main__":
         print(f"cut_last_seconds: {cut_last_seconds} seconds")
     if average_duplicates:
         print("Will average multiple experiments for the same routing policy")
+    if from_request:
+        print(f"from_request: skipping first {from_request} requests")
     if upto_request is not None:
         print(f"upto_request: plotting only the first {upto_request} requests")
     
@@ -1724,7 +1936,7 @@ if __name__ == "__main__":
     csv_data_dict = {}  # Dictionary to store DataFrames
 
     worker_args = [
-        (log_file, warmup_seconds, cut_last_seconds, iteration_from, upto_request)
+        (log_file, warmup_seconds, cut_last_seconds, iteration_from, from_request, upto_request)
         for log_file in log_files
     ]
     num_workers = min(len(log_files), os.cpu_count() or 4)

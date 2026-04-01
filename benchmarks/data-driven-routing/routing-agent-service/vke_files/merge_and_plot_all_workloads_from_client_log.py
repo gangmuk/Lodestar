@@ -75,9 +75,10 @@ def extract_rps_from_workload(workload):
     - "gangmuk-prefix/SharingRatio71%/rps4-benchmark/without_bitsandbytes" -> 4
     - "mooncake/conversation-2/rps15-benchmark/without_bitsandbytes" -> 15
     """
-    match = re.search(r'rps(\d+)', workload.lower())
+    match = re.search(r'rps([\d,]+)', workload.lower())
     if match:
-        return int(match.group(1))
+        # For multi-RPS like "rps6,11,8", return the first value for sorting
+        return int(match.group(1).split(',')[0])
     return 9999  # Put workloads without RPS at the end
 
 

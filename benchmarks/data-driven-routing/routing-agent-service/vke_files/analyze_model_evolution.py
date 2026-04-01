@@ -7,8 +7,12 @@ arrives, using gradient-based sensitivity analysis (not connection weights,
 which is misleading for deep ReLU networks).
 
 Methods:
-  1. Gradient Sensitivity: avg |dOutput/dInput| over random samples
+  1. Gradient Sensitivity: avg |dOutput/dInput| over realistic samples
   2. Perturbation Sensitivity: output change when each feature moves ±1 std
+
+All methods use actual feature distributions from feature_normalization_statistics.csv
+and feature_distribution_statistics.csv so that inputs match what the model saw
+during training (z-scored features with real correlations and skew).
 
 Usage:
     python3 analyze_model_evolution.py <directory_with_reward_net_checkpoints>
@@ -45,6 +49,11 @@ plt.rcParams.update({
     'font.family': 'sans-serif',
     'figure.dpi': 150,
 })
+
+
+# Number of checkpoints to aggregate per plotted point.
+# 1 = original per-iteration plotting.
+PLOT_AGGREGATE_WINDOW = 3
 
 
 # ── Auto-detect feature names from model + metadata ─────────────────────────
@@ -138,6 +147,185 @@ def detect_feature_names(directory, input_dim):
     return names
 
 
+# ── Load actual feature distributions ────────────────────────────────────────
+
+def load_normalization_stats(directory, feature_names):
+    """Load per-feature mean/std from feature_normalization_statistics.csv.
+    Returns dict {feature_name: {'mean': float, 'std': float}}."""
+    stats_path = os.path.join(directory, 'feature_normalization_statistics.csv')
+    if not os.path.exists(stats_path):
+        return None
+
+    stats = {}
+    with open(stats_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = row['feature_name']
+            stype = row['stats_type']
+            val = float(row['value'])
+            if name not in stats:
+                stats[name] = {}
+            stats[name][stype] = val
+
+    print(f"  Loaded normalization stats from {stats_path}")
+    return stats
+
+
+def _compute_dist_stats_from_serving_log(csv_path, feature_names):
+    """Compute per-feature distribution stats directly from the processed serving log.
+
+    For pod features (columns like pod_XXXX-feature), pools all pod columns together
+    (same as how the model sees them — per-pod, not per-request).
+    For request features (plain columns), uses the column directly.
+
+    Returns dict {feature_name: {'mean', 'std', 'min', 'max', 'p05', 'p95', 'zero_ratio'}}.
+    """
+    import pandas as pd
+    df = pd.read_csv(csv_path)
+    print(f"  Loaded serving log: {csv_path} ({len(df)} rows)")
+
+    stats = {}
+    for fname in feature_names:
+        # Try pod columns first (pod_XXXX-feature)
+        pod_cols = [c for c in df.columns if c.endswith(f'-{fname}')]
+        if pod_cols:
+            vals = df[pod_cols].values.flatten()
+            vals = vals[~np.isnan(vals)]
+        elif fname in df.columns:
+            vals = df[fname].dropna().values
+        else:
+            print(f"  WARNING: Feature '{fname}' not found in serving log")
+            continue
+
+        if len(vals) == 0:
+            continue
+
+        n_zeros = int((vals == 0).sum())
+        stats[fname] = {
+            'mean': float(vals.mean()),
+            'std': float(vals.std()),
+            'min': float(vals.min()),
+            'max': float(vals.max()),
+            'p05': float(np.percentile(vals, 5)),
+            'p95': float(np.percentile(vals, 95)),
+            'zero_ratio': n_zeros / len(vals),
+            'count': len(vals),
+        }
+
+    return stats
+
+
+def load_feature_distribution(directory, feature_names):
+    """Load per-feature distribution stats, preferring the actual serving log.
+
+    Priority:
+      1. ../../filtered-aibrix-gateway-plugins-processed.log.csv (actual serving data)
+      2. feature_distribution_statistics.csv (offline snapshot — may not match serving)
+
+    Returns dict {feature_name: {'mean', 'std', 'min', 'max', 'p05', 'p95', 'zero_ratio'}}.
+    """
+    # Search for the processed serving log relative to the final_model dir
+    serving_log_candidates = [
+        os.path.join(directory, '..', '..', 'filtered-aibrix-gateway-plugins-processed.log.csv'),
+        os.path.join(directory, '..', 'filtered-aibrix-gateway-plugins-processed.log.csv'),
+        os.path.join(directory, 'filtered-aibrix-gateway-plugins-processed.log.csv'),
+    ]
+    for candidate in serving_log_candidates:
+        candidate = os.path.normpath(candidate)
+        if os.path.exists(candidate):
+            print(f"  Found serving log: {candidate}")
+            stats = _compute_dist_stats_from_serving_log(candidate, feature_names)
+            if stats:
+                return stats
+
+    # Fallback to feature_distribution_statistics.csv
+    dist_path = os.path.join(directory, 'feature_distribution_statistics.csv')
+    if not os.path.exists(dist_path):
+        return None
+
+    print(f"  WARNING: No serving log found, falling back to {dist_path} (offline snapshot)")
+    stats = {}
+    with open(dist_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = row['feature_name']
+            entry = {}
+            for k, v in row.items():
+                if k not in ('feature_name', 'feature_type'):
+                    try:
+                        entry[k] = float(v)
+                    except (ValueError, TypeError):
+                        pass
+            stats[name] = entry
+
+    return stats
+
+
+def generate_realistic_samples(norm_stats, dist_stats, feature_names, n_samples=1000):
+    """Generate samples that approximate the actual normalized feature distribution.
+
+    Strategy: for each feature, sample from a truncated distribution in RAW space
+    using the actual serving data stats, then z-score normalize using the mean/std
+    from feature_normalization_statistics.csv.
+    This produces inputs in the same space the model was trained on.
+
+    Falls back to N(0,1) for any feature missing stats.
+    """
+    input_dim = len(feature_names)
+    samples = torch.zeros(n_samples, input_dim)
+
+    for i, fname in enumerate(feature_names):
+        n_stats = norm_stats.get(fname) if norm_stats else None
+        d_stats = dist_stats.get(fname) if dist_stats else None
+
+        if n_stats and d_stats and n_stats.get('std', 0) > 0:
+            raw_mean = d_stats.get('mean', n_stats['mean'])
+            raw_std = d_stats.get('std', n_stats['std'])
+            raw_min = d_stats.get('min', raw_mean - 3 * raw_std)
+            raw_max = d_stats.get('max', raw_mean + 3 * raw_std)
+            p05 = d_stats.get('p05', raw_min)
+            p95 = d_stats.get('p95', raw_max)
+            zero_ratio = d_stats.get('zero_ratio', 0.0)
+
+            raw = np.zeros(n_samples)
+            n_zeros = int(n_samples * zero_ratio)
+            n_bulk = n_samples - n_zeros
+            if n_bulk > 0:
+                raw[n_zeros:] = np.random.uniform(p05, max(p95, p05 + 1e-6), n_bulk)
+
+            # Normalize to z-score space (what the model actually sees)
+            normalized = (raw - n_stats['mean']) / n_stats['std']
+            samples[:, i] = torch.from_numpy(normalized).float()
+        else:
+            samples[:, i] = torch.randn(n_samples)
+            if n_stats is None:
+                print(f"  WARNING: No normalization stats for '{fname}', using N(0,1) fallback")
+
+    return samples
+
+
+def get_per_feature_stds_in_normalized_space(norm_stats, dist_stats, feature_names):
+    """Return the std of each feature IN NORMALIZED SPACE.
+
+    Computed as actual_raw_std / normalization_std.  When the serving data std
+    differs from the normalization stats std (e.g. due to distribution shift
+    between offline and online), this captures the true spread the model sees.
+
+    Returns np.array of shape (input_dim,).
+    """
+    input_dim = len(feature_names)
+    stds = np.ones(input_dim)
+
+    for i, fname in enumerate(feature_names):
+        n_stats = norm_stats.get(fname) if norm_stats else None
+        d_stats = dist_stats.get(fname) if dist_stats else None
+        if n_stats and d_stats and n_stats.get('std', 0) > 0:
+            actual_raw_std = d_stats.get('std', n_stats['std'])
+            stds[i] = actual_raw_std / n_stats['std']
+
+    return stds
+
+
 # ── Model loading ────────────────────────────────────────────────────────────
 
 class RewardNetwork(nn.Module):
@@ -187,19 +375,28 @@ def build_model(state_dict, input_dim, hidden_dim):
 
 # ── Analysis methods ─────────────────────────────────────────────────────────
 
-def compute_gradient_sensitivity(model, input_dim, n_samples=1000):
-    """Average |dOutput/dInput| over random samples. Returns raw (unnormalized) values."""
-    x = torch.randn(n_samples, input_dim, requires_grad=True)
+def compute_gradient_sensitivity(model, input_dim, realistic_samples=None, n_samples=1000):
+    """Average |dOutput/dInput| over samples. Returns raw (unnormalized) values.
+    Uses realistic_samples from actual feature distributions when available."""
+    if realistic_samples is not None:
+        x = realistic_samples[:n_samples].clone().detach().requires_grad_(True)
+    else:
+        x = torch.randn(n_samples, input_dim, requires_grad=True)
     out = model(x)
     out.sum().backward()
     return x.grad.abs().mean(dim=0).detach().numpy()
 
 
-def compute_integrated_gradients(model, input_dim, n_samples=200, n_steps=50):
+def compute_integrated_gradients(model, input_dim, realistic_samples=None,
+                                 n_samples=200, n_steps=50):
     """Integrated Gradients (Sundararajan et al., ICML 2017) with zero baseline.
+    Uses realistic_samples from actual feature distributions when available.
     Returns normalized relative importance (sums to 1)."""
     baseline = torch.zeros(1, input_dim)
-    x = torch.randn(n_samples, input_dim)
+    if realistic_samples is not None:
+        x = realistic_samples[:n_samples].clone().detach()
+    else:
+        x = torch.randn(n_samples, input_dim)
     attributions = torch.zeros(n_samples, input_dim)
 
     for step in range(n_steps):
@@ -219,16 +416,31 @@ def compute_integrated_gradients(model, input_dim, n_samples=200, n_steps=50):
     return raw
 
 
-def compute_perturbation_sensitivity(model, input_dim):
-    """Output change when each feature moves ±1 std from zero baseline.
-    Returns (sensitivity, direction) where direction[i] = +1 if higher feature → higher reward."""
-    baseline = torch.zeros(1, input_dim)
+def compute_perturbation_sensitivity(model, input_dim, per_feature_stds=None,
+                                     realistic_samples=None):
+    """Output change when each feature moves ±1 actual std from a realistic baseline.
+
+    When realistic_samples are provided, the baseline is the mean of those samples
+    and the perturbation magnitude is the actual per-feature std in normalized space.
+    This ensures features with different effective ranges are compared fairly.
+
+    Returns (sensitivity, direction) where direction[i] = +1 if higher feature → higher reward.
+    """
+    if realistic_samples is not None:
+        baseline = realistic_samples.mean(dim=0, keepdim=True)
+    else:
+        baseline = torch.zeros(1, input_dim)
+
+    if per_feature_stds is None:
+        per_feature_stds = np.ones(input_dim)
+
     sensitivity = np.zeros(input_dim)
     direction = np.zeros(input_dim)
     for i in range(input_dim):
+        step = float(per_feature_stds[i])
         with torch.no_grad():
-            p_plus = baseline.clone(); p_plus[0, i] = 1.0
-            p_minus = baseline.clone(); p_minus[0, i] = -1.0
+            p_plus = baseline.clone(); p_plus[0, i] += step
+            p_minus = baseline.clone(); p_minus[0, i] -= step
             out_plus = model(p_plus).item()
             out_minus = model(p_minus).item()
         diff = out_plus - out_minus
@@ -337,10 +549,10 @@ def plot_gradient_evolution(checkpoints, grad_matrix, feature_names, pdf, save_d
         fname = feature_names[fi]
         vals = grad_matrix[:, fi]
         color = get_feature_color(fname, feature_names)
-        lw = 3.0 if fname in HIGHLIGHT_FEATURES else 1.5
-        alpha = 1.0 if fname in HIGHLIGHT_FEATURES else 0.5
-        ms = 7 if fname in HIGHLIGHT_FEATURES else 4
-        zorder = 10 if fname in HIGHLIGHT_FEATURES else 1
+        lw = 2.0
+        alpha = 0.9
+        ms = 5
+        zorder = 2
         ax.plot(indices, vals, 'o-', color=color, linewidth=lw, markersize=ms,
                 alpha=alpha, label=get_display_name(fname), zorder=zorder)
 
@@ -363,66 +575,167 @@ def plot_gradient_evolution(checkpoints, grad_matrix, feature_names, pdf, save_d
     print(f"  Plotted: Feature Sensitivity Evolution{title_suffix}")
 
 
+def aggregate_for_plotting(checkpoints, *matrices, window=1):
+    """Aggregate consecutive checkpoints into fixed-size windows for smoother plots.
+
+    Returns:
+      aggregated_checkpoints: list[(idx, None)] using rounded mean iteration index
+      aggregated_matrices:    list[np.ndarray] with rows aligned to aggregated checkpoints
+    """
+    if window <= 1 or len(checkpoints) <= 1:
+        passthrough = [np.asarray(m) for m in matrices]
+        return checkpoints, passthrough
+
+    n = len(checkpoints)
+    aggregated_checkpoints = []
+    aggregated_mats = [[] for _ in matrices]
+
+    for start in range(0, n, window):
+        end = min(start + window, n)
+        block_indices = [checkpoints[i][0] for i in range(start, end)]
+        agg_idx = int(round(float(np.mean(block_indices))))
+        aggregated_checkpoints.append((agg_idx, None))
+
+        for mi, mat in enumerate(matrices):
+            block = np.asarray(mat[start:end])
+            aggregated_mats[mi].append(block.mean(axis=0))
+
+    aggregated_mats = [np.vstack(rows) for rows in aggregated_mats]
+    return aggregated_checkpoints, aggregated_mats
+
+
 def plot_perturbation_sensitivity(checkpoints, sens_matrix, dir_matrix, feature_names, pdf, save_dir):
-    """Perturbation sensitivity bar chart. Shows first vs last when multiple checkpoints, single panel otherwise."""
-    if len(checkpoints) == 1:
-        panels = [(0, checkpoints[0][0])]
-        fig, axes = plt.subplots(1, 1, figsize=(12, 9))
-        axes = [axes]
-        suptitle = 'Learned Feature Sensitivity (Single Checkpoint)'
-    else:
-        first_idx, last_idx = 0, len(checkpoints) - 1
-        panels = [(first_idx, checkpoints[first_idx][0]), (last_idx, checkpoints[last_idx][0])]
-        fig, axes = plt.subplots(1, 2, figsize=(20, 9), sharey=True)
-        suptitle = 'Learned Feature Sensitivity: Early vs Late Training'
+    """Perturbation sensitivity as a signed heatmap: features × checkpoints.
 
-    for ax_idx, (ckpt_idx, iter_num) in enumerate(panels):
-        ax = axes[ax_idx]
-        sens = sens_matrix[ckpt_idx]
-        dirs = dir_matrix[ckpt_idx]
+    Color encodes direction correctness AND magnitude:
+      Blue  = correct direction (learned matches domain knowledge), darker = stronger
+      Red   = wrong direction (learned opposes expectation), darker = stronger
+      Gray  = no expected direction defined
 
-        # Sort by sensitivity
-        order = np.argsort(-sens)
-        sorted_names = [feature_names[i] for i in order]
-        sorted_sens = sens[order]
-        sorted_dirs = dirs[order]
+    Cell annotations show the signed sensitivity value (+/-).
+    """
+    input_dim = len(feature_names)
+    n_ckpts = len(checkpoints)
+    indices = [c[0] for c in checkpoints]
 
-        colors = [get_feature_color(fname, feature_names) for fname in sorted_names]
-
-        ax.barh(range(len(sorted_names)), sorted_sens, color=colors, edgecolor='white', linewidth=0.5, height=0.7)
-
-        # Add direction arrows and values
-        for i, (s, d, fname) in enumerate(zip(sorted_sens, sorted_dirs, sorted_names)):
-            arrow = '  (+)' if d > 0 else '  (-)'
+    # Build signed matrix: positive = correct direction, negative = wrong
+    signed_matrix = np.zeros((input_dim, n_ckpts))
+    for ci in range(n_ckpts):
+        for fi in range(input_dim):
+            fname = feature_names[fi]
+            sens = sens_matrix[ci, fi]
+            direction = dir_matrix[ci, fi]
             expected = EXPECTED_DIRECTIONS.get(fname, None)
             if expected is not None and expected != 0:
-                correct = (d > 0) == (expected > 0)
-                marker = ' ✓' if correct else ' ✗'
+                correct = (direction > 0) == (expected > 0)
+                signed_matrix[fi, ci] = sens if correct else -sens
             else:
-                marker = ''
-            ax.text(s + 0.02, i, f'{s:.3f}{arrow}{marker}', va='center', fontsize=12, fontweight='bold' if fname in HIGHLIGHT_FEATURES else 'normal')
+                # No expected direction: show raw magnitude as positive
+                signed_matrix[fi, ci] = sens
 
-        ax.set_yticks(range(len(sorted_names)))
-        ax.set_yticklabels([get_display_name(n) for n in sorted_names], fontsize=13)
-        # Bold the highlighted features in y-tick labels
-        for tick_label in ax.get_yticklabels():
-            text = tick_label.get_text()
-            for hf in HIGHLIGHT_FEATURES:
-                if get_display_name(hf) == text:
-                    tick_label.set_fontweight('bold')
-                    break
+    # Row order
+    row_order = _fixed_legend_order(feature_names)
+    ordered_names = [feature_names[i] for i in row_order]
+    ordered_matrix = signed_matrix[row_order, :]
 
-        ax.set_xlabel('Perturbation Sensitivity  (|output(+1σ) - output(-1σ)|)', fontsize=14, fontweight='bold')
-        ax.set_title(f'Iteration {iter_num}', fontsize=18, fontweight='bold')
-        ax.grid(True, axis='x', alpha=0.2)
-        ax.invert_yaxis()
+    vmax = np.max(np.abs(ordered_matrix)) * 1.05
 
-    fig.suptitle(suptitle, fontsize=22, fontweight='bold', y=1.02)
+    fig, ax = plt.subplots(figsize=(max(n_ckpts * 0.9 + 3, 10), input_dim * 0.7 + 2.5))
+
+    im = ax.imshow(ordered_matrix, aspect='auto', cmap='RdBu', vmin=-vmax, vmax=vmax,
+                   interpolation='nearest')
+
+    # Annotate cells
+    for r in range(len(ordered_names)):
+        fname = ordered_names[r]
+        expected = EXPECTED_DIRECTIONS.get(fname, None)
+        for c in range(n_ckpts):
+            val = ordered_matrix[r, c]
+            # Text color for readability
+            text_color = 'white' if abs(val) > vmax * 0.55 else 'black'
+            # Show direction arrow
+            fi = row_order[r]
+            d = dir_matrix[c, fi]
+            arrow = '+' if d > 0 else '−'
+            ax.text(c, r, f'{arrow}{abs(val):.2f}', ha='center', va='center',
+                    fontsize=8, fontweight='bold', color=text_color)
+
+    ax.set_xticks(range(n_ckpts))
+    ax.set_xticklabels([str(i) for i in indices], fontsize=12)
+    ax.set_xlabel('Online Training Iteration', fontsize=15, fontweight='bold')
+
+    ax.set_yticks(range(len(ordered_names)))
+    ax.set_yticklabels([get_display_name(f) for f in ordered_names], fontsize=13)
+
+    ax.set_title('Perturbation Sensitivity: Direction Correctness × Magnitude',
+                 fontsize=18, fontweight='bold', pad=15)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label('Signed Sensitivity  (blue = correct, red = wrong)', fontsize=12)
+
+    # Add expected direction legend as text below the plot
+    legend_parts = []
+    for fname in ordered_names:
+        expected = EXPECTED_DIRECTIONS.get(fname, None)
+        if expected is not None and expected != 0:
+            exp_str = '↑ reward' if expected > 0 else '↓ reward'
+            legend_parts.append(f'{get_display_name(fname)}: higher → {exp_str}')
+    if legend_parts:
+        legend_text = 'Expected directions:  ' + '  |  '.join(legend_parts)
+        fig.text(0.5, -0.02, legend_text, ha='center', fontsize=9, style='italic',
+                 color='#555555', wrap=True)
+
     fig.tight_layout()
     pdf.savefig(fig, bbox_inches='tight')
     plt.close()
-    n_pages = 1 if len(checkpoints) == 1 else 2
-    print(f"  [{n_pages}/{n_pages}] Perturbation sensitivity")
+    print(f"  Plotted: Perturbation sensitivity heatmap (feature × checkpoint)")
+
+
+def plot_first_layer_weights(checkpoints, feature_names, pdf, save_dir, norm_matrix):
+    """Visualize first-layer weights as a compact feature × checkpoint heatmap.
+
+    Rows = features (fixed order), columns = checkpoints (0, 1, 2, ...).
+    Color = L2 norm of that feature's weight column in that checkpoint.
+    Annotated with the numeric value in each cell.
+    """
+    input_dim = len(feature_names)
+    n_ckpts = len(checkpoints)
+    indices = [c[0] for c in checkpoints]
+
+    # Use fixed legend order for row ordering
+    row_order = _fixed_legend_order(feature_names)
+    ordered_names = [get_display_name(feature_names[i]) for i in row_order]
+    ordered_matrix = np.asarray(norm_matrix).T[row_order, :]
+
+    fig, ax = plt.subplots(figsize=(max(n_ckpts * 0.9 + 3, 10), input_dim * 0.7 + 2))
+
+    im = ax.imshow(ordered_matrix, aspect='auto', cmap='YlOrRd', interpolation='nearest')
+
+    # Annotate each cell with its value
+    for r in range(input_dim):
+        for c in range(n_ckpts):
+            val = ordered_matrix[r, c]
+            text_color = 'white' if val > ordered_matrix.max() * 0.65 else 'black'
+            ax.text(c, r, f'{val:.2f}', ha='center', va='center',
+                    fontsize=9, fontweight='bold', color=text_color)
+
+    ax.set_xticks(range(n_ckpts))
+    ax.set_xticklabels([str(i) for i in indices], fontsize=12)
+    ax.set_xlabel('Online Training Iteration', fontsize=15, fontweight='bold')
+
+    ax.set_yticks(range(input_dim))
+    ax.set_yticklabels(ordered_names, fontsize=13)
+
+    ax.set_title('First-Layer Weight Magnitude (L2 Norm) per Feature × Checkpoint',
+                 fontsize=18, fontweight='bold', pad=15)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label('L2 Norm', fontsize=13)
+
+    fig.tight_layout()
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close()
+    print(f"  Plotted: First-layer weight heatmap (feature × checkpoint)")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -461,36 +774,73 @@ def main():
         print(f"ERROR: Feature count ({len(feature_names)}) != model input dim ({input_dim}). Using generic names.")
         feature_names = [f'feature_{i}' for i in range(input_dim)]
 
+    # Load actual feature distributions for realistic sampling
+    norm_stats = load_normalization_stats(directory, feature_names)
+    dist_stats = load_feature_distribution(directory, feature_names)
+    if norm_stats and dist_stats:
+        realistic_samples = generate_realistic_samples(norm_stats, dist_stats, feature_names, n_samples=1000)
+        per_feature_stds = get_per_feature_stds_in_normalized_space(norm_stats, dist_stats, feature_names)
+        print(f"  Using realistic samples from actual feature distributions")
+        print(f"  Per-feature stds in normalized space: {dict(zip(feature_names, [f'{s:.3f}' for s in per_feature_stds]))}")
+    else:
+        realistic_samples = None
+        per_feature_stds = None
+        print(f"  WARNING: No normalization/distribution stats found, falling back to N(0,1) random inputs")
+
     # Compute all sensitivity metrics for all checkpoints
     grad_matrix = np.zeros((len(checkpoints), input_dim))
     grad_norm_matrix = np.zeros((len(checkpoints), input_dim))
     ig_matrix = np.zeros((len(checkpoints), input_dim))
     sens_matrix = np.zeros((len(checkpoints), input_dim))
     dir_matrix = np.zeros((len(checkpoints), input_dim))
+    first_layer_norm_matrix = np.zeros((len(checkpoints), input_dim))
 
     for ci, (idx, sd) in enumerate(checkpoints):
         model = build_model(sd, input_dim, hidden_dim)
-        raw_grad = compute_gradient_sensitivity(model, input_dim)
+        raw_grad = compute_gradient_sensitivity(model, input_dim, realistic_samples)
         grad_matrix[ci] = raw_grad
         total = raw_grad.sum()
         grad_norm_matrix[ci] = raw_grad / total if total > 0 else raw_grad
-        ig_matrix[ci] = compute_integrated_gradients(model, input_dim)
-        sens_matrix[ci], dir_matrix[ci] = compute_perturbation_sensitivity(model, input_dim)
+        ig_matrix[ci] = compute_integrated_gradients(model, input_dim, realistic_samples)
+        sens_matrix[ci], dir_matrix[ci] = compute_perturbation_sensitivity(
+            model, input_dim, per_feature_stds, realistic_samples)
+        first_layer_norm_matrix[ci] = np.linalg.norm(sd['scorer.0.weight'].numpy(), axis=0)
         print(f"  Checkpoint {idx}: grad_sum={total:.3f}")
 
     # Generate PDF
     output_pdf = os.path.join(save_dir, 'model_evolution_analysis.pdf')
     print(f"\nGenerating analysis -> {output_pdf}")
 
+    plot_checkpoints, aggregated = aggregate_for_plotting(
+        checkpoints,
+        grad_matrix,
+        grad_norm_matrix,
+        ig_matrix,
+        sens_matrix,
+        dir_matrix,
+        first_layer_norm_matrix,
+        window=PLOT_AGGREGATE_WINDOW
+    )
+    (grad_plot_matrix,
+     grad_norm_plot_matrix,
+     ig_plot_matrix,
+     sens_plot_matrix,
+     dir_plot_matrix,
+     first_layer_plot_matrix) = aggregated
+    if PLOT_AGGREGATE_WINDOW > 1 and len(checkpoints) > 1:
+        print(f"  Plot smoothing: averaging every {PLOT_AGGREGATE_WINDOW} checkpoints "
+              f"({len(checkpoints)} -> {len(plot_checkpoints)} plotted points)")
+
     with PdfPages(output_pdf) as pdf:
-        if len(checkpoints) >= 2:
-            plot_gradient_evolution(checkpoints, grad_matrix, feature_names, pdf, save_dir,
+        if len(plot_checkpoints) >= 2:
+            plot_gradient_evolution(plot_checkpoints, grad_plot_matrix, feature_names, pdf, save_dir,
                                    title_suffix=' (Raw)', ylabel_prefix='Raw ')
-            plot_gradient_evolution(checkpoints, grad_norm_matrix, feature_names, pdf, save_dir,
+            plot_gradient_evolution(plot_checkpoints, grad_norm_plot_matrix, feature_names, pdf, save_dir,
                                    title_suffix=' (Normalized)', ylabel_prefix='Relative ')
-            plot_gradient_evolution(checkpoints, ig_matrix, feature_names, pdf, save_dir,
+            plot_gradient_evolution(plot_checkpoints, ig_plot_matrix, feature_names, pdf, save_dir,
                                    title_suffix=' (Integrated Gradients)', ylabel_prefix='Relative ')
-        plot_perturbation_sensitivity(checkpoints, sens_matrix, dir_matrix, feature_names, pdf, save_dir)
+        plot_perturbation_sensitivity(plot_checkpoints, sens_plot_matrix, dir_plot_matrix, feature_names, pdf, save_dir)
+        plot_first_layer_weights(plot_checkpoints, feature_names, pdf, save_dir, first_layer_plot_matrix)
 
     # Save CSVs
     csv_path = os.path.join(save_dir, 'gradient_sensitivity.csv')
