@@ -381,7 +381,20 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	for _, pod := range readyPods {
 		readyPodsMapForLastAccess[pod.Status.PodIP] = struct{}{}
 	}
-	podIPsWithLastAccess := r.prefixCacheIndexer.GetPodPrefixLastAccess(allPrefixHashes, ctx.Model, readyPodsMapForLastAccess)
+	podIPsWithLastAccessAbsolute := r.prefixCacheIndexer.GetPodPrefixLastAccess(allPrefixHashes, ctx.Model, readyPodsMapForLastAccess)
+	// Convert absolute unix-millis timestamps to relative microseconds (same
+	// reference frame as request_start_time = UnixMicro - FirstRequestStartTime).
+	// preprocess.py computes age as (request_start_time - last_access) and both
+	// must use the same epoch for the subtraction to be meaningful.
+	podIPsWithLastAccess := make(map[string]int64, len(podIPsWithLastAccessAbsolute))
+	for pod, absMillis := range podIPsWithLastAccessAbsolute {
+		if absMillis > 0 && utils.FirstRequestStartTime > 0 {
+			// absMillis is unix millis, FirstRequestStartTime is unix micros
+			podIPsWithLastAccess[pod] = absMillis*1000 - utils.FirstRequestStartTime
+		} else {
+			podIPsWithLastAccess[pod] = 0
+		}
+	}
 	utils.SetSnapShotForKVCacheLastAccess(ctx.RequestID, podIPsWithLastAccess)
 
 	if len(readyPods) == 0 {
