@@ -658,7 +658,7 @@ def handle_infer():
                     smoothing_threshold=SMOOTHING_THRESHOLD,
                     generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
-        elif 'contextual_bandit' in subAlgorithm or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'prefix_hit_threshold_or_least_request'}:
+        elif 'contextual_bandit' in subAlgorithm or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'least_prefill_tokens', 'prefix_cache_1', 'prefix_cache_2', 'prefix_hit_threshold_or_least_request'}:
             # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
             # logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
             global CONTEXTUAL_BANDIT_AGENT
@@ -701,7 +701,7 @@ def handle_infer():
             #         final_model_dir=final_model_dir,
             #         sorted_all_pod_ids=sorted_all_pod_ids
             #     )
-            if 'perpodmodel_checkpoint' in subAlgorithm or subAlgorithm in {'least_latency', 'least_request', 'least_kv_cache', 'prefix_cache_1', 'prefix_cache_2', 'random', 'prefix_hit_threshold_or_least_request'}:
+            if 'perpodmodel_checkpoint' in subAlgorithm or subAlgorithm in {'least_latency', 'least_request', 'least_kv_cache', 'least_prefill_tokens', 'prefix_cache_1', 'prefix_cache_2', 'random', 'prefix_hit_threshold_or_least_request'}:
                 result, infer_from_tensor_overhead_summary = neural_contextual_bandit_perpodmodel_checkpoint.infer_from_tensor(
                     tensor_data=tensor_data,
                     request_id=request_id,
