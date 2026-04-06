@@ -47,22 +47,34 @@ from distribution_shift_detector import PerSampleOODDetector, OODAction
 # Prefix-group hash filtering: restricts CB's pod selection to K candidate pods
 # when the cluster is stressed, to preserve prefix concentration.
 ENABLE_PREFIX_FILTERING = int(os.getenv("ENABLE_PREFIX_FILTERING", "1"))
-GPU_KV_SATURATION_THRESHOLD = float(os.getenv("GPU_KV_SATURATION_THRESHOLD", "0.75"))
-PREFIX_SHARING_MIN_BENEFIT_THRESHOLD = float(os.getenv("PREFIX_SHARING_MIN_BENEFIT_THRESHOLD", "300"))
-CANDIDATE_K = int(os.getenv("CANDIDATE_K", "3"))
+GPU_KV_SATURATION_THRESHOLD = float(os.getenv("GPU_KV_SATURATION_THRESHOLD", "0.5"))
+PREFIX_SHARING_MIN_BENEFIT_THRESHOLD = float(os.getenv("PREFIX_SHARING_MIN_BENEFIT_THRESHOLD", "100"))
+CANDIDATE_K = int(os.getenv("CANDIDATE_K", "2"))
 logger.info(f"Prefix filtering config: ENABLE_PREFIX_FILTERING={ENABLE_PREFIX_FILTERING}, "
             f"GPU_KV_SATURATION_THRESHOLD={GPU_KV_SATURATION_THRESHOLD}, "
-            f"PREFIX_SHARING_MIN_BENEFIT_THRESHOLD={PREFIX_SHARING_MIN_BENEFIT_THRESHOLD}, CANDIDATE_K={CANDIDATE_K}")
+            f"PREFIX_SHARING_MIN_BENEFIT_THRESHOLD={PREFIX_SHARING_MIN_BENEFIT_THRESHOLD}, "
+            f"CANDIDATE_K={CANDIDATE_K}")
+
+
+
+
 
 
 def _select_candidate_pods(prefix_hash, all_pod_ids, k):
     """Select K candidate pods deterministically from prefix hash.
-    Uses modular arithmetic to pick a starting pod, then takes K consecutive
-    pods (wrapping around). Same prefix always maps to the same candidates."""
+    Used for small groups where collision is harmless.
+    Uses k independent salted hashes to scatter candidates across the pod ring."""
     n = len(all_pod_ids)
     k = min(k, n)
-    start = abs(prefix_hash) % n
-    return [all_pod_ids[(start + i) % n] for i in range(k)]
+    selected = set()
+    candidates = []
+    for i in range(k):
+        h = hash((i, prefix_hash)) % n
+        while h in selected:
+            h = (h + 1) % n
+        selected.add(h)
+        candidates.append(all_pod_ids[h])
+    return candidates
 
 
 # GPU features are now always included as one-hot encoded features
@@ -172,12 +184,15 @@ CB_RESET_LR_PER_ROUND = int(os.getenv("CB_RESET_LR_PER_ROUND", "1"))  # Reset LR
 RECENCY_DECAY_WEIGHT_FACTOR = float(os.environ.get('RECENCY_DECAY_WEIGHT_FACTOR', '1.0'))
 ENABLE_FALLBACK = int(os.getenv("ENABLE_FALLBACK", 1))
 RETRAIN_AT_STARTUP = int(os.getenv("RETRAIN_AT_STARTUP", 0))  # 1=load offline data but skip pretrained weights, retrain at first training round
+MAX_NUM_ONLINE_TRAINS = int(os.getenv("MAX_NUM_ONLINE_TRAINS", -1))  # -1=unlimited, N=stop online training after N rounds
 NORMALIZATION_MODE = os.getenv("NORMALIZATION_MODE", "zscore")  # "zscore" (data-dependent) or "fixed_range" (domain-knowledge bounds, immune to distribution shift)
+CL_TRAINING_EPOCHS = int(os.getenv("CL_TRAINING_EPOCHS", 0))  # 0=use model_config.json default, >0=override training_epochs for CL round 1+
+LEARNING_METHODOLOGY = os.getenv("LEARNING_METHODOLOGY", "from_scratch_fifo_replay")  # For logging only
 logger.info(f"Routing configuration: EXPLORATION_ENABLED={EXPLORATION_ENABLED}, EXPLORATION_RATE={EXPLORATION_RATE}, "
            f"SMOOTHING_ENABLED={SMOOTHING_ENABLED}, SMOOTHING_THRESHOLD={SMOOTHING_THRESHOLD}, "
            f"LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, INCLUDE_GPU_FEATURES={INCLUDE_GPU_FEATURES}, "
            f"ONLINE_TRAIN_FROM_SCRATCH={ONLINE_TRAIN_FROM_SCRATCH}, CB_RESET_LR_PER_ROUND={CB_RESET_LR_PER_ROUND}, RECENCY_DECAY_WEIGHT_FACTOR={RECENCY_DECAY_WEIGHT_FACTOR}, "
-           f"NORMALIZATION_MODE={NORMALIZATION_MODE}")
+           f"NORMALIZATION_MODE={NORMALIZATION_MODE}, CL_TRAINING_EPOCHS={CL_TRAINING_EPOCHS}, LEARNING_METHODOLOGY={LEARNING_METHODOLOGY}")
 HYPERPARAMETERS = None
 
 # Fixed-range normalization bounds (domain-knowledge, hardware/config dependent)
@@ -990,7 +1005,6 @@ def handle_infer():
         for key, value in infer_from_tensor_overhead_summary.items():
             overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
         
-        # if request id % 10 == 0, log the overhead_log
         if int(request_id) % 10 == 0:
             logger.info(f"overhead_log: {overhead_log}")
         
@@ -1042,21 +1056,29 @@ def handle_infer():
                 response["ood_fallback"] = 4
                 response["fallback_reason"] = "pc1_biased_exploration"
 
-            # PC1 fallback when predicted rewards are similar across pods (saturation regime)
-            # ood_fallback=3: rewards within threshold → defer to prefix_cache_1 heuristic
-            # When all pods look similar to the model, prefix locality is a better tiebreaker
-            REWARD_SIMILARITY_THRESHOLD = float(os.getenv("REWARD_SIMILARITY_THRESHOLD", "0.1"))  # 10% relative range
+            # Tiebreaker: when multiple pods have rewards close to the best pod,
+            # the model can't meaningfully differentiate them → pick randomly among top pods.
+            # ood_fallback=3: tiebreaker triggered, agent picked randomly among near-best pods
+            REWARD_SIMILARITY_THRESHOLD = float(os.getenv("REWARD_SIMILARITY_THRESHOLD", "0.1"))  # 10% of best reward
             predicted_rewards_for_tiebreak = result.get('predicted_rewards', None)
             if predicted_rewards_for_tiebreak is not None and hasattr(predicted_rewards_for_tiebreak, '__len__') and len(predicted_rewards_for_tiebreak) > 1:
                 rewards_arr = np.array(predicted_rewards_for_tiebreak, dtype=np.float64)
-                reward_range = rewards_arr.max() - rewards_arr.min()
-                reward_scale = max(abs(rewards_arr.max()), abs(rewards_arr.min()), 1e-6)
-                relative_range = reward_range / reward_scale
-                logger.info(f"tiebreaker test, Reward similarity fallback: relative_range={relative_range:.4f},  threshold={REWARD_SIMILARITY_THRESHOLD}, using PC1 fallback")
-                if relative_range < REWARD_SIMILARITY_THRESHOLD:
+                best_reward = rewards_arr.max()
+                reward_threshold = best_reward * (1 - REWARD_SIMILARITY_THRESHOLD)
+                near_best_indices = np.where(rewards_arr >= reward_threshold)[0]
+                logger.info(f"tiebreaker test, best_reward={best_reward:.4f}, threshold={reward_threshold:.4f}, near_best_pods={len(near_best_indices)}/{len(rewards_arr)}")
+                if len(near_best_indices) > 1:
+                    random_pick = np.random.choice(near_best_indices)
                     response["ood_fallback"] = 3
-                    response["fallback_reason"] = f"reward_similarity_{relative_range:.4f}"
-                    logger.info(f"Tiebreaker happens! ood_fallback=3")
+                    response["fallback_reason"] = f"reward_tiebreak_picked_pod{random_pick}_from_{len(near_best_indices)}_candidates"
+                    # Override the selected pod with the random pick
+                    selected_pod_index = int(random_pick)
+                    selected_pod_generalpodid = sorted_all_pod_ids[selected_pod_index]
+                    selected_pod_ip = HYPERPARAMETERS['generalpodid_to_pod_ip'][selected_pod_generalpodid]
+                    response["selected_pod"] = selected_pod_ip
+                    response["selected_pod_generalpodid"] = selected_pod_generalpodid
+                    response["chosen_pod_predicted_reward"] = float(rewards_arr[selected_pod_index])
+                    logger.info(f"Tiebreaker happens! ood_fallback=3, picked pod {selected_pod_generalpodid} (index={random_pick}) from {len(near_best_indices)} candidates")
 
             # Fallback routing if using random weights (no online training completed yet)
             # ood_fallback values: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak)
@@ -1169,6 +1191,9 @@ def _evict_global_data(offline_df_copy, online_df_copy, max_keep):
 
 def online_train_routine():
     global NUM_TRAINS, MODEL_UPDATED, TOTAL_NUM_DATA, final_model_dir, NUM_NEW_DATA, TOTAL_NUM_NEW_DATA, HYPERPARAMETERS, TRAINING_RIGHT_NOW, LATENCY_PREDICTOR, OFFLINE_DF, ONLINE_DF, stats_instance, OFFLINE_DATA_SIZE, MAX_TOTAL_DATA, distribution_shift_monitor, per_sample_ood_detector, feature_normalization_stats_file, REPLAY_BUFFER, OLD_TRANSFER_MONITOR
+    if MAX_NUM_ONLINE_TRAINS >= 0 and NUM_TRAINS >= MAX_NUM_ONLINE_TRAINS:
+        logger.info(f"Reached MAX_NUM_ONLINE_TRAINS={MAX_NUM_ONLINE_TRAINS}, NUM_TRAINS={NUM_TRAINS}, skipping training")
+        return
     if TRAINING_RIGHT_NOW:
         logger.info(f"Previous training still in progress, skipping training")
         return
@@ -1180,7 +1205,35 @@ def online_train_routine():
         return
     TRAINING_RIGHT_NOW = True
     training_start_time = time.time()
-    logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with NUM_NEW_DATA ({NUM_NEW_DATA}) new training data")
+
+    # === CL round-0-vs-round-N override ===
+    # For CL configs (ONLINE_TRAIN_FROM_SCRATCH=0): round 0 needs aggressive training
+    # (from-scratch behavior), round 1+ uses gentle incremental updates.
+    # For from-scratch configs (ONLINE_TRAIN_FROM_SCRATCH=1): no override needed.
+    # Use the global env var (not HYPERPARAMETERS) to detect CL mode, because
+    # HYPERPARAMETERS gets overridden per-round and round 0 sets it to True.
+    cl_training_epochs = HYPERPARAMETERS.get('CL_TRAINING_EPOCHS', 0)
+    is_cl_mode = not bool(ONLINE_TRAIN_FROM_SCRATCH)  # env var: 0 = CL mode
+    if is_cl_mode and NUM_TRAINS == 0:
+        # CL round 0: behave like from-scratch (aggressive training to bootstrap the model)
+        HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = True
+        HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = True
+        # Use default training_epochs from model_config.json (don't override)
+        logger.info(f"CL round 0: using from-scratch behavior (aggressive training to bootstrap model)")
+    elif is_cl_mode and NUM_TRAINS > 0:
+        # CL round 1+: incremental updates
+        HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = False
+        HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = False
+        if cl_training_epochs > 0:
+            HYPERPARAMETERS['training_epochs'] = cl_training_epochs
+            logger.info(f"CL round {NUM_TRAINS}: incremental mode, training_epochs overridden to {cl_training_epochs}")
+        else:
+            logger.info(f"CL round {NUM_TRAINS}: incremental mode, using default training_epochs={HYPERPARAMETERS.get('training_epochs', 'N/A')}")
+
+    logger.info(f"online_train_routine start, {NUM_TRAINS}th online training with NUM_NEW_DATA ({NUM_NEW_DATA}) new training data, "
+                f"ONLINE_TRAIN_FROM_SCRATCH={HYPERPARAMETERS.get('ONLINE_TRAIN_FROM_SCRATCH')}, "
+                f"CB_RESET_LR_PER_ROUND={HYPERPARAMETERS.get('CB_RESET_LR_PER_ROUND')}, "
+                f"training_epochs={HYPERPARAMETERS.get('training_epochs', 'N/A')}")
     try:
         # Route to appropriate training function based on model type
         model_type = HYPERPARAMETERS['MODEL_TYPE']
@@ -1303,7 +1356,8 @@ def online_train_routine():
             # or the initial offline model stats).
             # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally (model weights
             # are carried forward, so stats should evolve gradually).
-            recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
+            # Use HYPERPARAMETERS (not global) to respect CL round-0-vs-round-N override
+            recompute_stats = bool(HYPERPARAMETERS.get('ONLINE_TRAIN_FROM_SCRATCH', ONLINE_TRAIN_FROM_SCRATCH))
 
             # When using fixed-range normalization, do NOT update stats from data.
             # The fixed-range bounds are domain-knowledge constants that should never change.
@@ -1464,7 +1518,17 @@ def online_train_routine():
             
             logger.info(f"Training on total data: {total_samples} (offline: {current_offline_size}, online: {len(online_df_copy)})")
 
-            if FIFO_SIZE > 0 or REPLAY_SIZE > 0:
+            if is_cl_mode and NUM_TRAINS > 0 and FIFO_SIZE == 0 and REPLAY_SIZE == 0:
+                # === CL NEW DATA ONLY (Config 4, round 1+) ===
+                # Only train on the new batch from the latest flush. No historical data.
+                # The model relies entirely on its weights to remember past patterns.
+                new_batch_df, historical_df = _split_new_and_historical(online_df_copy, offline_df_copy, NUM_TRAINS)
+                training_df_copy = new_batch_df
+                if 'request_id' in training_df_copy.columns:
+                    training_df_copy = training_df_copy.drop_duplicates(subset=['request_id'])
+                total_samples = len(training_df_copy)
+                logger.info(f"CL new-data-only (round {NUM_TRAINS}): training on {total_samples} new samples only (no FIFO, no replay)")
+            elif FIFO_SIZE > 0 or REPLAY_SIZE > 0:
                 # === TWO-POOL SELECTION ===
                 target_pool = FIFO_SIZE + REPLAY_SIZE
                 new_batch_df, historical_df = _split_new_and_historical(online_df_copy, offline_df_copy, NUM_TRAINS)
@@ -1621,7 +1685,8 @@ def online_train_routine():
             # reflect ONLY the current training window (no accumulation from prior rounds
             # or the initial offline model stats).
             # When ONLINE_TRAIN_FROM_SCRATCH=0: accumulate incrementally.
-            recompute_stats = bool(ONLINE_TRAIN_FROM_SCRATCH)
+            # Use HYPERPARAMETERS (not global) to respect CL round-0-vs-round-N override
+            recompute_stats = bool(HYPERPARAMETERS.get('ONLINE_TRAIN_FROM_SCRATCH', ONLINE_TRAIN_FROM_SCRATCH))
 
             # When using fixed-range normalization, do NOT update stats from data.
             update_stats_online = NORMALIZATION_MODE != "fixed_range"
@@ -2113,7 +2178,7 @@ def initialize():
                 if lmetric_base:
                     final_model_dir = lmetric_base
                 else:
-                    final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                    final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear"
                 offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -2177,6 +2242,8 @@ def initialize():
         HYPERPARAMETERS['INCLUDE_GPU_FEATURES'] = INCLUDE_GPU_FEATURES
         HYPERPARAMETERS['ONLINE_TRAIN_FROM_SCRATCH'] = bool(ONLINE_TRAIN_FROM_SCRATCH)
         HYPERPARAMETERS['CB_RESET_LR_PER_ROUND'] = bool(CB_RESET_LR_PER_ROUND)
+        HYPERPARAMETERS['CL_TRAINING_EPOCHS'] = CL_TRAINING_EPOCHS  # 0=use default, >0=override for CL round 1+
+        HYPERPARAMETERS['LEARNING_METHODOLOGY'] = LEARNING_METHODOLOGY
         HYPERPARAMETERS['RECENCY_DECAY_WEIGHT_FACTOR'] = RECENCY_DECAY_WEIGHT_FACTOR
         HYPERPARAMETERS['ENABLE_FALLBACK'] = bool(ENABLE_FALLBACK)
         HYPERPARAMETERS['RETRAIN_AT_STARTUP'] = bool(RETRAIN_AT_STARTUP)
