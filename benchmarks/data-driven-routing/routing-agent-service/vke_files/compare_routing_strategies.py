@@ -333,7 +333,95 @@ def average_metrics_by_category(all_metrics, average_duplicates=False):
     
     return averaged_metrics
 
-def export_metrics_to_csv(all_metrics, base_dir):
+def _extract_per_request_columns(strategy_name, csv_data_dict):
+    """Extract per-request metric lists from a strategy's DataFrame, sorted by relative_time."""
+    result = {}
+    if not csv_data_dict or strategy_name not in csv_data_dict:
+        return result
+    df = csv_data_dict[strategy_name]
+    if 'relative_time' not in df.columns:
+        return result
+    df_sorted = df.sort_values('relative_time').reset_index(drop=True)
+
+    # ttft, avg_tpot, relative_time
+    for col in ['ttft', 'avg_tpot', 'relative_time']:
+        if col in df_sorted.columns:
+            vals = pd.to_numeric(df_sorted[col], errors='coerce').tolist()
+            result[f'per_request_{col}'] = json.dumps(vals)
+
+    # kv_hit_ratio via _extract_selectedpod_series
+    kv_series = _extract_selectedpod_series(
+        df_sorted,
+        direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
+        dict_candidates=['allPodsKvCacheHitRatios'],
+        per_pod_suffix='-kv_hit_ratio',
+    )
+    if kv_series is not None and kv_series.notna().any():
+        result['per_request_kv_hit_ratio'] = json.dumps(kv_series.tolist())
+
+    # prefill_tokens
+    pt_series = _extract_selectedpod_series(
+        df_sorted,
+        direct_candidates=['prefill_tokens'],
+        dict_candidates=['numPrefillTokensForAllPods'],
+        per_pod_suffix='-prefill_tokens',
+    )
+    if pt_series is not None and pt_series.notna().any():
+        result['per_request_prefill_tokens'] = json.dumps(pt_series.tolist())
+
+    # inflight_prefill_requests
+    ipr_series = _extract_selectedpod_series(
+        df_sorted,
+        direct_candidates=['inflight_prefill_requests', 'selected_inflight_prefill_requests'],
+        dict_candidates=['numInflightPrefillRequestsAllPods'],
+        per_pod_suffix='-inflight_prefill_requests',
+    )
+    if ipr_series is not None and ipr_series.notna().any():
+        result['per_request_inflight_prefill_requests'] = json.dumps(ipr_series.tolist())
+
+    return result
+
+
+def _rebuild_csv_data_dict_from_df(existing_df):
+    """Reconstruct csv_data_dict from per-request columns stored in the metrics CSV."""
+    per_request_cols = [c for c in existing_df.columns if c.startswith('per_request_')]
+    if not per_request_cols:
+        return None
+
+    csv_data_dict = {}
+    for _, row in existing_df.iterrows():
+        strategy = row['strategy_full_name']
+        # Check if per_request_ttft exists and is not empty
+        if 'per_request_ttft' not in existing_df.columns or pd.isna(row.get('per_request_ttft', None)):
+            continue
+        try:
+            ttft_vals = json.loads(row['per_request_ttft'])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        n = len(ttft_vals)
+        if n == 0:
+            continue
+
+        df_data = {'ttft': ttft_vals}
+        col_map = {
+            'per_request_avg_tpot': 'avg_tpot',
+            'per_request_relative_time': 'relative_time',
+            'per_request_kv_hit_ratio': 'selected_kv_hit_ratio',
+            'per_request_prefill_tokens': 'prefill_tokens',
+            'per_request_inflight_prefill_requests': 'inflight_prefill_requests',
+        }
+        for csv_col, df_col in col_map.items():
+            if csv_col in existing_df.columns and pd.notna(row.get(csv_col, None)):
+                try:
+                    df_data[df_col] = json.loads(row[csv_col])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        csv_data_dict[strategy] = pd.DataFrame(df_data)
+    return csv_data_dict if csv_data_dict else None
+
+
+def export_metrics_to_csv(all_metrics, base_dir, csv_data_dict=None):
     """Export performance metrics to a CSV file in the same directory as the PDF."""
     if not all_metrics:
         print("No metrics to export.")
@@ -387,15 +475,28 @@ def export_metrics_to_csv(all_metrics, base_dir):
             row['avg_ttft_min'] = metrics.get('avg_ttft_min', '')
             row['avg_ttft_max'] = metrics.get('avg_ttft_max', '')
 
+        # Add per-request columns from csv_data_dict
+        per_req = _extract_per_request_columns(strategy_name, csv_data_dict)
+        row.update(per_req)
+
         rows.append(row)
 
     # Write CSV file
     if rows:
         # Define fieldnames
+        per_request_fields = [
+            'per_request_ttft', 'per_request_avg_tpot', 'per_request_relative_time',
+            'per_request_kv_hit_ratio', 'per_request_prefill_tokens',
+            'per_request_inflight_prefill_requests',
+        ]
         fieldnames = ['workload', 'routing_policy', 'strategy_full_name'] + metric_columns
         # Add optional fields if present
         optional_fields = ['experiment_count', 'avg_ttft_std', 'avg_ttft_min', 'avg_ttft_max']
         for field in optional_fields:
+            if any(field in row for row in rows):
+                fieldnames.append(field)
+        # Add per-request fields that are actually present
+        for field in per_request_fields:
             if any(field in row for row in rows):
                 fieldnames.append(field)
 
@@ -893,7 +994,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
-def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None, window_size=500):
+def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None, window_size=500, skip_timeseries=False):
     """Create bar charts comparing performance metrics across routing strategies."""
     if not metrics_list:
         print("No metrics to plot.")
@@ -978,13 +1079,18 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    fig = plt.figure(figsize=(18, 82))  # 12 rows: original 8 + 4 extra time series
-
-    # GridSpec: 12 rows (CDFs, bars, and time series x6)
-    gs = GridSpec(12, 9, figure=fig,
-                  height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6, 1.6],
-                  hspace=1.1,
-                  wspace=0.35)
+    if skip_timeseries:
+        fig = plt.figure(figsize=(18, 42))  # 6 rows: CDFs + bars only
+        gs = GridSpec(6, 9, figure=fig,
+                      height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5],
+                      hspace=1.1,
+                      wspace=0.35)
+    else:
+        fig = plt.figure(figsize=(18, 82))  # 12 rows: original 8 + 4 extra time series
+        gs = GridSpec(12, 9, figure=fig,
+                      height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6, 1.6],
+                      hspace=1.1,
+                      wspace=0.35)
     
     # fig.suptitle('Routing Strategy Performance Comparison', fontsize=maintitle_fontsize, y=0.98)
     
@@ -1046,75 +1152,78 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'end_to_end_overhead',
                                       'End-to-End Overhead Comparison (Avg, P50, P99, P999)')
 
-        # Plot 8: TTFT Time Series (full width, row 6)
-        ax = fig.add_subplot(gs[6, :])
-        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1000-request window averages)', 'TTFT (ms)', show_legend=True)
+        if not skip_timeseries:
+            # Plot 8: TTFT Time Series (full width, row 6)
+            ax = fig.add_subplot(gs[6, :])
+            plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1000-request window averages)', 'TTFT (ms)', show_legend=False)
 
-        # Plot 9: Avg TPOT Time Series (full width, row 7)
-        ax = fig.add_subplot(gs[7, :])
-        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1000-request window averages)', 'Avg TPOT (ms)', show_legend=False)
+            # Plot 9: Avg TPOT Time Series (full width, row 7)
+            ax = fig.add_subplot(gs[7, :])
+            plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'avg_tpot', 'Avg TPOT Time Series (1000-request window averages)', 'Avg TPOT (ms)', show_legend=False)
 
-        # Plot 10: KV Hit Ratio Time Series (full width, row 8)
-        ax = fig.add_subplot(gs[8, :])
-        plot_selectedpod_metric_timeseries(
-            ax, csv_data_dict, strategy_order, color_dict,
-            metric_title=f'KV Hit Ratio Time Series ({window_size}-request window averages)',
-            ylabel='KV Hit Ratio',
-            direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
-            dict_candidates=['allPodsKvCacheHitRatios'],
-            per_pod_suffix='-kv_hit_ratio',
-            window_size=window_size,
-            normalize_to_ratio=True,
-            show_legend=False,
-        )
+            # Plot 10: KV Hit Ratio Time Series (full width, row 8)
+            ax = fig.add_subplot(gs[8, :])
+            plot_selectedpod_metric_timeseries(
+                ax, csv_data_dict, strategy_order, color_dict,
+                metric_title=f'KV Hit Ratio Time Series ({window_size}-request window averages)',
+                ylabel='KV Hit Ratio',
+                direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
+                dict_candidates=['allPodsKvCacheHitRatios'],
+                per_pod_suffix='-kv_hit_ratio',
+                window_size=window_size,
+                normalize_to_ratio=True,
+                show_legend=False,
+            )
 
-        # Plot 11: KV Hit Ratio Time Series with P25/P99 (full width, row 9)
-        ax = fig.add_subplot(gs[9, :])
-        plot_selectedpod_metric_timeseries_percentiles(
-            ax, csv_data_dict, strategy_order, color_dict,
-            metric_title=f'KV Hit Ratio Time Series ({window_size}-request window P25/P50/P99)',
-            ylabel='KV Hit Ratio',
-            direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
-            dict_candidates=['allPodsKvCacheHitRatios'],
-            per_pod_suffix='-kv_hit_ratio',
-            window_size=window_size,
-            normalize_to_ratio=True,
-            show_legend=True,
-        )
+            # Plot 11: KV Hit Ratio Time Series with P25/P99 (full width, row 9)
+            ax = fig.add_subplot(gs[9, :])
+            plot_selectedpod_metric_timeseries_percentiles(
+                ax, csv_data_dict, strategy_order, color_dict,
+                metric_title=f'KV Hit Ratio Time Series ({window_size}-request window P25/P50/P99)',
+                ylabel='KV Hit Ratio',
+                direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
+                dict_candidates=['allPodsKvCacheHitRatios'],
+                per_pod_suffix='-kv_hit_ratio',
+                window_size=window_size,
+                normalize_to_ratio=True,
+                show_legend=True,
+            )
 
-        # Plot 12: Prefill Tokens Time Series (full width, row 10)
-        ax = fig.add_subplot(gs[10, :])
-        plot_selectedpod_metric_timeseries(
-            ax, csv_data_dict, strategy_order, color_dict,
-            metric_title=f'Prefill Tokens Time Series ({window_size}-request window averages)',
-            ylabel='Prefill Tokens',
-            direct_candidates=['prefill_tokens'],
-            dict_candidates=['numPrefillTokensForAllPods'],
-            per_pod_suffix='-prefill_tokens',
-            window_size=window_size,
-            normalize_to_ratio=False,
-            show_legend=False,
-        )
+            # Plot 12: Prefill Tokens Time Series (full width, row 10)
+            ax = fig.add_subplot(gs[10, :])
+            plot_selectedpod_metric_timeseries(
+                ax, csv_data_dict, strategy_order, color_dict,
+                metric_title=f'Prefill Tokens Time Series ({window_size}-request window averages)',
+                ylabel='Prefill Tokens',
+                direct_candidates=['prefill_tokens'],
+                dict_candidates=['numPrefillTokensForAllPods'],
+                per_pod_suffix='-prefill_tokens',
+                window_size=window_size,
+                normalize_to_ratio=False,
+                show_legend=False,
+            )
 
-        # Plot 13: Inflight Prefill Requests Time Series (full width, row 11)
-        ax = fig.add_subplot(gs[11, :])
-        plot_selectedpod_metric_timeseries(
-            ax, csv_data_dict, strategy_order, color_dict,
-            metric_title=f'Inflight Prefill Requests Time Series ({window_size}-request window averages)',
-            ylabel='Inflight Prefill Requests',
-            direct_candidates=['inflight_prefill_requests', 'selected_inflight_prefill_requests'],
-            dict_candidates=['numInflightPrefillRequestsAllPods'],
-            per_pod_suffix='-inflight_prefill_requests',
-            window_size=window_size,
-            normalize_to_ratio=False,
-            show_legend=False,
-        )
+            # Plot 13: Inflight Prefill Requests Time Series (full width, row 11)
+            ax = fig.add_subplot(gs[11, :])
+            plot_selectedpod_metric_timeseries(
+                ax, csv_data_dict, strategy_order, color_dict,
+                metric_title=f'Inflight Prefill Requests Time Series ({window_size}-request window averages)',
+                ylabel='Inflight Prefill Requests',
+                direct_candidates=['inflight_prefill_requests', 'selected_inflight_prefill_requests'],
+                dict_candidates=['numInflightPrefillRequestsAllPods'],
+                per_pod_suffix='-inflight_prefill_requests',
+                window_size=window_size,
+                normalize_to_ratio=False,
+                show_legend=False,
+            )
     else:
         # If no CSV data provided, show placeholder text for all plots
-        for row_idx, plot_cols in [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
-                                   (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)]),
-                                   (6, [slice(None)]), (7, [slice(None)]), (8, [slice(None)]),
-                                   (9, [slice(None)]), (10, [slice(None)]), (11, [slice(None)])]:
+        placeholder_rows = [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
+                            (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]
+        if not skip_timeseries:
+            placeholder_rows += [(6, [slice(None)]), (7, [slice(None)]), (8, [slice(None)]),
+                                 (9, [slice(None)]), (10, [slice(None)]), (11, [slice(None)])]
+        for row_idx, plot_cols in placeholder_rows:
             if row_idx == 0:
                 for col_slice in plot_cols:
                     ax = fig.add_subplot(gs[row_idx, col_slice])
@@ -1630,7 +1739,6 @@ def plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, column, titl
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.set_xlabel(xlabel, fontsize=ylabel_fontsize)
     ax.set_ylabel('CDF', fontsize=ylabel_fontsize)
-    ax.legend(fontsize=16, loc='lower right')
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=tick_fontsize)
 
@@ -2086,9 +2194,13 @@ if __name__ == "__main__":
                        help='Average multiple experiments for the same routing policy')
     parser.add_argument('--upto_request', type=int, default=None,
                        help='If given, only plot the first N requests (by arrival order) from each log file')
-    
+    parser.add_argument('--append', action='store_true',
+                       help='Only process experiments not already in the CSV, append their metrics, then plot')
+    parser.add_argument('--skip-timeseries', action='store_true',
+                       help='Skip plotting time series graphs')
+
     args = parser.parse_args()
-    
+
     base_dir = args.base_directory
     warmup_seconds = args.warmup_seconds
     cut_last_seconds = args.cut_last_seconds
@@ -2096,6 +2208,8 @@ if __name__ == "__main__":
     from_request = args.from_request
     average_duplicates = args.average_duplicates
     upto_request = args.upto_request
+    append_mode = args.append
+    skip_timeseries = args.skip_timeseries
     
     print(f"Searching for log files in {base_dir}...")
     if warmup_seconds is not None:
@@ -2108,26 +2222,106 @@ if __name__ == "__main__":
         print(f"from_request: skipping first {from_request} requests")
     if upto_request is not None:
         print(f"upto_request: plotting only the first {upto_request} requests")
-    
+    if append_mode:
+        print("Append mode: only processing new experiments not already in CSV")
+
     slo_ttft = 1000
     slo_tpot = 50
-    
+
     log_files = find_log_files(base_dir)
     print(f"Found {len(log_files)} log files.")
-    
+
     if not log_files:
         print(f"No log files found in {base_dir}")
         sys.exit(1)
-    
-    # Process each log file in parallel - collect both metrics and DataFrames
+
+    # In append mode, filter out log files whose experiments are already in the CSV
+    if append_mode:
+        csv_filepath = os.path.join(base_dir, "routing_strategy_metrics_gateway.csv")
+        existing_strategies = set()
+        if os.path.exists(csv_filepath):
+            with open(csv_filepath, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    existing_strategies.add(row.get('strategy_full_name', ''))
+            print(f"Found {len(existing_strategies)} existing experiments in CSV")
+
+        new_log_files = []
+        for log_file in log_files:
+            strategy = parse_strategy_name(log_file)
+            if strategy not in existing_strategies:
+                new_log_files.append(log_file)
+            else:
+                print(f"  Skipping (already in CSV): {strategy}")
+
+        if not new_log_files:
+            print("No new experiments to process. CSV is up to date.")
+            # Still need all_metrics for plotting — read them from the CSV
+            all_metrics = []
+            csv_data_dict = {}
+            if os.path.exists(csv_filepath):
+                existing_df = pd.read_csv(csv_filepath)
+                for _, row in existing_df.iterrows():
+                    metrics = {col: row[col] for col in existing_df.columns if pd.notna(row[col])}
+                    metrics['strategy'] = row['strategy_full_name']
+                    all_metrics.append(metrics)
+                # Try to reconstruct csv_data_dict from cached per-request columns
+                cached = _rebuild_csv_data_dict_from_df(existing_df)
+                if cached:
+                    csv_data_dict = cached
+                    print(f"  Loaded per-request data from CSV for {len(csv_data_dict)} strategies (no log re-parsing needed)")
+            if not csv_data_dict:
+                # Fallback: reprocess all log files for plotting DataFrames
+                print("  Per-request data not found in CSV, re-parsing log files...")
+                worker_args = [
+                    (lf, warmup_seconds, cut_last_seconds, iteration_from, from_request, upto_request)
+                    for lf in log_files
+                ]
+                num_workers = min(len(log_files), os.cpu_count() or 4)
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    future_to_file = {
+                        executor.submit(_process_log_file_captured, a): a[0]
+                        for a in worker_args
+                    }
+                    results_by_file = {}
+                    for future in as_completed(future_to_file):
+                        lf = future_to_file[future]
+                        results_by_file[lf] = future.result()
+                for lf in log_files:
+                    _, result, _ = results_by_file[lf]
+                    if result:
+                        _, df = result
+                        strategy = parse_strategy_name(lf)
+                        csv_data_dict[strategy] = df
+            csv_data_dict_individual = dict(csv_data_dict)
+            if average_duplicates:
+                all_metrics = average_metrics_by_category(all_metrics, average_duplicates)
+                if csv_data_dict:
+                    category_csv_dict = {}
+                    for strategy, df in csv_data_dict.items():
+                        category = categorize_strategy(strategy)
+                        if category not in category_csv_dict:
+                            category_csv_dict[category] = df
+                    csv_data_dict = category_csv_dict
+            plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries)
+            sys.exit(0)
+
+        print(f"Processing {len(new_log_files)} new experiment(s):")
+        for lf in new_log_files:
+            print(f"  NEW: {parse_strategy_name(lf)}")
+        log_files_to_process = new_log_files
+    else:
+        log_files_to_process = log_files
+
+    # Process log files in parallel - collect both metrics and DataFrames
     all_metrics = []
     csv_data_dict = {}  # Dictionary to store DataFrames
 
     worker_args = [
         (log_file, warmup_seconds, cut_last_seconds, iteration_from, from_request, upto_request)
-        for log_file in log_files
+        for log_file in log_files_to_process
     ]
-    num_workers = min(len(log_files), os.cpu_count() or 4)
+    num_workers = min(len(log_files_to_process), os.cpu_count() or 4)
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         future_to_file = {
             executor.submit(_process_log_file_captured, args): args[0]
@@ -2139,15 +2333,133 @@ if __name__ == "__main__":
             log_file = future_to_file[future]
             results_by_file[log_file] = future.result()
 
-    # Print output and collect results in original log_files order
-    for log_file in log_files:
+    # Print output and collect results in original order
+    new_metrics = []
+    for log_file in log_files_to_process:
         log_file_key, result, output = results_by_file[log_file]
         print(output, end='')
         if result:
             metrics, df = result
-            all_metrics.append(metrics)
+            new_metrics.append(metrics)
             csv_data_dict[metrics['strategy']] = df
-    
+
+    if append_mode:
+        # Append only new metrics to the existing CSV
+        csv_filepath = os.path.join(base_dir, "routing_strategy_metrics_gateway.csv")
+        if new_metrics and os.path.exists(csv_filepath):
+            workload = ""
+            if "workload-and-experiment_results" in base_dir:
+                parts = base_dir.split("workload-and-experiment_results")
+                if len(parts) > 1:
+                    workload = parts[1].lstrip("/")
+
+            # Read existing CSV to get fieldnames (may include per-request columns)
+            with open(csv_filepath, 'r') as f:
+                reader = csv.DictReader(f)
+                existing_fieldnames = reader.fieldnames or []
+
+            per_request_fields = [
+                'per_request_ttft', 'per_request_avg_tpot', 'per_request_relative_time',
+                'per_request_kv_hit_ratio', 'per_request_prefill_tokens',
+                'per_request_inflight_prefill_requests',
+            ]
+            # Ensure per-request fields are in fieldnames
+            fieldnames = list(existing_fieldnames)
+            for field in per_request_fields:
+                if field not in fieldnames:
+                    fieldnames.append(field)
+
+            # If fieldnames changed, rewrite with new header
+            if fieldnames != list(existing_fieldnames):
+                existing_df = pd.read_csv(csv_filepath)
+                existing_rows = existing_df.to_dict('records')
+            else:
+                existing_rows = None
+
+            metric_columns = [
+                'avg_ttft', 'p99_ttft', 'p999_ttft',
+                'avg_tpot', 'p99_tpot', 'p999_tpot',
+                'avg_end_to_end', 'p99_end_to_end',
+                'avg_end_to_end_overhead', 'p50_end_to_end_overhead',
+                'p99_end_to_end_overhead', 'p999_end_to_end_overhead',
+                'num_requests', 'throughput_rps', 'throughput_tps'
+            ]
+
+            new_rows = []
+            for metrics in new_metrics:
+                strategy_name = metrics.get('strategy', '')
+                row = {
+                    'workload': workload,
+                    'routing_policy': categorize_strategy(strategy_name),
+                    'strategy_full_name': strategy_name,
+                }
+                for metric in metric_columns:
+                    row[metric] = metrics.get(metric, '')
+                row.update(_extract_per_request_columns(strategy_name, csv_data_dict))
+                new_rows.append(row)
+
+            if existing_rows is not None:
+                # Rewrite entire CSV with new fieldnames
+                with open(csv_filepath, 'w', newline='') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+                    writer.writeheader()
+                    for row in existing_rows:
+                        writer.writerow(row)
+                    for row in new_rows:
+                        writer.writerow(row)
+            else:
+                with open(csv_filepath, 'a', newline='') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    for row in new_rows:
+                        writer.writerow(row)
+            print(f"** Appended {len(new_metrics)} new experiment(s) to {csv_filepath}")
+        elif new_metrics:
+            # No existing CSV — create it from scratch
+            export_metrics_to_csv(new_metrics, base_dir, csv_data_dict)
+
+        # For plotting, load all metrics from the CSV (existing + newly appended)
+        all_metrics = []
+        existing_df = pd.read_csv(csv_filepath)
+        for _, row in existing_df.iterrows():
+            metrics = {col: row[col] for col in existing_df.columns if pd.notna(row[col])}
+            metrics['strategy'] = row['strategy_full_name']
+            all_metrics.append(metrics)
+
+        # Also need DataFrames for all experiments (not just new ones) for plotting
+        # Try to load from cached per-request columns first
+        cached = _rebuild_csv_data_dict_from_df(existing_df)
+        if cached:
+            # Merge cached data for strategies we don't already have from new processing
+            for strategy, df in cached.items():
+                if strategy not in csv_data_dict:
+                    csv_data_dict[strategy] = df
+            print(f"  Loaded per-request data from CSV for existing strategies (no log re-parsing needed)")
+        else:
+            remaining_log_files = [lf for lf in log_files if lf not in results_by_file]
+            if remaining_log_files:
+                print(f"  Per-request data not found in CSV, re-parsing {len(remaining_log_files)} log files...")
+                worker_args = [
+                    (lf, warmup_seconds, cut_last_seconds, iteration_from, from_request, upto_request)
+                    for lf in remaining_log_files
+                ]
+                num_workers = min(len(remaining_log_files), os.cpu_count() or 4)
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    future_to_file = {
+                        executor.submit(_process_log_file_captured, a): a[0]
+                        for a in worker_args
+                    }
+                    for future in as_completed(future_to_file):
+                        lf = future_to_file[future]
+                        _, result, _ = future.result()
+                        if result:
+                            _, df = result
+                            strategy = parse_strategy_name(lf)
+                            csv_data_dict[strategy] = df
+    else:
+        all_metrics = new_metrics
+        # Export metrics to CSV (full overwrite)
+        export_metrics_to_csv(all_metrics, base_dir, csv_data_dict)
+
     # Keep a copy of the original per-experiment csv_data_dict before averaging
     csv_data_dict_individual = dict(csv_data_dict)
 
@@ -2166,7 +2478,7 @@ if __name__ == "__main__":
                 if category not in category_csv_dict:
                     category_csv_dict[category] = df
             csv_data_dict = category_csv_dict
-    
+
     # ADD: Debug information
     # print(f"CSV data dict keys: {list(csv_data_dict.keys())}")
     if csv_data_dict:
@@ -2182,8 +2494,5 @@ if __name__ == "__main__":
             print(f"WARNING: Missing required columns: {missing_cols}")
             print(f"Available columns: {list(sample_df.columns)}")
 
-    # Export metrics to CSV
-    export_metrics_to_csv(all_metrics, base_dir)
-
     # Plot the comparison - MODIFIED to pass csv_data_dict
-    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual)
+    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries)

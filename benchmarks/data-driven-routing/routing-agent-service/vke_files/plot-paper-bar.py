@@ -34,6 +34,19 @@ from trendline_plot_from_gateway_log import (
 )
 
 
+# -- Font size variables (bump all by changing _FS_BUMP) --
+_FS_BUMP = 4
+FS_DEFAULT = 13 + _FS_BUMP        # matplotlib font.size
+FS_AXES_TITLE = 16 + _FS_BUMP     # axes.titlesize
+FS_AXES_LABEL = 13 + _FS_BUMP + 5 # axes.labelsize (+2+3)
+FS_TICK = 11 + _FS_BUMP + 4       # xtick / ytick labelsize (+2+2)
+FS_LEGEND = 11 + _FS_BUMP + 12    # legend.fontsize (+4+4+4)
+FS_FIG_TITLE = 20 + _FS_BUMP + 10 # figure.titlesize / suptitle (+10)
+FS_BAR_ANNOTATION = 10 + _FS_BUMP # value labels on bars
+FS_SUBPLOT_TITLE = 11 + _FS_BUMP + 7  # per-subplot title (+5+2)
+FS_LEGEND_BOX = 10 + _FS_BUMP + 12 # legend boxes in single-page mode (+4+4+4)
+
+
 def _set_paper_style():
     """Apply matplotlib defaults that are cleaner for paper-ready figures."""
     # Keep output clean: font subsetting can emit verbose INFO logs.
@@ -42,13 +55,13 @@ def _set_paper_style():
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 13,
-            "axes.titlesize": 16,
-            "axes.labelsize": 13,
-            "xtick.labelsize": 11,
-            "ytick.labelsize": 11,
-            "legend.fontsize": 11,
-            "figure.titlesize": 20,
+            "font.size": FS_DEFAULT,
+            "axes.titlesize": FS_AXES_TITLE,
+            "axes.labelsize": FS_AXES_LABEL,
+            "xtick.labelsize": FS_TICK,
+            "ytick.labelsize": FS_TICK,
+            "legend.fontsize": FS_LEGEND,
+            "figure.titlesize": FS_FIG_TITLE,
             "pdf.fonttype": 42,  # Embed editable TrueType fonts
             "ps.fonttype": 42,
         }
@@ -56,23 +69,28 @@ def _set_paper_style():
 
 
 _DISPLAY_NAME_OVERRIDES = {
-    "cb_ttft_conv2_tool2-onlinelearning_0": "Quicksilver-without-onlinelearning",
+    "cb_ttft_conv2_tool2-onlinelearning_0": "Quicksilver without online learning",
+    "cb_ttft_conv2_tool2-onlinelearning_1": "Quicksilver",
     "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1": "Quicksilver",
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random": "Quicksilver",
+    "least_request": "Least request",
+    "prefix_cache_1": "Prefix-and-load-aware",
 }
 
 # Policies matching any of these substrings are excluded from plots by default.
-_DEFAULT_EXCLUDE_PATTERNS = [
-    "cb_ttft_conv2_tool2-onlinelearning_1",
-]
+_DEFAULT_EXCLUDE_PATTERNS = []
 
 
 def _compact_policy_label(policy: str, max_len: int = 56) -> str:
     """Make long policy names more readable in legends."""
     if policy in _DISPLAY_NAME_OVERRIDES:
         return _DISPLAY_NAME_OVERRIDES[policy]
+    # prefix_hit_threshold_or_least_request_threshold_XX -> Prefix hit or least request (tau=XX)
+    m = re.match(r"prefix_hit_threshold_or_least_request_threshold_(.+)", policy)
+    if m:
+        return f"Prefix hit or least request (tau={m.group(1)})"
     text = (
         policy.replace("contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_", "cb_ttft_")
-        .replace("prefix_hit_threshold_or_least_request_threshold_", "prefix_hit_or_lr_")
         .replace("_conversation_2", "_conv2")
         .replace("_toolagent_2", "_tool2")
     )
@@ -118,8 +136,7 @@ def _mean_std_positive(series):
     if not vals:
         return 0.0, 0.0
     mean_v = float(np.mean(vals))
-    std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
-    return mean_v, std_v
+    return mean_v, 0.0
 
 
 def _is_quicksilver_policy(policy: str) -> bool:
@@ -166,6 +183,7 @@ def _merge_cb_conv2_tool2_onlinelearning_policies(df):
         rp.str.contains("contextual_bandit")
         & rp.str.contains("onlinelearning_")
         & (rp.str.contains("conversation_2") | rp.str.contains("toolagent_2"))
+        & ~rp.str.contains("no_candidate_filtering")
     )
     merged_count = int(merge_mask.sum())
     if merged_count == 0:
@@ -195,6 +213,12 @@ def export_paper_csv(df, output_dir, exclude_patterns=None):
                 lambda p: any(pat in p for pat in exclude_patterns)
             )
         ]
+        if "strategy_full_name" in df_plot.columns:
+            df_plot = df_plot[
+                ~df_plot["strategy_full_name"].apply(
+                    lambda s: any(pat in s for pat in exclude_patterns) if isinstance(s, str) else False
+                )
+            ]
     if df_plot.empty:
         print("No rows to export after exclusion filters.")
         return None
@@ -310,7 +334,7 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
     n = len(policies)
     # Two bars per policy group (Avg / P99), centred around each tick.
     x = np.arange(n) * 1.85
-    width = 0.44
+    width = 0.62
     p99_colors = [_lighten(c, 1.45) for c in colors]
 
     b1 = ax.bar(
@@ -365,42 +389,28 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
             ratio_label_p99 = f"{p99_vals[quicksilver_idx] / p99_vals[prefix_idx]:.2f}"
 
         for i, (bar, v, e) in enumerate(zip(b1, avg_vals, avg_errs)):
-            if v > 0:
-                label = f"{v:.0f}"
-                if (
-                    quicksilver_idx is not None
-                    and ratio_label is not None
-                    and i == quicksilver_idx
-                ):
-                    label = f"{v:.0f}({ratio_label})"
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    v + e + max_avg * 0.015,
-                    label,
-                    ha="center",
-                    va="bottom",
-                    fontsize=10,
-                    rotation=90,
-                )
+            if v <= 0:
+                continue
+            x_pos = bar.get_x() + bar.get_width() / 2
+            y_pos = v + e + max_avg * 0.015
+            val_str = f"{v:.0f}"
+            if quicksilver_idx is not None and ratio_label is not None and i == quicksilver_idx:
+                val_str = f"{v:.0f} ({ratio_label})"
+            ax.text(x_pos, y_pos, val_str, ha="center", va="bottom",
+                    fontsize=FS_BAR_ANNOTATION, rotation=90,
+                    fontweight="bold" if (quicksilver_idx is not None and i == quicksilver_idx and ratio_label) else "normal")
+
         for i, (bar, v, e) in enumerate(zip(b2, p99_vals, p99_errs)):
-            if v > 0:
-                label = f"{v:.0f}"
-                if (
-                    quicksilver_idx is not None
-                    and ratio_label_p99 is not None
-                    and i == quicksilver_idx
-                ):
-                    label = f"{v:.0f}({ratio_label_p99})"
-                ax2.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    v + e + max_right * 0.015,
-                    label,
-                    ha="center",
-                    va="bottom",
-                    fontsize=8,
-                    rotation=90,
-                    color="dimgray",
-                )
+            if v <= 0:
+                continue
+            x_pos = bar.get_x() + bar.get_width() / 2
+            y_pos = v + e + max_right * 0.015
+            val_str = f"{v:.0f}"
+            if quicksilver_idx is not None and ratio_label_p99 is not None and i == quicksilver_idx:
+                val_str = f"{v:.0f} ({ratio_label_p99})"
+            ax2.text(x_pos, y_pos, val_str, ha="center", va="bottom",
+                     fontsize=FS_BAR_ANNOTATION, rotation=90,
+                     fontweight="bold" if (quicksilver_idx is not None and i == quicksilver_idx and ratio_label_p99) else "normal")
 
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(n)])
@@ -412,7 +422,8 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
     return ax2
 
 
-def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
+def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
+                  single_page=False, single_row=False, ncol=3):
     """Generate bar-only pages and save to a single PDF."""
     exclude_patterns = exclude_patterns or []
 
@@ -429,7 +440,19 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
 
     sorted_group_keys = sorted(groups.keys())
     all_policies = _order_policies_for_paper(df["routing_policy"].unique())
+    # Filter out policies matching exclude patterns (check routing_policy name).
     policies = [p for p in all_policies if not any(pat in p for pat in exclude_patterns)]
+    # Also drop individual rows whose strategy_full_name matches an exclude pattern.
+    if exclude_patterns and "strategy_full_name" in df.columns:
+        mask = df["strategy_full_name"].apply(
+            lambda s: any(pat in s for pat in exclude_patterns) if isinstance(s, str) else False
+        )
+        if mask.any():
+            print(f"  Excluded {mask.sum()} row(s) by strategy_full_name match.")
+            df = df[~mask]
+    # Remove policies that have no remaining rows after filtering.
+    remaining_policies = set(df["routing_policy"].unique())
+    policies = [p for p in policies if p in remaining_policies]
 
     if exclude_patterns:
         excluded = [p for p in all_policies if p not in policies]
@@ -439,6 +462,13 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
     _set_paper_style()
     policy_colors = generate_policy_colors(policies)
     pdf_path = os.path.join(output_dir, "paper_bar_from_gateway_log.pdf")
+
+    if single_page:
+        _plot_bar_single_page(
+            df, groups, sorted_group_keys, policies, policy_colors,
+            annotate_values, pdf_path, single_row=single_row, ncol=ncol,
+        )
+        return
 
     with PdfPages(pdf_path) as pdf:
         for gk in sorted_group_keys:
@@ -528,6 +558,162 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False):
     print(f"Saved bar-only PDF to {pdf_path}")
 
 
+def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors,
+                          annotate_values, pdf_path, single_row=False, ncol=3):
+    """All workload categories on a single page: one row per category, columns per RPS."""
+    import pandas as pd
+    from matplotlib.patches import Patch
+    import matplotlib.gridspec as gridspec
+
+    # Collect valid groups and their data.
+    valid_groups = []
+    for gk in sorted_group_keys:
+        rps_workload_pairs = groups[gk]
+        group_workloads = [w for _, w in rps_workload_pairs]
+        df_group = df[df["workload"].isin(group_workloads)]
+        if "avg_ttft" not in df_group.columns and "p99_ttft" not in df_group.columns:
+            continue
+        group_policies = [p for p in policies if p in df_group["routing_policy"].values]
+        if not group_policies:
+            continue
+        valid_groups.append((gk, rps_workload_pairs, df_group, group_policies))
+
+    # Order: Conversation first, ToolAgent second, Synthetic third.
+    # For gangmuk-prefix: 71% → 47% → 28% → 9% → Mixed.
+    _ROW_ORDER = {
+        "conversation": 0, "toolagent": 1, "synthetic": 2,
+        "sharingratio71": 0, "sharingratio47": 1,
+        "sharingratio28": 2, "sharingratio9%": 3,
+        "mixedsharingratio": 4,
+    }
+
+    def _row_sort_key(item):
+        gk = item[0].lower()
+        for key, rank in _ROW_ORDER.items():
+            if key in gk:
+                return rank
+        return 99
+
+    valid_groups.sort(key=_row_sort_key)
+
+    if not valid_groups:
+        print("No valid groups for single-page plot.")
+        return
+
+    # Flatten all groups into a single row: each group+RPS becomes one column.
+    # Store per-column group keys for titles.
+    _single_row_gks = None
+    if single_row:
+        all_pairs = []
+        _single_row_gks = []
+        combined_df = pd.concat([dg for _, _, dg, _ in valid_groups], ignore_index=True)
+        combined_policies = [p for p in policies if p in combined_df["routing_policy"].values]
+        for gk, rps_workload_pairs, df_group, group_policies in valid_groups:
+            for rps_pair in rps_workload_pairs:
+                all_pairs.append(rps_pair)
+                _single_row_gks.append(gk)
+        valid_groups = [("__single_row__", all_pairs, combined_df, combined_policies)]
+
+    n_rows = len(valid_groups)
+    n_cols = max(len(pairs) for _, pairs, _, _ in valid_groups)
+    n_policies = len(policies)
+
+    # Figure sizing: balance compactness with readability.
+    row_height = 3.2 if single_row else 4.2
+    col_width = max(5.5, 1.3 * n_policies)
+    ncol_policy_legend = ncol
+    n_legend_rows = int(np.ceil(n_policies / ncol_policy_legend))
+    # Generous top area: title + bar-semantics legend + gap + policy legend (multi-row).
+    top_header_inches = 5.0 + max(0, n_legend_rows - 1) * 0.45
+    fig_width = col_width * n_cols + 1.2
+    fig_height = row_height * n_rows + top_header_inches + 0.3
+
+    fig = plt.figure(figsize=(fig_width, fig_height))
+
+    # Reserve fractional space at top for title + legends.
+    top_header_frac = top_header_inches / fig_height
+    gs = gridspec.GridSpec(
+        n_rows, n_cols, figure=fig,
+        top=1.0 - top_header_frac, bottom=0.03,
+        left=0.07, right=0.96,
+        hspace=0.45, wspace=0.65 if single_row else 0.30,
+    )
+
+    # Title at very top.
+    fig.suptitle("TTFT Comparison Across Workloads", y=0.995, fontsize=FS_FIG_TITLE,
+                 va="top")
+
+    # Bar-semantics legend: just below title.
+    metric_handles = [
+        Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
+        Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
+    ]
+    metric_legend_y = 1.0 - 1.0 / fig_height
+    leg1 = fig.legend(
+        handles=metric_handles,
+        loc="upper center",
+        ncol=2,
+        bbox_to_anchor=(0.5, metric_legend_y),
+        framealpha=0.9,
+        title="Bar semantics",
+        fontsize=FS_LEGEND_BOX,
+    )
+    leg1.get_title().set_fontsize(FS_LEGEND_BOX)
+
+    # Policy-color legend: below bar-semantics with clear gap, above plots.
+    legend_labels = [f"{i + 1}. {_compact_policy_label(p)}" for i, p in enumerate(policies)]
+    legend_colors = [policy_colors.get(p, "#7f7f7f") for p in policies]
+    legend_handles = [
+        Patch(facecolor=c, edgecolor="black", label=lbl)
+        for c, lbl in zip(legend_colors, legend_labels)
+    ]
+    if legend_handles:
+        policy_legend_y = 1.0 - 2.6 / fig_height
+        leg2 = fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            ncol=ncol_policy_legend,
+            bbox_to_anchor=(0.5, policy_legend_y),
+            framealpha=0.9,
+            title="Routing policies",
+            fontsize=FS_LEGEND_BOX,
+        )
+        leg2.get_title().set_fontsize(FS_LEGEND_BOX)
+
+    for ri, (gk, rps_workload_pairs, df_group, group_policies) in enumerate(valid_groups):
+        for ci, rps_pair in enumerate(rps_workload_pairs):
+            ax = fig.add_subplot(gs[ri, ci])
+            ax2 = _plot_bars_twin_y_paper(
+                ax, df_group, rps_pair, group_policies, policy_colors,
+                annotate_values=annotate_values,
+            )
+            rps, _ = rps_pair
+            # In single_row mode, use per-column group key for the title.
+            col_gk = _single_row_gks[ci] if _single_row_gks else gk
+            short_label = _short_group_label(col_gk)
+            clean_label = short_label.replace("mooncake/", "")
+            _TITLE_MAP = {
+                "conversation-2-extended-ver1": "Conversation",
+                "synthetic_3x-numtokens_100": "Synthetic",
+                "toolagent-2-extended-ver1": "ToolAgent",
+            }
+            clean_label = _TITLE_MAP.get(clean_label, clean_label)
+            ax.set_title(f"{clean_label} — RPS {rps}", fontsize=FS_SUBPLOT_TITLE)
+            if ci > 0:
+                ax.set_ylabel("")
+            if ax2 is not None and ci < len(rps_workload_pairs) - 1:
+                ax2.set_ylabel("")
+        # Hide unused columns in this row.
+        for ci in range(len(rps_workload_pairs), n_cols):
+            ax = fig.add_subplot(gs[ri, ci])
+            ax.set_visible(False)
+
+    with PdfPages(pdf_path) as pdf_out:
+        pdf_out.savefig(fig, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Saved single-page bar PDF to {pdf_path}")
+
+
 def _run_compare_routing_strategies(target_dirs):
     """Run compare_routing_strategies.py in parallel on each target directory.
 
@@ -589,6 +775,16 @@ def main():
         help="File containing list of target directories (one per line).",
     )
     parser.add_argument(
+        "--search-dirs",
+        nargs="+",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Recursively search for CSV files only under these directories "
+            "(instead of searching the entire base_dir)."
+        ),
+    )
+    parser.add_argument(
         "--exclude",
         "-e",
         nargs="+",
@@ -612,6 +808,14 @@ def main():
         help="Disable numeric labels above bars.",
     )
     parser.add_argument(
+        "--rps",
+        nargs="+",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only include these RPS values (e.g., --rps 6 8). If not given, include all.",
+    )
+    parser.add_argument(
         "--include-non-paper",
         action="store_true",
         default=False,
@@ -622,6 +826,36 @@ def main():
         action="store_true",
         default=False,
         help="Include multi-RPS benchmarks (e.g., rps9,11-benchmark).",
+    )
+    parser.add_argument(
+        "--single-page",
+        action="store_true",
+        default=False,
+        help="Combine all workload categories into a single-page PDF (one row per category).",
+    )
+    parser.add_argument(
+        "--ncol",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Number of columns in the policy legend (default: 3).",
+    )
+    parser.add_argument(
+        "--single-row",
+        action="store_true",
+        default=False,
+        help="With --single-page, flatten all workloads into a single row (one column per workload+RPS).",
+    )
+    parser.add_argument(
+        "--run-compare-routing-strategies",
+        type=int,
+        default=1,
+        metavar="{0,1}",
+        help=(
+            "Whether to run compare_routing_strategies.py before plotting. "
+            "1 (default): regenerate routing_strategy_metrics_gateway.csv from raw logs. "
+            "0: skip and use existing CSV files as-is."
+        ),
     )
 
     args = parser.parse_args()
@@ -644,38 +878,82 @@ def main():
             sys.exit(1)
 
     # Discover which directories will be used so we can regenerate their CSVs
-    # before loading them.  When target_dirs is not provided, find them by
-    # scanning for existing CSVs (or rps*-benchmark subdirs) under base_dir.
+    # before loading them.
     if target_dirs is not None:
         dirs_to_process = list(target_dirs)
     else:
-        # Discover rps*-benchmark/without_bitsandbytes dirs under base_dir.
         import glob as _glob
-        dirs_to_process = sorted(
-            d for d in _glob.glob(
-                os.path.join(base_dir, "rps*-benchmark", "without_bitsandbytes"),
-                recursive=False,
-            )
-            if os.path.isdir(d)
-        )
-        if not dirs_to_process:
-            # Fall back: derive dirs from any pre-existing CSV paths.
-            _existing = find_gateway_metrics_files(base_dir, None)
-            dirs_to_process = sorted({os.path.dirname(f) for f in _existing})
+        # When --search-dirs is given, only look inside those directories.
+        # Otherwise fall back to base_dir.
+        _search_roots = args.search_dirs if args.search_dirs else [base_dir]
+        dirs_to_process = []
+        for root in _search_roots:
+            # If root is already a without_bitsandbytes dir, use it directly.
+            if os.path.basename(root) == "without_bitsandbytes":
+                if os.path.isdir(root):
+                    dirs_to_process.append(root)
+            # If root is already a rps*-benchmark dir, look for without_bitsandbytes inside.
+            elif re.search(r"rps[\d,]+-benchmark$", os.path.basename(root)):
+                wb = os.path.join(root, "without_bitsandbytes")
+                if os.path.isdir(wb):
+                    dirs_to_process.append(wb)
+            else:
+                # Glob recursively for rps*-benchmark/without_bitsandbytes.
+                dirs_to_process.extend(
+                    d for d in _glob.glob(
+                        os.path.join(root, "**", "rps*-benchmark", "without_bitsandbytes"),
+                        recursive=True,
+                    )
+                    if os.path.isdir(d)
+                )
+        dirs_to_process = sorted(set(dirs_to_process))
 
-    if dirs_to_process:
-        try:
-            _run_compare_routing_strategies(dirs_to_process)
-        except RuntimeError as exc:
-            print(f"ERROR: {exc}")
-            sys.exit(1)
+    # Filter dirs by --rps if given.
+    if args.rps:
+        _rps_set = set(args.rps)
+        before = len(dirs_to_process)
+        dirs_to_process = [
+            d for d in dirs_to_process
+            if any(re.search(rf"/rps{r}-benchmark/", d) for r in _rps_set)
+        ]
+        removed = before - len(dirs_to_process)
+        if removed > 0:
+            print(f"Filtered out {removed} dir(s) not matching --rps {args.rps}")
+
+    if args.run_compare_routing_strategies:
+        if dirs_to_process:
+            try:
+                _run_compare_routing_strategies(dirs_to_process)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}")
+                sys.exit(1)
+        else:
+            print("Warning: no target directories found; skipping compare_routing_strategies.py.")
     else:
-        print("Warning: no target directories found; skipping compare_routing_strategies.py.")
+        print("Skipping compare_routing_strategies.py (--run-compare-routing-strategies 0).")
 
-    files = find_gateway_metrics_files(base_dir, target_dirs)
+    if args.search_dirs:
+        # Recursively find CSVs only under the specified directories.
+        files = []
+        for sd in args.search_dirs:
+            files.extend(find_gateway_metrics_files(sd, None))
+        files = sorted(set(files))
+    else:
+        files = find_gateway_metrics_files(base_dir, target_dirs)
     if not files:
         print("No routing_strategy_metrics_gateway.csv files found")
         sys.exit(1)
+
+    if args.rps:
+        _rps_set = set(args.rps)
+        before = len(files)
+        files = [
+            f for f in files
+            if any(re.search(rf"/rps{r}-benchmark/", f) for r in _rps_set)
+        ]
+        removed = before - len(files)
+        if removed > 0:
+            print(f"Filtered out {removed} CSV file(s) not matching --rps {args.rps}")
 
     if not args.include_non_paper:
         before = len(files)
@@ -732,6 +1010,9 @@ def main():
         output_dir,
         exclude_patterns=exclude_patterns,
         annotate_values=not args.no_value_labels,
+        single_page=args.single_page,
+        single_row=args.single_row,
+        ncol=args.ncol,
     )
     print("Done!")
 

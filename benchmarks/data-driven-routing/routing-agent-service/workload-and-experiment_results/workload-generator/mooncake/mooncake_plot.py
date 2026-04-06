@@ -1,173 +1,406 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+#!/usr/bin/env python3
+"""
+Multi-workload facet plot for raw Mooncake traces.
+
+Each row is one trace file. Six panels per row:
+  1) Input token distribution
+  2) Output token distribution
+  3) Prefix / KV cache hit ratio distribution (temporal trie over hash_ids)
+  4) Unique prefix groups in a 30s sliding window (1s step)
+  5) Prefix group size distribution (requests per prefix_group)
+  6) Intra-group distance (consecutive same-group request spacing, seconds)
+
+Prefix groups are derived from hash_ids: two requests belong to the same
+group if they share the first MIN_PREFIX_MATCH hash_ids (matching from the
+beginning). Requests with fewer hash_ids are ungrouped.
+
+Usage:
+  python3 mooncake_plot.py [-o OUT.pdf] trace1.jsonl [trace2.jsonl ...]
+
+Default: plots all three Mooncake traces next to this script.
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
-from collections import defaultdict
 import os
+import sys
+from collections import Counter, defaultdict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-NUM_TOKEN_PER_HASH_ID = 50
 
-def load_mooncake_data(input_file):
-    # If the path is already absolute, use it as-is; otherwise resolve relative to script dir
-    if os.path.isabs(input_file):
-        filepath = input_file
-    else:
-        filepath = os.path.join(_SCRIPT_DIR, input_file)
-    data = []
-    with open(filepath, 'r') as f:
+# Minimum number of matching hash_ids from the beginning to count as shared prefix.
+# Used for: prefix group key, trie hit ratio threshold.
+MIN_PREFIX_MATCH = 2
+
+plt.rcParams.update(
+    {
+        "font.size": 34,
+        "axes.titlesize": 44,
+        "axes.labelsize": 38,
+        "xtick.labelsize": 36,
+        "ytick.labelsize": 36,
+        "legend.fontsize": 32,
+        "figure.titlesize": 42,
+    }
+)
+
+textbox_fontsize = 36
+main_title_fontsize = 58
+
+def load_workload(path: str) -> list[dict]:
+    """Load raw Mooncake trace (flat jsonl, one request per line). Sort by timestamp."""
+    entries = []
+    with open(path) as f:
         for line in f:
-            data.append(json.loads(line.strip()))
+            obj = json.loads(line)
+            hids = obj.get("hash_ids", [])
+            # prefix group = first MIN_PREFIX_MATCH hash_ids
+            if len(hids) >= MIN_PREFIX_MATCH:
+                pg = "_".join(str(h) for h in hids[:MIN_PREFIX_MATCH])
+            else:
+                pg = ""
+            entries.append(
+                {
+                    "timestamp_ms": obj["timestamp"],
+                    "input_tokens": obj["input_length"],
+                    "output_tokens": obj["output_length"],
+                    "hash_ids": hids,
+                    "prefix_group": pg,
+                }
+            )
+    entries.sort(key=lambda e: e["timestamp_ms"])
+    return entries
 
-    # Convert to DataFrame for easier analysis
-    df = pd.DataFrame(data)
 
-    # Convert timestamp from milliseconds to seconds
-    df['timestamp_seconds'] = df['timestamp'] / 1000
+def compute_unique_groups_timeseries(
+    entries_sorted: list[dict], window_ms: int = 30000, step_ms: int = 1000
+):
+    """Unique prefix_group count in sliding window."""
+    if not entries_sorted:
+        return [], []
+    t_min = entries_sorted[0]["timestamp_ms"]
+    t_max = entries_sorted[-1]["timestamp_ms"]
+    n = len(entries_sorted)
+    xs, ys = [], []
+    left = 0
+    right = 0
+    group_counts: Counter = Counter()
+    for t in range(int(t_min), int(t_max) + step_ms, step_ms):
+        w_start = t - window_ms
+        while right < n and entries_sorted[right]["timestamp_ms"] <= t:
+            group_counts[entries_sorted[right]["prefix_group"]] += 1
+            right += 1
+        while left < n and entries_sorted[left]["timestamp_ms"] <= w_start:
+            pg = entries_sorted[left]["prefix_group"]
+            group_counts[pg] -= 1
+            if group_counts[pg] == 0:
+                del group_counts[pg]
+            left += 1
+        xs.append((t - t_min) / 1000)
+        ys.append(len(group_counts))
+    return xs, ys
 
-    print(f"Dataset info:")
-    print(f"Total requests: {len(df)}")
 
-    # Compute block-derived input length (used in distribution and time series plots)
-    df['num_token_blocks'] = df['hash_ids'].apply(len)
-    df['input_length_from_blocks'] = df['num_token_blocks'] * NUM_TOKEN_PER_HASH_ID
+class TrieNode:
+    __slots__ = ("children",)
 
-    workload_name = os.path.basename(input_file).split('.')[0]
+    def __init__(self):
+        self.children = {}
 
-    # RPS stats
-    rps_data = df.groupby(df['timestamp_seconds'].astype(int)).size()
-    print(f"RPS stats: min={rps_data.min()}, max={rps_data.max()}, mean={rps_data.mean():.2f}, std={rps_data.std():.2f}")
 
-    # Single figure: left column = distributions, right column = time series
-    fig, axes = plt.subplots(4, 2, figsize=(14, 12))
-    fig.suptitle(f'{workload_name} - Distribution & Time Series Analysis', fontsize=16)
+def compute_prefix_hit_ratios(
+    entries_sorted: list[dict], min_match: int = MIN_PREFIX_MATCH
+) -> list[float]:
+    """Temporal trie prefix hit ratio per request.
 
-    # --- Left column: Distribution plots ---
-
-    # Row 0, Left: Input token length distribution
-    axes[0, 0].hist(df['input_length_from_blocks'], bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
-    axes[0, 0].set_xlabel('Input Token Length (from blocks)')
-    axes[0, 0].set_ylabel('Frequency')
-    axes[0, 0].set_title('Input Token Length Distribution (from blocks)')
-    axes[0, 0].grid(True, alpha=0.3)
-
-    # Row 1, Left: Output token length distribution
-    axes[1, 0].hist(df['output_length'], bins=50, alpha=0.7, color='lightcoral', edgecolor='black')
-    axes[1, 0].set_xlabel('Output Token Length')
-    axes[1, 0].set_ylabel('Frequency')
-    axes[1, 0].set_title('Output Token Length Distribution')
-    axes[1, 0].grid(True, alpha=0.3)
-
-    # Row 2, Left: Input vs Output scatter
-    axes[2, 0].scatter(df['input_length'], df['output_length'], alpha=0.5, s=20, c='purple')
-    axes[2, 0].set_xlabel('Input Token Length')
-    axes[2, 0].set_ylabel('Output Token Length')
-    axes[2, 0].set_title('Input vs Output Token Length')
-    axes[2, 0].grid(True, alpha=0.3)
-
-    # Row 3, Left: Token blocks per request distribution
-    axes[3, 0].hist(df['num_token_blocks'], bins=30, alpha=0.7, color='orange', edgecolor='black')
-    axes[3, 0].set_xlabel('Number of Token Blocks')
-    axes[3, 0].set_ylabel('Frequency')
-    axes[3, 0].set_title('Token Blocks per Request Distribution')
-    axes[3, 0].grid(True, alpha=0.3)
-
-    # --- Right column: Time series plots ---
-
-    # Prepare time series data
-    max_time = int(df['timestamp_seconds'].max()) + 1
-    time_bins = range(0, max_time + 1)
-
-    # Row 0, Right: RPS over time
-    rps_by_second = df.groupby(df['timestamp_seconds'].astype(int)).size().reindex(time_bins, fill_value=0)
-    axes[0, 1].plot(rps_by_second.index, rps_by_second.values, linewidth=1, alpha=0.8, color='blue')
-    axes[0, 1].set_xlabel('Time (seconds)')
-    axes[0, 1].set_ylabel('Requests per Second')
-    axes[0, 1].set_title('RPS Over Time')
-    axes[0, 1].grid(True, alpha=0.3)
-    axes[0, 1].set_xlim(0, max_time)
-
-    # Row 1, Right: Average input token length over time
-    input_tokens_by_second = df.groupby(df['timestamp_seconds'].astype(int))['input_length'].mean().reindex(time_bins, fill_value=np.nan)
-    valid_input_mask = ~input_tokens_by_second.isna()
-    axes[1, 1].plot(input_tokens_by_second.index[valid_input_mask], input_tokens_by_second.values[valid_input_mask], linewidth=1, alpha=0.8, color='green')
-    axes[1, 1].set_xlabel('Time (seconds)')
-    axes[1, 1].set_ylabel('Average Input Token Length')
-    axes[1, 1].set_title('Average Input Token Length Over Time')
-    axes[1, 1].grid(True, alpha=0.3)
-    axes[1, 1].set_xlim(0, max_time)
-
-    # Row 2, Right: Average output token length over time
-    output_tokens_by_second = df.groupby(df['timestamp_seconds'].astype(int))['output_length'].mean().reindex(time_bins, fill_value=np.nan)
-    valid_output_mask = ~output_tokens_by_second.isna()
-    axes[2, 1].plot(output_tokens_by_second.index[valid_output_mask], output_tokens_by_second.values[valid_output_mask], linewidth=1, alpha=0.8, color='red')
-    axes[2, 1].set_xlabel('Time (seconds)')
-    axes[2, 1].set_ylabel('Average Output Token Length')
-    axes[2, 1].set_title('Average Output Token Length Over Time')
-    axes[2, 1].grid(True, alpha=0.3)
-    axes[2, 1].set_xlim(0, max_time)
-
-    # Row 3, Right: Per-request prefix cache hit ratio over time (trie-based, temporal order)
-    class _TrieNode:
-        __slots__ = ['children']
-        def __init__(self):
-            self.children = {}
-
-    def compute_prefix_hit_ratios_trie(df_sorted):
-        root = _TrieNode()
-        hit_ratios = []
-        timestamps = []
-        for _, row in df_sorted.iterrows():
-            hids = row['hash_ids']
-            total_blocks = len(hids)
-            node = root
-            matched = 0
-            for h in hids:
-                if h in node.children:
-                    matched += 1
-                    node = node.children[h]
-                else:
-                    break
-            hit_ratios.append(matched / total_blocks if total_blocks > 0 else 0.0)
-            timestamps.append(row['timestamp_seconds'])
-            node = root
-            for h in hids:
-                if h not in node.children:
-                    node.children[h] = _TrieNode()
+    Only counts a hit when >= min_match hash_ids match from the beginning.
+    """
+    root = TrieNode()
+    hit_ratios = []
+    for entry in entries_sorted:
+        hids = entry["hash_ids"]
+        total_blocks = len(hids)
+        node = root
+        matched_blocks = 0
+        for h in hids:
+            if h in node.children:
+                matched_blocks += 1
                 node = node.children[h]
-        return timestamps, hit_ratios
-
-    df_sorted_by_time = df.sort_values('timestamp_seconds').reset_index(drop=True)
-    hit_ts, hit_ratios = compute_prefix_hit_ratios_trie(df_sorted_by_time)
-
-    axes[3, 1].scatter(hit_ts, hit_ratios, alpha=0.15, s=8, color='purple', label='per-request hit ratio')
-
-    # 10-second sliding window average
-    window_s = 10
-    hit_ts_arr = np.array(hit_ts)
-    hit_ratios_arr = np.array(hit_ratios)
-    sw_x, sw_y = [], []
-    for i, t in enumerate(hit_ts_arr):
-        mask = (hit_ts_arr >= t - window_s) & (hit_ts_arr <= t)
-        sw_x.append(t)
-        sw_y.append(hit_ratios_arr[mask].mean())
-    axes[3, 1].plot(sw_x, sw_y, color='red', linewidth=1.5, alpha=0.9, label=f'{window_s}s sliding avg')
-    axes[3, 1].set_xlabel('Time (seconds)')
-    axes[3, 1].set_ylabel('Prefix Cache Hit Ratio')
-    axes[3, 1].set_title('Prefix Cache Hit Ratio Over Time (per request)')
-    axes[3, 1].grid(True, alpha=0.3)
-    axes[3, 1].set_xlim(0, max_time)
-    axes[3, 1].set_ylim(0, 1)
-    axes[3, 1].legend(fontsize=10)
-
-    plt.tight_layout()
-    pdf_path = os.path.join(_SCRIPT_DIR, f'{workload_name}.pdf')
-    fig.savefig(pdf_path, bbox_inches='tight')
-    print(f"Saved figure to {pdf_path}")
-    plt.show()
+            else:
+                break
+        # Require at least min_match blocks to count as a prefix hit
+        if matched_blocks < min_match:
+            matched_blocks = 0
+        hit_ratio = matched_blocks / total_blocks if total_blocks > 0 else 0.0
+        hit_ratios.append(hit_ratio)
+        node = root
+        for h in hids:
+            if h not in node.children:
+                node.children[h] = TrieNode()
+            node = node.children[h]
+    return hit_ratios
 
 
-if __name__ == '__main__':
-    load_mooncake_data('/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/workload-generator/mooncake/Mooncake_conversation_trace.jsonl')
-    load_mooncake_data('/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/workload-generator/mooncake/Mooncake_toolagent_trace.jsonl')
-    load_mooncake_data('/mnt/projects/aibrix-gangmuk-fixing/benchmarks/data-driven-routing/routing-agent-service/workload-and-experiment_results/workload-generator/mooncake/Mooncake_synthetic_trace.jsonl')
+def prefix_group_and_intra_distance(entries_sorted: list[dict]):
+    """Prefix group sizes and consecutive same-group gaps (in number of requests between)."""
+    pg_members: dict[str, list[int]] = defaultdict(list)
+    for i, r in enumerate(entries_sorted):
+        if r["prefix_group"]:
+            pg_members[r["prefix_group"]].append(i)
+
+    pg_sizes = [len(indices) for indices in pg_members.values()]
+    intra_distances = []
+    for indices in pg_members.values():
+        if len(indices) < 2:
+            continue
+        for j in range(1, len(indices)):
+            # number of other requests between consecutive same-group requests
+            intra_distances.append(indices[j] - indices[j - 1] - 1)
+    return pg_sizes, intra_distances
+
+
+def workload_label(path: str) -> str:
+    stem = os.path.splitext(os.path.basename(path))[0]
+    # Strip common prefixes for brevity
+    for prefix in ("Mooncake_", "mooncake_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+    for suffix in ("_trace",):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    return stem
+
+
+def analyze(path: str) -> dict:
+    entries = load_workload(path)
+    if not entries:
+        return {
+            "label": workload_label(path),
+            "path": path,
+            "entries": entries,
+            "wl_input": [],
+            "wl_output": [],
+            "hit_ratios": [],
+            "upg_x": [],
+            "upg_y": [],
+            "pg_sizes": [],
+            "intra_distances": [],
+        }
+
+    hit_ratios = compute_prefix_hit_ratios(entries)
+    upg_x, upg_y = compute_unique_groups_timeseries(entries)
+    pg_sizes, intra_distances = prefix_group_and_intra_distance(entries)
+
+    return {
+        "label": workload_label(path),
+        "path": path,
+        "entries": entries,
+        "wl_input": [e["input_tokens"] for e in entries],
+        "wl_output": [e["output_tokens"] for e in entries],
+        "hit_ratios": hit_ratios,
+        "upg_x": upg_x,
+        "upg_y": upg_y,
+        "pg_sizes": pg_sizes,
+        "intra_distances": intra_distances,
+    }
+
+
+def plot_facets(analyses: list[dict], out_pdf: str) -> None:
+    n = len(analyses)
+    ncol = 5
+    cell_size = 7  # square subplots, slightly larger with fewer columns
+    fig_w = ncol * cell_size
+    fig_h = max(1, n) * cell_size + 1.2
+    fig, axes = plt.subplots(n, ncol, figsize=(fig_w, fig_h), squeeze=False)
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_aspect("auto")
+            ax.set_box_aspect(1)  # force square
+
+    col_titles = [
+        "Input tokens",
+        "Output tokens",
+        "Prefix hit ratio",
+        "Prefix group size",
+        "Intra-group distance",
+    ]
+
+    for i, data in enumerate(analyses):
+        row_axes = axes[i]
+        wl_in = data["wl_input"]
+        wl_out = data["wl_output"]
+        hr = np.array(data["hit_ratios"]) if data["hit_ratios"] else np.array([])
+        pg_sizes = data["pg_sizes"]
+        intra = data["intra_distances"]
+
+        # 0: input
+        ax = row_axes[0]
+        if wl_in:
+            bins_in = np.linspace(0, 100000, 60)
+            ax.hist(wl_in, bins=bins_in, alpha=0.75, color="C0", edgecolor="white")
+            in_arr = np.array(wl_in)
+            ax.axvline(float(in_arr.mean()), color="red", linestyle="--", linewidth=2.0, label=f"mean={in_arr.mean()/1000:.1f}K")
+            ax.axvline(float(np.median(in_arr)), color="orange", linestyle=":", linewidth=2.0, label=f"p50={np.median(in_arr)/1000:.1f}K")
+            ax.legend(loc="center right")
+        ax.set_xlim(0, 100000)
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x/1000:.0f}K" if x >= 1000 else f"{x:.0f}"))
+        ax.set_ylabel("Count")
+        if i == n - 1:
+            ax.set_xlabel("Tokens")
+        if i == 0:
+            ax.set_title(col_titles[0])
+        ax.text(
+            0.02,
+            0.98,
+            data["label"],
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=textbox_fontsize,
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.25", fc="white", alpha=0.92),
+        )
+
+        # 1: output
+        ax = row_axes[1]
+        if wl_out:
+            bins_out = np.linspace(0, 1000, 60)
+            ax.hist(wl_out, bins=bins_out, alpha=0.75, color="C1", edgecolor="white")
+            out_arr = np.array(wl_out)
+            ax.axvline(float(out_arr.mean()), color="red", linestyle="--", linewidth=2.0, label=f"mean={out_arr.mean():.0f}")
+            ax.axvline(float(np.median(out_arr)), color="orange", linestyle=":", linewidth=2.0, label=f"p50={np.median(out_arr):.0f}")
+            ax.legend(loc="upper right")
+        ax.set_xlim(0, 1000)
+        if i == n - 1:
+            ax.set_xlabel("Tokens")
+        if i == 0:
+            ax.set_title(col_titles[1])
+
+        # 2: hit ratio histogram
+        ax = row_axes[2]
+        if hr.size:
+            bins_hr = np.linspace(0, 1, 51)
+            ax.hist(
+                hr,
+                bins=bins_hr,
+                alpha=0.75,
+                color="C2",
+                edgecolor="white",
+                linewidth=0.5,
+            )
+            ax.axvline(float(hr.mean()), color="red", linestyle="--", linewidth=2.0, label=f"mean={hr.mean():.2f}")
+            ax.legend(loc="upper left")
+        if i == n - 1:
+            ax.set_xlabel("Hit ratio")
+        ax.set_xlim(-0.02, 1.02)
+        if i == 0:
+            ax.set_title(col_titles[2])
+
+        # 3: prefix group size (linear scale, clipped at p99)
+        ax = row_axes[3]
+        if pg_sizes:
+            pg_arr = np.array(pg_sizes)
+            max_bin = min(int(np.percentile(pg_arr, 99)) + 2, int(pg_arr.max()) + 1)
+            bins_size = np.arange(1, max_bin + 1) - 0.5
+            ax.hist(pg_arr, bins=bins_size, alpha=0.75, color="C0", edgecolor="white")
+            ax.axvline(
+                float(np.mean(pg_arr)),
+                color="red",
+                linestyle="--",
+                linewidth=2.0,
+                label=f"mean={np.mean(pg_arr):.1f}",
+            )
+            ax.axvline(
+                float(np.median(pg_arr)),
+                color="orange",
+                linestyle=":",
+                linewidth=2.0,
+                label=f"p50={np.median(pg_arr):.0f}",
+            )
+            ax.legend(loc="upper right")
+            ax.set_xticks(np.arange(2, max_bin + 1, 2))
+        if i == n - 1:
+            ax.set_xlabel("Requests / group")
+        if i == 0:
+            ax.set_title(col_titles[3])
+
+        # 4: intra-group distance
+        ax = row_axes[4]
+        if intra:
+            dist_arr = np.array(intra)
+            p99 = np.percentile(dist_arr, 99)
+            bins_dist = np.linspace(0, max(p99, 1e-6), 60)
+            ax.hist(dist_arr, bins=bins_dist, alpha=0.75, color="C1", edgecolor="white")
+            ax.axvline(
+                float(np.mean(dist_arr)),
+                color="red",
+                linestyle="--",
+                linewidth=2.0,
+                label=f"mean={np.mean(dist_arr):.0f}",
+            )
+            ax.axvline(
+                float(np.median(dist_arr)),
+                color="orange",
+                linestyle=":",
+                linewidth=2.0,
+                label=f"p50={np.median(dist_arr):.0f}",
+            )
+            ax.legend(loc="upper right")
+        else:
+            ax.text(0.5, 0.5, "No multi-req groups", transform=ax.transAxes, ha="center", va="center", fontsize=18)
+        if i == n - 1:
+            ax.set_xlabel("Requests between")
+        if i == 0:
+            ax.set_title(col_titles[4])
+
+    plt.tight_layout(w_pad=0.1, h_pad=0.1)
+    fig.subplots_adjust(top=0.93)
+    fig.suptitle("Mooncake trace characteristics", y=0.96, fontsize=main_title_fontsize)
+    fig.savefig(out_pdf, format="pdf", bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_pdf}")
+
+
+def main() -> int:
+    default_traces = [
+        os.path.join(_SCRIPT_DIR, "Mooncake_conversation_trace.jsonl"),
+        os.path.join(_SCRIPT_DIR, "Mooncake_toolagent_trace.jsonl"),
+        os.path.join(_SCRIPT_DIR, "Mooncake_synthetic_trace.jsonl"),
+    ]
+
+    p = argparse.ArgumentParser(description="Multi-row Mooncake trace facet plots → PDF.")
+    p.add_argument(
+        "workloads",
+        nargs="*",
+        help="One or more trace .jsonl paths (default: all 3 Mooncake traces)",
+    )
+    args = p.parse_args()
+
+    paths = [os.path.abspath(x) for x in args.workloads] if args.workloads else default_traces
+    for path in paths:
+        if not os.path.isfile(path):
+            print(f"Error: not a file: {path}", file=sys.stderr)
+            return 1
+
+    analyses = [analyze(path) for path in paths]
+    for a in analyses:
+        n = len(a["entries"])
+        pg_count = len(a["pg_sizes"])
+        print(f"{a['label']}: {n} requests, {pg_count} prefix groups ({a['path']})")
+
+    out_pdf = os.path.join(_SCRIPT_DIR, f"mooncake_workload_summary.pdf")
+    os.makedirs(os.path.dirname(out_pdf) or ".", exist_ok=True)
+    plot_facets(analyses, out_pdf)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

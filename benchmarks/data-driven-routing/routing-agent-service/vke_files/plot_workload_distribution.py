@@ -447,9 +447,7 @@ def main():
     title = "Workload vs Training Data Distribution" if has_training else "Workload Distribution"
     plt.suptitle(f"{title} ({os.path.basename(TARGET_DIR)})", fontsize=20, y=1.02)
     plt.tight_layout()
-    plt.savefig(OUTPUT_BASE + ".png", dpi=150, bbox_inches="tight")
     plt.savefig(OUTPUT_BASE + ".pdf", dpi=150, bbox_inches="tight")
-    print(f"\nSaved plot to {OUTPUT_BASE}.png")
     print(f"Saved plot to {OUTPUT_BASE}.pdf")
 
     # Save per-request time-series CSV

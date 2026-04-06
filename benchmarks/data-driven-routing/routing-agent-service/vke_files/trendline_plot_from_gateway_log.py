@@ -344,6 +344,7 @@ def _short_group_label(group_key: str) -> str:
         if any(skip in p_lower for skip in [
             'nvidia', 'qwen', 'llama', 'use_given', 'maxtokens',
             'without_bitsandbytes', 'with_bitsandbytes', 'benchmark',
+            'gangmuk-prefix', 'mooncake',
         ]):
             continue
         if p.strip():

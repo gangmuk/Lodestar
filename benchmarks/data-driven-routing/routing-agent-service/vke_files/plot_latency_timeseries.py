@@ -735,18 +735,6 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
     
     add_transition_lines(ax1, train_transitions, flush_transitions, iteration_transitions)
 
-    # Add vertical lines for OOD fallback events with different colors per value
-    if 'ood_fallback' in df.columns:
-        ood_fallback_df = df[df['ood_fallback'].notna()].copy()
-        if not ood_fallback_df.empty:
-            ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
-            ood_fallback_df['_ood_int'] = ood_fallback_df['ood_fallback'].astype(int)
-            ymin, ymax = ax1.get_ylim()
-            for ood_val, group in ood_fallback_df.groupby('_ood_int'):
-                color = ood_colors.get(int(ood_val), 'gray')
-                ax1.vlines(group['relative_time'].values, ymin=ymin, ymax=ymax,
-                           colors=color, linestyles='-', linewidths=0.3, alpha=0.3, zorder=0)
-
     # NEW SUBPLOT: KV Cache Hit Ratio (ax_kv_cache)
     if not pod_data['kv_cache_df'].empty:
         for pod in unique_pods:
@@ -880,15 +868,6 @@ def plot_main_metrics_subplots(fig, gs, df, pod_data, cluster_stats, train_trans
         Line2D([0], [0], color='orange', linewidth=linewidth, linestyle='--', label='Iteration transition')
     ])
     legend_labels_ttft.extend(['Avg TTFT (per sec)', 'numTrains transition', 'Iteration transition'])
-    # Add OOD fallback to legend if present in data (different colors per value)
-    if 'ood_fallback' in df.columns and df['ood_fallback'].notna().any():
-        ood_colors = {0: 'cyan', 1: 'magenta', 2: 'lime', 3: 'orange', 4: 'yellow'}
-        unique_ood_vals = sorted(df['ood_fallback'].dropna().unique())
-        for ood_val in unique_ood_vals:
-            ood_val_int = int(ood_val)
-            color = ood_colors.get(ood_val_int, 'gray')
-            legend_elements_ttft.append(Line2D([0], [0], color=color, linewidth=0.8, alpha=0.5, label=f'oodFallback={ood_val_int}'))
-            legend_labels_ttft.append(f'oodFallback={ood_val_int}')
     ax1.legend(legend_elements_ttft, legend_labels_ttft, fontsize=10, ncol=4,
                loc='lower left', bbox_to_anchor=(0, 1.02, 1, 0.08),
                mode='expand', borderaxespad=0, frameon=True)
@@ -2012,6 +1991,111 @@ def plot_prediction_analysis_subplots(fig, gs, df, train_transitions, flush_tran
     return ax_pred_bar, ax_pred_scatter, ax_pred_timeseries, ax_iter_pred_bar, ax_iter_pred_scatter
 
 
+def create_oodfallback_timeseries_plot(df, log_dir):
+    """Create a paper-friendly OOD fallback time-series figure."""
+    if 'ood_fallback' not in df.columns:
+        print("No 'ood_fallback' column found. Skipping OOD fallback time-series plot.")
+        return None
+
+    ood_df = df[df['ood_fallback'].notna()].copy()
+    if ood_df.empty:
+        print("No OOD fallback events found. Skipping OOD fallback time-series plot.")
+        return None
+
+    ood_df['_ood_int'] = ood_df['ood_fallback'].astype(int)
+    counts = ood_df['_ood_int'].value_counts().sort_index()
+
+    # Adaptive binning to avoid overplotting while keeping time-series fidelity.
+    t_min = float(ood_df['relative_time'].min())
+    t_max = float(ood_df['relative_time'].max())
+    duration = max(1.0, t_max - t_min)
+    bin_seconds = max(1, int(np.ceil(duration / 250.0)))  # target about <=250 bins
+    ood_df['time_bin'] = (np.floor(ood_df['relative_time'] / bin_seconds) * bin_seconds).astype(int)
+
+    grouped = ood_df.groupby(['time_bin', '_ood_int']).size().unstack(fill_value=0).sort_index()
+    total_per_bin = grouped.sum(axis=1)
+    pct_per_bin = grouped.div(total_per_bin.replace(0, np.nan), axis=0).fillna(0.0) * 100.0
+
+    classes = sorted(grouped.columns.tolist())
+    class_colors = {
+        0: '#1f77b4',
+        1: '#ff7f0e',
+        2: '#2ca02c',
+        3: '#d62728',
+        4: '#9467bd',
+    }
+    class_labels = [f'oodFallback={int(c)} ({int(counts.get(c, 0))})' for c in classes]
+    class_color_list = [class_colors.get(int(c), 'gray') for c in classes]
+
+    fig_ood, (ax_mix, ax_volume) = plt.subplots(
+        2,
+        1,
+        figsize=(15, 4.9),
+        sharex=True,
+        gridspec_kw={'height_ratios': [1.0, 1.0], 'hspace': 0.15},
+    )
+
+    # Top panel: composition over time (stacked percentage time series).
+    x = pct_per_bin.index.values
+    y_stack = [pct_per_bin[c].values for c in classes]
+    ax_mix.stackplot(x, *y_stack, labels=class_labels, colors=class_color_list, alpha=0.9)
+    ax_mix.set_title('OOD Fallback Composition Over Time', fontsize=20, fontweight='bold', pad=12)
+    ax_mix.set_ylabel('Share in Bin (%)', fontsize=16, fontweight='bold')
+    ax_mix.set_ylim(0, 100)
+    ax_mix.grid(True, linestyle='--', alpha=0.3)
+    ax_mix.legend(fontsize=14, loc='upper right', ncol=1)
+    ax_mix.tick_params(axis='both', which='major', labelsize=14)
+
+    # Bottom panel: request volume + non-zero OOD rate over time.
+    ax_volume.plot(
+        x,
+        total_per_bin.values,
+        color='black',
+        linewidth=1.5,
+        alpha=0.8,
+        label=f'Events per {bin_seconds}s bin',
+    )
+    ax_volume.set_ylabel('Events / Bin', fontsize=16, fontweight='bold')
+    ax_volume.grid(True, linestyle='--', alpha=0.3)
+    ax_volume.tick_params(axis='both', which='major', labelsize=14)
+
+    ax_rate = ax_volume.twinx()
+    non_zero_classes = [c for c in classes if int(c) != 0]
+    if non_zero_classes:
+        non_zero_rate = grouped[non_zero_classes].sum(axis=1) / total_per_bin.replace(0, np.nan) * 100.0
+    else:
+        non_zero_rate = pd.Series(np.zeros(len(total_per_bin)), index=total_per_bin.index)
+    ax_rate.plot(
+        x,
+        non_zero_rate.values,
+        color='crimson',
+        linewidth=1.8,
+        alpha=0.9,
+        label='Non-zero OOD rate (%)',
+    )
+    ax_rate.set_ylabel('Non-zero OOD Rate (%)', fontsize=16, fontweight='bold', color='crimson')
+    ax_rate.tick_params(axis='y', labelcolor='crimson', labelsize=14)
+    ax_rate.set_ylim(0, 100)
+
+    vol_lines, vol_labels = ax_volume.get_legend_handles_labels()
+    rate_lines, rate_labels = ax_rate.get_legend_handles_labels()
+    ax_volume.legend(vol_lines + rate_lines, vol_labels + rate_labels, fontsize=14, loc='upper left')
+    ax_volume.set_xlabel('Relative Time (seconds)', fontsize=16, fontweight='bold')
+
+    plt.tight_layout()
+
+    ood_pdf_fn = f"{log_dir}/ood_fallback_timeseries.pdf"
+    ood_png_fn = f"{log_dir}/ood_fallback_timeseries.png"
+    fig_ood.savefig(ood_pdf_fn, bbox_inches='tight')
+    fig_ood.savefig(ood_png_fn, bbox_inches='tight', dpi=200)
+    print("*****************************")
+    print(f"** Saving OOD plot to: {ood_pdf_fn}")
+    print(f"** Saving OOD plot to: {ood_png_fn}")
+    print("*****************************")
+    plt.close(fig_ood)
+    return ood_pdf_fn, ood_png_fn
+
+
 def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_policy):
     # Convert to DataFrame for easier analysis
     df = pd.DataFrame(data)
@@ -2080,16 +2164,19 @@ def create_enhanced_plot(data, log_dir, setylim, slo_ttft, slo_tpot, routing_pol
     colors = plt.cm.viridis(np.linspace(0, 0.9, len(unique_pods)))
     pod_colors = dict(zip(unique_pods, colors))
 
+    # Save OOD fallback events as a dedicated time-series figure first.
+    create_oodfallback_timeseries_plot(df, log_dir)
+
     # Determine number of rows based on whether prediction plots are needed
     if 'latency_predictor' in routing_policy or 'contextual_bandit' in routing_policy:
         n_rows = 30  # Includes numTrains analysis + iteration analysis + prediction plots (removed reward plot, so 31->30)
         # Rows: 0-2 (request rate), 3-5 (TTFT/TPOT/E2E), 6-15 (pod metrics), 16-17 (analysis/CDF), 19-21 (numTrains), 22-24 (pred by numTrains), 25-27 (iterations), 28-29 (pred by iterations)
         height_ratios = [0.8, 0.8, 1.2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0]  # Rows 23 & 29 (scatter plots) are 3.0; row 2 enlarged for spacing
-        fig_height = 75
+        fig_height = 52.5
     else:
         n_rows = 23  # Includes iteration analysis only (no numTrains or prediction plots, removed reward plot, so 24->23)
         height_ratios = [0.8, 0.8, 1.2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # Iteration analysis at rows 20-22; row 2 enlarged for spacing
-        fig_height = 57
+        fig_height = 39.9
 
     # Create a more complex figure with GridSpec - Updated with additional subplots
     fig = plt.figure(figsize=(15, fig_height))
