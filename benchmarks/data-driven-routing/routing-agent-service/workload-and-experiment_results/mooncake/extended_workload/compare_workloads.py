@@ -179,7 +179,7 @@ def main():
     orig_path = sys.argv[1]
     ext_path = sys.argv[2]
     out_dir = os.path.dirname(os.path.abspath(ext_path))
-    out_file = os.path.join(out_dir, "workload_comparison.png")
+    out_file = os.path.join(out_dir, "workload_comparison.pdf")
     label = os.path.basename(out_dir)
 
     print(f"Loading {orig_path}...")

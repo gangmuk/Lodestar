@@ -3129,10 +3129,10 @@ if __name__ == "__main__":
             logger.warning("--iteration_ramp_duration requires --rps to be specified. Ignoring ramp.")
             args.iteration_ramp_duration = 0.0
 
-    asyncio.run(main(args))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     config_file = write_experiment_config_to_file(args.output_dir, args)
+    asyncio.run(main(args))
 
     # success = utils.save_k8s_logs(
     #     namespace='aibrix-system',
