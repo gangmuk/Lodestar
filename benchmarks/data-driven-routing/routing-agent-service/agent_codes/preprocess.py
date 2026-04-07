@@ -1776,41 +1776,31 @@ def _fast_parse_value(value: str):
     return value
 
 
-def parse_log_message(log_message):
+def _parse_log_to_dict(log_message):
     """
-    Parse a single log message into a DataFrame (optimized for inference).
-
-    Optimizations:
-    - Uses module-level constants for prefix detection
-    - Fast type conversion with try/except (faster for valid numbers)
-    - Minimal string operations
+    Core log-message parser. Returns (row_dict, json_columns).
+    No pandas involved — just a plain Python dict.
     """
-    # Fast prefix check using 'in' (optimized by Python)
     if "latency_metrics" not in log_message:
         logger.error(f"Invalid line. {log_message}")
-        return pd.DataFrame(), []
+        return {}, []
 
-    # Find start position using pre-computed constant
     start_idx = log_message.find(_LATENCY_METRICS_PREFIX)
     if start_idx == -1:
-        return pd.DataFrame(), []
+        return {}, []
     start_idx += _LATENCY_METRICS_PREFIX_LEN
 
-    # Split only the relevant part
     parts = log_message[start_idx:].split('@')
     row = {}
     json_columns = []
 
-    # Process pairs directly using range (slightly faster than while)
     num_parts = len(parts)
     for i in range(0, num_parts - 1, 2):
         key = parts[i]
         value = parts[i + 1]
 
-        # Fast JSON detection and parsing
         if value and value[0] == '{' and value[-1] == '}':
             try:
-                # Only fix quotes if needed
                 if '\\"' in value:
                     value = value.replace('\\"', '"')
                 row[key] = json.loads(value)
@@ -1820,15 +1810,161 @@ def parse_log_message(log_message):
                 logger.error(f"Error: {e}")
                 row[key] = value
         else:
-            # Fast type conversion
             row[key] = _fast_parse_value(value)
 
-    # Create DataFrame only if we have data
+    return row, json_columns
+
+
+def parse_log_message(log_message):
+    """
+    Parse a single log message into a DataFrame.
+    Used by training path and any callers expecting DataFrame output.
+    """
+    row, json_columns = _parse_log_to_dict(log_message)
     if row:
-        df = pd.DataFrame([row])
-        return df, json_columns
+        return pd.DataFrame([row]), json_columns
     else:
         return pd.DataFrame(), []
+
+
+def preprocess_inference_fast(row_dict, hyperparameters, sorted_all_pod_ids):
+    """
+    Fast single-row inference preprocessing — no pandas, no numpy array wrapping.
+    Equivalent to preprocess_data_unified(DataFrame([row]), ..., is_training=False)
+    but ~4x faster by avoiding DataFrame construction and pandas operations.
+    """
+    import math
+    overhead = {}
+
+    # --- JSON column parsing (should already be dicts from _parse_log_to_dict) ---
+    json_parse_start = time.time()
+    json_columns = [
+        'allPodsKvCacheHitRatios', 'allPodsKvCacheLastAccess',
+        'numInflightRequestsAllPods', 'numInflightPrefillRequestsAllPods',
+        'numInflightDecodeRequestsAllPods', 'vllmGPUKVCacheUsage',
+        'vllmCPUKVCacheUsage', 'vllmNumRequestsRunning',
+        'vllmNumRequestsWaiting', 'numPrefillTokensForAllPods',
+        'numDecodeTokensForAllPods', 'GPU',
+    ]
+    for col in json_columns:
+        val = row_dict.get(col)
+        if isinstance(val, str):
+            row_dict[col] = safe_parse_json(val)
+        elif val is None:
+            row_dict[col] = {}
+    overhead['json_parse_overhead'] = time.time() - json_parse_start
+
+    # Hardcode fix for missing columns (same as preprocess_data_unified)
+    if 'subAlgorithm' not in row_dict:
+        row_dict['subAlgorithm'] = None
+    if 'GPU' not in row_dict:
+        row_dict['GPU'] = {}
+
+    # --- Numeric conversion: direct float() instead of pd.to_numeric ---
+    numeric_start = time.time()
+    numeric_columns = [
+        'ttft', 'avg_tpot', 'total_decode_time', 'e2e',
+        'numInputTokens', 'numOutputTokens', 'numTotalTokens',
+        'request_start_time', 'request_end_time', 'prev_reward',
+    ]
+    for col in numeric_columns:
+        if col in row_dict:
+            v = row_dict[col]
+            if not isinstance(v, (int, float)):
+                try:
+                    row_dict[col] = float(v)
+                except (ValueError, TypeError):
+                    row_dict[col] = float('nan')
+    overhead['numeric_conversion_overhead'] = time.time() - numeric_start
+
+    # --- Extract base features: direct dict access ---
+    get_value_start = time.time()
+    result = {
+        'request_id': row_dict.get('requestID'),
+        'selected_pod': row_dict.get('selectedpod'),
+        'input_tokens': row_dict.get('numInputTokens', 0),
+        'output_tokens': row_dict.get('numOutputTokens', 0),
+        'total_tokens': row_dict.get('numTotalTokens', 0),
+        'ttft': row_dict.get('ttft', 0),
+        'avg_tpot': row_dict.get('avg_tpot', 0),
+        'e2e_latency': row_dict.get('e2e', 0),
+        'request_start_time': row_dict.get('request_start_time', 0),
+        'request_end_time': row_dict.get('request_end_time', 0),
+        'subAlgorithm': row_dict.get('subAlgorithm'),
+    }
+
+    # Feature exclusion
+    excluded = set()
+    if hyperparameters and 'EXCLUDED_POD_FEATURES' in hyperparameters:
+        excluded = set(hyperparameters['EXCLUDED_POD_FEATURES'])
+        if 'none' in excluded or 'None' in excluded:
+            excluded = set()
+
+    sorted_pods = sorted_all_pod_ids
+
+    # --- Pod feature extraction: direct dict lookups, plain floats ---
+    feature_configs = [
+        ('kv_hit_ratio', 'allPodsKvCacheHitRatios', 0),
+        ('inflight_requests', 'numInflightRequestsAllPods', 0),
+        ('inflight_prefill_requests', 'numInflightPrefillRequestsAllPods', 0),
+        ('inflight_decode_requests', 'numInflightDecodeRequestsAllPods', 0),
+        ('gpu_kv_cache', 'vllmGPUKVCacheUsage', 0),
+        ('cpu_kv_cache', 'vllmCPUKVCacheUsage', 0),
+        ('running_requests', 'vllmNumRequestsRunning', 0),
+        ('waiting_requests', 'vllmNumRequestsWaiting', 0),
+        ('prefill_tokens', 'numPrefillTokensForAllPods', 0),
+        ('decode_tokens', 'numDecodeTokensForAllPods', 0),
+    ]
+
+    for feature_name, col_name, default_val in feature_configs:
+        if feature_name not in excluded:
+            pod_map = row_dict.get(col_name, {})
+            if not isinstance(pod_map, dict):
+                pod_map = {}
+            for pod_id in sorted_pods:
+                val = pod_map.get(pod_id, default_val)
+                try:
+                    result[f"{pod_id}-{feature_name}"] = float(val)
+                except (ValueError, TypeError):
+                    result[f"{pod_id}-{feature_name}"] = float(default_val)
+
+    # --- kv_hit_ratio_fresh: time-weighted freshness ---
+    if 'kv_hit_ratio_fresh' not in excluded and 'kv_hit_ratio' not in excluded:
+        half_life = float(hyperparameters.get('KV_FRESHNESS_HALF_LIFE', 15.0)) if hyperparameters else 15.0
+        last_access_map = row_dict.get('allPodsKvCacheLastAccess', {})
+        if not isinstance(last_access_map, dict):
+            last_access_map = {}
+        current_us = float(result.get('request_start_time', 0))
+        for pod_id in sorted_pods:
+            raw_hit = result.get(f"{pod_id}-kv_hit_ratio", 0.0)
+            la = float(last_access_map.get(pod_id, 0))
+            age_s = max(0, (current_us - la) / 1e6) if la > 0 else 999.0
+            age_s = min(age_s, 999.0)
+            weight = math.exp(-0.693147 * age_s / max(half_life, 0.1))
+            result[f"{pod_id}-kv_hit_ratio_fresh"] = raw_hit * weight
+
+    # --- GPU model (string, not numeric) ---
+    if 'GPU' not in excluded:
+        gpu_map = row_dict.get('GPU', {})
+        if not isinstance(gpu_map, dict):
+            gpu_map = {}
+        for pod_id in sorted_pods:
+            result[f"{pod_id}-GPU"] = gpu_map.get(pod_id, 'GPU-L3c')
+
+    overhead['get_value_overhead'] = time.time() - get_value_start
+    overhead['create_df_overhead'] = 0
+    overhead['pod_index_overhead'] = 0
+    overhead['reward_calc_overhead'] = -1
+    overhead['slo_update_overhead'] = -1
+    overhead['column_check_overhead'] = -1
+    overhead['podmetrics_parse_overhead'] = -1
+
+    # NaN fill
+    for key, value in result.items():
+        if isinstance(value, float) and math.isnan(value):
+            result[key] = 0
+
+    return result, sorted_all_pod_ids, overhead
 
 
 def main(input_file, log_message, hyperparameters, pod_ip_mapping=None):
@@ -1851,28 +1987,30 @@ def main(input_file, log_message, hyperparameters, pod_ip_mapping=None):
         assert False
     if input_file is not None:  # Training path
         parsed_df, json_columns = parse_log_file(input_file, pod_ip_mapping=pod_ip_mapping)
-    else:  # Inference path
+    else:  # Inference path — fast dict-based pipeline, no pandas
         parse_start_time = time.time()
-        parsed_df, _ = parse_log_message(log_message)
+        row_dict, _ = _parse_log_to_dict(log_message)
         preprocess_dataset_overhead_summary["parse_log_message"] = time.time() - parse_start_time
+        if not row_dict:
+            logger.error("No data found after parsing log message.")
+            logger.error(f"Log message: {log_message}")
+            assert False
+        sorted_all_pod_ids = utils.get_sorted_all_pod_ids('single_row', row_dict)
+        preprocess_start_time = time.time()
+        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_inference_fast(
+            row_dict, hyperparameters, sorted_all_pod_ids)
+        preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
+        return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
+
     if len(parsed_df) == 0:
         logger.error("No data found after parsing JSON columns.")
         logger.error(f"Log message: {log_message}")
         assert False
-    
-    # Unified preprocessing for both single row (inference) and batch (training)
+
+    # Training mode: batch processing with full features
     sorted_all_pod_ids = utils.get_sorted_all_pod_ids('batch_dataframe', parsed_df)
-    if len(parsed_df) == 1 and input_file is None:
-        # Inference mode: single row, no training-specific features needed
-        preprocess_start_time = time.time()
-        is_training = False
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training)
-        preprocess_dataset_overhead_summary["preprocess_unified_inference"] = time.time() - preprocess_start_time
-        mapping_info = None  # No mapping info needed for inference
-    else:
-        # Training mode: batch processing with full features
-        preprocess_start_time = time.time()
-        is_training = True
-        processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training)
-        preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
+    preprocess_start_time = time.time()
+    is_training = True
+    processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary = preprocess_data_unified(parsed_df, hyperparameters, sorted_all_pod_ids, is_training)
+    preprocess_dataset_overhead_summary["preprocess_unified_training"] = time.time() - preprocess_start_time
     return processed_df, sorted_all_pod_ids, preprocess_dataset_overhead_summary
