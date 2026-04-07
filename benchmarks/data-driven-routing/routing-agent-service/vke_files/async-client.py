@@ -2944,6 +2944,11 @@ async def main(args):
     if '.jsonl' not in args.workload_path:
         raise ValueError("Workload path must be a .jsonl file")
 
+    # Fix random seeds for deterministic workload across runs
+    # (prompt padding, output token sampling, Poisson arrivals)
+    random.seed(42)
+    np.random.seed(42)
+
     os.makedirs(args.output_dir, exist_ok=True)
     # Always prepare a CSV output file; both benchmark and profiling modes
     # will record per-request metrics there.
