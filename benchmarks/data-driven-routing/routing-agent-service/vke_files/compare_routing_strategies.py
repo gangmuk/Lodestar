@@ -10,6 +10,7 @@ from datetime import datetime
 import logging
 import argparse
 import csv
+csv.field_size_limit(sys.maxsize)
 import io
 from concurrent.futures import ProcessPoolExecutor, as_completed
 # import training.preprocess as preprocess
@@ -994,7 +995,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
-def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None, window_size=500, skip_timeseries=False):
+def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data_dict=None, csv_data_dict_individual=None, window_size=500, skip_timeseries=False, plot_all=True):
     """Create bar charts comparing performance metrics across routing strategies."""
     if not metrics_list:
         print("No metrics to plot.")
@@ -1079,16 +1080,22 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             category_counts['other'] += 1
     
     # Create figure with custom GridSpec for better control
-    if skip_timeseries:
+    if not plot_all:
+        fig = plt.figure(figsize=(18, 16))  # 2 rows: TTFT bar + TTFT time series
+        gs = GridSpec(2, 9, figure=fig,
+                      height_ratios=[1.5, 1.8],
+                      hspace=1.1,
+                      wspace=0.35)
+    elif skip_timeseries:
         fig = plt.figure(figsize=(18, 42))  # 6 rows: CDFs + bars only
         gs = GridSpec(6, 9, figure=fig,
                       height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5],
                       hspace=1.1,
                       wspace=0.35)
     else:
-        fig = plt.figure(figsize=(18, 82))  # 12 rows: original 8 + 4 extra time series
-        gs = GridSpec(12, 9, figure=fig,
-                      height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6, 1.6],
+        fig = plt.figure(figsize=(18, 76))  # 11 rows: original 8 + 3 extra time series
+        gs = GridSpec(11, 9, figure=fig,
+                      height_ratios=[1, 1.5, 1.5, 1.5, 1.5, 1.5, 1.8, 1.8, 1.6, 1.6, 1.6],
                       hspace=1.1,
                       wspace=0.35)
     
@@ -1120,7 +1127,15 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
         individual_color_dict = color_dict
 
     # NEW: CDF plots, bar charts, and time series graphs
-    if csv_data_dict:
+    if csv_data_dict and not plot_all:
+        # Minimal mode: only TTFT bar chart and TTFT time series
+        ax = fig.add_subplot(gs[0, :])
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99, P999)')
+
+        ax = fig.add_subplot(gs[1, :])
+        plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1000-request window averages)', 'TTFT (ms)', show_legend=False)
+
+    elif csv_data_dict:
         # Plot 1: TTFT Latency CDF (left half of row 0)
         ax = fig.add_subplot(gs[0, :4])
         plot_latency_cdf(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Latency CDF', 'TTFT (ms)')
@@ -1175,22 +1190,8 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
                 show_legend=False,
             )
 
-            # Plot 11: KV Hit Ratio Time Series with P25/P99 (full width, row 9)
+            # Plot 11: Prefill Tokens Time Series (full width, row 9)
             ax = fig.add_subplot(gs[9, :])
-            plot_selectedpod_metric_timeseries_percentiles(
-                ax, csv_data_dict, strategy_order, color_dict,
-                metric_title=f'KV Hit Ratio Time Series ({window_size}-request window P25/P50/P99)',
-                ylabel='KV Hit Ratio',
-                direct_candidates=['selected_kv_hit_ratio', 'kv_hit_ratio', 'selectedPodKvCacheHitRatio'],
-                dict_candidates=['allPodsKvCacheHitRatios'],
-                per_pod_suffix='-kv_hit_ratio',
-                window_size=window_size,
-                normalize_to_ratio=True,
-                show_legend=True,
-            )
-
-            # Plot 12: Prefill Tokens Time Series (full width, row 10)
-            ax = fig.add_subplot(gs[10, :])
             plot_selectedpod_metric_timeseries(
                 ax, csv_data_dict, strategy_order, color_dict,
                 metric_title=f'Prefill Tokens Time Series ({window_size}-request window averages)',
@@ -1203,8 +1204,8 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
                 show_legend=False,
             )
 
-            # Plot 13: Inflight Prefill Requests Time Series (full width, row 11)
-            ax = fig.add_subplot(gs[11, :])
+            # Plot 12: Inflight Prefill Requests Time Series (full width, row 10)
+            ax = fig.add_subplot(gs[10, :])
             plot_selectedpod_metric_timeseries(
                 ax, csv_data_dict, strategy_order, color_dict,
                 metric_title=f'Inflight Prefill Requests Time Series ({window_size}-request window averages)',
@@ -1218,11 +1219,16 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
             )
     else:
         # If no CSV data provided, show placeholder text for all plots
-        placeholder_rows = [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
-                            (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]
-        if not skip_timeseries:
+        if not plot_all:
+            placeholder_rows = [(0, [slice(None)]), (1, [slice(None)])]
+        elif skip_timeseries:
+            placeholder_rows = [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
+                                (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]
+        else:
+            placeholder_rows = [(0, [slice(None, 4), slice(5, None)]), (1, [slice(None)]), (2, [slice(None)]),
+                                (3, [slice(None)]), (4, [slice(None)]), (5, [slice(None)])]
             placeholder_rows += [(6, [slice(None)]), (7, [slice(None)]), (8, [slice(None)]),
-                                 (9, [slice(None)]), (10, [slice(None)]), (11, [slice(None)])]
+                                 (9, [slice(None)]), (10, [slice(None)])]
         for row_idx, plot_cols in placeholder_rows:
             if row_idx == 0:
                 for col_slice in plot_cols:
@@ -2198,6 +2204,8 @@ if __name__ == "__main__":
                        help='Only process experiments not already in the CSV, append their metrics, then plot')
     parser.add_argument('--skip-timeseries', action='store_true',
                        help='Skip plotting time series graphs')
+    parser.add_argument('--plot-all', action='store_true',
+                       help='Plot all graphs. Without this flag, only TTFT bar chart and TTFT time series are plotted')
 
     args = parser.parse_args()
 
@@ -2210,6 +2218,7 @@ if __name__ == "__main__":
     upto_request = args.upto_request
     append_mode = args.append
     skip_timeseries = args.skip_timeseries
+    plot_all = args.plot_all
     
     print(f"Searching for log files in {base_dir}...")
     if warmup_seconds is not None:
@@ -2245,6 +2254,18 @@ if __name__ == "__main__":
                 for row in reader:
                     existing_strategies.add(row.get('strategy_full_name', ''))
             print(f"Found {len(existing_strategies)} existing experiments in CSV")
+
+        # Remove stale CSV entries whose directories no longer exist
+        current_strategies = {parse_strategy_name(lf) for lf in log_files}
+        stale_strategies = existing_strategies - current_strategies
+        if stale_strategies and os.path.exists(csv_filepath):
+            for s in sorted(stale_strategies):
+                print(f"  Removing (directory deleted): {s}")
+            existing_df = pd.read_csv(csv_filepath)
+            existing_df = existing_df[~existing_df['strategy_full_name'].isin(stale_strategies)]
+            existing_df.to_csv(csv_filepath, index=False)
+            existing_strategies -= stale_strategies
+            print(f"  Removed {len(stale_strategies)} stale experiment(s) from CSV")
 
         new_log_files = []
         for log_file in log_files:
@@ -2303,7 +2324,7 @@ if __name__ == "__main__":
                         if category not in category_csv_dict:
                             category_csv_dict[category] = df
                     csv_data_dict = category_csv_dict
-            plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries)
+            plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries, plot_all=plot_all)
             sys.exit(0)
 
         print(f"Processing {len(new_log_files)} new experiment(s):")
@@ -2495,4 +2516,4 @@ if __name__ == "__main__":
             print(f"Available columns: {list(sample_df.columns)}")
 
     # Plot the comparison - MODIFIED to pass csv_data_dict
-    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries)
+    plot_routing_comparison(all_metrics, base_dir, slo_ttft, slo_tpot, csv_data_dict, csv_data_dict_individual, skip_timeseries=skip_timeseries, plot_all=plot_all)

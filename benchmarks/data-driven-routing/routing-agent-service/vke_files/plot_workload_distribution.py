@@ -156,33 +156,42 @@ def compute_unique_groups_timeseries(entries_sorted, window_ms=30000, step_ms=10
 
 
 class TrieNode:
-    """Trie node for prefix matching on hash_id sequences."""
+    """Trie node for prefix matching on word-chunk sequences."""
     __slots__ = ['children']
     def __init__(self):
         self.children = {}
 
 
-def compute_prefix_hit_ratios(entries_sorted):
+def compute_prefix_hit_ratios(entries_sorted, chunk_size=10):
     """
-    Compute prefix hit ratio for each request in temporal order.
+    Compute prefix hit ratio for each request in temporal order using
+    actual prompt text.
 
-    Uses hash_id-based trie matching.  Because prompt text is generated
-    deterministically from hash_ids (each hash_id → a fixed text block),
-    ``matched_blocks / total_blocks`` equals the prompt-text-level prefix
-    sharing ratio.
+    Chunks each prompt into fixed-size word blocks, hashes each block,
+    and matches against a trie of previously seen prompts — simulating
+    an online KV-cache.  chunk_size=10 words gives ~1% precision on the
+    prefix boundary while keeping memory reasonable.
 
     Returns list of hit_ratios (one per request, in order).
     """
+    import hashlib
+
     root = TrieNode()
     hit_ratios = []
 
     for entry in entries_sorted:
-        hids = entry["hash_ids"]
-        total_blocks = len(hids)
+        words = entry["prompt"].split()
+        # Chunk into fixed-size word blocks and hash each block
+        chunks = []
+        for i in range(0, len(words), chunk_size):
+            block = " ".join(words[i:i + chunk_size])
+            chunks.append(hashlib.md5(block.encode()).hexdigest())
+
+        total_blocks = len(chunks)
 
         node = root
         matched_blocks = 0
-        for h in hids:
+        for h in chunks:
             if h in node.children:
                 matched_blocks += 1
                 node = node.children[h]
@@ -193,7 +202,7 @@ def compute_prefix_hit_ratios(entries_sorted):
         hit_ratios.append(hit_ratio)
 
         node = root
-        for h in hids:
+        for h in chunks:
             if h not in node.children:
                 node.children[h] = TrieNode()
             node = node.children[h]
@@ -202,19 +211,24 @@ def compute_prefix_hit_ratios(entries_sorted):
 
 
 def verify_prompt_text_sharing(entries_sorted, sample_size=200):
-    """Spot-check that prompt-text sharing matches hash_id sharing for a sample."""
-    from collections import defaultdict
+    """Spot-check text-level prefix sharing within prefix groups.
+    Samples evenly across all groups to cover the full workload."""
     groups = defaultdict(list)
     for e in entries_sorted:
         groups[e["prefix_group"]].append(e)
 
+    # Sample evenly across all groups (not just the first N)
+    group_keys = [k for k, v in groups.items() if len(v) >= 2]
+    if len(group_keys) > sample_size:
+        step = len(group_keys) / sample_size
+        sampled_keys = [group_keys[int(i * step)] for i in range(sample_size)]
+    else:
+        sampled_keys = group_keys
+
     checked = 0
-    mismatches = 0
-    for pg, reqs in groups.items():
-        if checked >= sample_size:
-            break
-        if len(reqs) < 2:
-            continue
+    text_ratios = []
+    for pg in sampled_keys:
+        reqs = groups[pg]
         p1 = reqs[0]["prompt"]
         p2 = reqs[1]["prompt"]
         common_chars = 0
@@ -224,25 +238,12 @@ def verify_prompt_text_sharing(entries_sorted, sample_size=200):
             else:
                 break
         text_ratio = common_chars / min(len(p1), len(p2)) if min(len(p1), len(p2)) > 0 else 0
-
-        h1, h2 = reqs[0]["hash_ids"], reqs[1]["hash_ids"]
-        shared_h = 0
-        for a, b in zip(h1, h2):
-            if a == b:
-                shared_h += 1
-            else:
-                break
-        hid_ratio = shared_h / min(len(h1), len(h2)) if min(len(h1), len(h2)) > 0 else 0
-
-        if abs(text_ratio - hid_ratio) > 0.05:
-            mismatches += 1
+        text_ratios.append(text_ratio)
         checked += 1
 
+    avg_text = statistics.mean(text_ratios) if text_ratios else 0
     print(f"  Prompt-text verification: {checked} groups checked, "
-          f"{mismatches} mismatches (>{5}% deviation)")
-    if mismatches > 0:
-        print(f"  WARNING: {mismatches}/{checked} groups have text sharing "
-              f"inconsistent with hash_id sharing!")
+          f"avg text sharing ratio={avg_text:.3f}")
 
 
 def save_workload_csv(workload_sorted, hit_ratios, out_path):

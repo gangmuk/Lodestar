@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 """
 Linear regression AND neural network reward prediction comparison.
 
@@ -360,13 +361,13 @@ def load_reward_net(model_dir, context_dim, hidden_dim):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <data-processed.csv> [axis_limit]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Linear regression + NN reward prediction plot.')
+    parser.add_argument('csv_path', help='Path to data-processed.csv')
+    parser.add_argument('--axis-limit', type=float, default=-2.0, help='Axis limit (default: -2.0)')
+    args = parser.parse_args()
 
-    csv_path = sys.argv[1]
-    output_path = csv_path.replace('.csv', '') + '_linear_regression_reward.png'
-    axis_limit = float(sys.argv[2]) if len(sys.argv) > 2 else -2.0
+    csv_path = args.csv_path
+    axis_limit = args.axis_limit
     model_dir = os.path.dirname(csv_path)
 
     config = load_config(csv_path)
@@ -423,43 +424,6 @@ def main():
         print(f"  MAE:  {mae_nn:.4f}")
         print(f"  RMSE: {rmse_nn:.4f}")
 
-    # ---- Plot ----
-    reward_func = config.get('REWARD_FUNCTION', 'negative_linear')
-    fig, ax = plt.subplots(figsize=(7, 7))
-
-    # Linear regression dots (blue) — test data only
-    ax.scatter(y_test, y_pred_lr, alpha=0.35, s=12, color='#4878CF', edgecolors='none',
-               label='Linear Regression', rasterized=True)
-
-    # Neural network dots (orange) — test data only
-    if y_pred_nn is not None:
-        ax.scatter(y_test, y_pred_nn, alpha=0.35, s=12, color='#E8801B', edgecolors='none',
-                   label='Neural Network', rasterized=True)
-
-    # Diagonal (perfect prediction)
-    ax.plot([axis_limit, 0], [axis_limit, 0], color='#333333', linestyle='--', linewidth=1.2,
-            label='y = x', zorder=5)
-
-    ax.set_xlabel('Ground Truth Reward')
-    ax.set_ylabel('Predicted Reward')
-    ax.set_xlim(axis_limit, 0)
-    ax.set_ylim(axis_limit, 0)
-    ax.set_aspect('equal')
-    ax.invert_xaxis()
-    ax.invert_yaxis()
-
-    ax.legend(loc='lower right', framealpha=0.9, edgecolor='#cccccc')
-    ax.grid(True, alpha=0.2, linewidth=0.5)
-    plt.tight_layout()
-
-    plt.savefig(output_path, dpi=200)
-    print(f"\nSaved plot to {output_path}")
-
-    pdf_path = output_path.rsplit('.', 1)[0] + '.pdf'
-    plt.savefig(pdf_path, dpi=200)
-    print(f"Saved PDF to {pdf_path}")
-    plt.close()
-
     # ---- Side-by-side plot ----
     fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
 
@@ -484,13 +448,9 @@ def main():
 
     fig2.tight_layout()
 
-    sidebyside_path = output_path.rsplit('.', 1)[0] + '_sidebyside.png'
+    sidebyside_path = 'reward_prediction_scatter_plot.pdf'
     fig2.savefig(sidebyside_path, dpi=200)
     print(f"Saved side-by-side plot to {sidebyside_path}")
-
-    sidebyside_pdf = sidebyside_path.rsplit('.', 1)[0] + '.pdf'
-    fig2.savefig(sidebyside_pdf, dpi=200)
-    print(f"Saved side-by-side PDF to {sidebyside_pdf}")
     plt.close()
 
     # ---- Side-by-side hexbin density plot (shared color scale) ----
@@ -538,17 +498,13 @@ def main():
     cb = fig3.colorbar(hexbins[0], ax=[ax1, ax2], shrink=0.8)
     cb.set_label('Count')
 
-    hexbin_path = output_path.rsplit('.', 1)[0] + '_hexbin.png'
+    hexbin_path = 'reward_prediction_hexbin.pdf'
     fig3.savefig(hexbin_path, dpi=200)
     print(f"Saved hexbin plot to {hexbin_path}")
-
-    hexbin_pdf = hexbin_path.rsplit('.', 1)[0] + '.pdf'
-    fig3.savefig(hexbin_pdf, dpi=200)
-    print(f"Saved hexbin PDF to {hexbin_pdf}")
     plt.close()
 
     # Save per-sample predictions to CSV
-    pred_csv_path = output_path.rsplit('.', 1)[0] + '_predictions.csv'
+    pred_csv_path = 'reward_predictions.csv'
     pred_df = pd.DataFrame({
         'ground_truth_reward': y_test,
         'linear_regression_pred': y_pred_lr,
