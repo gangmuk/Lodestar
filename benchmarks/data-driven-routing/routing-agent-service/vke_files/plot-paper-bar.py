@@ -85,6 +85,10 @@ def _compact_policy_label(policy: str, max_len: int = 56) -> str:
     """Make long policy names more readable in legends."""
     if policy in _DISPLAY_NAME_OVERRIDES:
         return _DISPLAY_NAME_OVERRIDES[policy]
+    # Pattern-based: any CB random-init variant with onlinelearning_1 is Quicksilver.
+    pl = policy.lower()
+    if "contextual_bandit" in pl and "random" in pl and "onlinelearning_1" in pl:
+        return "Quicksilver"
     # prefix_hit_threshold_or_least_request_threshold_XX -> Prefix hit or least request (tau=XX)
     m = re.match(r"prefix_hit_threshold_or_least_request_threshold_(.+)", policy)
     if m:
@@ -423,7 +427,9 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
 
 
 def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
-                  single_page=False, single_row=False, ncol=3):
+                  single_page=False, single_row=False, ncol=3,
+                  no_bar_semantics_legend=False, no_routing_policies_legend=False,
+                  no_suptitle=False, output_pdf=None):
     """Generate bar-only pages and save to a single PDF."""
     exclude_patterns = exclude_patterns or []
 
@@ -461,12 +467,15 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
 
     _set_paper_style()
     policy_colors = generate_policy_colors(policies)
-    pdf_path = os.path.join(output_dir, "paper_bar_from_gateway_log.pdf")
+    pdf_path = output_pdf if output_pdf else os.path.join(output_dir, "paper_bar_from_gateway_log.pdf")
 
     if single_page:
         _plot_bar_single_page(
             df, groups, sorted_group_keys, policies, policy_colors,
             annotate_values, pdf_path, single_row=single_row, ncol=ncol,
+            no_bar_semantics_legend=no_bar_semantics_legend,
+            no_routing_policies_legend=no_routing_policies_legend,
+            no_suptitle=no_suptitle,
         )
         return
 
@@ -497,7 +506,8 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
                 axes = [axes]
 
             short_label = _short_group_label(gk)
-            fig.suptitle(f"TTFT Comparison Across RPS - {short_label}", y=0.985)
+            if not no_suptitle:
+                fig.suptitle(f"TTFT Comparison Across RPS - {short_label}", y=0.985)
 
             for ci, rps_pair in enumerate(rps_workload_pairs):
                 ax2 = _plot_bars_twin_y_paper(
@@ -518,35 +528,37 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
             from matplotlib.patches import Patch
 
             # Shared metric-style legend
-            metric_handles = [
-                Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
-                Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
-            ]
-            fig.legend(
-                handles=metric_handles,
-                loc="upper center",
-                ncol=2,
-                bbox_to_anchor=(0.5, 0.955),
-                framealpha=0.9,
-                title="Bar semantics",
-            )
+            if not no_bar_semantics_legend:
+                metric_handles = [
+                    Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
+                    Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
+                ]
+                fig.legend(
+                    handles=metric_handles,
+                    loc="upper center",
+                    ncol=2,
+                    bbox_to_anchor=(0.5, 0.955),
+                    framealpha=0.9,
+                    # title="Bar semantics",
+                )
 
             # Shared policy-color legend
-            legend_labels = [f"{i + 1}. {_compact_policy_label(p)}" for i, p in enumerate(group_policies)]
-            legend_colors = [policy_colors.get(p, "#7f7f7f") for p in group_policies]
-            legend_handles = [
-                Patch(facecolor=c, edgecolor="black", label=lbl)
-                for c, lbl in zip(legend_colors, legend_labels)
-            ]
-            if legend_handles:
-                fig.legend(
-                    handles=legend_handles,
-                    loc="lower center",
-                    ncol=ncol_policy_legend,
-                    bbox_to_anchor=(0.5, 0.02),
-                    framealpha=0.9,
-                    title="Routing policies",
-                )
+            if not no_routing_policies_legend:
+                legend_labels = [f"{i + 1}. {_compact_policy_label(p)}" for i, p in enumerate(group_policies)]
+                legend_colors = [policy_colors.get(p, "#7f7f7f") for p in group_policies]
+                legend_handles = [
+                    Patch(facecolor=c, edgecolor="black", label=lbl)
+                    for c, lbl in zip(legend_colors, legend_labels)
+                ]
+                if legend_handles:
+                    fig.legend(
+                        handles=legend_handles,
+                        loc="lower center",
+                        ncol=ncol_policy_legend,
+                        bbox_to_anchor=(0.5, 0.02),
+                        framealpha=0.9,
+                        # title="Routing policies",
+                    )
 
             # Leave compact top space and bottom space for policy legend.
             bottom_frac = 0.135 + max(0, n_legend_rows - 1) * 0.035
@@ -559,7 +571,9 @@ def plot_bar_only(df, output_dir, exclude_patterns=None, annotate_values=False,
 
 
 def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors,
-                          annotate_values, pdf_path, single_row=False, ncol=3):
+                          annotate_values, pdf_path, single_row=False, ncol=3,
+                          no_bar_semantics_legend=False, no_routing_policies_legend=False,
+                          no_suptitle=False):
     """All workload categories on a single page: one row per category, columns per RPS."""
     import pandas as pd
     from matplotlib.patches import Patch
@@ -623,8 +637,14 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
     col_width = max(5.5, 1.3 * n_policies)
     ncol_policy_legend = ncol
     n_legend_rows = int(np.ceil(n_policies / ncol_policy_legend))
-    # Generous top area: title + bar-semantics legend + gap + policy legend (multi-row).
-    top_header_inches = 5.0 + max(0, n_legend_rows - 1) * 0.45
+    # Top area: build up from visible elements only.
+    top_header_inches = 0.2  # base top padding
+    if not no_suptitle:
+        top_header_inches += 1.2
+    if not no_bar_semantics_legend:
+        top_header_inches += 1.4
+    if not no_routing_policies_legend:
+        top_header_inches += 1.4 + max(0, n_legend_rows - 1) * 0.45
     fig_width = col_width * n_cols + 1.2
     fig_height = row_height * n_rows + top_header_inches + 0.3
 
@@ -640,45 +660,55 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
     )
 
     # Title at very top.
-    fig.suptitle("TTFT Comparison Across Workloads", y=0.995, fontsize=FS_FIG_TITLE,
-                 va="top")
+    if not no_suptitle:
+        fig.suptitle("TTFT Comparison Across Workloads", y=0.995, fontsize=FS_FIG_TITLE,
+                     va="top")
 
     # Bar-semantics legend: just below title.
-    metric_handles = [
-        Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
-        Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
-    ]
-    metric_legend_y = 1.0 - 1.0 / fig_height
-    leg1 = fig.legend(
-        handles=metric_handles,
-        loc="upper center",
-        ncol=2,
-        bbox_to_anchor=(0.5, metric_legend_y),
-        framealpha=0.9,
-        title="Bar semantics",
-        fontsize=FS_LEGEND_BOX,
-    )
-    leg1.get_title().set_fontsize(FS_LEGEND_BOX)
-
-    # Policy-color legend: below bar-semantics with clear gap, above plots.
-    legend_labels = [f"{i + 1}. {_compact_policy_label(p)}" for i, p in enumerate(policies)]
-    legend_colors = [policy_colors.get(p, "#7f7f7f") for p in policies]
-    legend_handles = [
-        Patch(facecolor=c, edgecolor="black", label=lbl)
-        for c, lbl in zip(legend_colors, legend_labels)
-    ]
-    if legend_handles:
-        policy_legend_y = 1.0 - 2.6 / fig_height
-        leg2 = fig.legend(
-            handles=legend_handles,
+    if not no_bar_semantics_legend:
+        metric_handles = [
+            Patch(facecolor="#666666", edgecolor="black", label="Avg TTFT (left axis)"),
+            Patch(facecolor="#bbbbbb", edgecolor="black", label="P99 TTFT (right axis, lighter shade)"),
+        ]
+        metric_legend_y = 1.0 - 1.0 / fig_height
+        leg1 = fig.legend(
+            handles=metric_handles,
             loc="upper center",
-            ncol=ncol_policy_legend,
-            bbox_to_anchor=(0.5, policy_legend_y),
+            ncol=2,
+            bbox_to_anchor=(0.5, metric_legend_y),
             framealpha=0.9,
-            title="Routing policies",
+            title="Bar semantics",
             fontsize=FS_LEGEND_BOX,
         )
-        leg2.get_title().set_fontsize(FS_LEGEND_BOX)
+        leg1.get_title().set_fontsize(FS_LEGEND_BOX)
+
+    # Policy-color legend: below bar-semantics with clear gap, above plots.
+    if not no_routing_policies_legend:
+        legend_labels = [f"{i + 1}. {_compact_policy_label(p)}" for i, p in enumerate(policies)]
+        legend_colors = [policy_colors.get(p, "#7f7f7f") for p in policies]
+        legend_handles = [
+            Patch(facecolor=c, edgecolor="black", label=lbl)
+            for c, lbl in zip(legend_colors, legend_labels)
+        ]
+        if legend_handles:
+            # Offset from top: shrink when title / bar-semantics legend are hidden.
+            _policy_legend_top_offset = 2.6
+            if no_suptitle:
+                _policy_legend_top_offset -= 1.0
+            if no_bar_semantics_legend:
+                _policy_legend_top_offset -= 1.6
+            _policy_legend_top_offset = max(0.2, _policy_legend_top_offset)
+            policy_legend_y = 1.0 - _policy_legend_top_offset / fig_height
+            leg2 = fig.legend(
+                handles=legend_handles,
+                loc="upper center",
+                ncol=ncol_policy_legend,
+                bbox_to_anchor=(0.5, policy_legend_y),
+                framealpha=0.9,
+                # title="Routing policies",
+                fontsize=FS_LEGEND_BOX,
+            )
+            leg2.get_title().set_fontsize(FS_LEGEND_BOX)
 
     for ri, (gk, rps_workload_pairs, df_group, group_policies) in enumerate(valid_groups):
         for ci, rps_pair in enumerate(rps_workload_pairs):
@@ -714,7 +744,7 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
     print(f"Saved single-page bar PDF to {pdf_path}")
 
 
-def _run_compare_routing_strategies(target_dirs):
+def _run_compare_routing_strategies(target_dirs, from_request=1000):
     """Run compare_routing_strategies.py in parallel on each target directory.
 
     Mirrors the Step-1 behaviour of compare2: processes all dirs concurrently
@@ -725,7 +755,7 @@ def _run_compare_routing_strategies(target_dirs):
     def _run_one(d):
         print(f"  [compare] Processing: {d}")
         result = subprocess.run(
-            [sys.executable, script, d, "--from-request", "1000"],
+            [sys.executable, script, d, "--from-request", str(from_request)],
             capture_output=True,
             text=True,
         )
@@ -783,6 +813,12 @@ def main():
             "Recursively search for CSV files only under these directories "
             "(instead of searching the entire base_dir)."
         ),
+    )
+    parser.add_argument(
+        "--output-pdf",
+        default=None,
+        metavar="FILENAME",
+        help="Output PDF filename (default: paper_bar_from_gateway_log.pdf). Relative to output-dir.",
     )
     parser.add_argument(
         "--exclude",
@@ -845,6 +881,34 @@ def main():
         action="store_true",
         default=False,
         help="With --single-page, flatten all workloads into a single row (one column per workload+RPS).",
+    )
+    parser.add_argument(
+        "--no-bar-semantics-legend",
+        action="store_true",
+        default=False,
+        help="Hide the bar-semantics legend (Avg TTFT / P99 TTFT).",
+    )
+    parser.add_argument(
+        "--no-suptitle",
+        action="store_true",
+        default=False,
+        help="Hide the main figure title (suptitle).",
+    )
+    parser.add_argument(
+        "--no-routing-policies-legend",
+        action="store_true",
+        default=False,
+        help="Hide the routing-policies color legend.",
+    )
+    parser.add_argument(
+        "--from-request",
+        type=int,
+        default=1000,
+        metavar="N",
+        help=(
+            "Skip the first N requests when computing metrics "
+            "(passed to compare_routing_strategies.py). Default: 1000."
+        ),
     )
     parser.add_argument(
         "--run-compare-routing-strategies",
@@ -923,7 +987,7 @@ def main():
     if args.run_compare_routing_strategies:
         if dirs_to_process:
             try:
-                _run_compare_routing_strategies(dirs_to_process)
+                _run_compare_routing_strategies(dirs_to_process, from_request=args.from_request)
             except RuntimeError as exc:
                 print(f"ERROR: {exc}")
                 sys.exit(1)
@@ -1013,6 +1077,10 @@ def main():
         single_page=args.single_page,
         single_row=args.single_row,
         ncol=args.ncol,
+        no_bar_semantics_legend=args.no_bar_semantics_legend,
+        no_routing_policies_legend=args.no_routing_policies_legend,
+        no_suptitle=args.no_suptitle,
+        output_pdf=args.output_pdf,
     )
     print("Done!")
 

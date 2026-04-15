@@ -127,6 +127,10 @@ COPY workload-and-experiment_results/workload-generator/mooncake/synthetic_3x-nu
 
 COPY workload-and-experiment_results/mooncake/overhead_test /app/workload/mooncake/overhead_test
 
+COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing0%50% /app/workload/gangmuk-prefix/SharingRatio_0%_50%
+
+COPY workload-and-experiment_results/workload-generator/gangmuk-prefix-sharing/config_sharing5%50% /app/workload/gangmuk-prefix/SharingRatio_5%_50%
+
 COPY vke_files/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

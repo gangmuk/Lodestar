@@ -1843,7 +1843,7 @@ async def send_request_batch(client, model, prompt, output_file, request_id,
 
 async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_file, temperature, routing_strategy, results_lock, history_lock, iteration, 
                                     total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
-                                    prompt_type="chat", force_exact_output_tokens=0, base_time=None):
+                                    prompt_type="chat", force_exact_output_tokens=0, base_time=None, prompt_token_deduction=0):
     """Schedule and execute tasks based on their target times with true concurrency"""
     # Sort tasks by target_time
     tasks.sort(key=lambda t: t["target_time"])
@@ -1891,6 +1891,7 @@ async def schedule_and_execute_tasks(tasks, client, model, is_streaming, output_
                     total_num_requests_per_iter=total_num_requests_per_iter,
                     total_num_episodes=total_num_episodes,
                     force_exact_output_tokens=force_exact_output_tokens,
+                    prompt_token_deduction=prompt_token_deduction,
                 )
             )
         else:
@@ -1980,7 +1981,7 @@ async def schedule_task(delay, target_time, request_id, send_func, client, model
 async def schedule_task_token_ids(delay, target_time, request_id, client, model, token_ids,
                                 output_file, session_id, max_tokens, temperature, routing_strategy, results_lock, history_lock, iteration,
                                 local_request_id=0, total_num_requests=0, total_num_requests_per_iter=0, total_num_episodes=1,
-                                force_exact_output_tokens=0):
+                                force_exact_output_tokens=0, prompt_token_deduction=0):
     """Schedule and execute a single token-ids task at the specified time"""
     task_start = time.time()
 
@@ -2024,7 +2025,7 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                                     input_tokens_std, max_input_tokens,
                                     input_token_length_scaling, output_token_length_scaling,
                                     shuffle_requests_between_iterations, prompt_type, override_workload_output_length,
-                                    total_iterations=1):
+                                    total_iterations=1, prompt_token_deduction=0):
     """
     Prepare all requests for a single iteration.
 
@@ -2104,6 +2105,8 @@ async def prepare_iteration_requests(load_struct, iteration, max_tokens, max_tok
                     original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
                     current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
                     target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
+                    if prompt_token_deduction > 0 and target_tokens > 10:
+                        target_tokens = max(10, target_tokens - prompt_token_deduction)
 
                     if target_tokens < current_estimated_tokens:
                         truncated_text = truncate_text_to_tokens(original_prompt_text, target_tokens)
@@ -2418,7 +2421,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                        temperature, is_streaming, results_lock, history_lock, iterations, rps=None,
                        shuffle_requests_between_iterations=0, poisson_arrivals=False, max_input_tokens=None, input_tokens_std=0.0, max_tokens_std=10, force_exact_output_tokens=0,
                        input_token_length_scaling=1.0, output_token_length_scaling=1.0,
-                       workload_path=None, iteration_overlap_ratio=0.0):
+                       workload_path=None, iteration_overlap_ratio=0.0, prompt_token_deduction=0):
     """Main benchmark function that runs all requests asynchronously.
 
     When iteration_overlap_ratio > 0, uses blended scheduling for smooth transitions
@@ -2472,6 +2475,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                 prompt_type=args.prompt_type,
                 override_workload_output_length=args.override_workload_output_length,
                 total_iterations=iterations,
+                prompt_token_deduction=prompt_token_deduction,
             )
             all_iteration_requests.append(iter_requests)
             logger.info(f"Prepared {len(iter_requests)} requests for iteration {iteration}")
@@ -2513,6 +2517,7 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
             prompt_type=args.prompt_type,
             force_exact_output_tokens=force_exact_output_tokens,
             base_time=base_time,
+            prompt_token_deduction=prompt_token_deduction,
         )
         end_time = time.time()
 
@@ -2660,6 +2665,8 @@ async def run_benchmark(api_key, endpoint, max_retries, timeout, routing_strateg
                             original_prompt_text = request["prompt"] if isinstance(request["prompt"], str) else str(request["prompt"])
                             current_estimated_tokens = estimate_tokens_from_text(original_prompt_text, use_word_count=True)
                             target_tokens = sample_input_tokens(current_estimated_tokens, input_tokens_std)
+                            if prompt_token_deduction > 0 and target_tokens > 10:
+                                target_tokens = max(10, target_tokens - prompt_token_deduction)
 
                             if target_tokens < current_estimated_tokens:
                                 # Truncate text to match target tokens
@@ -2946,8 +2953,8 @@ async def main(args):
 
     # Fix random seeds for deterministic workload across runs
     # (prompt padding, output token sampling, Poisson arrivals)
-    random.seed(42)
-    np.random.seed(42)
+    random.seed(123)
+    np.random.seed(123)
 
     os.makedirs(args.output_dir, exist_ok=True)
     # Always prepare a CSV output file; both benchmark and profiling modes
@@ -2991,6 +2998,7 @@ async def main(args):
             output_token_length_scaling=args.output_token_length_scaling,
             workload_path=args.workload_path,
             iteration_overlap_ratio=args.iteration_overlap_ratio,
+            prompt_token_deduction=args.prompt_token_deduction,
         )
         end_time = time.time()
         logger.info(f"Total benchmark time: {end_time - start_time:.2f} seconds")
@@ -3073,6 +3081,9 @@ if __name__ == "__main__":
     parser.add_argument("--iteration_ramp_start_fraction", type=float, default=0.1,
                        help="Starting RPS as a fraction of target RPS during ramp-up (0.0-1.0). "
                             "E.g., 0.1 means start at 10%% of target RPS. Default: 0.1")
+    
+    parser.add_argument("--prompt_token_deduction", type=int, default=0,
+                       help="Deduct tokens from all prompts to test tipping point sensitivity. Default: 0")
 
     args = parser.parse_args()
 

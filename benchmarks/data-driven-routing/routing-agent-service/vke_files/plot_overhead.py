@@ -2,6 +2,13 @@
 """
 Overhead Analysis and Visualization Tool
 Analyzes routing agent overhead logs and generates publication-quality plots.
+
+Usage:
+    python plot_overhead.py <experiment_dir>
+
+Expects the directory to contain:
+    - all-routing-agent-service.log.txt   (required)
+    - filtered-aibrix-gateway-plugins.log.csv  (optional, adds VLLMScrapingOverhead)
 """
 import argparse
 import pathlib
@@ -43,7 +50,9 @@ EXCLUDED_METRICS = {
 #       contextual_bandit_infer is an inner sub-measurement, NOT the additive one.
 # NOTE: replace_podid_overhead is a subset of request_prepare — don't list both.
 #       contextual_bandit_infer is a subset of calling_infer_from_tensor — don't list both.
+# NOTE: gateway_vllm_scraping_overhead comes from the gateway log, not the agent log.
 MAIN_ADDITIVE_COMPONENTS = [
+    'gateway_vllm_scraping_overhead',
     'handle_infer_request_prepare',
     'handle_infer_preprocess_overhead',
     'handle_infer_distribution_monitor',
@@ -58,6 +67,7 @@ MAIN_ADDITIVE_COMPONENTS = [
 
 # Nice display names for main components
 COMPONENT_DISPLAY_NAMES = {
+    'gateway_vllm_scraping_overhead': 'VLLM Scraping (Gateway)',
     'handle_infer_request_prepare': 'Request Prepare',
     'handle_infer_preprocess_overhead': 'Preprocess',
     'handle_infer_distribution_monitor': 'Distribution Monitor',
@@ -68,7 +78,6 @@ COMPONENT_DISPLAY_NAMES = {
     'handle_infer_contextual_bandit_create': 'CB Create',
     'handle_infer_calling_infer_from_tensor': 'Calling Infer From Tensor',
     'handle_infer_remaining_work': 'Remaining Work',
-    'other': 'Other',
 }
 
 
@@ -95,6 +104,43 @@ def parse_overhead_entries(text: str) -> List[Dict[str, float]]:
                         values[key] = val
                 except ValueError:
                     continue
+        if values:
+            entries.append(values)
+    return entries
+
+
+def parse_gateway_overhead(text: str) -> List[Dict[str, float]]:
+    """Parse overhead fields from the gateway log CSV.
+
+    Each line contains @-delimited key-value pairs like:
+        ...EndToEndOverhead@15@VLLMScrapingOverhead@7@...
+    Values of -1 indicate not-measured and are filtered out.
+    """
+    field_map = {
+        'EndToEndOverhead': 'gateway_end_to_end_overhead',
+        'VLLMScrapingOverhead': 'gateway_vllm_scraping_overhead',
+        'FeaturePrepOverhead': 'gateway_feature_prep_overhead',
+        'HTTPRoundTripOverhead': 'gateway_http_round_trip_overhead',
+    }
+    entries: List[Dict[str, float]] = []
+    for line in text.splitlines():
+        if '**@latency_metrics@' not in line:
+            continue
+        values: Dict[str, float] = {}
+        for gw_key, internal_key in field_map.items():
+            marker = f'{gw_key}@'
+            idx = line.find(marker)
+            if idx == -1:
+                continue
+            start = idx + len(marker)
+            end = line.find('@', start)
+            val_str = line[start:end] if end != -1 else line[start:].strip()
+            try:
+                val = float(val_str)
+                if val >= 0:  # Filter -1 placeholders
+                    values[internal_key] = val
+            except ValueError:
+                continue
         if values:
             entries.append(values)
     return entries
@@ -138,6 +184,7 @@ def categorize_metrics(summary: Dict[str, Dict[str, float]]) -> Dict[str, List[s
         'Preprocessing': [],
         'Encoding': [],
         'Infer From Tensor': [],
+        'Gateway': [],
         'Other': [],
     }
 
@@ -152,6 +199,8 @@ def categorize_metrics(summary: Dict[str, Dict[str, float]]) -> Dict[str, List[s
             categories['Encoding'].append(metric)
         elif metric.startswith('infer_from_tensor_'):
             categories['Infer From Tensor'].append(metric)
+        elif metric.startswith('gateway_'):
+            categories['Gateway'].append(metric)
         else:
             categories['Other'].append(metric)
 
@@ -162,29 +211,22 @@ def calculate_contributions(summary: Dict[str, Dict[str, float]],
                           stat: str = 'mean') -> Tuple[Dict[str, float], Dict[str, float]]:
     """
     Calculate contribution percentages for top-level additive components.
+    Total is the sum of all present components (no "Other" bucket).
     Returns (component_values, component_percentages)
     """
-    total_key = 'handle_infer_end_to_end'
-
-    if total_key not in summary:
-        return {}, {}
-
-    total_time = summary[total_key][stat]
-
     component_values = {}
-    component_percentages = {}
-
     for comp in MAIN_ADDITIVE_COMPONENTS:
         if comp in summary:
-            val = summary[comp][stat]
-            component_values[comp] = val
-            component_percentages[comp] = (val / total_time * 100) if total_time > 0 else 0
+            component_values[comp] = summary[comp][stat]
 
-    # Calculate "other" component (unaccounted time)
-    accounted = sum(component_values.values())
-    other = max(0, total_time - accounted)
-    component_values['other'] = other
-    component_percentages['other'] = (other / total_time * 100) if total_time > 0 else 0
+    if not component_values:
+        return {}, {}
+
+    total_time = sum(component_values.values())
+    component_percentages = {
+        comp: (val / total_time * 100) if total_time > 0 else 0
+        for comp, val in component_values.items()
+    }
 
     return component_values, component_percentages
 
@@ -204,8 +246,8 @@ def print_analysis(summary: Dict[str, Dict[str, float]]) -> None:
     comp_values, comp_pct = calculate_contributions(summary, 'mean')
 
     if comp_values:
-        total = summary['handle_infer_end_to_end']['mean']
-        print(f"\nTotal End-to-End Time: {total:.2f} ms\n")
+        total = sum(comp_values.values())
+        print(f"\nTotal Overhead (sum of components): {total:.2f} ms\n")
 
         # Sort by value, filter out zero-value components
         sorted_comps = sorted(comp_values.items(), key=lambda x: x[1], reverse=True)
@@ -252,111 +294,101 @@ def print_analysis(summary: Dict[str, Dict[str, float]]) -> None:
               f"{stats['p90']:8.1f} {stats['p99']:8.1f} {stats['max']:8.1f}")
 
 
+def _draw_stacked_bar(ax, stat_key: str, label: str,
+                      summary: Dict[str, Dict[str, float]],
+                      plot_components: List[str],
+                      all_labels: List[str],
+                      colors: List) -> List:
+    """Draw a single horizontal stacked bar for one statistic and return bar handles."""
+    vals = [summary[c][stat_key] if c in summary else 0.0 for c in plot_components]
+    total = sum(vals)
+
+    bars_for_legend = []
+    left = 0.0
+    for ci, v in enumerate(vals):
+        b = ax.barh(0, v, left=left, height=0.55,
+                     color=colors[ci], edgecolor='white', linewidth=0.4)
+        bars_for_legend.append(b)
+        if total > 0 and v / total > 0.04:
+            ax.text(left + v / 2, 0, f'{v:.1f}',
+                    ha='center', va='center', fontsize=7, color='white',
+                    fontweight='bold')
+        left += v
+
+    ax.text(total + total * 0.02, 0,
+            f'{total:.1f} ms', ha='left', va='center', fontsize=9)
+
+    ax.set_yticks([0])
+    ax.set_yticklabels([label])
+    ax.set_xlabel('Latency (ms)')
+    ax.set_xlim(0, total * 1.18)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(axis='x', alpha=0.25, linestyle='--')
+
+    return bars_for_legend
+
+
 def create_plot(summary: Dict[str, Dict[str, float]],
-                entries: List[Dict[str, float]],
+                agent_entries: List[Dict[str, float]],
+                gateway_entries: List[Dict[str, float]],
                 output_path: pathlib.Path) -> None:
-    """Generate a single PDF with stacked bar breakdown and per-request histogram."""
+    """Generate a PDF with separate Mean/P99 stacked bars, histogram, and CDF."""
     plot_components = [c for c in MAIN_ADDITIVE_COMPONENTS if c in summary and summary[c]['mean'] > 0.01]
+    all_labels = [COMPONENT_DISPLAY_NAMES.get(c, c) for c in plot_components]
 
-    total_key = 'handle_infer_end_to_end'
-    stats_to_plot = ['p99', 'p95', 'p90', 'median', 'mean']
-    stat_labels = ['P99', 'P95', 'P90', 'Median', 'Mean']
-
-    # Build data matrix: rows = stats, cols = components + other
-    data = []
-    for stat in stats_to_plot:
-        row = [summary[c][stat] if c in summary else 0.0 for c in plot_components]
-        accounted = sum(row)
-        total = summary[total_key][stat] if total_key in summary else accounted
-        row.append(max(0, total - accounted))
-        data.append(row)
-    data = np.array(data)
-
-    all_labels = [COMPONENT_DISPLAY_NAMES.get(c, c) for c in plot_components] + ['Other']
-
-    # Drop components that are negligible across all stats (< 1% of max total)
-    max_total = data.sum(axis=1).max()
-    keep = data.max(axis=0) >= 0.005 * max_total
-    data = data[:, keep]
-    all_labels = [l for l, k in zip(all_labels, keep) if k]
-
-    n_stats = len(stats_to_plot)
-    n_comps = data.shape[1]
-
+    n_comps = len(plot_components)
     cmap = plt.colormaps.get_cmap('tab10').resampled(max(n_comps, 1))
     colors = [cmap(i) for i in range(n_comps)]
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(7, 9),
-                                        gridspec_kw={'height_ratios': [1, 0.7, 0.7]})
+    fig, (ax_mean, ax_p99, ax_hist, ax_cdf) = plt.subplots(
+        4, 1, figsize=(7, 8),
+        gridspec_kw={'height_ratios': [0.45, 0.45, 0.7, 0.7]})
 
-    # --- Top: stacked bar breakdown ---
-    y_pos = np.arange(n_stats)
-    bar_height = 0.55
-    lefts = np.zeros(n_stats)
+    # --- Mean stacked bar (own x-scale) ---
+    bars = _draw_stacked_bar(ax_mean, 'mean', 'Mean', summary,
+                             plot_components, all_labels, colors)
 
-    bars_for_legend = []
-    for ci in range(n_comps):
-        vals = data[:, ci]
-        b = ax1.barh(y_pos, vals, left=lefts, height=bar_height,
-                      color=colors[ci], edgecolor='white', linewidth=0.4)
-        bars_for_legend.append(b)
-        for si in range(n_stats):
-            seg_w = vals[si]
-            row_total = data[si].sum()
-            if row_total > 0 and seg_w / row_total > 0.04:
-                cx = lefts[si] + seg_w / 2
-                ax1.text(cx, y_pos[si], f'{seg_w:.1f}',
-                         ha='center', va='center', fontsize=7, color='white',
-                         fontweight='bold')
-        lefts += vals
+    # --- P99 stacked bar (own x-scale) ---
+    _draw_stacked_bar(ax_p99, 'p99', 'P99', summary,
+                      plot_components, all_labels, colors)
 
-    totals_bar = data.sum(axis=1)
-    for si in range(n_stats):
-        ax1.text(totals_bar[si] + max_total * 0.01, y_pos[si],
-                 f'{totals_bar[si]:.1f} ms', ha='left', va='center', fontsize=9)
+    # Shared legend between the two bars
+    ax_mean.legend([b[0] for b in bars], all_labels,
+                   loc='upper center', bbox_to_anchor=(0.5, -0.35),
+                   ncol=min(4, n_comps), fontsize=8, frameon=False,
+                   columnspacing=1.0, handlelength=1.2)
 
-    ax1.set_yticks(y_pos)
-    ax1.set_yticklabels(stat_labels)
-    ax1.set_xlabel('Latency (ms)')
-    ax1.set_xlim(0, max_total * 1.18)
-    ax1.invert_yaxis()
-    ax1.spines['top'].set_visible(False)
-    ax1.spines['right'].set_visible(False)
-    ax1.grid(axis='x', alpha=0.25, linestyle='--')
+    # --- Histogram and CDF use agent handle_infer_end_to_end (per-request) ---
+    agent_total_key = 'handle_infer_end_to_end'
+    per_req = [e[agent_total_key] for e in agent_entries if agent_total_key in e]
 
-    ax1.legend([b[0] for b in bars_for_legend], all_labels,
-               loc='upper center', bbox_to_anchor=(0.5, -0.22),
-               ncol=min(4, n_comps), fontsize=8, frameon=False,
-               columnspacing=1.0, handlelength=1.2)
-
-    # --- Bottom: overhead distribution histogram ---
-    per_req = [e[total_key] for e in entries if total_key in e]
     if per_req:
         mean_val = statistics.mean(per_req)
-        ax2.hist(per_req, bins='auto', color='#4C72B0', edgecolor='white',
-                 linewidth=0.5, alpha=0.85)
-        ax2.axvline(mean_val, color='#C44E52', linestyle='--', linewidth=1.2,
-                     label=f'Mean: {mean_val:.2f} ms  (n={len(per_req)})')
-        ax2.set_xlabel('End-to-End Overhead (ms)')
-        ax2.set_ylabel('Count')
-        ax2.spines['top'].set_visible(False)
-        ax2.spines['right'].set_visible(False)
-        ax2.grid(axis='y', alpha=0.25, linestyle='--')
-        ax2.legend(fontsize=9, frameon=False)
 
-        # --- Bottom: CDF ---
+        ax_hist.hist(per_req, bins='auto', color='#4C72B0', edgecolor='white',
+                     linewidth=0.5, alpha=0.85)
+        ax_hist.axvline(mean_val, color='#C44E52', linestyle='--', linewidth=1.2,
+                        label=f'Mean: {mean_val:.2f} ms  (n={len(per_req)})')
+        ax_hist.set_xlabel('Routing Agent End-to-End Overhead (ms)')
+        ax_hist.set_ylabel('Count')
+        ax_hist.spines['top'].set_visible(False)
+        ax_hist.spines['right'].set_visible(False)
+        ax_hist.grid(axis='y', alpha=0.25, linestyle='--')
+        ax_hist.legend(fontsize=9, frameon=False)
+
         sorted_vals = np.sort(per_req)
         cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
-        ax3.plot(sorted_vals, cdf, color='#4C72B0', linewidth=1.5)
-        ax3.axvline(mean_val, color='#C44E52', linestyle='--', linewidth=1.2,
-                     label=f'Mean: {mean_val:.2f} ms')
-        ax3.set_xlabel('End-to-End Overhead (ms)')
-        ax3.set_ylabel('CDF')
-        ax3.set_ylim(0, 1.05)
-        ax3.spines['top'].set_visible(False)
-        ax3.spines['right'].set_visible(False)
-        ax3.grid(alpha=0.25, linestyle='--')
-        ax3.legend(fontsize=9, frameon=False)
+        ax_cdf.plot(sorted_vals, cdf, color='#4C72B0', linewidth=1.5)
+        ax_cdf.axvline(mean_val, color='#C44E52', linestyle='--', linewidth=1.2,
+                       label=f'Mean: {mean_val:.2f} ms')
+        ax_cdf.set_xlabel('Routing Agent End-to-End Overhead (ms)')
+        ax_cdf.set_ylabel('CDF')
+        ax_cdf.set_ylim(0, 1.05)
+        ax_cdf.spines['top'].set_visible(False)
+        ax_cdf.spines['right'].set_visible(False)
+        ax_cdf.grid(alpha=0.25, linestyle='--')
+        ax_cdf.legend(fontsize=9, frameon=False)
 
     plt.tight_layout()
     fig.savefig(str(output_path), bbox_inches='tight')
@@ -368,47 +400,64 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Analyze overhead logs and generate publication-quality visualizations.'
     )
-    parser.add_argument('log_path', type=pathlib.Path,
-                       help='Path to routing-agent service log file')
+    parser.add_argument('experiment_dir', type=pathlib.Path,
+                       help='Experiment directory containing log files')
     parser.add_argument('--output', '-o', type=pathlib.Path,
                        default=None,
-                       help='Output PDF path (default: same directory as log, named overhead_analysis.pdf)')
+                       help='Output PDF path (default: <experiment_dir>/overhead_analysis.pdf)')
     parser.add_argument('--skip-first', type=int, default=5,
                        help='Number of initial overhead entries to skip (default: 5 for warmup)')
 
     args = parser.parse_args()
+    exp_dir = args.experiment_dir
 
-    # Read and parse log
-    print("Reading log file...")
-    text = args.log_path.read_text(errors="ignore")
-    entries = parse_overhead_entries(text)
-
-    if not entries:
-        print("ERROR: No overhead log entries found!")
+    # --- Routing agent service log (required) ---
+    agent_log = exp_dir / 'all-routing-agent-service.log.txt'
+    if not agent_log.exists():
+        print(f"ERROR: routing agent log not found: {agent_log}")
         return
 
-    print(f"Found {len(entries)} requests with overhead data")
+    print(f"Reading {agent_log.name}...")
+    agent_entries = parse_overhead_entries(agent_log.read_text(errors="ignore"))
+    if not agent_entries:
+        print("ERROR: No overhead log entries found!")
+        return
+    print(f"Found {len(agent_entries)} requests with overhead data")
 
     if args.skip_first > 0:
-        skipped = min(args.skip_first, len(entries))
-        entries = entries[skipped:]
-        print(f"Skipped first {skipped} entries (warmup), {len(entries)} remaining")
+        skipped = min(args.skip_first, len(agent_entries))
+        agent_entries = agent_entries[skipped:]
+        print(f"Skipped first {skipped} entries (warmup), {len(agent_entries)} remaining")
+
+    # --- Gateway log (optional, adds VLLMScrapingOverhead) ---
+    gateway_log = exp_dir / 'filtered-aibrix-gateway-plugins.log.csv'
+    gateway_entries: List[Dict[str, float]] = []
+    if gateway_log.exists():
+        print(f"Reading {gateway_log.name}...")
+        gateway_entries = parse_gateway_overhead(gateway_log.read_text(errors="ignore"))
+        print(f"Found {len(gateway_entries)} gateway entries with overhead data")
+        if args.skip_first > 0:
+            gw_skipped = min(args.skip_first, len(gateway_entries))
+            gateway_entries = gateway_entries[gw_skipped:]
+            print(f"Skipped first {gw_skipped} gateway entries (warmup), {len(gateway_entries)} remaining")
+    else:
+        print(f"No gateway log found at {gateway_log}, skipping VLLMScrapingOverhead")
 
     # Compute statistics
     print("Computing statistics...")
-    summary = summarize(entries)
+    summary = summarize(agent_entries)
+
+    if gateway_entries:
+        gateway_summary = summarize(gateway_entries)
+        summary.update(gateway_summary)
 
     # Print analysis
     print_analysis(summary)
 
     # Generate plot
-    if args.output:
-        output_path = args.output
-    else:
-        output_path = args.log_path.parent / 'overhead_analysis.pdf'
-
+    output_path = args.output or (exp_dir / 'overhead_analysis.pdf')
     print(f"\nGenerating plot...")
-    create_plot(summary, entries, output_path)
+    create_plot(summary, agent_entries, gateway_entries, output_path)
 
     print(f"\n{'='*80}")
     print(f"\u2713 Analysis complete! PDF saved to: {output_path}")
