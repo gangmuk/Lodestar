@@ -327,11 +327,15 @@ def prepare_prompts(tokenizer, config, rand, unique_seed, np_random, repetition_
         for j in range(num_requests_per_prefix):
             # Function to sample L from a normal distribution with truncation at 1 (to ensure L > 0)
             def sample_L(mu_L, sigma_L):
+                if sigma_L == 0:
+                    return max(1, int(np.round(mu_L)))
                 L = int(np.round(truncnorm.rvs((1 - mu_L) / sigma_L, np.inf, loc=mu_L, scale=sigma_L, random_state=np_random)))
                 return max(1, L)  # Ensure L is at least 1
 
             # Function to sample P from a truncated normal distribution ensuring 0 <= P <= L
             def sample_P(mu_P, sigma_P, L):
+                if sigma_P == 0:
+                    return max(0, min(int(np.round(mu_P)), L))
                 lower, upper = 0, L
                 P = int(np.round(truncnorm.rvs((lower - mu_P) / sigma_P, (upper - mu_P) / sigma_P, loc=mu_P, scale=sigma_P, random_state=np_random)))
                 return max(0, min(P, L))  # Ensure P is within [0, L]
@@ -624,6 +628,44 @@ def plot_metrics(workload_data, output_dir, window_size_seconds=1.0):
         json.dump(metrics, f, indent=2)
     print(f"Saved metrics time series data to {metrics_data_file}")
 
+def _sample_output_length(mean, std, distribution, rng):
+    """Sample an output token length from the specified distribution.
+
+    Supported distributions:
+        normal      - N(mean, std), symmetric
+        exponential - Exp(mean), right-skewed (std is ignored, std=mean)
+        uniform     - U(mean-r, mean+r) where r = std*sqrt(3)
+        lognormal   - LogNormal parameterized to match mean and std
+        chi2        - Scaled chi-square parameterized to match mean and std
+        fixed       - Always returns mean (ignores std)
+
+    Returns an integer >= 1.
+    """
+    if distribution == "fixed" or std == 0:
+        return int(mean)
+
+    if distribution == "normal":
+        val = rng.normal(mean, std)
+    elif distribution == "exponential":
+        val = rng.exponential(mean)
+    elif distribution == "uniform":
+        half_range = std * np.sqrt(3)
+        val = rng.uniform(mean - half_range, mean + half_range)
+    elif distribution == "lognormal":
+        sigma2 = np.log(1 + (std / mean) ** 2)
+        mu = np.log(mean) - sigma2 / 2
+        val = rng.lognormal(mu, np.sqrt(sigma2))
+    elif distribution == "chi2":
+        k = max(1, 2 * (mean / std) ** 2)
+        c = mean / k
+        val = c * rng.chisquare(k)
+    else:
+        raise ValueError(f"Unknown output_length_distribution: '{distribution}'. "
+                         f"Supported: normal, exponential, uniform, lognormal, chi2, fixed")
+
+    return max(1, int(round(val)))
+
+
 def sample_token_length(avg, std, min_, max_):
             while True:
                 sample = int(np.random.normal(avg, std))
@@ -683,22 +725,13 @@ def process_single_config(tokenizer, config, config_id, base_seed, repetition_id
     # Get output length parameters from config (with defaults for backward compatibility)
     output_length_mean = config_copy.get("output_length_mean", 100)
     output_length_std = config_copy.get("output_length_std", 0)
-    
+    output_length_dist = config_copy.get("output_length_distribution", "normal")
+
     for prefix_idx, prompt_list in enumerate(prompts):
         for j, prompt in enumerate(prompt_list):
-            # Sample output token length from normal distribution
-            if output_length_std > 0:
-                # Use truncated normal to ensure positive values
-                # min = max(1, mean - 3*std), max = mean + 3*std
-                min_output = max(1, int(output_length_mean - 3 * output_length_std))
-                max_output = int(output_length_mean + 3 * output_length_std)
-                
-                # Sample until we get a value in valid range
-                output_token = int(np.round(config_np_random.normal(output_length_mean, output_length_std)))
-                output_token = max(min_output, min(output_token, max_output))
-            else:
-                # If std is 0, use the mean as fixed value
-                output_token = int(output_length_mean)
+            output_token = _sample_output_length(
+                output_length_mean, output_length_std, output_length_dist, config_np_random
+            )
             
             flat_prompts_data.append({
                 "prompt": prompt,
@@ -734,7 +767,84 @@ def process_single_config(tokenizer, config, config_id, base_seed, repetition_id
 
     return flat_prompts_data, tokens, token_counts, prompts, sharing_ratio, config_stats_dict
 
-def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, arrival_rps=1, arrival_start_time=0, repetitions=1):
+def order_prompts_by_reuse_distance(prompts, reuse_distance, reuse_distance_std=0, rng=None):
+    """Order prompts so that between consecutive requests from the same
+    prefix_group, there are approximately `reuse_distance` requests from
+    other prefix groups.
+
+    Uses a sliding window of active groups. After a group emits, it is
+    re-inserted into the window at a position sampled from
+    N(reuse_distance, reuse_distance_std), giving controlled variance
+    in the reuse distance.  When std=0, the behavior is deterministic
+    round-robin.
+
+    Args:
+        prompts: List of prompt dicts with 'prefix_group' key
+        reuse_distance: Mean number of other-group requests between same-group requests
+        reuse_distance_std: Std dev of the reuse distance (0 = deterministic)
+        rng: Random instance for shuffling group order
+
+    Returns:
+        Ordered list of prompts
+    """
+    from collections import deque
+
+    groups = defaultdict(deque)
+    for p in prompts:
+        groups[p["prefix_group"]].append(p)
+
+    group_keys = list(groups.keys())
+    if rng:
+        rng.shuffle(group_keys)
+
+    D = reuse_distance
+    D_std = reuse_distance_std
+
+    if D == 0 and D_std == 0:
+        # All same-group requests together
+        ordered = []
+        for g in group_keys:
+            ordered.extend(groups[g])
+        return ordered
+
+    np_rng = np.random.RandomState(rng.randint(0, 2**31) if rng else 42) if D_std > 0 else None
+
+    # Active list: groups eligible to emit. Pending: waiting to enter.
+    initial_window = min(D + 1, len(group_keys))
+    active_list = list(group_keys[:initial_window])
+    pending_groups = deque(group_keys[initial_window:])
+
+    ordered = []
+    while active_list:
+        g = active_list.pop(0)
+
+        if not groups[g]:
+            if pending_groups:
+                active_list.append(pending_groups.popleft())
+            continue
+
+        ordered.append(groups[g].popleft())
+
+        if groups[g]:  # Still has requests
+            # Sample re-insertion distance
+            if D_std > 0:
+                insert_dist = max(1, int(round(np_rng.normal(D, D_std))))
+            else:
+                insert_dist = D
+
+            # Expand window if sampled distance exceeds current size
+            while insert_dist > len(active_list) and pending_groups:
+                active_list.append(pending_groups.popleft())
+
+            insert_pos = min(insert_dist, len(active_list))
+            active_list.insert(insert_pos, g)
+        elif pending_groups:
+            active_list.append(pending_groups.popleft())
+
+    return ordered
+
+
+def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, arrival_rps=1, arrival_start_time=0, repetitions=1, config_id_offset=0, reuse_distance=None, reuse_distance_std=0):
     all_prompts_combined = []
     total_tokens = 0
     config_stats = []
@@ -757,7 +867,7 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
         future_to_task_id = {}
         for rep_id in range(repetitions):
             for i, config in enumerate(configs):
-                config_id = i + 1
+                config_id = i + 1 + config_id_offset
                 task_id = (rep_id, config_id)
                 future = executor.submit(process_single_config, tokenizer, config, config_id, base_seed, rep_id)
                 future_to_task_id[future] = task_id
@@ -786,7 +896,8 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
         # Store config data for overall prefix calculation
         all_prompts_for_sharing.extend(prompts)
         all_prompts_token_counts.extend(token_counts)
-        avg_prefix_length = int(configs[config_id-1]["prompt_length"] * configs[config_id-1]["shared_proportion"])
+        local_idx = config_id - 1 - config_id_offset
+        avg_prefix_length = int(configs[local_idx]["prompt_length"] * configs[local_idx]["shared_proportion"])
         all_prefix_lengths.extend([avg_prefix_length] * len(prompts))
 
         # Store stats for this config
@@ -852,14 +963,20 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
                     np_random=rep_np_random,
                 )
                 
-                # Shuffle timestamps within this repetition to mix configs/prefix groups
-                rep_shuffle_rng = random.Random(base_seed + 999999 + rep_id)
-                rep_shuffle_rng.shuffle(rep_timestamps)
-                
-                # Assign timestamps to prompts
-                for i, prompt in enumerate(rep_prompts):
-                    prompt["timestamp"] = rep_timestamps[i]
-                
+                if reuse_distance is not None:
+                    # Order prompts by reuse distance, assign sorted timestamps
+                    rep_rng = random.Random(base_seed + 999999 + rep_id)
+                    rep_prompts = order_prompts_by_reuse_distance(rep_prompts, reuse_distance, reuse_distance_std=reuse_distance_std, rng=rep_rng)
+                    sorted_timestamps = sorted(rep_timestamps)
+                    for i, prompt in enumerate(rep_prompts):
+                        prompt["timestamp"] = sorted_timestamps[i]
+                else:
+                    # Default: shuffle timestamps randomly
+                    rep_shuffle_rng = random.Random(base_seed + 999999 + rep_id)
+                    rep_shuffle_rng.shuffle(rep_timestamps)
+                    for i, prompt in enumerate(rep_prompts):
+                        prompt["timestamp"] = rep_timestamps[i]
+
                 # Sort this repetition by timestamp
                 rep_prompts.sort(key=lambda x: x["timestamp"])
                 all_prompts_combined.extend(rep_prompts)
@@ -888,8 +1005,11 @@ def process_workload_configs(tokenizer, configs, num_workers=4, base_seed=42, ar
                     cfg["end_time"] = e
                     cfg["total_duration"] = (e - s) / 1000.0
         else:
-            # No timestamps: just shuffle the prompts to mix configs/prefix groups/repetitions
-            shuffle_rng.shuffle(all_prompts_combined)
+            # No timestamps
+            if reuse_distance is not None:
+                all_prompts_combined = order_prompts_by_reuse_distance(all_prompts_combined, reuse_distance, reuse_distance_std=reuse_distance_std, rng=shuffle_rng)
+            else:
+                shuffle_rng.shuffle(all_prompts_combined)
 
     return {
         "prompts": all_prompts_combined,
@@ -1004,9 +1124,57 @@ def get_configurations(args):
             prefix_workload_configs = config_data
             global_config = {}
         elif isinstance(config_data, dict):
+            # Phase-based format: sequential temporal phases with different workload configs
+            if 'phases' in config_data:
+                phases = config_data['phases']
+                if not isinstance(phases, list) or len(phases) == 0:
+                    raise ValueError("'phases' must be a non-empty list")
+
+                required_fields = [
+                    "prompt_length", "prompt_length_std", "shared_proportion",
+                    "shared_proportion_std", "num_requests_per_prefix",
+                    "num_diff_prefix"
+                ]
+
+                for phase_idx, phase in enumerate(phases):
+                    if 'workloads' not in phase:
+                        raise ValueError(f"Phase {phase_idx+1} must contain 'workloads' key")
+                    if 'arrival' not in phase:
+                        raise ValueError(f"Phase {phase_idx+1} must contain 'arrival' key")
+                    for i, config in enumerate(phase['workloads']):
+                        if not isinstance(config, dict):
+                            raise ValueError(f"Phase {phase_idx+1}, config {i+1} must be a dictionary")
+                        for field in required_fields:
+                            if field not in config:
+                                raise ValueError(f"Phase {phase_idx+1}, config {i+1} missing required field: {field}")
+
+                global_config = {
+                    'seed': config_data.get('seed', args.seed),
+                    'num_workers': config_data.get('num_workers', args.num_workers),
+                    'output_dir': config_data.get('output_dir', args.output_dir),
+                    'phases': phases,
+                }
+
+                print(f"Loaded {len(phases)} phases:")
+                for phase_idx, phase in enumerate(phases):
+                    phase_rps = phase.get('arrival', {}).get('rps', None)
+                    phase_reps = phase.get('repetitions', 1)
+                    print(f"  Phase {phase_idx+1}: {len(phase['workloads'])} configs, rps={phase_rps}, repetitions={phase_reps}")
+                    for i, config in enumerate(phase['workloads']):
+                        print(f"    Config {i+1}: prompt_length={config['prompt_length']}±{config['prompt_length_std']}, "
+                              f"shared_proportion={config['shared_proportion']*100:.1f}%±{config['shared_proportion_std']*100:.1f}%, "
+                              f"requests_per_prefix={config['num_requests_per_prefix']}, "
+                              f"num_prefixes={config['num_diff_prefix']}")
+
+                print(f"\nGlobal settings:")
+                print(f"  - Seed: {global_config['seed']}")
+                print(f"  - Number of workers: {global_config['num_workers']}")
+
+                return None, global_config
+
             # New format: dict with 'workloads' key and optional global settings
             if 'workloads' not in config_data:
-                raise ValueError("JSON config file must contain either a list of workloads or a dict with 'workloads' key")
+                raise ValueError("JSON config file must contain 'workloads', 'phases', or be a list of workload configs")
             prefix_workload_configs = config_data['workloads']
             global_config = {
                 'seed': config_data.get('seed', args.seed),
@@ -1150,59 +1318,141 @@ def main(args):
     seed = global_config['seed']
     print(f"Using {num_workers} worker threads")
 
-    # Generate filename
-    print("Generating multi-configuration workload...")
-    arrival_cfg = global_config.get('arrival', {}) or {}
-    arrival_rps = arrival_cfg.get('rps', None)
-    
-    # Validate RPS
-    if arrival_rps is None:
-        raise ValueError("Global arrival rps must be specified in config under 'arrival.rps' (use -1 to skip timestamp generation)")
-    
-    # Check if rps is a list or single value
-    if isinstance(arrival_rps, list):
-        if len(arrival_rps) == 0:
-            raise ValueError("RPS list cannot be empty")
-        if any(r <= 0 for r in arrival_rps):
-            raise ValueError("All RPS values in list must be positive")
-        print(f"Using multi-segment RPS: {arrival_rps}")
-    elif arrival_rps == 0:
-        raise ValueError("Global arrival rps cannot be 0. Use -1 to skip timestamp generation or a positive value for Poisson arrivals")
-    
-    # Get repetitions from global config (default to 1 for backward compatibility)
-    repetitions = global_config.get('repetitions', 1)
-    if repetitions < 1:
-        raise ValueError("Repetitions must be at least 1")
-    
-    # Save original RPS for directory naming (before expansion)
-    original_arrival_rps = arrival_rps
-    
-    if repetitions > 1:
-        print(f"Generating workload with {repetitions} repetitions")
-        # If RPS is a list, repeat it for each repetition
-        if isinstance(arrival_rps, list):
-            arrival_rps = arrival_rps * repetitions
-            print(f"Expanded RPS pattern for {repetitions} repetitions: {arrival_rps}")
-    
-    workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=arrival_rps, arrival_start_time=0, repetitions=repetitions)
-    print(f"workload_data['overall_sharing_ratio']: {workload_data['overall_sharing_ratio']}")
-
-    avg_prompt_length = int(sum(config['prompt_length'] for config in prefix_workload_configs) / len(prefix_workload_configs))
+    print("Generating workload...")
     config_dir = os.path.dirname(args.config_file)
-    
-    # Generate output directory name based on ORIGINAL RPS configuration (before expansion)
-    rep_str = f"_rep{repetitions}" if repetitions > 1 else ""
-    
-    if original_arrival_rps == -1:
-        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_notimestamp{rep_str}"
-        print("Note: No timestamps will be generated (arrival.rps = -1). Client code should handle timestamp assignment.")
-    elif isinstance(original_arrival_rps, list):
-        rps_str = "-".join(str(int(r)) for r in original_arrival_rps)
-        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_multirps{rps_str}{rep_str}"
-        print(f"Using multi-segment arrival rates (per repetition): {original_arrival_rps}")
+
+    if 'phases' in global_config:
+        # === Phase-based workload generation ===
+        phases = global_config['phases']
+        phase_results = []
+        current_start_time = 0
+        config_id_offset = 0
+        phase_sharing_proportions = []
+
+        for phase_idx, phase in enumerate(phases):
+            phase_configs = phase['workloads']
+            phase_arrival = phase.get('arrival', {})
+            phase_rps = phase_arrival.get('rps', None)
+            phase_repetitions = phase.get('repetitions', 1)
+            phase_reuse_distance = phase.get('reuse_distance_mean', phase.get('reuse_distance', None))
+            phase_reuse_distance_std = phase.get('reuse_distance_std', 0)
+
+            if phase_rps is None:
+                raise ValueError(f"Phase {phase_idx+1}: arrival.rps must be specified")
+            if isinstance(phase_rps, list):
+                if len(phase_rps) == 0:
+                    raise ValueError(f"Phase {phase_idx+1}: RPS list cannot be empty")
+                if any(r <= 0 for r in phase_rps):
+                    raise ValueError(f"Phase {phase_idx+1}: All RPS values must be positive")
+            elif phase_rps == 0:
+                raise ValueError(f"Phase {phase_idx+1}: RPS cannot be 0")
+
+            actual_rps = phase_rps
+            if phase_repetitions > 1 and isinstance(phase_rps, list):
+                actual_rps = phase_rps * phase_repetitions
+
+            reuse_str = ""
+            if phase_reuse_distance is not None:
+                reuse_str = f", reuse_distance={phase_reuse_distance}"
+                if phase_reuse_distance_std > 0:
+                    reuse_str += f"±{phase_reuse_distance_std}"
+            print(f"\n--- Phase {phase_idx+1}/{len(phases)} (start_time={current_start_time}ms{reuse_str}) ---")
+
+            phase_data = process_workload_configs(
+                tokenizer, phase_configs, num_workers, seed,
+                arrival_rps=actual_rps,
+                arrival_start_time=current_start_time,
+                repetitions=phase_repetitions,
+                config_id_offset=config_id_offset,
+                reuse_distance=phase_reuse_distance,
+                reuse_distance_std=phase_reuse_distance_std,
+            )
+
+            phase_results.append(phase_data)
+            phase_sharing_proportions.append(phase_data['overall_prefix_proportion'])
+
+            # Next phase starts after this one ends
+            if phase_data['prompts']:
+                max_ts = max(p['timestamp'] for p in phase_data['prompts'])
+                current_start_time = max_ts + 1
+
+            config_id_offset += len(phase_configs)
+
+        # Merge all phase results
+        all_prompts = []
+        all_stats = []
+        total_tokens = 0
+        for pd in phase_results:
+            all_prompts.extend(pd['prompts'])
+            all_stats.extend(pd['stats'])
+            total_tokens += pd['total_tokens']
+
+        if total_tokens > 0:
+            overall_sharing_ratio = sum(
+                pd['overall_sharing_ratio'] * pd['total_tokens'] for pd in phase_results
+            ) / total_tokens
+            overall_prefix_proportion = sum(
+                pd['overall_prefix_proportion'] * pd['total_tokens'] for pd in phase_results
+            ) / total_tokens
+        else:
+            overall_sharing_ratio = 0
+            overall_prefix_proportion = 0
+
+        workload_data = {
+            'prompts': all_prompts,
+            'stats': all_stats,
+            'total_tokens': total_tokens,
+            'overall_sharing_ratio': overall_sharing_ratio,
+            'overall_prefix_proportion': overall_prefix_proportion,
+            'has_timestamps': True,
+        }
+
+        print(f"\nworkload_data['overall_sharing_ratio']: {workload_data['overall_sharing_ratio']}")
+
+        # Save output in the same directory as the config file
+        final_output_dir = config_dir
+
     else:
-        output_dir = f"SharingRatio{int(workload_data['overall_prefix_proportion']*100)}%_avginput{avg_prompt_length}_globalrps{int(original_arrival_rps)}{rep_str}"
-    final_output_dir = os.path.join(config_dir, output_dir)
+        # === Original single-phase workload generation ===
+        arrival_cfg = global_config.get('arrival', {}) or {}
+        arrival_rps = arrival_cfg.get('rps', None)
+
+        # Validate RPS
+        if arrival_rps is None:
+            raise ValueError("Global arrival rps must be specified in config under 'arrival.rps' (use -1 to skip timestamp generation)")
+
+        # Check if rps is a list or single value
+        if isinstance(arrival_rps, list):
+            if len(arrival_rps) == 0:
+                raise ValueError("RPS list cannot be empty")
+            if any(r <= 0 for r in arrival_rps):
+                raise ValueError("All RPS values in list must be positive")
+            print(f"Using multi-segment RPS: {arrival_rps}")
+        elif arrival_rps == 0:
+            raise ValueError("Global arrival rps cannot be 0. Use -1 to skip timestamp generation or a positive value for Poisson arrivals")
+
+        # Get repetitions from global config (default to 1 for backward compatibility)
+        repetitions = global_config.get('repetitions', 1)
+        if repetitions < 1:
+            raise ValueError("Repetitions must be at least 1")
+
+        # Save original RPS for directory naming (before expansion)
+        original_arrival_rps = arrival_rps
+
+        if repetitions > 1:
+            print(f"Generating workload with {repetitions} repetitions")
+            # If RPS is a list, repeat it for each repetition
+            if isinstance(arrival_rps, list):
+                arrival_rps = arrival_rps * repetitions
+                print(f"Expanded RPS pattern for {repetitions} repetitions: {arrival_rps}")
+
+        reuse_distance = global_config.get('reuse_distance_mean', global_config.get('reuse_distance', None))
+        reuse_distance_std = global_config.get('reuse_distance_std', 0)
+        workload_data = process_workload_configs(tokenizer, prefix_workload_configs, num_workers, seed, arrival_rps=arrival_rps, arrival_start_time=0, repetitions=repetitions, reuse_distance=reuse_distance, reuse_distance_std=reuse_distance_std)
+        print(f"workload_data['overall_sharing_ratio']: {workload_data['overall_sharing_ratio']}")
+
+        # Save output in the same directory as the config file
+        final_output_dir = config_dir
     print(f"Output directory: {final_output_dir}")
     os.makedirs(final_output_dir, exist_ok=True)
 

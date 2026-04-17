@@ -378,6 +378,11 @@ def main() -> int:
 
     p = argparse.ArgumentParser(description="Multi-row Mooncake trace facet plots → PDF.")
     p.add_argument(
+        "-o", "--output",
+        default=None,
+        help="Output PDF path (default: mooncake_workload_summary.pdf next to this script)",
+    )
+    p.add_argument(
         "workloads",
         nargs="*",
         help="One or more trace .jsonl paths (default: all 3 Mooncake traces)",
@@ -396,7 +401,7 @@ def main() -> int:
         pg_count = len(a["pg_sizes"])
         print(f"{a['label']}: {n} requests, {pg_count} prefix groups ({a['path']})")
 
-    out_pdf = os.path.join(_SCRIPT_DIR, f"mooncake_workload_summary.pdf")
+    out_pdf = args.output if args.output else os.path.join(_SCRIPT_DIR, "mooncake_workload_summary.pdf")
     os.makedirs(os.path.dirname(out_pdf) or ".", exist_ok=True)
     plot_facets(analyses, out_pdf)
     return 0
