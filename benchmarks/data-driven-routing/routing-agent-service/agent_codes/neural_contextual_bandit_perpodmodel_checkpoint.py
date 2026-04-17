@@ -120,6 +120,11 @@ class NeuralContextualBandit:
                    f"request={state_dim['request_features']})")
         
         # Create per-pod reward prediction network
+        # Seed RNGs for deterministic weight initialization and exploration across runs
+        model_seed = hyperparameters.get('model_seed', 42)
+        torch.manual_seed(model_seed)
+        np.random.seed(model_seed)
+        logger.info(f"Set torch/numpy seed={model_seed} for deterministic model init")
         weight_init = hyperparameters.get('weight_initialization', 'xavier')
         self.reward_net = RewardNetwork(
             self.per_pod_context_dim,

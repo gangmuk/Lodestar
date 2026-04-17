@@ -32,7 +32,7 @@ GPU_MODEL_TO_ENCODE = {
     'NVIDIA-L40': 7,
     'NVIDIA-L40S': 8,
     'NVIDIA-T4': 9,
-    'NVIDIA-V100': 10,
+    'Tesla-V100': 10,
 }
 
 def load_hyperparameter_file(file_path):
@@ -130,21 +130,17 @@ def get_sorted_all_pod_ids(source_type, data=None):
         return sorted_all_pod_ids
         
     elif source_type == 'processed_csv_columns':
-        # Extract from already processed CSV columns
+        # Extract from already processed CSV columns.
+        # Use exact suffix matching to avoid partial matches like
+        # "pod_0000-kv_hit_ratio_fresh" being parsed as pod "pod_0000_fresh".
+        _SUFFIXES = ['-gpu_kv_cache', '-cpu_kv_cache', '-running_requests', '-waiting_requests']
         pod_ids_set = set()
         for col in data:  # data is list of column names
-            if '-kv_hit_ratio' in col or '-gpu_kv_cache' in col or '-cpu_kv_cache' in col or '-running_requests' in col or '-waiting_requests' in col:
-                if '-kv_hit_ratio' in col:
-                    pod_id = col.replace('-kv_hit_ratio', '')
-                elif '-gpu_kv_cache' in col:
-                    pod_id = col.replace('-gpu_kv_cache', '')
-                elif '-cpu_kv_cache' in col:
-                    pod_id = col.replace('-cpu_kv_cache', '')
-                elif '-running_requests' in col:
-                    pod_id = col.replace('-running_requests', '')
-                elif '-waiting_requests' in col:
-                    pod_id = col.replace('-waiting_requests', '')
-                pod_ids_set.add(pod_id)
+            for suffix in _SUFFIXES:
+                if col.endswith(suffix):
+                    pod_id = col[:-len(suffix)]
+                    pod_ids_set.add(pod_id)
+                    break
         sorted_all_pod_ids = sorted(list(pod_ids_set))
         logger.info(f"Extracted {len(sorted_all_pod_ids)} pod IDs from processed CSV columns: {sorted_all_pod_ids}")
         return sorted_all_pod_ids
