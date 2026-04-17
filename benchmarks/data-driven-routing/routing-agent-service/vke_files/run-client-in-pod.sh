@@ -444,9 +444,9 @@ experiment_configs=(
 
     ## RPS shifting, online adaptation
     "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
-    "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
-    "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
-    "lmetric|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
+    # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
+    # "least_request|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
+    # "lmetric|mooncake|toolagent-2-extended-ver1|${target_gpu}|10,22|1"
 
 )
 
@@ -472,12 +472,12 @@ EXPLORATION_RATE=0.0
 NORMALIZATION_MODE=zscore # zscore, fixed_range
 GPU_KV_SATURATION_THRESHOLD=0.6 
 PREFIX_SHARING_MIN_BENEFIT_THRESHOLD=100
-MAX_NUM_ONLINE_TRAINS_LIST=(-1 7)  # -1=unlimited, N=stop online training after N rounds
+MAX_NUM_ONLINE_TRAINS_LIST=(-1 -1)  # -1=unlimited, N=stop online training after N rounds
 # CANDIDATE_K=1
 # CANDIDATE_K=2
 # CANDIDATE_K=-99
 # CANDIDATE_K_LIST=(-99 2)
-CANDIDATE_K_LIST=(-1)
+CANDIDATE_K_LIST=(0)
 REWARD_SIMILARITY_THRESHOLD=0.0
 
 OLD_TRANSFER_SAMPLES_PER_WINDOW=1000
