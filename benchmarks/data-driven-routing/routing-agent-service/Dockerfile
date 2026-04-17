@@ -159,11 +159,13 @@ COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_ou
 
 
 COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/random/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random
-
 COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/random/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random
+
 
 COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear
 
+COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/random/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear NVIDIA-A30/llama-3-8b-instruct/use_given_output_length/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random
+COPY workload-and-experiment_results/NVIDIA-A30/llama-3-8b-instruct/random/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/gangmuk-prefix/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random
 
 ###############################################################################
 #### hetero: NVIDIA-L20*7 and NVIDIA-A30*8, , llama3.1 8B, no bitsandbytes ####
