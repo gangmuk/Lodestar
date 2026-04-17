@@ -83,6 +83,7 @@ const (
 	HeadervLLMCPUKVCacheUsage     = "x-vllm-cpu-kvcache-usage"
 	HeadervLLMNumRunningRequests  = "x-vllm-num-running-requests"
 	HeadervLLMNumwWaitingRequests = "x-vllm-num-waiting-requests"
+	HeadervLLMNumPreemptions      = "x-vllm-num-preemptions"
 
 	HeaderPodDetailedMetrics = "x-pod-detailed-metrics"
 
