@@ -284,6 +284,9 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 
 				utils.DecrementNumInflightPrefillRequestsForPod(podIPWithoutPort)
 				utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, prefill_token_count)
+				// LMETRIC: decrement accumulated new prefill tokens for this request's pod.
+				// No-op if request was not routed by LMETRIC.
+				utils.DecrementNewPrefillTokensForRequest(requestID, podIPWithoutPort)
 				utils.IncrementNumInflightDecodeRequestsForPod(podIPWithoutPort)
 
 				// rollback for data compatibility with the existing model
@@ -330,11 +333,14 @@ func (s *Server) handleStreamingResponse(requestID string, responseBody []byte) 
 				utils.DecrementNumInflightDecodeRequestsForPod(podIPWithoutPort)
 				utils.DecrementNumInflightDecodeTokensForPod(podIPWithoutPort, int(timing.decodeTokenCount))
 			} else {
-				// Still in prefill phase
+				// Still in prefill phase — decrement prefill counters including LMETRIC
 				utils.DecrementNumInflightPrefillRequestsForPod(podIPWithoutPort)
 				utils.DecrementNumInflightPrefillTokensForPod(podIPWithoutPort, int(timing.prefillTokenCount))
+				utils.DecrementNewPrefillTokensForRequest(requestID, podIPWithoutPort)
 			}
 			utils.DecrementNumInflightRequestsForPod(podIPWithoutPort)
+			// MOONCAKE: decrement virtual queue on error (no-op if not mooncake-routed)
+			utils.DecrementMooncakeVirtualQueue(requestID)
 			// Delete timing entry so the top-level defer's cleanupInflightCounters
 			// (which uses LoadAndDelete) won't double-decrement.
 			utils.RequestTimings.Delete(requestID)
@@ -509,6 +515,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			// utils.CleanupvLLMCPUKVCacheUsage(routerCtx.RequestID)
 			utils.CleanupvLLMNumRequestsRunning(routerCtx.RequestID)
 			utils.CleanupvLLMNumRequestsWaiting(routerCtx.RequestID)
+			utils.CleanupvLLMNumPreemptions(routerCtx.RequestID)
 			utils.CleanupSnapshotNumInflightPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanupSnapshotNumInflightDecodeTokensForRequest(routerCtx.RequestID)
 			utils.CleanupSnapshotNumInflightPrefillRequestsForRequest(routerCtx.RequestID)
@@ -525,9 +532,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 			utils.CleanupSelectedPodGPU(routerCtx.RequestID)
 			utils.CleanupOODFallbackForRequest(routerCtx.RequestID)
 			utils.CleanupFailureFallbackForRequest(routerCtx.RequestID)
+			// MOONCAKE: decrement virtual queue on request completion (no-op if not mooncake-routed)
+			utils.DecrementMooncakeVirtualQueue(routerCtx.RequestID)
 			utils.CleanupPrevRewardForRequest(routerCtx.RequestID)
 			utils.CleanupNumPrefillTokensForRequest(routerCtx.RequestID)
 			utils.CleanuprequestToPodIP(routerCtx.RequestID)
+			utils.CleanupEndToEndOverheadForRequest(routerCtx.RequestID)
+			utils.CleanupVLLMScrapingOverheadForRequest(routerCtx.RequestID)
+			utils.CleanupFeaturePrepOverheadForRequest(routerCtx.RequestID)
+			utils.CleanupHTTPRoundTripOverheadForRequest(routerCtx.RequestID)
 			headers = append(headers, timingHeaders...)
 			utils.RequestTimings.Delete(routerCtx.RequestID)
 			s.routingContexts.Delete(routerCtx.RequestID)
@@ -911,6 +924,14 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["vllmNumRequestWaiting"] = "{}"
 	}
 
+	// 7. Number of preemptions
+	vllmNumPreemptions, err := utils.GetvLLMNumPreemptionsForAllPods(routerCtx.RequestID)
+	if err == nil {
+		headers, jsonStrings["vllmNumPreemptions"] = addMetricToHeaders(headers, HeadervLLMNumPreemptions, vllmNumPreemptions, utils.GetvllmNumPreemptionsMutex())
+	} else {
+		jsonStrings["vllmNumPreemptions"] = "{}"
+	}
+
 	// BUG
 	// numPrefillTokensForAllPods := utils.GetNumPrefillTokensForAllPods()
 	numInflightPrefillTokensForAllPods := utils.GetSnapshotNumInflightPrefillTokensForRequest(routerCtx.RequestID)
@@ -971,7 +992,10 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 	oodFallback := utils.GetOODFallbackForRequest(routerCtx.RequestID)
 	failureFallback := utils.GetFailureFallbackForRequest(routerCtx.RequestID)
 	hashOfMatchedPrefix := utils.GetPrefixGroupHashForRequest(routerCtx.RequestID)
-	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d@EndToEndOverhead@%d",
+	vllmScrapingOverhead := utils.GetVLLMScrapingOverheadForRequest(routerCtx.RequestID)
+	featurePrepOverhead := utils.GetFeaturePrepOverheadForRequest(routerCtx.RequestID)
+	httpRoundTripOverhead := utils.GetHTTPRoundTripOverheadForRequest(routerCtx.RequestID)
+	logMessage := fmt.Sprintf("**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@%d@selectedpod@%s@ttft@%d@avg_tpot@%d@total_decode_time@%d@e2e@%d@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@vllmNumPreemptions@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@numTrains@%d@numFlush@%d@exploration@%d@explorationEnabled@%d@predictedRewards@%s@chosenPodPredictedReward@%f@iteration@%d@subAlgorithm@%s@prev_reward@%f@GPU@%s@selectedPodGPU@%s@failureFallback@%d@oodFallback@%d@EndToEndOverhead@%d@VLLMScrapingOverhead@%d@FeaturePrepOverhead@%d@HTTPRoundTripOverhead@%d",
 		routerCtx.RequestID,
 		normalized_request_start_time,
 		normalized_request_end_time,
@@ -993,6 +1017,7 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		jsonStrings["vllmCPUKVCacheUsage"],
 		jsonStrings["vllmNumRequestsRunning"],
 		jsonStrings["vllmNumRequestWaiting"],
+		jsonStrings["vllmNumPreemptions"],
 		jsonStrings["numPrefillTokensForAllPods"],
 		jsonStrings["numDecodeTokensForAllPods"],
 		utils.GetNumTrains(),
@@ -1009,6 +1034,9 @@ func (s *Server) calculateTimingMetrics(timing *RequestTiming, currentTime time.
 		failureFallback,
 		oodFallback,
 		end_to_end_overhead,
+		vllmScrapingOverhead,
+		featurePrepOverhead,
+		httpRoundTripOverhead,
 	)
 	klog.Infof("%s", logMessage)
 

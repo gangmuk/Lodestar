@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -199,8 +200,19 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 	return histogram, nil
 }
 
+// metricsHTTPClient is a shared HTTP client for vLLM /metrics scraping.
+// Connection pooling via keep-alive avoids a new TCP handshake per request.
+var metricsHTTPClient = &http.Client{
+	Timeout: 2 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 30, // up to 30 keep-alive connections per pod
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func ParseMetricsURL(url string) (map[string]*dto.MetricFamily, error) {
-	resp, err := http.Get(url)
+	resp, err := metricsHTTPClient.Get(url)
 	if err != nil {
 		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch metrics from %s: %v", url, err)
 	}
@@ -216,4 +228,38 @@ func ParseMetricsURL(url string) (map[string]*dto.MetricFamily, error) {
 		return make(map[string]*dto.MetricFamily), fmt.Errorf("Error parsing metric families: %v\n", err)
 	}
 	return allMetrics, nil
+}
+
+// ParseMetricsURLFiltered fetches only the requested metric families from a
+// Prometheus /metrics endpoint using the standard name[] query parameter.
+// This avoids downloading and parsing the full metrics dump (50-200KB)
+// when only a few gauges/counters are needed (~1-2KB).
+func ParseMetricsURLFiltered(baseURL string, metricNames []string) (map[string]*dto.MetricFamily, error) {
+	// Build URL with name[] query parameters for server-side filtering
+	req, err := http.NewRequest("GET", baseURL, nil)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to create request for %s: %v", baseURL, err)
+	}
+	q := req.URL.Query()
+	for _, name := range metricNames {
+		q.Add("name[]", name)
+	}
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := metricsHTTPClient.Do(req)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch filtered metrics from %s: %v", req.URL.String(), err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("failed to close response body: %v", err)
+		}
+	}()
+
+	var parser expfmt.TextParser
+	filteredMetrics, err := parser.TextToMetricFamilies(resp.Body)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Error parsing filtered metric families: %v\n", err)
+	}
+	return filteredMetrics, nil
 }

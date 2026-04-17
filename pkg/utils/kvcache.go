@@ -650,6 +650,15 @@ var (
 	OverheadMutex sync.RWMutex
 	Overhead      map[string]float64 // requestID -> overhead
 
+	VLLMScrapingOverheadMutex sync.RWMutex
+	VLLMScrapingOverhead      map[string]int64 // requestID -> vLLM metric scraping overhead in milliseconds
+
+	FeaturePrepOverheadMutex sync.RWMutex
+	FeaturePrepOverhead      map[string]int64 // requestID -> feature preparation overhead in milliseconds
+
+	HTTPRoundTripOverheadMutex sync.RWMutex
+	HTTPRoundTripOverhead      map[string]int64 // requestID -> HTTP round-trip overhead in milliseconds
+
 	FirstRequestStartTime   int64 = 0
 	RunningPodRegistry            = make(map[string]string) // Map to track running pods: podIP -> Pod object
 	RunningPodRegistryMutex sync.RWMutex
@@ -686,6 +695,25 @@ var (
 
 	podToTotalTokensMutex sync.RWMutex
 	podToTotalTokens      map[string]int // podIP -> total number of active tokens
+
+	// LMETRIC: accumulated new (cache-adjusted) prefill tokens per pod.
+	// Tracks sum of input_tokens*(1-kv_hit_ratio/100) for all requests currently in prefill on each pod.
+	podNewPrefillTokensMutex sync.Mutex // plain Mutex (not RW) to serialize LMETRIC read-compute-increment
+	podNewPrefillTokens      map[string]int64
+
+	// Per-request new prefill token contribution (for decrement when prefill completes).
+	requestNewPrefillTokensMutex sync.RWMutex
+	requestNewPrefillTokens      map[string]int64 // requestID -> new prefill tokens added to selected pod
+
+	// MOONCAKE: virtual queue depth per pod.
+	// Incremented when a request is routed to a pod, decremented when the request completes.
+	// Used by MooncakeScorePods to compute expected_latency = virtual_queue / speed.
+	mooncakeVirtualQueueMutex sync.Mutex // plain Mutex to serialize read-compute-increment
+	mooncakeVirtualQueue      map[string]int64
+
+	// Per-request tracking for Mooncake (for decrement when request completes).
+	mooncakeRequestPodMutex sync.RWMutex
+	mooncakeRequestPod      map[string]string // requestID -> podIP that was selected
 
 	requestAllPodsKVCacheMutex sync.RWMutex
 	requestAllPodsKVCache      map[string]map[string]int // requestID -> (podIP -> hit ratio)
@@ -808,6 +836,15 @@ func init() {
 	OverheadMutex = sync.RWMutex{}
 	Overhead = make(map[string]float64)
 
+	VLLMScrapingOverheadMutex = sync.RWMutex{}
+	VLLMScrapingOverhead = make(map[string]int64)
+
+	FeaturePrepOverheadMutex = sync.RWMutex{}
+	FeaturePrepOverhead = make(map[string]int64)
+
+	HTTPRoundTripOverheadMutex = sync.RWMutex{}
+	HTTPRoundTripOverhead = make(map[string]int64)
+
 	RequestToLogMessageMutex = sync.RWMutex{}
 	RequestToLogMessage = make(map[string]string)
 
@@ -831,6 +868,16 @@ func init() {
 
 	podToTotalTokensMutex = sync.RWMutex{}
 	podToTotalTokens = make(map[string]int)
+
+	podNewPrefillTokensMutex = sync.Mutex{}
+	podNewPrefillTokens = make(map[string]int64)
+	requestNewPrefillTokensMutex = sync.RWMutex{}
+	requestNewPrefillTokens = make(map[string]int64)
+
+	mooncakeVirtualQueueMutex = sync.Mutex{}
+	mooncakeVirtualQueue = make(map[string]int64)
+	mooncakeRequestPodMutex = sync.RWMutex{}
+	mooncakeRequestPod = make(map[string]string)
 
 	requestAllPodsKVCacheMutex = sync.RWMutex{}
 	requestAllPodsKVCache = make(map[string]map[string]int)
@@ -1240,6 +1287,15 @@ func GetGPUModel(podIP string) (string, bool) {
 	return gpuModel, true
 }
 
+// IsPrefixCacheCapable returns whether the GPU type of the given pod supports
+// vLLM prefix caching. Some GPU types (e.g. Tesla-V100) do not support prefix
+// caching, so their kv_hit_ratio should always be 0 and they should not be
+// inserted into the prefix tracking data structure.
+func IsPrefixCacheCapable(podIP string) bool {
+	gpuModel, _ := GetGPUModel(podIP)
+	return !strings.Contains(gpuModel, "V100")
+}
+
 // fetches the GPU model from the node's labels
 // This function queries the Kubernetes API to get the node's GPU label
 func GetGPUModelFromNode(nodeName string) (string, error) {
@@ -1301,6 +1357,75 @@ func CleanupEndToEndOverheadForRequest(requestID string) {
 	defer EndToEndOverheadMutex.Unlock()
 	delete(EndToEndOverhead, requestID)
 	klog.V(5).Infof("CleanupEndToEndOverheadForRequest, requestID: %s", requestID)
+}
+
+func GetVLLMScrapingOverheadForRequest(requestID string) int64 {
+	VLLMScrapingOverheadMutex.RLock()
+	defer VLLMScrapingOverheadMutex.RUnlock()
+	if val, ok := VLLMScrapingOverhead[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetVLLMScrapingOverheadForRequest for request ID: %s, not found, returning -1", requestID)
+	return -1
+}
+
+func SetVLLMScrapingOverheadForRequest(overhead int64, requestID string) {
+	VLLMScrapingOverheadMutex.Lock()
+	defer VLLMScrapingOverheadMutex.Unlock()
+	VLLMScrapingOverhead[requestID] = overhead
+	klog.V(5).Infof("SetVLLMScrapingOverheadForRequest, requestID: %s, overhead: %d", requestID, overhead)
+}
+
+func CleanupVLLMScrapingOverheadForRequest(requestID string) {
+	VLLMScrapingOverheadMutex.Lock()
+	defer VLLMScrapingOverheadMutex.Unlock()
+	delete(VLLMScrapingOverhead, requestID)
+}
+
+func GetFeaturePrepOverheadForRequest(requestID string) int64 {
+	FeaturePrepOverheadMutex.RLock()
+	defer FeaturePrepOverheadMutex.RUnlock()
+	if val, ok := FeaturePrepOverhead[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetFeaturePrepOverheadForRequest for request ID: %s, not found, returning -1", requestID)
+	return -1
+}
+
+func SetFeaturePrepOverheadForRequest(overhead int64, requestID string) {
+	FeaturePrepOverheadMutex.Lock()
+	defer FeaturePrepOverheadMutex.Unlock()
+	FeaturePrepOverhead[requestID] = overhead
+	klog.V(5).Infof("SetFeaturePrepOverheadForRequest, requestID: %s, overhead: %d", requestID, overhead)
+}
+
+func CleanupFeaturePrepOverheadForRequest(requestID string) {
+	FeaturePrepOverheadMutex.Lock()
+	defer FeaturePrepOverheadMutex.Unlock()
+	delete(FeaturePrepOverhead, requestID)
+}
+
+func GetHTTPRoundTripOverheadForRequest(requestID string) int64 {
+	HTTPRoundTripOverheadMutex.RLock()
+	defer HTTPRoundTripOverheadMutex.RUnlock()
+	if val, ok := HTTPRoundTripOverhead[requestID]; ok {
+		return val
+	}
+	klog.Errorf("Error, Failed GetHTTPRoundTripOverheadForRequest for request ID: %s, not found, returning -1", requestID)
+	return -1
+}
+
+func SetHTTPRoundTripOverheadForRequest(overhead int64, requestID string) {
+	HTTPRoundTripOverheadMutex.Lock()
+	defer HTTPRoundTripOverheadMutex.Unlock()
+	HTTPRoundTripOverhead[requestID] = overhead
+	klog.V(5).Infof("SetHTTPRoundTripOverheadForRequest, requestID: %s, overhead: %d", requestID, overhead)
+}
+
+func CleanupHTTPRoundTripOverheadForRequest(requestID string) {
+	HTTPRoundTripOverheadMutex.Lock()
+	defer HTTPRoundTripOverheadMutex.Unlock()
+	delete(HTTPRoundTripOverhead, requestID)
 }
 
 // func SetTensorTransferOverheadForRequest(tensorTransferOverhead float64, requestID string) {
@@ -2552,49 +2677,51 @@ func GetNumPrefillTokensForAllPods() map[string]int {
 
 func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) error {
 	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, PodPort)
-	allMetrics, err := metrics.ParseMetricsURL(url)
+
+	resolvedName := ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+	fullMetricName := fmt.Sprintf("vllm:%s", resolvedName)
+
+	// Build filtered name list (resolved + alternate for v0.9.x fallback)
+	filterNames := []string{fullMetricName}
+	var altName string
+	switch metricName {
+	case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
+		if resolvedName == metricName {
+			altName = "kv_cache_usage_perc"
+		} else {
+			altName = metricName
+		}
+	case MetricNumPreemptions:
+		if resolvedName == metricName {
+			altName = "num_preemptions"
+		} else {
+			altName = metricName
+		}
+	case MetricPromptTokensTotal:
+		if resolvedName == metricName {
+			altName = "prompt_tokens"
+		} else {
+			altName = metricName
+		}
+	case MetricGenerationTokensTotal:
+		if resolvedName == metricName {
+			altName = "generation_tokens"
+		} else {
+			altName = metricName
+		}
+	}
+	if altName != "" {
+		filterNames = append(filterNames, fmt.Sprintf("vllm:%s", altName))
+	}
+
+	allMetrics, err := metrics.ParseMetricsURLFiltered(url, filterNames)
 	if err != nil {
 		return fmt.Errorf("error parsing metric families from pod %s: %v", pod.Status.PodIP, err)
 	}
 
-	resolvedName := ResolveVLLMMetricName(pod.Status.PodIP, metricName)
-	fullMetricName := fmt.Sprintf("vllm:%s", resolvedName)
 	metricFamily, exists := allMetrics[fullMetricName]
-
-	// Fallback: if the resolved name wasn't found, try the alternate name.
-	// This handles edge cases around v0.9.x where the engine (v1 vs old) determines
-	// which metric names are exposed.
-	if !exists {
-		var altName string
-		switch metricName {
-		case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
-			if resolvedName == metricName {
-				altName = "kv_cache_usage_perc"
-			} else {
-				altName = metricName
-			}
-		case MetricNumPreemptions:
-			if resolvedName == metricName {
-				altName = "num_preemptions"
-			} else {
-				altName = metricName
-			}
-		case MetricPromptTokensTotal:
-			if resolvedName == metricName {
-				altName = "prompt_tokens"
-			} else {
-				altName = metricName
-			}
-		case MetricGenerationTokensTotal:
-			if resolvedName == metricName {
-				altName = "generation_tokens"
-			} else {
-				altName = metricName
-			}
-		}
-		if altName != "" {
-			metricFamily, exists = allMetrics[fmt.Sprintf("vllm:%s", altName)]
-		}
+	if !exists && altName != "" {
+		metricFamily, exists = allMetrics[fmt.Sprintf("vllm:%s", altName)]
 	}
 
 	// Select the appropriate storage and mutex based on metricName
@@ -2651,6 +2778,153 @@ func ReadAndStoreVLLMMetric(requestID string, pod *v1.Pod, metricName string) er
 		metricMutex.Unlock()
 
 		klog.V(5).Infof("Stored requestID: %s, metric %s, pod %s: %f", requestID, metricName, pod.Status.PodIP, metricValue)
+	}
+
+	return nil
+}
+
+// ReadAndStoreVLLMMetrics scrapes a pod's /metrics endpoint once and extracts
+// multiple metrics from the single response. This avoids redundant HTTP calls
+// when multiple metrics are needed from the same pod.
+func ReadAndStoreVLLMMetrics(requestID string, pod *v1.Pod, metricNames []string) error {
+	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, PodPort)
+
+	// Build the filtered metric name list (both resolved and alternate names)
+	// so the server returns only what we need (~1-2KB vs 50-200KB full dump).
+	filterNames := make([]string, 0, len(metricNames)*2)
+	for _, metricName := range metricNames {
+		resolvedName := ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+		filterNames = append(filterNames, fmt.Sprintf("vllm:%s", resolvedName))
+		// Also request the alternate name to handle v0.9.x edge cases
+		var altName string
+		switch metricName {
+		case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
+			if resolvedName == metricName {
+				altName = "kv_cache_usage_perc"
+			} else {
+				altName = metricName
+			}
+		case MetricNumPreemptions:
+			if resolvedName == metricName {
+				altName = "num_preemptions"
+			} else {
+				altName = metricName
+			}
+		case MetricPromptTokensTotal:
+			if resolvedName == metricName {
+				altName = "prompt_tokens"
+			} else {
+				altName = metricName
+			}
+		case MetricGenerationTokensTotal:
+			if resolvedName == metricName {
+				altName = "generation_tokens"
+			} else {
+				altName = metricName
+			}
+		}
+		if altName != "" {
+			filterNames = append(filterNames, fmt.Sprintf("vllm:%s", altName))
+		}
+	}
+
+	allMetrics, err := metrics.ParseMetricsURLFiltered(url, filterNames)
+	if err != nil {
+		return fmt.Errorf("error parsing metric families from pod %s: %v", pod.Status.PodIP, err)
+	}
+
+	for _, metricName := range metricNames {
+		resolvedName := ResolveVLLMMetricName(pod.Status.PodIP, metricName)
+		fullMetricName := fmt.Sprintf("vllm:%s", resolvedName)
+		metricFamily, exists := allMetrics[fullMetricName]
+
+		if !exists {
+			var altName string
+			switch metricName {
+			case MetricGPUCacheUsagePerc, MetricCPUCacheUsagePerc:
+				if resolvedName == metricName {
+					altName = "kv_cache_usage_perc"
+				} else {
+					altName = metricName
+				}
+			case MetricNumPreemptions:
+				if resolvedName == metricName {
+					altName = "num_preemptions"
+				} else {
+					altName = metricName
+				}
+			case MetricPromptTokensTotal:
+				if resolvedName == metricName {
+					altName = "prompt_tokens"
+				} else {
+					altName = metricName
+				}
+			case MetricGenerationTokensTotal:
+				if resolvedName == metricName {
+					altName = "generation_tokens"
+				} else {
+					altName = metricName
+				}
+			}
+			if altName != "" {
+				metricFamily, exists = allMetrics[fmt.Sprintf("vllm:%s", altName)]
+			}
+		}
+
+		var metricStorage map[string]map[string]float64
+		var metricMutex *sync.RWMutex
+
+		switch metricName {
+		case MetricGPUCacheUsagePerc:
+			metricStorage = vllmGPUKVCacheUsage
+			metricMutex = &vllmGPUKVCacheUsageMutex
+		case MetricCPUCacheUsagePerc:
+			metricStorage = vllmCPUKVCacheUsage
+			metricMutex = &vllmCPUKVCacheUsageMutex
+		case MetricNumRequestsRunning:
+			metricStorage = vllmNumRequestsRunning
+			metricMutex = &vllmNumRequestsRunningMutex
+		case MetricNumRequestsWaiting:
+			metricStorage = vllmNumRequestsWaiting
+			metricMutex = &vllmNumRequestsWaitingMutex
+		case MetricNumPreemptions:
+			metricStorage = vllmNumPreemptions
+			metricMutex = &vllmNumPreemptionsMutex
+		case MetricPromptTokensTotal:
+			metricStorage = vllmPromptTokensTotal
+			metricMutex = &vllmPromptTokensTotalMutex
+		case MetricGenerationTokensTotal:
+			metricStorage = vllmGenerationTokensTotal
+			metricMutex = &vllmGenerationTokensTotalMutex
+		default:
+			return fmt.Errorf("unknown metric name: %s", metricName)
+		}
+
+		if !exists {
+			availableMetrics := make([]string, 0, len(allMetrics))
+			for k := range allMetrics {
+				availableMetrics = append(availableMetrics, k)
+			}
+			klog.Fatalf("metric vllm:%s (resolved from %s) not found for pod %s, available metrics: %v",
+				resolvedName, metricName, pod.Status.PodIP, availableMetrics)
+		}
+
+		for _, familyMetric := range metricFamily.Metric {
+			metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
+			if err != nil {
+				klog.Errorf("Error, Failed to parse metric %s from pod %s: %v", metricName, pod.Status.PodIP, err)
+				continue
+			}
+
+			metricMutex.Lock()
+			if _, ok := metricStorage[requestID]; !ok {
+				metricStorage[requestID] = make(map[string]float64)
+			}
+			metricStorage[requestID][pod.Status.PodIP] = metricValue
+			metricMutex.Unlock()
+
+			klog.V(5).Infof("Stored requestID: %s, metric %s, pod %s: %f", requestID, metricName, pod.Status.PodIP, metricValue)
+		}
 	}
 
 	return nil
@@ -2785,6 +3059,36 @@ func GetvLLMGenerationTokensTotalForAllPods(requestID string) (map[string]float6
 		return result, nil
 	}
 	return nil, fmt.Errorf("vLLM generation tokens total not found for request ID %s", requestID)
+}
+
+// CleanupVLLMMetricsForRequest removes all vLLM metric entries for a given requestID.
+// Used by the background scraper to clean up temporary scrape IDs.
+func CleanupVLLMMetricsForRequest(requestID string) {
+	CleanupvLLMGPUKVCacheUsage(requestID)
+	CleanupvLLMNumRequestsRunning(requestID)
+	CleanupvLLMNumRequestsWaiting(requestID)
+	CleanupvLLMNumPreemptions(requestID)
+}
+
+// StoreVLLMMetricsForRequest writes a pre-built metrics snapshot into the per-request
+// storage maps. Used by the background scraper path so that Route() can populate
+// per-request data without doing any HTTP calls.
+func StoreVLLMMetricsForRequest(requestID string, gpuKV, running, waiting, preemptions map[string]float64) {
+	vllmGPUKVCacheUsageMutex.Lock()
+	vllmGPUKVCacheUsage[requestID] = gpuKV
+	vllmGPUKVCacheUsageMutex.Unlock()
+
+	vllmNumRequestsRunningMutex.Lock()
+	vllmNumRequestsRunning[requestID] = running
+	vllmNumRequestsRunningMutex.Unlock()
+
+	vllmNumRequestsWaitingMutex.Lock()
+	vllmNumRequestsWaiting[requestID] = waiting
+	vllmNumRequestsWaitingMutex.Unlock()
+
+	vllmNumPreemptionsMutex.Lock()
+	vllmNumPreemptions[requestID] = preemptions
+	vllmNumPreemptionsMutex.Unlock()
 }
 
 func CleanupvLLMGPUKVCacheUsage(requestID string) {
@@ -3062,4 +3366,324 @@ func buildPodMetricsLastSecond(podIPs []string) string {
 	}
 
 	return fmt.Sprintf("{%s}", strings.Join(parts, ","))
+}
+
+// =============================================================================
+// LMETRIC: Per-pod accumulated new (cache-adjusted) prefill tokens
+// =============================================================================
+
+// LMetricScorePods computes the LMETRIC score for all pods and returns the
+// selected pod IP along with the new-prefill-token contribution for that request.
+// It atomically reads the accumulated counters, computes scores, selects the best
+// pod, and increments the counter for the selected pod — all under one lock.
+//
+// Score_i = (podNewPrefillTokens[i] + thisRequestNew_i) × (BS_i + 1)
+// Selected = argmin(Score)
+//
+// Parameters:
+//   - numInputTokens: number of input tokens in this request
+//   - podIPsWithMatchingRatios: podIP -> kv_hit_ratio (0-100) for this request
+//   - podBatchSizes: podIP -> running_requests + waiting_requests
+//   - requestID: for per-request tracking (decrement on completion)
+//
+// Returns:
+//   - selectedPodIP: the pod to route to
+//   - ok: false if no pods available
+func LMetricScorePods(
+	numInputTokens int,
+	podIPsWithMatchingRatios map[string]int,
+	podBatchSizes map[string]int,
+	requestID string,
+) (selectedPodIP string, ok bool) {
+	podNewPrefillTokensMutex.Lock()
+	defer podNewPrefillTokensMutex.Unlock()
+
+	bestScore := int64(-1)
+	bestBS := int64(-1)
+	var bestPodIP string
+
+	for podIP, kvHitPercent := range podIPsWithMatchingRatios {
+		// P_tokens for this request on this pod
+		thisRequestNew := int64(numInputTokens) * int64(100-kvHitPercent) / 100
+
+		// Accumulated new prefill tokens already on this pod + this request's contribution
+		accumulated := podNewPrefillTokens[podIP] // 0 if not present
+		pTokens := accumulated + thisRequestNew
+
+		// BS = running + waiting + 1 (including this request)
+		bs := int64(podBatchSizes[podIP]) + 1
+
+		score := pTokens * bs
+
+		// Select minimum score; tiebreak by lowest BS
+		if bestScore < 0 || score < bestScore || (score == bestScore && bs < bestBS) {
+			bestScore = score
+			bestBS = bs
+			bestPodIP = podIP
+		}
+	}
+
+	if bestPodIP == "" {
+		return "", false
+	}
+
+	// Compute and store the new-token contribution for the selected pod
+	selectedKVHit := podIPsWithMatchingRatios[bestPodIP]
+	newTokens := int64(numInputTokens) * int64(100-selectedKVHit) / 100
+
+	podNewPrefillTokens[bestPodIP] += newTokens
+
+	// Store per-request contribution for decrement when prefill completes
+	requestNewPrefillTokensMutex.Lock()
+	requestNewPrefillTokens[requestID] = newTokens
+	requestNewPrefillTokensMutex.Unlock()
+
+	klog.V(4).Infof("LMETRIC: requestID=%s, selected=%s, score=%d, newTokens=%d, accumulated=%d, BS=%d",
+		requestID, bestPodIP, bestScore, newTokens, podNewPrefillTokens[bestPodIP], bestBS)
+
+	return bestPodIP, true
+}
+
+// DecrementNewPrefillTokensForRequest decrements the new prefill token counter
+// for the pod that served this request. Called when prefill completes (first token received).
+// Returns the new token count that was decremented (for logging), or 0 if not found.
+func DecrementNewPrefillTokensForRequest(requestID string, podIP string) int64 {
+	// Get and remove the per-request contribution
+	requestNewPrefillTokensMutex.Lock()
+	newTokens, exists := requestNewPrefillTokens[requestID]
+	if exists {
+		delete(requestNewPrefillTokens, requestID)
+	}
+	requestNewPrefillTokensMutex.Unlock()
+
+	if !exists {
+		// Request not tracked by LMETRIC (different subalgorithm or already cleaned up)
+		return 0
+	}
+
+	// Decrement the per-pod accumulator
+	podNewPrefillTokensMutex.Lock()
+	defer podNewPrefillTokensMutex.Unlock()
+
+	old := podNewPrefillTokens[podIP]
+	podNewPrefillTokens[podIP] -= newTokens
+	if podNewPrefillTokens[podIP] < 0 {
+		klog.Errorf("LMETRIC: podNewPrefillTokens[%s] went negative (%d -> %d), clamping to 0. requestID=%s",
+			podIP, old, podNewPrefillTokens[podIP], requestID)
+		podNewPrefillTokens[podIP] = 0
+	}
+
+	klog.V(5).Infof("LMETRIC: decremented requestID=%s, podIP=%s, by %d (was %d, now %d)",
+		requestID, podIP, newTokens, old, podNewPrefillTokens[podIP])
+	return newTokens
+}
+
+// CleanupNewPrefillTokensForRequest removes the per-request LMETRIC tracking entry
+// without decrementing the pod counter. Used only when the request needs cleanup but
+// the decrement was already handled by DecrementNewPrefillTokensForRequest.
+// This is idempotent.
+func CleanupNewPrefillTokensForRequest(requestID string) {
+	requestNewPrefillTokensMutex.Lock()
+	delete(requestNewPrefillTokens, requestID)
+	requestNewPrefillTokensMutex.Unlock()
+}
+
+// RollbackLMetricForRequest undoes the counter increment that LMetricScorePods made
+// for the given request on the originally-selected pod. Call this when the LMETRIC
+// selection is overridden (e.g., by fallback routing or when the actual pod differs
+// from the pre-computed pod).
+// Returns true if a rollback was performed.
+func RollbackLMetricForRequest(requestID string, originalPodIP string) bool {
+	requestNewPrefillTokensMutex.Lock()
+	newTokens, exists := requestNewPrefillTokens[requestID]
+	if exists {
+		delete(requestNewPrefillTokens, requestID)
+	}
+	requestNewPrefillTokensMutex.Unlock()
+
+	if !exists || newTokens == 0 {
+		return false
+	}
+
+	podNewPrefillTokensMutex.Lock()
+	defer podNewPrefillTokensMutex.Unlock()
+
+	old := podNewPrefillTokens[originalPodIP]
+	podNewPrefillTokens[originalPodIP] -= newTokens
+	if podNewPrefillTokens[originalPodIP] < 0 {
+		podNewPrefillTokens[originalPodIP] = 0
+	}
+	klog.V(4).Infof("LMETRIC rollback: requestID=%s, podIP=%s, rolled back %d (was %d, now %d)",
+		requestID, originalPodIP, newTokens, old, podNewPrefillTokens[originalPodIP])
+	return true
+}
+
+// GetNewPrefillTokensForAllPods returns a snapshot of the accumulated new prefill tokens
+// per pod. Used for logging/debugging.
+func GetNewPrefillTokensForAllPods() map[string]int64 {
+	podNewPrefillTokensMutex.Lock()
+	defer podNewPrefillTokensMutex.Unlock()
+	result := make(map[string]int64, len(podNewPrefillTokens))
+	for k, v := range podNewPrefillTokens {
+		result[k] = v
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// MOONCAKE: min_expected_latency routing
+//
+// Estimates each pod's expected latency as virtual_queue_depth / throughput_speed,
+// then routes to the pod with the minimum expected latency.
+// Tie-breaking: lowest virtual queue depth wins; if still tied, lowest podIP (stable).
+// ---------------------------------------------------------------------------
+
+// MooncakeScorePods selects the pod with minimum expected latency.
+//
+//	expected_latency(pod) = (virtualQueue[pod] + 1) / speed[pod]
+//
+// The +1 accounts for the current request being added to the queue.
+// podBatchSizes: podIP -> current running+waiting requests (from vLLM metrics).
+// podSpeeds: podIP -> static throughput (e.g., derived from GPU model).
+// The function is atomic: it reads the virtual queue, picks the best pod,
+// and increments the counter under a single lock, so concurrent requests
+// see each other's contributions.
+func MooncakeScorePods(
+	podBatchSizes map[string]int,
+	podSpeeds map[string]float64,
+	requestID string,
+) (selectedPodIP string, ok bool) {
+	mooncakeVirtualQueueMutex.Lock()
+	defer mooncakeVirtualQueueMutex.Unlock()
+
+	bestLatency := float64(-1)
+	bestQueue := int64(-1)
+	var bestPodIP string
+
+	for podIP, speed := range podSpeeds {
+		if speed <= 0 {
+			continue // skip pods with invalid speed
+		}
+
+		// Virtual queue = vLLM batch size + accumulated virtual requests not yet completed
+		vq := mooncakeVirtualQueue[podIP] // 0 if not present
+		queue := int64(podBatchSizes[podIP]) + vq + 1 // +1 for this request
+
+		expectedLatency := float64(queue) / speed
+
+		// Select minimum latency; tiebreak by lowest queue, then lexicographic podIP
+		if bestLatency < 0 || expectedLatency < bestLatency ||
+			(expectedLatency == bestLatency && queue < bestQueue) ||
+			(expectedLatency == bestLatency && queue == bestQueue && podIP < bestPodIP) {
+			bestLatency = expectedLatency
+			bestQueue = queue
+			bestPodIP = podIP
+		}
+	}
+
+	if bestPodIP == "" {
+		return "", false
+	}
+
+	// Increment virtual queue for the selected pod
+	mooncakeVirtualQueue[bestPodIP]++
+
+	// Track which pod this request was routed to (for decrement on completion)
+	mooncakeRequestPodMutex.Lock()
+	mooncakeRequestPod[requestID] = bestPodIP
+	mooncakeRequestPodMutex.Unlock()
+
+	klog.V(4).Infof("MOONCAKE: requestID=%s, selected=%s, expectedLatency=%.4f, virtualQueue=%d, speed=%.2f",
+		requestID, bestPodIP, bestLatency, mooncakeVirtualQueue[bestPodIP], podSpeeds[bestPodIP])
+
+	return bestPodIP, true
+}
+
+// DecrementMooncakeVirtualQueue decrements the virtual queue counter for the pod
+// that served this request. Called when the request completes.
+// Returns true if a decrement was performed.
+func DecrementMooncakeVirtualQueue(requestID string) bool {
+	mooncakeRequestPodMutex.Lock()
+	podIP, exists := mooncakeRequestPod[requestID]
+	if exists {
+		delete(mooncakeRequestPod, requestID)
+	}
+	mooncakeRequestPodMutex.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	mooncakeVirtualQueueMutex.Lock()
+	defer mooncakeVirtualQueueMutex.Unlock()
+
+	old := mooncakeVirtualQueue[podIP]
+	mooncakeVirtualQueue[podIP]--
+	if mooncakeVirtualQueue[podIP] < 0 {
+		klog.Errorf("MOONCAKE: virtualQueue[%s] went negative (%d -> %d), clamping to 0. requestID=%s",
+			podIP, old, mooncakeVirtualQueue[podIP], requestID)
+		mooncakeVirtualQueue[podIP] = 0
+	}
+
+	klog.V(5).Infof("MOONCAKE: decremented requestID=%s, podIP=%s (was %d, now %d)",
+		requestID, podIP, old, mooncakeVirtualQueue[podIP])
+	return true
+}
+
+// RollbackMooncakeForRequest undoes the virtual queue increment that MooncakeScorePods
+// made for the given request. Call this when the Mooncake selection is overridden
+// (e.g., by fallback routing).
+// Returns true if a rollback was performed.
+func RollbackMooncakeForRequest(requestID string) bool {
+	mooncakeRequestPodMutex.Lock()
+	podIP, exists := mooncakeRequestPod[requestID]
+	if exists {
+		delete(mooncakeRequestPod, requestID)
+	}
+	mooncakeRequestPodMutex.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	mooncakeVirtualQueueMutex.Lock()
+	defer mooncakeVirtualQueueMutex.Unlock()
+
+	old := mooncakeVirtualQueue[podIP]
+	mooncakeVirtualQueue[podIP]--
+	if mooncakeVirtualQueue[podIP] < 0 {
+		mooncakeVirtualQueue[podIP] = 0
+	}
+	klog.V(4).Infof("MOONCAKE rollback: requestID=%s, podIP=%s (was %d, now %d)",
+		requestID, podIP, old, mooncakeVirtualQueue[podIP])
+	return true
+}
+
+// GPUModelToMooncakeSpeed maps GPU model names to relative throughput values
+// for the Mooncake routing algorithm. These are relative values (not absolute RPM);
+// the ratio between them is what matters for routing decisions.
+var GPUModelToMooncakeSpeed = map[string]float64{
+	"GPU-L3c":  1.0,
+	"GPU-L20":  2.0,
+	"A100":     3.0,
+	"A100-SXM": 3.5,
+	"H100":     5.0,
+	"H100-SXM": 6.0,
+}
+
+// DefaultMooncakeSpeed is used when a pod's GPU model is not in the speed map.
+const DefaultMooncakeSpeed = 1.0
+
+// GetMooncakeSpeedsForPods builds a podIP -> speed map using GPU model information.
+func GetMooncakeSpeedsForPods(podIPs []string) map[string]float64 {
+	speeds := make(map[string]float64, len(podIPs))
+	for _, podIP := range podIPs {
+		gpuModel, _ := GetGPUModel(podIP)
+		speed, ok := GPUModelToMooncakeSpeed[gpuModel]
+		if !ok {
+			speed = DefaultMooncakeSpeed
+		}
+		speeds[podIP] = speed
+	}
+	return speeds
 }

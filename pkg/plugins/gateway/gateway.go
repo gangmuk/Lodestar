@@ -312,12 +312,16 @@ func (s *Server) cleanupInflightCounters(routerCtx *types.RoutingContext, reques
 		// Still in prefill phase — backend rejected before generating any tokens
 		utils.DecrementNumInflightPrefillRequestsForPod(podIP)
 		utils.DecrementNumInflightPrefillTokensForPod(podIP, int(timing.prefillTokenCount))
+		// LMETRIC: decrement accumulated new prefill tokens (no-op if not LMETRIC-routed)
+		utils.DecrementNewPrefillTokensForRequest(requestID, podIP)
 	} else {
-		// Had transitioned to decode phase
+		// Had transitioned to decode phase — LMETRIC already decremented at first token
 		utils.DecrementNumInflightDecodeRequestsForPod(podIP)
 		utils.DecrementNumInflightDecodeTokensForPod(podIP, int(timing.decodeTokenCount))
 	}
 	utils.DecrementNumInflightRequestsForPod(podIP)
+	// MOONCAKE: decrement virtual queue on cleanup (no-op if not mooncake-routed)
+	utils.DecrementMooncakeVirtualQueue(requestID)
 
 	klog.V(5).Infof("cleanupInflightCounters: decremented counters, requestID: %s, podIP: %s, wasPrefill: %t, prefillTokens: %d, decodeTokens: %d",
 		"requestID", requestID,

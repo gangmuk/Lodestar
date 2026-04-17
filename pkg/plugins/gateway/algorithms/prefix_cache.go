@@ -325,7 +325,7 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 			maxValue = value
 		}
 	}
-	klog.Infof("pod_request_count: %v, min: %d, max: %d", podRequestCount, minValue, maxValue)
+	// klog.Infof("pod_request_count: %v, min: %d, max: %d", podRequestCount, minValue, maxValue)
 	for podname, value := range podRequestCount {
 		if minValue == value {
 			targetPods = append(targetPods, podname)

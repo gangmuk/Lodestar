@@ -21,10 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -171,33 +169,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		// utils.SetPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens)
 		utils.SetByteArrayPrefillTokensForRequest(routingCtx.RequestID, prefill_tokens_in_bytearray) // Cleanup in gateway_rsp_body.go
 
-		readyPods := utils.FilterRoutablePods(podsArr.All())
-		targetMetrics := [...]string{
-			utils.MetricGPUCacheUsagePerc,
-			// utils.MetricCPUCacheUsagePerc,
-			utils.MetricNumRequestsRunning,
-			utils.MetricNumRequestsWaiting,
-			// utils.MetricNumPreemptions,
-			// utils.MetricPromptTokensTotal,
-			// utils.MetricGenerationTokensTotal,
-		}
-
-		// NOTE: currently it is logging for every request for all pods. We can do periodically.
-		var wg sync.WaitGroup
-		for _, pod := range readyPods {
-			wg.Add(1)
-			go func(pod *v1.Pod) {
-				defer wg.Done()
-				for _, metricName := range targetMetrics {
-					if err := utils.ReadAndStoreVLLMMetric(requestID, pod, metricName); err != nil {
-						klog.Errorf("ReadAndStoreVLLMMetric failed: %v", err)
-					}
-				}
-			}(pod)
-		}
-		wg.Wait()
-		detailedpodmetrics := utils.MetricsTracker.GetDetailedMetrics(time.Now().Add(-utils.MetricsTracker.WindowSize))
-		utils.AddRequestPodMetrics(routingCtx.RequestID, detailedpodmetrics)
+		// vLLM metric scraping moved to rl_routing.go Route() for overhead measurement
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		s.selectedPodIP.Store(requestID, targetPodIP)
 
