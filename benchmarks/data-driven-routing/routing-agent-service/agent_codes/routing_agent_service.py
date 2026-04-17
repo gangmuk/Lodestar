@@ -2,6 +2,7 @@
 
 # import threading
 # import joblib
+import collections
 import pandas as pd
 import numpy as np
 import random
@@ -46,18 +47,187 @@ from distribution_shift_detector import PerSampleOODDetector, OODAction
 
 # Prefix-group hash filtering: restricts CB's pod selection to K candidate pods
 # when the cluster is stressed, to preserve prefix concentration.
-ENABLE_PREFIX_FILTERING = int(os.getenv("ENABLE_PREFIX_FILTERING", "1"))
+# CANDIDATE_K: 0 = disabled, 1+ = static K for all groups, -99 = dynamic K per group
+CANDIDATE_K = int(os.getenv("CANDIDATE_K", "2"))
+ENABLE_PREFIX_FILTERING = (CANDIDATE_K != 0)
+DYNAMIC_K = (CANDIDATE_K == -99)
 GPU_KV_SATURATION_THRESHOLD = float(os.getenv("GPU_KV_SATURATION_THRESHOLD", "0.5"))
 PREFIX_SHARING_MIN_BENEFIT_THRESHOLD = float(os.getenv("PREFIX_SHARING_MIN_BENEFIT_THRESHOLD", "100"))
-CANDIDATE_K = int(os.getenv("CANDIDATE_K", "2"))
 logger.info(f"Prefix filtering config: ENABLE_PREFIX_FILTERING={ENABLE_PREFIX_FILTERING}, "
             f"GPU_KV_SATURATION_THRESHOLD={GPU_KV_SATURATION_THRESHOLD}, "
             f"PREFIX_SHARING_MIN_BENEFIT_THRESHOLD={PREFIX_SHARING_MIN_BENEFIT_THRESHOLD}, "
-            f"CANDIDATE_K={CANDIDATE_K}")
+            f"CANDIDATE_K={CANDIDATE_K}, DYNAMIC_K={DYNAMIC_K}")
 
 
 
 
+
+
+class PrefixGroupManager:
+    """Dynamic per-group K management for prefix filtering.
+
+    Design:
+    - Global ring buffer of recent filtered prefix_hashes identifies dominant groups
+    - Only dominant groups (>DOMINANT_PCT% of recent filtered traffic) get dynamic K
+    - Non-dominant groups: no filtering (CB has full freedom)
+    - K adjustment: check candidate pods' waiting, ±1 per period (every 2 seconds)
+    - All gated by existing saturation + benefit checks
+    """
+
+    def __init__(self, default_k=2, adjust_interval=2.0):
+        self.default_k = default_k
+        self.adjust_interval = adjust_interval
+
+        # Per-group K state
+        self.group_k = {}              # prefix_hash -> current K
+
+        # Global ring buffer: last N filtered prefix_hashes
+        self.RING_SIZE = int(os.getenv("DYNAMIC_K_RING_SIZE", "200"))
+        self.ring_buffer = collections.deque(maxlen=self.RING_SIZE)
+
+        # Latest pod states (updated every /infer)
+        self.pod_waiting = {}          # pod_id -> waiting_requests
+        self.pod_gpu_kv = {}           # pod_id -> gpu_kv_cache
+        self.all_pod_ids = []
+
+        # Thresholds
+        self.WAITING_HIGH = float(os.getenv("DYNAMIC_K_WAITING_HIGH", "10"))
+        self.WAITING_LOW = float(os.getenv("DYNAMIC_K_WAITING_LOW", "3"))
+        self.DOMINANT_PCT = float(os.getenv("DYNAMIC_K_DOMINANT_PCT", "10"))  # >10% of ring buffer = dominant
+        self.MIN_K = int(os.getenv("DYNAMIC_K_MIN_K", "2"))  # K=1 creates single-pod hotspots
+        self.COOLDOWN_PERIODS = int(os.getenv("DYNAMIC_K_COOLDOWN", "3"))  # periods to wait after K change before changing again
+
+        # Per-group cooldown tracking
+        self.group_cooldown = {}  # prefix_hash -> remaining cooldown periods
+
+        self.num_adjustments = 0
+        self._lock = threading.Lock()
+
+    def update_pod_states(self, raw_features_for_filtering, raw_features_for_lmetric, sorted_all_pod_ids):
+        """Called every /infer with latest pod metrics."""
+        with self._lock:
+            self.all_pod_ids = sorted_all_pod_ids
+            if raw_features_for_filtering:
+                self.pod_gpu_kv = raw_features_for_filtering.get('gpu_kv_per_pod', {})
+            if raw_features_for_lmetric:
+                self.pod_waiting = raw_features_for_lmetric.get('waiting_per_pod', {})
+
+    def record_filtered_request(self, prefix_hash):
+        """Called when a request passes saturation + benefit checks (filter-eligible).
+        Feeds the global ring buffer to track which groups are currently dominant."""
+        if prefix_hash == 0:
+            return
+        with self._lock:
+            self.ring_buffer.append(prefix_hash)
+
+    def is_dominant(self, prefix_hash):
+        """Check if a prefix group is dominant in recent filtered traffic."""
+        with self._lock:
+            if len(self.ring_buffer) < 10:
+                return False  # not enough data yet
+            count = self.ring_buffer.count(prefix_hash)
+            pct = count * 100 / len(self.ring_buffer)
+            return pct > self.DOMINANT_PCT
+
+    def get_k(self, prefix_hash):
+        """Get current K for a dominant group."""
+        with self._lock:
+            return self.group_k.get(prefix_hash, self.default_k)
+
+    def adjust_all_groups(self):
+        """Called periodically (every 2 seconds).
+        Identifies dominant groups from ring buffer, adjusts their K ±1."""
+        with self._lock:
+            if len(self.ring_buffer) < 10:
+                self.num_adjustments += 1
+                return
+
+            num_pods = len(self.all_pod_ids) if self.all_pod_ids else 7
+            groups_adjusted = 0
+            groups_incremented = 0
+            groups_decremented = 0
+
+            # Count frequency in ring buffer
+            freq = collections.Counter(self.ring_buffer)
+            threshold_count = len(self.ring_buffer) * self.DOMINANT_PCT / 100
+
+            # Find dominant groups
+            dominant_groups = {h: c for h, c in freq.items() if c > threshold_count}
+
+            # Clean up K and cooldowns for groups no longer dominant
+            for h in list(self.group_k.keys()):
+                if h not in dominant_groups:
+                    del self.group_k[h]
+                    self.group_cooldown.pop(h, None)
+
+            # Adjust K for each dominant group
+            for prefix_hash, count in dominant_groups.items():
+                current_k = self.group_k.get(prefix_hash, self.default_k)
+                pct = count * 100 / len(self.ring_buffer)
+
+                # Cooldown: skip adjustment if recently changed
+                cd = self.group_cooldown.get(prefix_hash, 0)
+                if cd > 0:
+                    self.group_cooldown[prefix_hash] = cd - 1
+                    continue
+
+                # Get candidate pods' health
+                candidates = _select_candidate_pods(prefix_hash, self.all_pod_ids, current_k) if self.all_pod_ids else []
+                if not candidates:
+                    continue
+
+                avg_waiting = np.mean([self.pod_waiting.get(p, 0) for p in candidates])
+
+                # Adjust K by at most ±1, with MIN_K floor
+                new_k = current_k
+                reason = ""
+
+                if avg_waiting > self.WAITING_HIGH and current_k < num_pods:
+                    # Before incrementing: check if the NEW pod has headroom
+                    # The next pod would be _select_candidate_pods(hash, pods, current_k+1)[-1]
+                    next_candidates = _select_candidate_pods(prefix_hash, self.all_pod_ids, current_k + 1)
+                    new_pod = next_candidates[-1]  # the pod that would be added
+                    new_pod_gpu_kv = self.pod_gpu_kv.get(new_pod, 0)
+                    new_pod_waiting = self.pod_waiting.get(new_pod, 0)
+
+                    if new_pod_gpu_kv < 0.85 and new_pod_waiting < self.WAITING_HIGH:
+                        new_k = current_k + 1
+                        groups_incremented += 1
+                        reason = f"overloaded->spread(new_pod={new_pod},gkv={new_pod_gpu_kv:.2f},wait={new_pod_waiting:.0f})"
+                    else:
+                        reason = ""  # don't increment — new pod has no headroom
+                elif avg_waiting < self.WAITING_LOW and current_k > self.MIN_K:
+                    new_k = current_k - 1
+                    groups_decremented += 1
+                    reason = "concentrate"
+
+                if new_k != current_k:
+                    self.group_k[prefix_hash] = new_k
+                    self.group_cooldown[prefix_hash] = self.COOLDOWN_PERIODS
+                    groups_adjusted += 1
+                    logger.info(f"DYNAMIC_K_CHANGE hash={prefix_hash}, K={current_k}->{new_k}, "
+                                f"reason={reason}, pct={pct:.1f}%, avg_wait={avg_waiting:.1f}, "
+                                f"cooldown={self.COOLDOWN_PERIODS}, "
+                                f"candidates={[p for p in candidates]}")
+
+            self.num_adjustments += 1
+
+            # Summary
+            k_dist = collections.Counter(self.group_k.values())
+            if self.pod_waiting:
+                wait_vals = list(self.pod_waiting.values())
+                cluster_wait = f"[{min(wait_vals):.0f},{np.mean(wait_vals):.1f},{max(wait_vals):.0f}]"
+            else:
+                cluster_wait = "N/A"
+
+            logger.info(f"DYNAMIC_K_SUMMARY adj#{self.num_adjustments}: "
+                        f"ring={len(self.ring_buffer)}, dominant={len(dominant_groups)}, "
+                        f"changed={groups_adjusted}(+{groups_incremented}/-{groups_decremented}), "
+                        f"K_dist={dict(sorted(k_dist.items()))}, "
+                        f"cluster_wait={cluster_wait}")
+
+# Global instance (initialized later when we know num_pods)
+prefix_group_manager = None
 
 
 def _select_candidate_pods(prefix_hash, all_pod_ids, k):
@@ -530,6 +700,10 @@ def handle_infer():
                 logger.warning(f"Failed to extract raw features for prefix filtering: {e}")
                 raw_features_for_filtering = None
 
+        # Update dynamic K manager with latest pod states
+        if DYNAMIC_K and prefix_group_manager is not None:
+            prefix_group_manager.update_pod_states(raw_features_for_filtering, raw_features_for_lmetric, sorted_all_pod_ids)
+
         normalize_start = time.time()
         if stats_instance is None:
             logger.error(f"No running statistics available, stats_instance: {stats_instance}")
@@ -949,6 +1123,8 @@ def handle_infer():
 
         # Prefix-group hash filtering: restrict CB's selection to K candidate pods
         # when the cluster is stressed and the prefix benefit justifies concentration.
+        # DYNAMIC_K mode: K is per-group, adjusted periodically based on group load and pod health.
+        # Static mode: K is fixed (CANDIDATE_K) for all groups.
         result['prefix_filtered'] = False
         if ENABLE_PREFIX_FILTERING and raw_features_for_filtering is not None and not result.get('explored', False):
             try:
@@ -961,18 +1137,34 @@ def handle_infer():
                 prefix_hash_val = raw_features_for_filtering['prefix_hash']
 
                 if cluster_gpu_kv > GPU_KV_SATURATION_THRESHOLD and prefix_benefit > PREFIX_SHARING_MIN_BENEFIT_THRESHOLD and prefix_hash_val != 0:
-                    candidates = _select_candidate_pods(prefix_hash_val, sorted_all_pod_ids, CANDIDATE_K)
-                    rewards = result['predicted_rewards']
-                    candidate_indices = [sorted_all_pod_ids.index(p) for p in candidates]
-                    best_candidate_idx = max(candidate_indices, key=lambda i: float(rewards[i]))
+                    # Get K: dynamic (per-group, adjusted for dominant groups) or static
+                    if DYNAMIC_K and prefix_group_manager is not None:
+                        prefix_group_manager.record_filtered_request(prefix_hash_val)
+                        k_used = prefix_group_manager.get_k(prefix_hash_val)
+                        is_dom = prefix_group_manager.is_dominant(prefix_hash_val)
+                    else:
+                        k_used = CANDIDATE_K
+                        is_dom = False
 
-                    original_idx = result['selected_pod_index']
-                    if original_idx not in candidate_indices:
-                        result['selected_pod_index'] = best_candidate_idx
-                        result['prefix_filtered'] = True
-                        logger.info(f"Prefix filtering: req={request_id}, gpu_kv={cluster_gpu_kv:.3f}, "
-                                    f"benefit={prefix_benefit:.0f}, candidates={candidates}, "
-                                    f"original=pod_{original_idx}, filtered=pod_{best_candidate_idx}")
+                    candidates = _select_candidate_pods(prefix_hash_val, sorted_all_pod_ids, k_used)
+
+                    if k_used >= len(sorted_all_pod_ids):
+                        result['prefix_filter_skipped_full_k'] = True
+                    else:
+                        rewards = result['predicted_rewards']
+                        candidate_indices = [sorted_all_pod_ids.index(p) for p in candidates]
+                        best_candidate_idx = max(candidate_indices, key=lambda i: float(rewards[i]))
+                        original_idx = result['selected_pod_index']
+                        if original_idx not in candidate_indices:
+                            orig_wait = raw_features_for_lmetric['waiting_per_pod'].get(sorted_all_pod_ids[original_idx], 0) if raw_features_for_lmetric else -1
+                            filt_wait = raw_features_for_lmetric['waiting_per_pod'].get(sorted_all_pod_ids[best_candidate_idx], 0) if raw_features_for_lmetric else -1
+                            result['selected_pod_index'] = best_candidate_idx
+                            result['prefix_filtered'] = True
+                            logger.info(f"PREFIX_FILTER req={request_id}, gpu_kv={cluster_gpu_kv:.3f}, "
+                                        f"benefit={prefix_benefit:.0f}, K={k_used}, dominant={is_dom}, "
+                                        f"original=pod_{original_idx}(wait={orig_wait:.0f}), "
+                                        f"filtered=pod_{best_candidate_idx}(wait={filt_wait:.0f}), "
+                                        f"candidates={candidates}")
             except Exception as e:
                 logger.warning(f"Prefix filtering failed: {e}")
 
@@ -2151,7 +2343,7 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, CONTEXTUAL_BANDIT_PRELOADED
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, CONTEXTUAL_BANDIT_PRELOADED, prefix_group_manager
     
     # Model directory and offline data are GPU-specific
     # LMETRIC is a heuristic but still needs hyperparameters/normalization stats for the
@@ -2748,12 +2940,30 @@ if __name__ == "__main__":
         online_train_routine()
         logger.info(f"📐 Immediate retraining complete. NUM_TRAINS={NUM_TRAINS}")
 
+    # Initialize dynamic K manager if enabled
+    if DYNAMIC_K:
+        prefix_group_manager = PrefixGroupManager(
+            default_k=2,
+            adjust_interval=float(os.getenv("DYNAMIC_K_ADJUST_INTERVAL", "2.0")),
+        )
+        logger.info(f"PrefixGroupManager initialized: default_k=2, "
+                     f"adjust_interval={prefix_group_manager.adjust_interval}s, "
+                     f"ring_size={prefix_group_manager.RING_SIZE}, "
+                     f"dominant_pct={prefix_group_manager.DOMINANT_PCT}%, "
+                     f"waiting_high={prefix_group_manager.WAITING_HIGH}, "
+                     f"waiting_low={prefix_group_manager.WAITING_LOW}")
+
     scheduler = BackgroundScheduler()
     # If online learning is disabled, just use the pretrained model
     if ENABLE_ONLINE_LEARNING:
         scheduler.add_job(func=online_train_routine, trigger="interval", seconds=30)
     else:
         logger.info("Online learning disabled. online_train_routine will not be invoked at all - using pretrained model only in inference")
+
+    # Dynamic K periodic adjustment
+    if DYNAMIC_K and prefix_group_manager is not None:
+        scheduler.add_job(func=prefix_group_manager.adjust_all_groups, trigger="interval", seconds=prefix_group_manager.adjust_interval)
+        logger.info(f"Dynamic K adjustment scheduled every {prefix_group_manager.adjust_interval}s")
     
     # # Add periodic checkpointing for scalable RL agent (every 2 minutes)
     # scheduler.add_job(func=periodic_checkpoint_scalable_rl, trigger="interval", seconds=120)
