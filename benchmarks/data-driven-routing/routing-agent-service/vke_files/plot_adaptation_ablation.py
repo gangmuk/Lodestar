@@ -556,6 +556,94 @@ def _compute_gap_and_regret(data, midpoint, rps=7.8):
     return x, gap, regret_x, cum_regret
 
 
+# ── Multi-run merging ────────────────────────────────────────
+def _merge_runs(runs: list) -> dict:
+    """Average multiple experiment runs into a single data dict."""
+    if len(runs) == 1:
+        runs[0]["_runs"] = runs
+        return runs[0]
+
+    merged = {
+        "label": runs[0]["label"],
+        "color": runs[0]["color"],
+        "half": runs[0]["half"],
+        "n": max(r["n"] for r in runs),
+        "_runs": runs,
+    }
+
+    # Average sliding-window timeseries by interpolating to common grid
+    sw_pairs = [
+        ("ttft_centers", "ttft_means"),
+        ("kv_sel_centers", "kv_sel_means"),
+        ("kv_avg_centers", "kv_avg_means"),
+        ("pf_sel_centers", "pf_sel_means"),
+        ("pf_avg_centers", "pf_avg_means"),
+        ("wait_sel_centers", "wait_sel_means"),
+        ("wait_avg_centers", "wait_avg_means"),
+        ("gpu_sel_centers", "gpu_sel_means"),
+        ("gpu_avg_centers", "gpu_avg_means"),
+    ]
+    for c_key, m_key in sw_pairs:
+        all_c = [r[c_key] for r in runs]
+        all_m = [r[m_key] for r in runs]
+        x_lo = max(c[0] for c in all_c)
+        x_hi = min(c[-1] for c in all_c)
+        n_pts = min(len(c) for c in all_c)
+        x_common = np.linspace(x_lo, x_hi, n_pts)
+        merged[c_key] = x_common
+        merged[m_key] = np.mean(
+            [np.interp(x_common, c, m) for c, m in zip(all_c, all_m)], axis=0,
+        )
+
+    # MAE: average across runs that have it
+    mae_runs = [r for r in runs if r.get("mae_centers") is not None]
+    if mae_runs:
+        x_lo = max(r["mae_centers"][0] for r in mae_runs)
+        x_hi = min(r["mae_centers"][-1] for r in mae_runs)
+        n_pts = min(len(r["mae_centers"]) for r in mae_runs)
+        x_common = np.linspace(x_lo, x_hi, n_pts)
+        merged["mae_centers"] = x_common
+        merged["mae_vals"] = np.mean(
+            [np.interp(x_common, r["mae_centers"], r["mae_vals"])
+             for r in mae_runs], axis=0,
+        )
+    else:
+        merged["mae_centers"] = None
+        merged["mae_vals"] = None
+
+    # Preemptions
+    pre_runs = [r for r in runs if r.get("preempt_centers") is not None]
+    if pre_runs:
+        x_lo = max(r["preempt_centers"][0] for r in pre_runs)
+        x_hi = min(r["preempt_centers"][-1] for r in pre_runs)
+        n_pts = min(len(r["preempt_centers"]) for r in pre_runs)
+        x_common = np.linspace(x_lo, x_hi, n_pts)
+        merged["preempt_centers"] = x_common
+        merged["preempt_means"] = np.mean(
+            [np.interp(x_common, r["preempt_centers"], r["preempt_means"])
+             for r in pre_runs], axis=0,
+        )
+    else:
+        merged["preempt_centers"] = None
+        merged["preempt_means"] = None
+
+    # Keep first run's raw arrays for backward compatibility
+    merged["ttft_raw"] = runs[0]["ttft_raw"]
+    merged["input_tokens"] = runs[0]["input_tokens"]
+    merged["selected_pods"] = runs[0]["selected_pods"]
+    merged["pods_arr"] = runs[0]["pods_arr"]
+
+    return merged
+
+
+def _avg_run_stats(d: dict, slice_fn) -> Tuple[float, float]:
+    """Compute (avg, p99) TTFT averaged across runs."""
+    runs = d.get("_runs", [d])
+    run_avgs = [float(np.mean(slice_fn(r))) for r in runs]
+    run_p99s = [float(np.percentile(slice_fn(r), 99)) for r in runs]
+    return float(np.mean(run_avgs)), float(np.mean(run_p99s))
+
+
 # ── Plotting ──────────────────────────────────────────────────
 def plot_figure(
     data: dict,
@@ -729,13 +817,22 @@ def plot_figure(
     # ── Sliding routing balance timeseries ──
     for key in all_keys:
         d = data[key]
-        centers, cvs, jains_v, ents = _sliding_routing_metrics(
-            d["pods_arr"], window, step,
-        )
-        d["rt_centers"] = centers
-        d["rt_cvs"] = cvs
-        d["rt_jains"] = jains_v
-        d["rt_ents"] = ents
+        runs = d.get("_runs", [d])
+        all_rt_cvs, all_rt_jains, all_rt_ents = [], [], []
+        ref_centers = None
+        for r in runs:
+            centers, cvs, jains_v, ents = _sliding_routing_metrics(
+                r["pods_arr"], window, step,
+            )
+            if ref_centers is None:
+                ref_centers = centers
+            all_rt_cvs.append(np.interp(ref_centers, centers, cvs))
+            all_rt_jains.append(np.interp(ref_centers, centers, jains_v))
+            all_rt_ents.append(np.interp(ref_centers, centers, ents))
+        d["rt_centers"] = ref_centers
+        d["rt_cvs"] = np.mean(all_rt_cvs, axis=0)
+        d["rt_jains"] = np.mean(all_rt_jains, axis=0)
+        d["rt_ents"] = np.mean(all_rt_ents, axis=0)
 
     _draw_phase_bg(ax_entropy_ts, midpoint, total_requests)
 
@@ -755,9 +852,9 @@ def plot_figure(
 
     # ── Combined TTFT bar chart: Overall | Phase 1 | Phase 2 ──
     phases = [
-        ("Overall", lambda d: d["ttft_raw"]),
-        ("Phase 1\n(5% sharing)", lambda d: d["ttft_raw"][:d["half"]]),
-        ("Phase 2\n(50% sharing)", lambda d: d["ttft_raw"][d["half"]:]),
+        ("Overall", lambda r: r["ttft_raw"]),
+        ("Phase 1\n(5% sharing)", lambda r: r["ttft_raw"][:r["half"]]),
+        ("Phase 2\n(50% sharing)", lambda r: r["ttft_raw"][r["half"]:]),
     ]
     n_policies = len(all_keys)
     n_phases = len(phases)
@@ -772,9 +869,7 @@ def plot_figure(
         positions.append(phase_center)
         for ki, key in enumerate(all_keys):
             d = data[key]
-            ttft = slice_fn(d)
-            avg_val = np.mean(ttft)
-            p99_val = np.percentile(ttft, 99)
+            avg_val, p99_val = _avg_run_stats(d, slice_fn)
             group_offset = (ki - (n_policies - 1) / 2) * (bar_width * 2.2)
             # Avg on left axis
             b = ax_bars.bar(phase_center + group_offset - bar_width / 2, avg_val,
@@ -1027,8 +1122,9 @@ def plot_figure_dense(
     avgs, p99s, colors, labels = [], [], [], []
     for key in all_keys:
         d = data[key]
-        avgs.append(np.mean(d["ttft_raw"]))
-        p99s.append(np.percentile(d["ttft_raw"], 99))
+        avg_val, p99_val = _avg_run_stats(d, lambda r: r["ttft_raw"])
+        avgs.append(avg_val)
+        p99s.append(p99_val)
         colors.append(d["color"])
         labels.append(BAR_LABELS[key])
 
@@ -1131,6 +1227,7 @@ def main() -> None:
 
     experiments = discover_experiments(base_dir, args.csv_name)
 
+    all_runs = {}
     data = {}
     midpoint = None
 
@@ -1194,7 +1291,9 @@ def main() -> None:
                 total_preempt = int(np.sum(preempt_arr))
                 print(f"    Preemptions: {total_preempt} total")
 
-        data[key] = {
+        if key not in all_runs:
+            all_runs[key] = []
+        all_runs[key].append({
             "label": label,
             "color": COLORS[key],
             "ttft_raw": ttft,
@@ -1214,7 +1313,7 @@ def main() -> None:
             "mae_centers": mae_centers, "mae_vals": mae_vals,
             "preempt_centers": preempt_centers, "preempt_means": preempt_means,
             "n": n,
-        }
+        })
 
         p2_sel_kv = float(np.mean(sel_kv[half:]))
         p2_avg_kv = float(np.mean(avg_kv[half:]))
@@ -1231,6 +1330,12 @@ def main() -> None:
         print(f"    Prefill:   sel={p2_sel_pf:.0f}   sys={p2_avg_pf:.0f}   adv={p2_sel_pf-p2_avg_pf:+.0f}")
         print(f"    Waiting:   sel={p2_sel_w:.2f}   sys={p2_avg_w:.2f}   adv={p2_sel_w-p2_avg_w:+.2f}")
         print(f"    GPU KV$:   sel={p2_sel_g:.3f}   sys={p2_avg_g:.3f}   adv={p2_sel_g-p2_avg_g:+.3f}")
+
+    # Merge multiple runs per policy
+    for key, runs in all_runs.items():
+        data[key] = _merge_runs(runs)
+        if len(runs) > 1:
+            print(f"\n  >> Averaged {len(runs)} runs for {LABELS[key].replace(chr(10), ' ')}")
 
     total_requests = max(d["n"] for d in data.values())
     plot_figure(data, midpoint, total_requests, args.window_size, step, out_path)
