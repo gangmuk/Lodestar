@@ -131,6 +131,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				klog.ErrorS(nil, "iteration not present in request. set it -3", "requestID", requestID)
 			}
 			routingCtx.Iteration = iteration
+
+			// Propagate targetGPU from the cached header so routers (e.g. preble's
+			// cost model at prefix_cache_and_load.go) see the correct device type
+			// instead of falling back to the V100 default.
+			if gpuValue, exists := headerMap["targetGPU"]; exists {
+				routingCtx.TargetGPU = gpuValue
+			}
 		} else {
 			// Fallback: headers not cached
 			subAlgorithm = ""

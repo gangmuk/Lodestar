@@ -276,17 +276,14 @@ class NeuralContextualBandit:
                 explored = False
 
             elif self.exploration_method == 'epsilon_greedy':
-                # Epsilon-greedy exploration with PC1-biased strategy
-                # Instead of random pod, explore by selecting the pod with highest KV hit ratio.
-                # This bootstraps prefix concentration signal for the differential KV feature.
+                # Classical epsilon-greedy: with probability ε, pick a uniformly
+                # random pod; otherwise pick argmax. Uniform random is what feeds
+                # the reward network data from under-used pods (especially new pods
+                # that came online via scale-up) so it can eventually learn their
+                # real reward distribution.
                 actual_num_pods = len(predicted_rewards)
                 if np.random.random() < epsilon_effective:
-                    # PC1-biased exploration: delegate to gateway's PC1 fallback routing
-                    # Instead of reimplementing PC1 here (which caused single-pod overloading),
-                    # we pick any pod and signal the gateway to override with its own PC1 logic
-                    # (which considers both prefix hits AND load balance).
-                    # The gateway handles this via ood_fallback=4 → fallbackRouting_with_prefix_cache_1.
-                    action = int(np.argmax(predicted_rewards))  # placeholder, gateway will override
+                    action = int(np.random.randint(actual_num_pods))
                     explored = True
                 else:
                     action = int(np.argmax(predicted_rewards))

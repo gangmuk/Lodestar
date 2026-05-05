@@ -35,6 +35,113 @@ GPU_MODEL_TO_ENCODE = {
     'Tesla-V100': 10,
 }
 
+# Append-only registry of pod IP -> generalpodid (pod_00NN). Once an IP is
+# assigned an ID, that binding is permanent for the life of the process so
+# the contextual bandit's per-pod predictions stay attached to the same
+# physical pod across scale-up events. New IPs are always appended at the
+# next unused index — never re-sort, never reassign.
+_pod_registry_lock = threading.Lock()
+_pod_ip_to_generalpodid = {}
+_pod_ip_to_gpu_model = {}
+
+
+def _format_generalpodid(idx):
+    if idx < 10:
+        return f"pod_000{idx}"
+    if idx < 100:
+        return f"pod_00{idx}"
+    if idx < 1000:
+        return f"pod_0{idx}"
+    raise AssertionError(f"Too many pods ({idx + 1}) — only supporting up to 1000")
+
+
+def _resolve_gpu_model(pod_ip, gpu_map_from_payload, fallback):
+    if gpu_map_from_payload:
+        gm = gpu_map_from_payload.get(pod_ip)
+        if gm and gm in GPU_MODEL_TO_ENCODE:
+            return gm
+    return fallback
+
+
+def _refresh_hyperparameter_views(hyperparameters):
+    """Rebuild every pod-keyed HYPERPARAMETERS entry from the current registry.
+    Caller must hold _pod_registry_lock."""
+    pod_ip_to_generalpodid = dict(_pod_ip_to_generalpodid)
+    generalpodid_to_pod_ip = {pid: ip for ip, pid in pod_ip_to_generalpodid.items()}
+    sorted_running_pod_ips = sorted(pod_ip_to_generalpodid.keys())
+    pod_ip_to_gpu_model = dict(_pod_ip_to_gpu_model)
+    pod_ip_to_gpu_model_encoded = {
+        ip: GPU_MODEL_TO_ENCODE[gm] for ip, gm in pod_ip_to_gpu_model.items()
+    }
+    generalpodid_to_gpu_model = {
+        pod_ip_to_generalpodid[ip]: gm for ip, gm in pod_ip_to_gpu_model.items()
+    }
+    pod_gpu_id_mapping = {
+        pid: GPU_MODEL_TO_ENCODE[gm] for pid, gm in generalpodid_to_gpu_model.items()
+    }
+    hyperparameters['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
+    hyperparameters['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+    hyperparameters['sorted_running_pod_ips'] = sorted_running_pod_ips
+    hyperparameters['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
+    hyperparameters['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
+    hyperparameters['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
+    hyperparameters['pod_gpu_mapping'] = generalpodid_to_gpu_model
+    hyperparameters['pod_gpu_id_mapping'] = pod_gpu_id_mapping
+
+
+def register_pod_ips(pod_ips, hyperparameters, gpu_map_from_payload=None,
+                     fallback_gpu_model=None):
+    """Append-only registration of pod IPs into the process-wide registry.
+
+    For each IP not yet seen, assigns the next pod_00NN id and stores its GPU
+    model (from the payload when available, else from fallback_gpu_model or
+    the TARGET_GPU_MODEL env var). When at least one new IP is added, the
+    eight pod-keyed HYPERPARAMETERS entries are rebuilt from the registry.
+
+    Returns the full pod_ip -> generalpodid mapping snapshot."""
+    if fallback_gpu_model is None:
+        fallback_gpu_model = os.getenv("TARGET_GPU_MODEL", "NVIDIA-A30")
+        if fallback_gpu_model == "hetero":
+            fallback_gpu_model = "NVIDIA-A30"
+    if fallback_gpu_model not in GPU_MODEL_TO_ENCODE:
+        logger.error(f"register_pod_ips: fallback GPU model '{fallback_gpu_model}' not in GPU_MODEL_TO_ENCODE; using NVIDIA-A30")
+        fallback_gpu_model = "NVIDIA-A30"
+
+    new_ips = []
+    with _pod_registry_lock:
+        # Iterate in sorted order so a given set of new IPs always gets the
+        # same pod_00NN bindings regardless of how the caller provided them
+        # (e.g. from a Python set with hash-randomized iteration). Existing
+        # IPs are skipped, so this only affects the assignment order of
+        # never-seen-before IPs.
+        for ip in sorted(pod_ips):
+            if ip in _pod_ip_to_generalpodid:
+                continue
+            new_idx = len(_pod_ip_to_generalpodid)
+            new_id = _format_generalpodid(new_idx)
+            _pod_ip_to_generalpodid[ip] = new_id
+            _pod_ip_to_gpu_model[ip] = _resolve_gpu_model(ip, gpu_map_from_payload, fallback_gpu_model)
+            new_ips.append((ip, new_id, _pod_ip_to_gpu_model[ip]))
+
+        if new_ips:
+            _refresh_hyperparameter_views(hyperparameters)
+            for ip, pid, gm in new_ips:
+                logger.info(f"register_pod_ips: new pod registered: {pid} -> {ip} (GPU={gm})")
+
+        return dict(_pod_ip_to_generalpodid)
+
+
+def _extract_gpu_map_from_log_message(content):
+    """Pull the per-pod GPU map out of the gateway's @GPU@{...} field.
+    Returns {} if not present or unparseable — the caller will fall back to env."""
+    m = re.search(r'@GPU@(\{[^@]*\})', content)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
 def load_hyperparameter_file(file_path):
     logger.info(f"Loading RL hyperparameters from {file_path}")
     hyperparameters = {}
@@ -164,13 +271,19 @@ def set_all_seeds(seed=42):
         torch.use_deterministic_algorithms(True, warn_only=True)
     logger.info(f"All seeds set to {seed} for reproducible results")
     
-def replace_pod_ip_with_generalpodid(data_input):
+def replace_pod_ip_with_generalpodid(data_input, hyperparameters=None):
     """
     Replace pod IPs with general pod IDs in either a file or a log message string.
-    
+
     Args:
         data_input: Either a file path (str) or a log message (str)
-    
+        hyperparameters: When provided (log-message path only), uses the
+            process-wide pod registry so IDs are stable across requests and
+            new pods seen mid-experiment are appended without reshuffling
+            existing pod_00NN bindings. When None, falls back to the legacy
+            per-call mapping (used by training-data file paths where each
+            file's mapping is self-contained).
+
     Returns:
         str: Path to the processed file or the processed log message
     """
@@ -196,7 +309,6 @@ def replace_pod_ip_with_generalpodid(data_input):
             content = f.read()
 
         # OPTIMIZED: Use regex for single-pass replacement instead of multiple str.replace() calls
-        import re
         # Build regex pattern that matches any of the pod IPs
         # Sort by length descending to match longer IPs first (prevents partial matches)
         sorted_ips = sorted(pod_ip_to_generalpodid.keys(), key=len, reverse=True)
@@ -216,16 +328,29 @@ def replace_pod_ip_with_generalpodid(data_input):
             logger.error(f"No pod IPs found in log message")
             assert False
 
-        all_pod_ips_from_log = sorted(list(pod_ips))
-        logger.debug(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
-        pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_log)
-        logger.debug(f"Deterministic mapping: {pod_ip_to_generalpodid}")
+        if hyperparameters is not None:
+            # Registry path: stable IDs, append-only on scale-up
+            gpu_map = _extract_gpu_map_from_log_message(data_input)
+            pod_ip_to_generalpodid = register_pod_ips(pod_ips, hyperparameters, gpu_map)
+        else:
+            # Legacy path: caller did not pass HYPERPARAMETERS, keep per-call mapping
+            all_pod_ips_from_log = sorted(list(pod_ips))
+            logger.debug(f"Deterministic pod IP order from log: {all_pod_ips_from_log}")
+            pod_ip_to_generalpodid = create_pod_ip_to_generalpodid_mapping(all_pod_ips_from_log)
+            logger.debug(f"Deterministic mapping: {pod_ip_to_generalpodid}")
 
-        content = data_input
-        for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
-            content = content.replace(pod_ip, generalpodid)
-
-        return content
+        # Single-pass regex replace with IPs sorted longest-first so that
+        # e.g. "10.0.1.50" wins over "10.0.1.5" at the same position. Sequential
+        # str.replace would otherwise turn "10.0.1.50" into "pod_00000" by
+        # replacing the "10.0.1.5" prefix first. (Mirrors the file branch above.)
+        replaceable = [(ip, pod_ip_to_generalpodid[ip])
+                       for ip in pod_ips if ip in pod_ip_to_generalpodid]
+        if not replaceable:
+            return data_input
+        replaceable.sort(key=lambda kv: len(kv[0]), reverse=True)
+        ip_to_id = dict(replaceable)
+        pattern = re.compile('|'.join(re.escape(ip) for ip, _ in replaceable))
+        return pattern.sub(lambda m: ip_to_id[m.group(0)], data_input)
 
 def get_all_pod_ips_from_data_file(data_file):
     """Extract pod IPs from a data file."""

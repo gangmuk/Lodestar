@@ -38,7 +38,14 @@ type TreeNode struct {
 	value         []int
 	key           []int
 	refCounter    []int
-	load          int
+	// refCounterByPod is the per-pod live-request count used by the Preble
+	// router's cost model (reference global_lru_cache.py:30 where Python keeps
+	// ref_counter as a fixed-size list indexed by GPU slot). We key by pod IP
+	// directly so pod churn in the gateway doesn't need an external
+	// pod→index registry. Incremented in the router's Route() as it walks
+	// leaf→root; decremented on request completion via PrebleOnRequestComplete.
+	refCounterByPod map[string]int
+	load            int
 	lastAccess    time.Time
 	evictedPods   map[int]bool
 	cachedPods    map[int]bool
@@ -198,6 +205,63 @@ func (n *TreeNode) AddOrUpdatePodForModel(model string, podIP string, timestamp 
 		n.modelToPods[model] = make(map[string]time.Time)
 	}
 	n.modelToPods[model][podIP] = timestamp
+}
+
+// IncrementRefCounterForPod bumps the live-request counter for a pod on this node.
+// Called by the Preble router's Route() as it walks from the selected leaf up to
+// the root (reference update_allocated_size in global_lru_cache.py:312).
+func (n *TreeNode) IncrementRefCounterForPod(podIP string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.refCounterByPod == nil {
+		n.refCounterByPod = make(map[string]int)
+	}
+	n.refCounterByPod[podIP]++
+}
+
+// DecrementRefCounterForPod decreases the live-request counter for a pod on this node.
+// Called on request completion by PrebleOnRequestComplete as it walks the stashed
+// leaf up to the root (reference dec_ref_counter in global_lru_cache.py:221).
+// Floor-clamped at zero and prunes the zero entry to keep the map from hoarding
+// stale keys after pod churn. Safe to call even if the pod has no entry (no-op).
+func (n *TreeNode) DecrementRefCounterForPod(podIP string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.refCounterByPod == nil {
+		return
+	}
+	if v, ok := n.refCounterByPod[podIP]; ok && v > 0 {
+		n.refCounterByPod[podIP] = v - 1
+		if n.refCounterByPod[podIP] == 0 {
+			delete(n.refCounterByPod, podIP)
+		}
+	}
+}
+
+// GetRefCounterForPod reads the live-request counter for a pod on this node.
+// Returns zero when no entry exists (missing pod, pruned after reaching zero,
+// or pod never routed through this node).
+func (n *TreeNode) GetRefCounterForPod(podIP string) int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.refCounterByPod == nil {
+		return 0
+	}
+	return n.refCounterByPod[podIP]
+}
+
+// SetOnlyPodForModel replaces this node's pod set for the given model with a single pod.
+// Used by the Preble router's important-node migration path: after rebalancing moves an
+// important node from pod A to pod B, the node (and its descendants via the caller) are
+// re-homed to B only for this model. Pod sets for other models on the same node are left
+// untouched.
+func (n *TreeNode) SetOnlyPodForModel(model, podIP string, timestamp time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.modelToPods == nil {
+		n.modelToPods = make(map[string]map[string]time.Time)
+	}
+	n.modelToPods[model] = map[string]time.Time{podIP: timestamp}
 }
 
 func (n *TreeNode) RemovePodsNotInSet(currentPodSet map[string]bool) bool {
@@ -381,7 +445,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 		}
 	}
 
-	klog.Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v",
+	klog.V(5).Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v",
 		node.id, node.key, matchedTokens, node.modelToPods)
 
 	return matchedTokens, unmatchedTokens, matchedPods
@@ -490,7 +554,7 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*Tr
 func (c *LPRadixCache) doesExceededTTL(node *TreeNode, now time.Time) bool {
 	timeSinceLastAccess := now.Sub(node.lastAccess)
 	if timeSinceLastAccess > evictionDuration {
-		klog.Infof("Node(%d) exceeded TTL(%ds), time since last access: %.2f seconds",
+		klog.V(5).Infof("Node(%d) exceeded TTL(%ds), time since last access: %.2f seconds",
 			node.id, int(evictionDuration.Seconds()), timeSinceLastAccess.Seconds())
 		return true
 	}
@@ -568,7 +632,7 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 
 	// Remove from allNodes map
 	delete(c.allNodes, node.id)
-	klog.Infof("Evict node(%d)", node.id)
+	klog.V(5).Infof("Evict node(%d)", node.id)
 
 	// Clean up the node's references
 	node.parent = nil
@@ -809,6 +873,6 @@ func (c *LPRadixCache) GetCacheHitRatioForTargetPod(tokens []int, model string, 
 		return 0 // No match found
 	}
 	hitPercentage := len(matchedTokens) * 100 / len(tokens)
-	klog.Infof("Pod-aware matching - podIP: %s, model: %s, matched: %d/%d (%d%%)", podIP, model, len(matchedTokens), len(tokens), hitPercentage)
+	klog.V(5).Infof("Pod-aware matching - podIP: %s, model: %s, matched: %d/%d (%d%%)", podIP, model, len(matchedTokens), len(tokens), hitPercentage)
 	return hitPercentage
 }

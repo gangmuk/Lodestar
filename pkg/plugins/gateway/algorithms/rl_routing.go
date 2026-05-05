@@ -33,7 +33,142 @@ var (
 	// Uses allPrefixHashes[depth] as the group fingerprint.
 	// Should be larger than typical system prompt blocks (3-5) to distinguish conversations.
 	prefixGroupDepthThreshold = utils.LoadEnvInt("PREFIX_GROUP_DEPTH_THRESHOLD", 10)
+
+	// Background vLLM metric scraping interval in milliseconds.
+	// The background scraper refreshes metrics for all pods at this interval,
+	// so Route() reads cached values with zero HTTP overhead.
+	bgScrapeIntervalMs = utils.LoadEnvInt("BG_SCRAPE_INTERVAL_MS", 100)
 )
+
+// bgMetricsCache holds the latest vLLM metrics snapshot from the background scraper.
+// Written by the background goroutine, read by Route() on every request.
+type bgMetricsSnapshot struct {
+	GPUKVCacheUsage    map[string]float64 // podIP -> value
+	NumRequestsRunning map[string]float64
+	NumRequestsWaiting map[string]float64
+	NumPreemptions     map[string]float64
+}
+
+var (
+	bgMetricsMu    sync.RWMutex
+	bgMetricsReady bool
+	bgMetrics      bgMetricsSnapshot
+)
+
+// bgScraperOnce ensures the scraper goroutine is launched at most once per
+// process, so both rl-online-router and preble can safely prime it from their
+// constructors without racing or starting duplicate scrapers. A pointer is
+// used so tests can swap in a fresh *sync.Once without tripping go vet's
+// copylocks warning.
+var bgScraperOnce = &sync.Once{}
+
+// startBackgroundMetricsScraper launches a goroutine that scrapes vLLM metrics
+// from all pods at a fixed interval. Route() reads the cached snapshot instead
+// of scraping per-request, reducing overhead from ~50ms to ~0ms.
+//
+// Safe to call from multiple routers — bgScraperOnce guards the body.
+func startBackgroundMetricsScraper(c cache.Cache) {
+	bgScraperOnce.Do(func() { startBackgroundMetricsScraperImpl(c) })
+}
+
+func startBackgroundMetricsScraperImpl(c cache.Cache) {
+	// Defense-in-depth: a nil cache would nil-deref on the first ticker tick
+	// (c.ListModels in the goroutine body). Both production call sites guard
+	// via cache.Get(), so this should never fire — but if it does, fail loud
+	// without crashing the process.
+	if c == nil {
+		klog.Errorf("Background metrics scraper: nil cache, scraper NOT started")
+		return
+	}
+	interval := time.Duration(bgScrapeIntervalMs) * time.Millisecond
+	klog.Infof("Starting background vLLM metrics scraper with interval %v", interval)
+
+	targetMetrics := []string{
+		utils.MetricGPUCacheUsagePerc,
+		utils.MetricNumRequestsRunning,
+		utils.MetricNumRequestsWaiting,
+		utils.MetricNumPreemptions,
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			// Get current pods from cache
+			models := c.ListModels()
+			var allPods []*v1.Pod
+			for _, model := range models {
+				pods, err := c.ListPodsByModel(model)
+				if err != nil {
+					continue
+				}
+				allPods = append(allPods, pods.All()...)
+			}
+			if len(allPods) == 0 {
+				continue
+			}
+
+			// Scrape all pods in parallel using a temporary requestID
+			scrapeID := fmt.Sprintf("bg_scrape_%d", time.Now().UnixMicro())
+			var wg sync.WaitGroup
+			for _, pod := range allPods {
+				wg.Add(1)
+				go func(pod *v1.Pod) {
+					defer wg.Done()
+					if err := utils.ReadAndStoreVLLMMetrics(scrapeID, pod, targetMetrics); err != nil {
+						klog.V(5).Infof("Background scrape failed for pod %s: %v", pod.Status.PodIP, err)
+					}
+				}(pod)
+			}
+			wg.Wait()
+
+			// Read the scraped values and build a snapshot
+			snap := bgMetricsSnapshot{
+				GPUKVCacheUsage:    make(map[string]float64),
+				NumRequestsRunning: make(map[string]float64),
+				NumRequestsWaiting: make(map[string]float64),
+				NumPreemptions:     make(map[string]float64),
+			}
+			if gpuKV, err := utils.GetvLLMGPUKVCacheUsageForAllPods(scrapeID); err == nil {
+				snap.GPUKVCacheUsage = gpuKV
+			}
+			if running, err := utils.GetvLLMNumRequestsRunningForAllPods(scrapeID); err == nil {
+				snap.NumRequestsRunning = running
+			}
+			if waiting, err := utils.GetvLLMNumRequestsWaitingForAllPods(scrapeID); err == nil {
+				snap.NumRequestsWaiting = waiting
+			}
+			if preemptions, err := utils.GetvLLMNumPreemptionsForAllPods(scrapeID); err == nil {
+				snap.NumPreemptions = preemptions
+			}
+
+			// Publish snapshot
+			bgMetricsMu.Lock()
+			bgMetrics = snap
+			bgMetricsReady = true
+			bgMetricsMu.Unlock()
+
+			// Clean up the temporary requestID storage
+			utils.CleanupVLLMMetricsForRequest(scrapeID)
+		}
+	}()
+}
+
+// copyBgMetricsToRequest copies the latest background metrics snapshot into
+// the per-request storage maps so downstream code (which reads by requestID)
+// works unchanged.
+func copyBgMetricsToRequest(requestID string) {
+	bgMetricsMu.RLock()
+	snap := bgMetrics
+	bgMetricsMu.RUnlock()
+
+	utils.StoreVLLMMetricsForRequest(requestID,
+		snap.GPUKVCacheUsage,
+		snap.NumRequestsRunning,
+		snap.NumRequestsWaiting,
+		snap.NumPreemptions,
+	)
+}
 
 var (
 	httpClientForRLAgent = &http.Client{
@@ -83,6 +218,9 @@ func NewRLOnlineRouter() (types.Router, error) {
 
 	// Initialize GPU models for all pods in the background
 	go initializeGPUModels(c)
+
+	// Start background vLLM metrics scraper
+	startBackgroundMetricsScraper(c)
 
 	klog.InfoS("Created RL online router")
 	return router, nil
@@ -312,6 +450,43 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return ctx.TargetAddress(), nil
 	}
 
+	// === Phase 1: vLLM metric scraping ===
+	// Use background-scraped metrics (refreshed every BG_SCRAPE_INTERVAL_MS).
+	// This avoids per-request HTTP round-trips to all pods (~50ms overhead).
+	vllmScrapeStart := time.Now()
+	if bgMetricsReady {
+		// Fast path: copy cached background metrics into per-request storage
+		copyBgMetricsToRequest(ctx.RequestID)
+	} else {
+		// Fallback: background scraper hasn't produced a snapshot yet (cold start).
+		// Scrape synchronously on this request.
+		klog.Infof("Background metrics not ready yet, falling back to per-request scraping for requestID: %s", ctx.RequestID)
+		targetMetrics := []string{
+			utils.MetricGPUCacheUsagePerc,
+			utils.MetricNumRequestsRunning,
+			utils.MetricNumRequestsWaiting,
+			utils.MetricNumPreemptions,
+		}
+		var wg sync.WaitGroup
+		for _, pod := range readyPods {
+			wg.Add(1)
+			go func(pod *v1.Pod) {
+				defer wg.Done()
+				if err := utils.ReadAndStoreVLLMMetrics(ctx.RequestID, pod, targetMetrics); err != nil {
+					klog.Errorf("ReadAndStoreVLLMMetrics failed: %v", err)
+				}
+			}(pod)
+		}
+		wg.Wait()
+	}
+	detailedpodmetrics := utils.MetricsTracker.GetDetailedMetrics(time.Now().Add(-utils.MetricsTracker.WindowSize))
+	utils.AddRequestPodMetrics(ctx.RequestID, detailedpodmetrics)
+	vllmScrapeOverhead := time.Since(vllmScrapeStart).Milliseconds()
+	utils.SetVLLMScrapingOverheadForRequest(vllmScrapeOverhead, ctx.RequestID)
+
+	// === Phase 2: Feature preparation ===
+	featurePrepStart := time.Now()
+
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Status.PodIP] = struct{}{}
@@ -336,9 +511,17 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	var allPrefixHashes []uint64     // allPrefixHashes is used to store all prefix hashes for the request
 	var matchedPrefixHashes []uint64 // matchedPrefixHashes is used to store matched prefix hashes for the request
 
-	// podIPsWithMatchingRatios, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
+	// Build a prefix-cache-capable subset of readyPodsMap for prefix matching.
+	// Pods that don't support prefix caching (e.g. V100) are excluded from matching
+	// so they always get kv_hit_ratio=0 and don't pollute the prefix indexer.
+	prefixCapablePodsMap := make(map[string]struct{}, len(readyPodsMap))
+	for podIP := range readyPodsMap {
+		if utils.IsPrefixCacheCapable(podIP) {
+			prefixCapablePodsMap[podIP] = struct{}{}
+		}
+	}
 
-	podIPsWithMatchingRatios, matchedPrefixHashes, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix_returning_matchedprefixes(input_tokens_in_bytearray, ctx.Model, readyPodsMap)
+	podIPsWithMatchingRatios, matchedPrefixHashes, allPrefixHashes = r.prefixCacheIndexer.MatchPrefix_returning_matchedprefixes(input_tokens_in_bytearray, ctx.Model, prefixCapablePodsMap)
 	numInputTokens := utils.GetNumPrefillTokensForRequest(ctx.RequestID)
 
 	// predict output!
@@ -408,6 +591,45 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return ctx.TargetAddress(), nil
 	}
 
+	// LMETRIC pre-compute: score + counter increment must happen atomically
+	// BEFORE the HTTP round-trip so concurrent requests see this contribution.
+	// See lmetric.go for details.
+	var lmetricSelectedPodIP string
+	if ctx.SubAlgorithm == "lmetric" {
+		lmetricSelectedPodIP = lmetricPreCompute(ctx, readyPods, podIPsWithMatchingRatios, numInputTokens)
+	}
+
+	// === MOONCAKE: min_expected_latency pre-compute (before HTTP call for atomicity) ===
+	var mooncakeSelectedPodIP string
+	if ctx.SubAlgorithm == "mooncake" {
+		vllmRunning, runErr := utils.GetvLLMNumRequestsRunningForAllPods(ctx.RequestID)
+		vllmWaiting, waitErr := utils.GetvLLMNumRequestsWaitingForAllPods(ctx.RequestID)
+		podBatchSizes := make(map[string]int, len(readyPods))
+		podIPs := make([]string, 0, len(readyPods))
+		for _, pod := range readyPods {
+			ip := pod.Status.PodIP
+			podIPs = append(podIPs, ip)
+			bs := 0
+			if runErr == nil {
+				bs += int(vllmRunning[ip])
+			}
+			if waitErr == nil {
+				bs += int(vllmWaiting[ip])
+			}
+			podBatchSizes[ip] = bs
+		}
+		podSpeeds := utils.GetMooncakeSpeedsForPods(podIPs)
+		selectedIP, ok := utils.MooncakeScorePods(
+			podBatchSizes,
+			podSpeeds,
+			ctx.RequestID,
+		)
+		if ok {
+			mooncakeSelectedPodIP = selectedIP
+		}
+		klog.Infof("MOONCAKE pre-compute: requestID=%s, selectedPod=%s", ctx.RequestID, mooncakeSelectedPodIP)
+	}
+
 	var logMessage string
 	var jsonStrings = make(map[string]string)
 	// 1. KV cache hit ratios
@@ -468,6 +690,14 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		jsonStrings["vllmNumRequestWaiting"] = jsonStringify(vllmNumRequestWaiting, utils.GetvllmNumRequestsWaitingMutex())
 	} else {
 		jsonStrings["vllmNumRequestWaiting"] = "{}"
+	}
+
+	// 7. Number of preemptions
+	vllmNumPreemptions, err := utils.GetvLLMNumPreemptionsForAllPods(ctx.RequestID)
+	if err == nil {
+		jsonStrings["vllmNumPreemptions"] = jsonStringify(vllmNumPreemptions, utils.GetvllmNumPreemptionsMutex())
+	} else {
+		jsonStrings["vllmNumPreemptions"] = "{}"
 	}
 
 	numPrefillTokensForAllPods := utils.GetNumPrefillTokensForAllPods()
@@ -551,7 +781,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	}
 	// exploration, explorationEnabled := utils.GetExploration(ctx.RequestID)
 	normalized_request_start_time := time.Now().UnixMicro() - utils.FirstRequestStartTime
-	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
+	logFormat := `**@latency_metrics@requestID@%s@request_start_time@%d@request_end_time@-9999@selectedpod@-9999@ttft@-9999@avg_tpot@-9999@total_decode_time@-9999@e2e@-9999@numInputTokens@%d@numOutputTokens@%d@numTotalTokens@%d@allPodsKvCacheHitRatios@%s@allPodsKvCacheLastAccess@%s@hashOfMatchedPrefix@%d@numInflightRequestsAllPods@%s@numInflightPrefillRequestsAllPods@%s@numInflightDecodeRequestsAllPods@%s@vllmGPUKVCacheUsage@%s@vllmCPUKVCacheUsage@%s@vllmNumRequestsRunning@%s@vllmNumRequestsWaiting@%s@vllmNumPreemptions@%s@numPrefillTokensForAllPods@%s@numDecodeTokensForAllPods@%s@subAlgorithm@%s@prev_reward@%f@GPU@%s`
 	logMessage = fmt.Sprintf(
 		logFormat,
 		ctx.RequestID,
@@ -569,6 +799,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		jsonStrings["vllmCPUKVCacheUsage"],
 		jsonStrings["vllmNumRequestsRunning"],
 		jsonStrings["vllmNumRequestWaiting"],
+		jsonStrings["vllmNumPreemptions"],
 		jsonStrings["numPrefillTokensForAllPods"],
 		jsonStrings["numDecodeTokensForAllPods"],
 		ctx.SubAlgorithm,
@@ -598,14 +829,36 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		return ctx.TargetAddress(), nil
 	}
 	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
+
+	featurePrepOverhead := time.Since(featurePrepStart).Milliseconds()
+	utils.SetFeaturePrepOverheadForRequest(featurePrepOverhead, ctx.RequestID)
+
+	// === Phase 3: HTTP round-trip to routing-agent-service ===
+	httpRoundTripStart := time.Now()
 	/////////////////////////////////////////////////
 	// Send HTTP Request to routing-agent-service  //
 	/////////////////////////////////////////////////
 	klog.V(5).Infof("Sending request to routing-agent-service: %s, requestID: %s", url, ctx.RequestID)
+	// lmetricFallback prefers the LMETRIC or MOONCAKE pre-computed pod if available,
+	// otherwise uses the standard fallback — so those decisions still stand when
+	// the routing agent is unreachable.
+	lmetricFallback := func() *v1.Pod {
+		if pod := lmetricFallbackPod(ctx, readyPods, lmetricSelectedPodIP); pod != nil {
+			return pod
+		}
+		if mooncakeSelectedPodIP != "" {
+			if pod := GetPod(mooncakeSelectedPodIP, readyPods); pod != nil {
+				klog.Infof("MOONCAKE: using pre-computed selection %s (routing agent unavailable), requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
+				return pod
+			}
+		}
+		return r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+	}
+
 	resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
 	if sendErr != nil {
 		klog.Errorf("Request failure!!: %v, requestID: %s", sendErr, ctx.RequestID)
-		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+		targetPod = lmetricFallback()
 		routing_agent_failed = 1
 	} else {
 		if resp.StatusCode != http.StatusOK {
@@ -615,7 +868,7 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		responseBody, readErr := ioutil.ReadAll(resp.Body) // body: {"request_id":"10","selected_pod":"10.0.1.30"}
 		if readErr != nil {
 			klog.Errorf("failure to read response body: %v, requestID: %s", readErr, ctx.RequestID)
-			targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+			targetPod = lmetricFallback()
 			routing_agent_failed = 1
 		} else {
 			var routeResponse RouteResponse
@@ -632,12 +885,13 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
 				if targetPod == nil {
 					klog.Errorf("failure, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
-					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+					targetPod = lmetricFallback()
 					routing_agent_failed = 1
 				}
 				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak), 4=PC1-biased exploration
-				if routeResponse.OODFallback >= 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
+				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
+				// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
+				if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
 					routing_agent_failed = 1
@@ -690,6 +944,23 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				} else if ctx.SubAlgorithm == "prefix_hit_threshold_or_least_request" {
 					klog.Infof("subAlgorithm, prefix_hit_threshold_or_least_request routing (threshold-based), request_id: %s", ctx.RequestID)
 					targetPod = routePrefixHitThresholdOrLeastRequest(ctx, r.cache, readyPods, podIPsWithMatchingRatios)
+				} else if ctx.SubAlgorithm == "lmetric" {
+					targetPod = selectLMetricPod(ctx, readyPods, lmetricSelectedPodIP)
+					if targetPod == nil {
+						targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+					}
+				} else if ctx.SubAlgorithm == "mooncake" {
+					// MOONCAKE: use the pre-computed pod selection (scored before HTTP call for atomicity)
+					if mooncakeSelectedPodIP != "" {
+						targetPod = GetPod(mooncakeSelectedPodIP, readyPods)
+					}
+					if targetPod == nil {
+						klog.Errorf("MOONCAKE: pre-computed pod %s not in readyPods, falling back. requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
+						utils.RollbackMooncakeForRequest(ctx.RequestID)
+						targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+					} else {
+						klog.Infof("MOONCAKE: requestID=%s, selectedPod=%s", ctx.RequestID, targetPod.Status.PodIP)
+					}
 				}
 				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
 				if targetPod == nil {
@@ -716,8 +987,9 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
 			} else {
 				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward similarity (PC1 tiebreak), 4=PC1-biased exploration
-				if routeResponse.OODFallback >= 1 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
+				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
+				// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
+				if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
 					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
 					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
 					routing_agent_failed = 1
@@ -727,8 +999,18 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 	}
 
+	httpRoundTripOverhead := time.Since(httpRoundTripStart).Milliseconds()
+	utils.SetHTTPRoundTripOverheadForRequest(httpRoundTripOverhead, ctx.RequestID)
+
 	if len(allPrefixHashes) > 0 && targetPod != nil {
-		r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
+		// Only insert into prefix tracking for pods that support prefix caching.
+		// V100 pods don't have prefix caching enabled in vLLM, so tracking them
+		// would create false prefix hit signals for future requests.
+		if utils.IsPrefixCacheCapable(targetPod.Status.PodIP) {
+			r.prefixCacheIndexer.AddPrefix(allPrefixHashes, ctx.Model, targetPod.Status.PodIP)
+		} else {
+			klog.V(5).Infof("Skipping AddPrefix for non-prefix-cache-capable pod %s (requestID: %s)", targetPod.Status.PodIP, ctx.RequestID)
+		}
 	} else {
 		if len(allPrefixHashes) == 0 {
 			klog.Warningf("No prefix hashes found for requestID: %s, not adding to cache", ctx.RequestID)
@@ -745,6 +1027,8 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	if targetPod == nil {
 		return "", fmt.Errorf("all routing attempts failed, no available pod for requestID: %s", ctx.RequestID)
 	}
+
+	lmetricRollbackIfMismatch(ctx, targetPod.Status.PodIP, lmetricSelectedPodIP)
 
 	end_to_end_overhead := time.Now().UnixMilli() - route_start_time
 	utils.SetEndToEndOverheadForRequest(end_to_end_overhead, ctx.RequestID)

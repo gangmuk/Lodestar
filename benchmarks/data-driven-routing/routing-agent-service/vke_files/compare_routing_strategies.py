@@ -552,11 +552,11 @@ def process_log_file(
     if len(df) > 10 and 'request_start_time' in df.columns:
         before_count = len(df)
         # Only remove negative timestamps and values that are clearly in the wrong unit
-        # (e.g., > 1e15 suggests microseconds stored as nanoseconds or corrupted data)
-        df = df[(df['request_start_time'] >= 0) & (df['request_start_time'] <= 1e15)]
+        # (microsecond epoch timestamps are ~1.8e15 in 2026; > 1e17 suggests nanoseconds or corruption)
+        df = df[(df['request_start_time'] >= 0) & (df['request_start_time'] <= 1e17)]
         after_count = len(df)
         if before_count > after_count:
-            print(f"  Warning: Filtered out {before_count - after_count} entries with invalid timestamps (negative or > 1e15)")
+            print(f"  Warning: Filtered out {before_count - after_count} entries with invalid timestamps (negative or > 1e17)")
     
     df = normalize_time(df)
     df = analyze_llm_inference_logs(df)
@@ -825,7 +825,7 @@ def get_strategy_color(strategy_name, index_in_category):
 
     
 def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, metric_column, title, ylabel_text):
-    """Plot bar chart with avg/p99/p999 for each input token range, grouped by strategy."""
+    """Plot bar chart with avg/p99 for each input token range, grouped by strategy."""
     strategies = [s for s in strategy_order if s in csv_data_dict]
     n_strategies = len(strategies)
     if n_strategies == 0:
@@ -850,7 +850,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
 
     groups = INPUT_LENGTH_GROUPS
     n_groups = len(groups)
-    stat_labels = ['Avg', 'P99', 'P999']
+    stat_labels = ['Avg', 'P99']
     n_stats = len(stat_labels)
 
     # Compute stats per strategy per group (including 'All' aggregated)
@@ -868,21 +868,17 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
             if len(gdf) == 0:
                 all_bar_values.append((strategy, group, 'Avg', 0))
                 all_bar_values.append((strategy, group, 'P99', 0))
-                all_bar_values.append((strategy, group, 'P999', 0))
             else:
                 all_bar_values.append((strategy, group, 'Avg', gdf.mean()))
                 all_bar_values.append((strategy, group, 'P99', gdf.quantile(0.99)))
-                all_bar_values.append((strategy, group, 'P999', gdf.quantile(0.999)))
         # Aggregated (All) stats
         all_data = df_tmp[metric_column]
         if len(all_data) == 0:
             all_bar_values.append((strategy, 'All', 'Avg', 0))
             all_bar_values.append((strategy, 'All', 'P99', 0))
-            all_bar_values.append((strategy, 'All', 'P999', 0))
         else:
             all_bar_values.append((strategy, 'All', 'Avg', all_data.mean()))
             all_bar_values.append((strategy, 'All', 'P99', all_data.quantile(0.99)))
-            all_bar_values.append((strategy, 'All', 'P999', all_data.quantile(0.999)))
 
     if not all_bar_values:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center', fontsize=12)
@@ -897,18 +893,18 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     group_block_width = n_all_groups * sub_group_width + 0.4  # extra space for separator
     strategy_centers = np.arange(n_strategies) * group_block_width
 
-    stat_alphas = {'Avg': 0.9, 'P99': 0.7, 'P999': 0.5}
+    stat_alphas = {'Avg': 0.9, 'P99': 0.7}
     # Use different alphas for token range groups to distinguish them,
     # while using routing policy colors from color_dict for consistency across subfigures
     group_alphas = {'Short (0-1K)': 1.0, 'Medium (1K-5K)': 0.7, 'Long (5K+)': 0.45, 'All': 0.25}
 
-    # Compute separate max values for left (Avg) and right (P99/P999) axes
+    # Compute separate max values for left (Avg) and right (P99) axes
     avg_vals = [v[3] for v in all_bar_values if v[2] == 'Avg' and np.isfinite(v[3])]
-    tail_vals = [v[3] for v in all_bar_values if v[2] in ('P99', 'P999') and np.isfinite(v[3])]
+    tail_vals = [v[3] for v in all_bar_values if v[2] == 'P99' and np.isfinite(v[3])]
     max_avg = max(avg_vals, default=1)
     max_tail = max(tail_vals, default=1)
 
-    # Create right y-axis for P99/P999
+    # Create right y-axis for P99
     ax2 = ax.twinx()
 
     for si, strategy in enumerate(strategies):
@@ -933,7 +929,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
                 pos = sub_base + stat_idx * bar_width
                 alpha = stat_alphas[stat_label] * g_alpha
 
-                # Avg on left axis, P99/P999 on right axis
+                # Avg on left axis, P99 on right axis
                 if stat_label == 'Avg':
                     ax.bar(pos, val, bar_width, color=strategy_color, edgecolor='black',
                            linewidth=0.5, alpha=alpha, hatch=hatch_pattern)
@@ -985,7 +981,7 @@ def plot_metric_by_token_range(ax, csv_data_dict, strategy_order, color_dict, me
     ax.legend(handles=group_legend, loc='upper left', fontsize=10, ncol=len(group_legend))
 
     ax.set_ylabel(f'{ylabel_text} — Avg', fontsize=ylabel_fontsize, color='#222266')
-    ax2.set_ylabel(f'{ylabel_text} — P99/P999', fontsize=ylabel_fontsize, color='#662222')
+    ax2.set_ylabel(f'{ylabel_text} — P99', fontsize=ylabel_fontsize, color='#662222')
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
     ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#662222')
@@ -1130,7 +1126,7 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
     if csv_data_dict and not plot_all:
         # Minimal mode: only TTFT bar chart and TTFT time series
         ax = fig.add_subplot(gs[0, :])
-        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99, P999)')
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99)')
 
         ax = fig.add_subplot(gs[1, :])
         plot_latency_timeseries(ax, csv_data_dict, strategy_order, color_dict, 'ttft', 'TTFT Time Series (1000-request window averages)', 'TTFT (ms)', show_legend=False)
@@ -1146,26 +1142,26 @@ def plot_routing_comparison(metrics_list, base_dir, slo_ttft, slo_tpot, csv_data
 
         # Plot 3: TTFT Bar Chart (full width, row 1)
         ax = fig.add_subplot(gs[1, :])
-        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99, P999)')
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'ttft', 'TTFT Latency Comparison (Avg, P99)')
 
         # Plot 4: TTFT by Input Token Range (full width, row 2) — uses individual experiments
         ax = fig.add_subplot(gs[2, :])
         plot_metric_by_token_range(ax, csv_data_dict_individual, individual_strategies, individual_color_dict, 'ttft',
-                                   'TTFT by Input Token Range (Avg, P99, P999)', 'TTFT (ms)')
+                                   'TTFT by Input Token Range (Avg, P99)', 'TTFT (ms)')
 
         # Plot 5: TPOT Bar Chart (full width, row 3)
         ax = fig.add_subplot(gs[3, :])
-        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99, P999)')
+        plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'tpot', 'Avg TPOT Latency Comparison (Avg, P99)')
 
         # Plot 6: TPOT by Input Token Range (full width, row 4) — uses individual experiments
         ax = fig.add_subplot(gs[4, :])
         plot_metric_by_token_range(ax, csv_data_dict_individual, individual_strategies, individual_color_dict, 'avg_tpot',
-                                   'Avg TPOT by Input Token Range (Avg, P99, P999)', 'Avg TPOT (ms)')
+                                   'Avg TPOT by Input Token Range (Avg, P99)', 'Avg TPOT (ms)')
 
         # Plot 7: End-to-End Overhead Bar Chart (full width, row 5)
         ax = fig.add_subplot(gs[5, :])
         plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, 'end_to_end_overhead',
-                                      'End-to-End Overhead Comparison (Avg, P50, P99, P999)')
+                                      'End-to-End Overhead Comparison (Avg, P50, P99)')
 
         if not skip_timeseries:
             # Plot 8: TTFT Time Series (full width, row 6)
@@ -1335,9 +1331,9 @@ def plot_reward_timeseries(ax, csv_data_dict, reward_column, title, strategy_ord
             ax.axhline(y=0.5, color='green', linestyle=':', alpha=0.7, linewidth=1.5)
 
 
-# New function to plot single metric comparison (TTFT or TPOT) with avg, p99, p999
+# New function to plot single metric comparison (TTFT or TPOT) with avg, p99
 def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, metric_type, title):
-    """Plot bar chart with single metric (TTFT or TPOT) showing avg on left y-axis, p99/p999 on right y-axis."""
+    """Plot bar chart with single metric (TTFT or TPOT) showing avg on left y-axis, p99 on right y-axis."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     n_strategies = len(strategies)
     if n_strategies == 0:
@@ -1354,17 +1350,14 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     if metric_type == 'ttft':
         avg_values = [metrics_indexed.loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
         p99_values = [metrics_indexed.loc[s, 'p99_ttft'] if 'p99_ttft' in metrics_df.columns else 0 for s in strategies]
-        p999_values = [metrics_indexed.loc[s, 'p999_ttft'] if 'p999_ttft' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'TTFT (ms)'
     elif metric_type == 'tpot':
         avg_values = [metrics_indexed.loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
         p99_values = [metrics_indexed.loc[s, 'p99_tpot'] if 'p99_tpot' in metrics_df.columns else 0 for s in strategies]
-        p999_values = [metrics_indexed.loc[s, 'p999_tpot'] if 'p999_tpot' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'Avg TPOT (ms)'
     else:  # end-to-end overhead
         avg_values = [metrics_indexed.loc[s, 'avg_end_to_end_overhead'] if 'avg_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
         p99_values = [metrics_indexed.loc[s, 'p99_end_to_end_overhead'] if 'p99_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
-        p999_values = [metrics_indexed.loc[s, 'p999_end_to_end_overhead'] if 'p999_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
         ylabel_text = 'End-to-End Overhead (ms)'
 
     # Compute max values for each y-axis
@@ -1373,9 +1366,9 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     if metric_type == 'end_to_end_overhead':
         p50_values = [metrics_indexed.loc[s, 'p50_end_to_end_overhead']
                       if 'p50_end_to_end_overhead' in metrics_df.columns else 0 for s in strategies]
-        tail_arr = np.array(p50_values + p99_values + p999_values, dtype=float)
+        tail_arr = np.array(p50_values + p99_values, dtype=float)
     else:
-        tail_arr = np.array(p99_values + p999_values, dtype=float)
+        tail_arr = np.array(p99_values, dtype=float)
     tail_finite = tail_arr[np.isfinite(tail_arr)]
 
     if avg_finite.size == 0 and tail_finite.size == 0:
@@ -1388,12 +1381,12 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     max_avg = float(np.max(avg_finite)) if avg_finite.size > 0 else 1.0
     max_tail = float(np.max(tail_finite)) if tail_finite.size > 0 else 1.0
 
-    # Create right y-axis for P99/P999
+    # Create right y-axis for P99
     ax2 = ax.twinx()
 
     # Create bar positions
-    num_bars = 4 if metric_type == 'end_to_end_overhead' else 3
-    bar_width = 0.2 if metric_type == 'end_to_end_overhead' else 0.25
+    num_bars = 3 if metric_type == 'end_to_end_overhead' else 2
+    bar_width = 0.25 if metric_type == 'end_to_end_overhead' else 0.3
     group_width = num_bars * bar_width + 0.3  # Space between groups
     group_centers = np.arange(n_strategies) * group_width
 
@@ -1418,11 +1411,10 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
                        f'{avg_values[i]:.0f}', rotation=90, ha='center', va='bottom',
                        fontsize=10, fontweight='bold', color='#222266')
 
-            # P50, P99, P999 on right axis
+            # P50, P99 on right axis
             right_bars = [
                 (p50_values[i], 'P50', 0.75, 1),
                 (p99_values[i], 'P99', 0.6, 2),
-                (p999_values[i], 'P999', 0.45, 3),
             ]
             for value, label, alpha, j in right_bars:
                 pos = group_center + offset_start + j * bar_width
@@ -1442,10 +1434,9 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
                        f'{avg_values[i]:.0f}', rotation=90, ha='center', va='bottom',
                        fontsize=10, fontweight='bold', color='#222266')
 
-            # P99, P999 on right axis
+            # P99 on right axis
             right_bars = [
                 (p99_values[i], 'P99', 0.7, 1),
-                (p999_values[i], 'P999', 0.5, 2),
             ]
             for value, label, alpha, j in right_bars:
                 pos = group_center + offset_start + j * bar_width
@@ -1471,22 +1462,20 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
 
     ax.set_xticklabels(strategy_labels, fontsize=10, rotation=45, ha='right')
 
-    # Add legend for Avg/P99/P999 with axis indication
+    # Add legend for Avg/P99 with axis indication
     if metric_type == 'end_to_end_overhead':
         legend_elements = [
             Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg (left)'),
             Patch(facecolor='gray', edgecolor='black', alpha=0.75, label='P50 (right)'),
             Patch(facecolor='gray', edgecolor='black', alpha=0.6, label='P99 (right)'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.45, label='P999 (right)')
         ]
-        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=4)
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
     else:
         legend_elements = [
             Patch(facecolor='gray', edgecolor='black', alpha=0.9, label='Avg (left)'),
             Patch(facecolor='gray', edgecolor='black', alpha=0.7, label='P99 (right)'),
-            Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='P999 (right)')
         ]
-        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=3)
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=14, ncol=2)
 
     # Add num_requests annotation below each strategy group
     has_num_requests = False
@@ -1501,7 +1490,7 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
 
     # Styling
     ax.set_ylabel(f'{ylabel_text} — Avg', fontsize=ylabel_fontsize, color='#222266')
-    ax2.set_ylabel(f'{ylabel_text} — P99/P999', fontsize=ylabel_fontsize, color='#662222')
+    ax2.set_ylabel(f'{ylabel_text} — P99', fontsize=ylabel_fontsize, color='#662222')
     ax.set_title(title, fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
     ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#662222')
@@ -1512,9 +1501,9 @@ def plot_single_metric_comparison(ax, metrics_df, strategy_order, color_dict, me
     ax2.set_ylim(0, max(max_tail * 1.6, 1.0))
 
 
-# New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99, p999
+# New function to plot dual-axis comparison (TTFT, TPOT) with avg, p99
 def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
-    """Plot bar chart with TTFT and TPOT (avg, p99, p999) grouped by strategy - dual y-axes (left: TTFT, right: TPOT)."""
+    """Plot bar chart with TTFT and TPOT (avg, p99) grouped by strategy - dual y-axes (left: TTFT, right: TPOT)."""
     strategies = [s for s in strategy_order if s in metrics_df['strategy'].values]
     n_strategies = len(strategies)
 
@@ -1524,20 +1513,18 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     # TTFT metrics
     avg_ttft = [metrics_indexed.loc[s, 'avg_ttft'] if 'avg_ttft' in metrics_df.columns else 0 for s in strategies]
     p99_ttft = [metrics_indexed.loc[s, 'p99_ttft'] if 'p99_ttft' in metrics_df.columns else 0 for s in strategies]
-    p999_ttft = [metrics_indexed.loc[s, 'p999_ttft'] if 'p999_ttft' in metrics_df.columns else 0 for s in strategies]
 
     # TPOT metrics
     avg_tpot = [metrics_indexed.loc[s, 'avg_tpot'] if 'avg_tpot' in metrics_df.columns else 0 for s in strategies]
     p99_tpot = [metrics_indexed.loc[s, 'p99_tpot'] if 'p99_tpot' in metrics_df.columns else 0 for s in strategies]
-    p999_tpot = [metrics_indexed.loc[s, 'p999_tpot'] if 'p999_tpot' in metrics_df.columns else 0 for s in strategies]
 
     # Get max values for each y-axis (across all percentiles)
-    max_ttft = max(max(avg_ttft or [0]), max(p99_ttft or [0]), max(p999_ttft or [0]))
-    max_tpot = max(max(avg_tpot or [0]), max(p99_tpot or [0]), max(p999_tpot or [0]))
+    max_ttft = max(max(avg_ttft or [0]), max(p99_ttft or [0]))
+    max_tpot = max(max(avg_tpot or [0]), max(p99_tpot or [0]))
 
-    # Create bar positions - 6 bars per strategy (3 TTFT + 3 TPOT) with spacing between groups
-    bar_width = 0.12  # Narrower bars to fit 6 bars per strategy
-    group_width = 6 * bar_width + 0.5  # Space between groups
+    # Create bar positions - 4 bars per strategy (2 TTFT + 2 TPOT) with spacing between groups
+    bar_width = 0.15  # Bar width to fit 4 bars per strategy
+    group_width = 4 * bar_width + 0.5  # Space between groups
     group_centers = np.arange(n_strategies) * group_width
 
     # Create x positions for each metric within each group
@@ -1551,12 +1538,12 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
         strategy_color = color_dict[strategy]
         group_center = group_centers[i]
 
-        # Calculate positions for the 6 bars in each group
-        # Left side: 3 TTFT bars, Right side: 3 TPOT bars
-        offset_start = -2.5 * bar_width
+        # Calculate positions for the 4 bars in each group
+        # Left side: 2 TTFT bars, Right side: 2 TPOT bars
+        offset_start = -1.5 * bar_width
 
-        # TTFT bars (avg, p99, p999)
-        for j, (value, label) in enumerate([(avg_ttft[i], 'Avg'), (p99_ttft[i], 'P99'), (p999_ttft[i], 'P999')]):
+        # TTFT bars (avg, p99)
+        for j, (value, label) in enumerate([(avg_ttft[i], 'Avg'), (p99_ttft[i], 'P99')]):
             pos = group_center + offset_start + j * bar_width
             all_positions.append(pos)
             all_values_ttft.append(value)
@@ -1564,9 +1551,9 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
             all_colors.append(strategy_color)
             all_labels.append(f'TTFT\n{label}')
 
-        # TPOT bars (avg, p99, p999)
-        for j, (value, label) in enumerate([(avg_tpot[i], 'Avg'), (p99_tpot[i], 'P99'), (p999_tpot[i], 'P999')]):
-            pos = group_center + offset_start + (3 + j) * bar_width
+        # TPOT bars (avg, p99)
+        for j, (value, label) in enumerate([(avg_tpot[i], 'Avg'), (p99_tpot[i], 'P99')]):
+            pos = group_center + offset_start + (2 + j) * bar_width
             all_positions.append(pos)
             all_values_ttft.append(0)  # Placeholder for primary axis
             all_values_tpot.append(value)
@@ -1613,7 +1600,7 @@ def plot_triple_axis_comparison(ax, metrics_df, strategy_order, color_dict):
     # Styling
     ax.set_ylabel('TTFT (ms)', fontsize=ylabel_fontsize, color='#222266')
     ax2.set_ylabel('Avg TPOT (ms)', fontsize=ylabel_fontsize, color='#226622')
-    ax.set_title('Average TTFT and TPOT Latency Comparison (Avg, P99, P999)', fontsize=subtitle_fontsize)
+    ax.set_title('Average TTFT and TPOT Latency Comparison (Avg, P99)', fontsize=subtitle_fontsize)
     ax.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#222266')
     ax2.tick_params(axis='y', labelsize=tick_fontsize, labelcolor='#226622')
     ax2.tick_params(axis='x')

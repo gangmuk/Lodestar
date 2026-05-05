@@ -39,12 +39,14 @@ _FS_BUMP = 4
 FS_DEFAULT = 13 + _FS_BUMP        # matplotlib font.size
 FS_AXES_TITLE = 16 + _FS_BUMP     # axes.titlesize
 FS_AXES_LABEL = 13 + _FS_BUMP + 5 # axes.labelsize (+2+3)
-FS_TICK = 11 + _FS_BUMP + 4       # xtick / ytick labelsize (+2+2)
-FS_LEGEND = 11 + _FS_BUMP + 12    # legend.fontsize (+4+4+4)
+FS_YLABEL = FS_AXES_LABEL + 2
+FS_XLABEL = FS_AXES_LABEL + 3
+FS_TICK = 11 + _FS_BUMP + 4 + 3   # xtick / ytick labelsize (+2+2, then +3)
+FS_LEGEND = 11 + _FS_BUMP + 12 + 2    # legend.fontsize (+4+4+4, then +2)
 FS_FIG_TITLE = 20 + _FS_BUMP + 10 # figure.titlesize / suptitle (+10)
-FS_BAR_ANNOTATION = 10 + _FS_BUMP # value labels on bars
-FS_SUBPLOT_TITLE = 11 + _FS_BUMP + 7  # per-subplot title (+5+2)
-FS_LEGEND_BOX = 10 + _FS_BUMP + 12 # legend boxes in single-page mode (+4+4+4)
+FS_BAR_ANNOTATION = 10 + _FS_BUMP + 1 # value labels on bars (+1)
+FS_SUBPLOT_TITLE = 11 + _FS_BUMP + 7 + 3  # per-subplot title (+5+2, then +3)
+FS_LEGEND_BOX = 10 + _FS_BUMP + 12 + 2 # legend boxes in single-page mode (+4+4+4, then +2)
 
 
 def _set_paper_style():
@@ -69,7 +71,7 @@ def _set_paper_style():
 
 
 _DISPLAY_NAME_OVERRIDES = {
-    "cb_ttft_conv2_tool2-onlinelearning_0": "Quicksilver without online learning",
+    "cb_ttft_conv2_tool2-onlinelearning_0": "Quicksilver offline train only",
     "cb_ttft_conv2_tool2-onlinelearning_1": "Quicksilver",
     "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1": "Quicksilver",
     "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random": "Quicksilver",
@@ -177,6 +179,42 @@ def _remove_rps_segment_local(workload: str) -> str:
     parts = workload.split("/")
     filtered = [p for p in parts if not re.match(r"^rps[\d,]+", p, re.IGNORECASE)]
     return "/".join(filtered)
+
+
+def _merge_cb_random_quicksilver_policies(df):
+    """Merge all CB-random Quicksilver variants (incl. ablation variants) per onlinelearning_k.
+
+    Variants like `..._random_K2_iter1-onlinelearning_1`,
+    `..._random_all_data_maxnumtrains_7_K2-onlinelearning_1`,
+    `..._random_fifo_replay_..._onlinelearning_1`, etc. collapse into a single
+    `quicksilver-onlinelearning_N` label so they render as one bar with an
+    error bar from the mean/std across variants.
+    """
+    df = df.copy()
+    rp = df["routing_policy"].fillna("").astype(str).str.lower()
+    merge_mask = (
+        rp.str.contains("contextual_bandit")
+        & rp.str.contains("random")
+        & rp.str.contains("onlinelearning_")
+        & ~rp.str.contains("conversation_2")
+        & ~rp.str.contains("toolagent_2")
+        & ~rp.str.contains("no_candidate_filtering")
+    )
+    merged_count = int(merge_mask.sum())
+    if merged_count == 0:
+        return df, 0
+
+    def _rewrite_label(policy: str) -> str:
+        m = re.search(r"(onlinelearning_\d+)", str(policy), re.IGNORECASE)
+        suffix = m.group(1).lower() if m else "onlinelearning"
+        # Keep "contextual_bandit" + "random" in the label so existing color
+        # categorization and Quicksilver legend-label rules still apply.
+        return f"contextual_bandit_random-{suffix}"
+
+    df.loc[merge_mask, "routing_policy"] = (
+        df.loc[merge_mask, "routing_policy"].apply(_rewrite_label)
+    )
+    return df, merged_count
 
 
 def _merge_cb_conv2_tool2_onlinelearning_policies(df):
@@ -418,10 +456,10 @@ def _plot_bars_twin_y_paper(ax, df_group, rps_workload_pair, policies, policy_co
 
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(n)])
-    ax.set_xlabel("Policy index")
-    ax.set_ylabel("Avg TTFT (ms)")
-    ax2.set_ylabel("P99 TTFT (ms)", color="dimgray")
-    ax2.tick_params(axis="y", labelcolor="dimgray")
+    ax.set_xlabel("Policy index", fontsize=FS_XLABEL)
+    ax.set_ylabel("Avg TTFT (ms)", fontsize=FS_YLABEL)
+    ax2.set_ylabel("P99 TTFT (ms)", color="black", fontsize=FS_YLABEL)
+    ax2.tick_params(axis="y", labelcolor="black")
     ax.grid(axis="y", alpha=0.25, zorder=0)
     return ax2
 
@@ -659,11 +697,6 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
         hspace=0.45, wspace=0.65 if single_row else 0.30,
     )
 
-    # Title at very top.
-    if not no_suptitle:
-        fig.suptitle("TTFT Comparison Across Workloads", y=0.995, fontsize=FS_FIG_TITLE,
-                     va="top")
-
     # Bar-semantics legend: just below title.
     if not no_bar_semantics_legend:
         metric_handles = [
@@ -677,10 +710,8 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
             ncol=2,
             bbox_to_anchor=(0.5, metric_legend_y),
             framealpha=0.9,
-            title="Bar semantics",
             fontsize=FS_LEGEND_BOX,
         )
-        leg1.get_title().set_fontsize(FS_LEGEND_BOX)
 
     # Policy-color legend: below bar-semantics with clear gap, above plots.
     if not no_routing_policies_legend:
@@ -692,7 +723,7 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
         ]
         if legend_handles:
             # Offset from top: shrink when title / bar-semantics legend are hidden.
-            _policy_legend_top_offset = 2.6
+            _policy_legend_top_offset = 1.7
             if no_suptitle:
                 _policy_legend_top_offset -= 1.0
             if no_bar_semantics_legend:
@@ -744,7 +775,7 @@ def _plot_bar_single_page(df, groups, sorted_group_keys, policies, policy_colors
     print(f"Saved single-page bar PDF to {pdf_path}")
 
 
-def _run_compare_routing_strategies(target_dirs, from_request=1000):
+def _run_compare_routing_strategies(target_dirs, from_request=1000, append=False):
     """Run compare_routing_strategies.py in parallel on each target directory.
 
     Mirrors the Step-1 behaviour of compare2: processes all dirs concurrently
@@ -754,8 +785,11 @@ def _run_compare_routing_strategies(target_dirs, from_request=1000):
 
     def _run_one(d):
         print(f"  [compare] Processing: {d}")
+        cmd = [sys.executable, script, d, "--from-request", str(from_request)]
+        if append:
+            cmd.append("--append")
         result = subprocess.run(
-            [sys.executable, script, d, "--from-request", str(from_request)],
+            cmd,
             capture_output=True,
             text=True,
         )
@@ -921,6 +955,16 @@ def main():
             "0: skip and use existing CSV files as-is."
         ),
     )
+    parser.add_argument(
+        "--compare-append",
+        type=int,
+        default=0,
+        metavar="{0,1}",
+        help=(
+            "Forward --append to compare_routing_strategies.py. "
+            "1: append to existing CSV. 0 (default): overwrite."
+        ),
+    )
 
     args = parser.parse_args()
     base_dir = args.base_dir
@@ -972,6 +1016,13 @@ def main():
                 )
         dirs_to_process = sorted(set(dirs_to_process))
 
+    # Skip empty dirs — compare_routing_strategies.py exits 1 when it finds no logs.
+    _before_empty = len(dirs_to_process)
+    dirs_to_process = [d for d in dirs_to_process if os.listdir(d)]
+    _empty_removed = _before_empty - len(dirs_to_process)
+    if _empty_removed > 0:
+        print(f"Skipped {_empty_removed} empty dir(s).")
+
     # Filter dirs by --rps if given.
     if args.rps:
         _rps_set = set(args.rps)
@@ -987,7 +1038,11 @@ def main():
     if args.run_compare_routing_strategies:
         if dirs_to_process:
             try:
-                _run_compare_routing_strategies(dirs_to_process, from_request=args.from_request)
+                _run_compare_routing_strategies(
+                    dirs_to_process,
+                    from_request=args.from_request,
+                    append=bool(args.compare_append),
+                )
             except RuntimeError as exc:
                 print(f"ERROR: {exc}")
                 sys.exit(1)
@@ -997,11 +1052,8 @@ def main():
         print("Skipping compare_routing_strategies.py (--run-compare-routing-strategies 0).")
 
     if args.search_dirs:
-        # Recursively find CSVs only under the specified directories.
-        files = []
-        for sd in args.search_dirs:
-            files.extend(find_gateway_metrics_files(sd, None))
-        files = sorted(set(files))
+        # Only load CSVs directly in the specified dirs (no recursion into subdirs).
+        files = find_gateway_metrics_files(None, args.search_dirs)
     else:
         files = find_gateway_metrics_files(base_dir, target_dirs)
     if not files:
@@ -1055,6 +1107,12 @@ def main():
     if merged_cb > 0:
         print(
             f"Merged {merged_cb} CB conv2/tool2 onlinelearning rows "
+            "into shared policy bars per onlinelearning_k."
+        )
+    df, merged_qs = _merge_cb_random_quicksilver_policies(df)
+    if merged_qs > 0:
+        print(
+            f"Merged {merged_qs} CB-random Quicksilver rows (incl. ablation variants) "
             "into shared policy bars per onlinelearning_k."
         )
 
