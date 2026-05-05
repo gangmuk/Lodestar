@@ -24,6 +24,31 @@ alpha = 0.7
 marker_size = 50
 edgewidth=0.5
 
+# Klog line prefix: e.g. "I0417 04:07:41.139373 ..."
+_KLOG_PREFIX_RE = re.compile(r'^[IWEF](\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)')
+
+
+def _parse_klog_wallclock_us(line):
+    """Return a monotonic wall-clock microsecond value extracted from a klog
+    line prefix (e.g. 'I0417 04:07:41.139373'), or None if absent.
+
+    Unlike the gateway-side 'request_start_time' field, the klog prefix is
+    wall-clock and survives gateway pod restarts mid-experiment — so it gives
+    a correct x-axis across scale-up events (which trigger an env-var change
+    and rolling restart, resetting FirstRequestStartTime). The value is NOT a
+    real epoch timestamp; it uses a 31-day-per-month approximation so that
+    only monotonicity and differences within a single run are guaranteed,
+    which is all the plotting code needs. Safe for runs that stay within a
+    single month."""
+    m = _KLOG_PREFIX_RE.match(line)
+    if not m:
+        return None
+    mon, day, hh, mm, ss, frac = m.groups()
+    frac_us = int((frac + '000000')[:6])
+    days = (int(mon) - 1) * 31 + int(day)
+    total_s = ((days * 24 + int(hh)) * 60 + int(mm)) * 60 + int(ss)
+    return total_s * 1_000_000 + frac_us
+
 def parse_log_file(filename):
     data = []
     invalid_count = 0
@@ -134,18 +159,39 @@ def parse_metrics_line(line):
     start_idx = line.find(start_marker)
     if start_idx == -1:
         return None
-    
+
     # Extract the metrics string
     metrics_str = line[start_idx + len(start_marker):]
-    
+
     # Parse using a more robust approach
     parsed_data = parse_metrics_string(metrics_str)
-    
+
+    # Derive start/end wall-clock timestamps from the klog prefix rather than
+    # trusting the gateway's request_start_time/request_end_time fields, which
+    # are normalized against utils.FirstRequestStartTime — a Go static that
+    # resets to 0 whenever the gateway pod restarts. The scale-up path in
+    # run-client-in-pod-autoscsaling.sh triggers such a restart mid-run, so the
+    # gateway-side timestamps for pre- and post-scaleup phases get overlaid
+    # onto the same [0, N] range. The klog prefix is true wall-clock and does
+    # not suffer that artifact.
+    klog_us = _parse_klog_wallclock_us(line)
+    if klog_us is not None:
+        e2e_ms = parsed_data.get('e2e')
+        try:
+            e2e_us = int(float(e2e_ms) * 1000) if e2e_ms is not None else 0
+        except (TypeError, ValueError):
+            e2e_us = 0
+        wallclock_start = klog_us - e2e_us
+        wallclock_end = klog_us
+    else:
+        wallclock_start = parsed_data.get('request_start_time')
+        wallclock_end = parsed_data.get('request_end_time')
+
     # Create final entry with standardized field names
     final_entry = {
         'request_id': parsed_data.get('requestID'),
-        'start_time': parsed_data.get('request_start_time'),
-        'end_time': parsed_data.get('request_end_time'),
+        'start_time': wallclock_start,
+        'end_time': wallclock_end,
         'ttft': parsed_data.get('ttft'),
         'avg_tpot': parsed_data.get('avg_tpot'),
         'selectedpod': parsed_data.get('selectedpod'),
@@ -167,6 +213,8 @@ def parse_metrics_line(line):
         'chosen_pod_predicted_latency': float(parsed_data.get('chosenPodPredictedLatency', 0)) if parsed_data.get('chosenPodPredictedLatency') else None,  # ADD THIS - predicted latency for chosen pod
         'iteration': parsed_data.get('iteration'),  # ADD THIS - iteration from the data
         'ood_fallback': parsed_data.get('oodFallback'),  # OOD fallback flag (0 or 1)
+        'selectedpod_gpu_model': parsed_data.get('selectedPodGPU'),
+        'pod_gpu_map': parsed_data.get('GPU'),
     }
 
     # Only require request_id and start_time as essential
@@ -195,7 +243,7 @@ def parse_metrics_string(metrics_str):
         json_keys = {'allPodsKvCacheHitRatios', 'vllmGPUKVCacheUsage', 'vllmCPUKVCacheUsage',
                      'vllmNumRequestsRunning', 'vllmNumRequestsWaiting', 'podMetricsLastSecond',
                      'numInflightRequestsAllPods', 'numPrefillTokensForAllPods', 'numDecodeTokensForAllPods',
-                     'predictedLatencies'}
+                     'predictedLatencies', 'GPU'}
         
         if key in json_keys:
             # Handle JSON value
@@ -1066,51 +1114,69 @@ def _plot_pod_metric_subplot(ax, data_df, metric_col, metric_name, title, unique
 
 def plot_analysis_subplots(fig, gs, df, slo_stats, slo_ttft, slo_tpot, unique_pods, pod_colors):
     """Plot the pod analysis and CDF distribution subplots"""
-    # Define the pod analysis plots (updated indices - shifted up by 1 after removing reward plot)
-    ax4 = fig.add_subplot(gs[16, 0])  # Average TTFT by Pod
-    ax5 = fig.add_subplot(gs[16, 1])  # Average TPOT by Pod
-    ax_slo = fig.add_subplot(gs[16, 2])  # SLO satisfaction
-    
-    # Define the CDF distribution plots  
-    ax6 = fig.add_subplot(gs[17, 0])  # TTFT CDF
-    ax7 = fig.add_subplot(gs[17, 1])  # TPOT CDF
-    ax8 = fig.add_subplot(gs[17, 2])  # E2E CDF
+    # Combine rows 16 (pod analysis) and 17 (CDFs) into a subgridspec so we can
+    # enlarge the gap between the two rows (doubled vs. the outer hspace).
+    gs_analysis = gs[16:18, :].subgridspec(2, 3, hspace=4.0)
+    ax4 = fig.add_subplot(gs_analysis[0, 0])  # Average TTFT by Pod
+    ax5 = fig.add_subplot(gs_analysis[0, 1])  # Average TPOT by Pod
+    ax_slo = fig.add_subplot(gs_analysis[0, 2])  # SLO satisfaction
+
+    # Define the CDF distribution plots
+    ax6 = fig.add_subplot(gs_analysis[1, 0])  # TTFT CDF
+    ax7 = fig.add_subplot(gs_analysis[1, 1])  # TPOT CDF
+    ax8 = fig.add_subplot(gs_analysis[1, 2])  # E2E CDF
     
     # Average TTFT by Pod (ax4)
     pod_avg_ttft = df.groupby('selectedpod')['ttft'].mean().sort_values(ascending=False)
     pod_counts = df.groupby('selectedpod').size()
-    
+
+    # Build pod -> gpu_model lookup (prefer per-row selectedpod_gpu_model, fallback to pod_gpu_map)
+    pod_to_gpu = {}
+    if 'selectedpod_gpu_model' in df.columns:
+        gpu_series = df.dropna(subset=['selectedpod_gpu_model']).groupby('selectedpod')['selectedpod_gpu_model'].agg(lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0])
+        pod_to_gpu.update(gpu_series.to_dict())
+    if 'pod_gpu_map' in df.columns:
+        for m in df['pod_gpu_map'].dropna():
+            if isinstance(m, dict):
+                for p, g in m.items():
+                    pod_to_gpu.setdefault(p, g)
+                break
+
+    def _pod_label(pod):
+        gpu = pod_to_gpu.get(pod)
+        return f'{pod} ({gpu})' if gpu else f'{pod}'
+
     # Create bars for TTFT plot
-    ttft_bars = ax4.bar(range(len(pod_avg_ttft)), pod_avg_ttft.values, 
-                      color=[pod_colors[pod] for pod in pod_avg_ttft.index], 
+    ttft_bars = ax4.bar(range(len(pod_avg_ttft)), pod_avg_ttft.values,
+                      color=[pod_colors[pod] for pod in pod_avg_ttft.index],
                       edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, width=0.7)
-    
+
     # Add annotations
     for i, (pod, ttft) in enumerate(pod_avg_ttft.items()):
         ax4.text(i, ttft + 7, f'{ttft:.0f} ms', ha='center', fontsize=6, fontweight='bold', rotation=45)
         ax4.text(i, 14, f'n={pod_counts[pod]}', ha='center', fontsize=6, rotation=90, fontweight='bold')
-    
+
     ax4.set_xticks(range(len(pod_avg_ttft)))
-    ax4.set_xticklabels([f'Pod {pod}' for pod in pod_avg_ttft.index], rotation=45, ha='right', fontsize=11)
+    ax4.set_xticklabels([_pod_label(pod) for pod in pod_avg_ttft.index], rotation=45, ha='right', fontsize=9)
     ax4.set_ylabel('Average TTFT (ms)', fontsize=12, fontweight='bold')
     ax4.set_title('Average TTFT by Pod', fontsize=14, fontweight='bold', pad=10)
     ax4.grid(axis='y', linestyle='--', alpha=alpha)
-    
+
     # Average TPOT by Pod (ax5)
     pod_avg_tpot = df.groupby('selectedpod')['avg_tpot'].mean().sort_values(ascending=False)
-    
+
     # Create bars for TPOT plot
     tpot_bars = ax5.bar(range(len(pod_avg_tpot)), pod_avg_tpot.values,
-                      color=[pod_colors[pod] for pod in pod_avg_tpot.index], 
+                      color=[pod_colors[pod] for pod in pod_avg_tpot.index],
                       edgecolor=edgecolor, linewidth=edgewidth, alpha=alpha, width=0.7)
-    
+
     # Add annotations
     for i, (pod, tpot) in enumerate(pod_avg_tpot.items()):
         ax5.text(i, tpot + 1, f'{tpot:.1f} ms', ha='center', fontsize=12, fontweight='bold')
         ax5.text(i, 0.5, f'n={pod_counts[pod]}', ha='center', fontsize=10)
-    
+
     ax5.set_xticks(range(len(pod_avg_tpot)))
-    ax5.set_xticklabels([f'Pod {pod}' for pod in pod_avg_tpot.index], rotation=45, ha='right', fontsize=11)
+    ax5.set_xticklabels([_pod_label(pod) for pod in pod_avg_tpot.index], rotation=45, ha='right', fontsize=9)
     ax5.set_ylabel('Avg TPOT (ms)', fontsize=12, fontweight='bold')
     ax5.set_title('Average TPOT by Pod', fontsize=14, fontweight='bold', pad=10)
     ax5.grid(axis='y', linestyle='--', alpha=alpha)
@@ -1473,38 +1539,27 @@ def plot_iteration_analysis_subplots(fig, gs, df, start_row):
         overall_p99_e2e = np.percentile(df['e2e'], 99)
         overall_p99_9_e2e = np.percentile(df['e2e'], 99.9)
         
-        # TTFT Trends (Avg + P99 with dual y-axis)
-        ax_iter_ttft_trends.plot(iter_vals, avg_ttft_vals, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
-        # Add value labels on each dot for average
-        for it, val in zip(iter_vals, avg_ttft_vals):
-            ax_iter_ttft_trends.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='blue', fontweight='bold')
-        ax_iter_ttft_trends.set_xlabel('Iteration', fontsize=10)
+        # Avg TTFT sliding window (non-overlapping, ws=1000)
+        window_size = 1000
+        sort_col = 'relative_time' if 'relative_time' in df.columns else None
+        df_sorted = df.sort_values(sort_col).reset_index(drop=True) if sort_col else df.reset_index(drop=True)
+        ttft_series = df_sorted['ttft'].to_numpy()
+        n_windows = len(ttft_series) // window_size
+        win_idx = np.arange(n_windows)
+        win_avg_ttft = np.array([ttft_series[i*window_size:(i+1)*window_size].mean() for i in win_idx]) if n_windows > 0 else np.array([])
+
+        if n_windows > 0:
+            ax_iter_ttft_trends.plot(win_idx, win_avg_ttft, marker='o', linestyle='-', color='blue', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_ttft:.1f}ms')
+            for wi, val in zip(win_idx, win_avg_ttft):
+                ax_iter_ttft_trends.text(wi, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='blue', fontweight='bold')
+            ax_iter_ttft_trends.set_ylim(0, max(win_avg_ttft) * 1.4)
+
+        ax_iter_ttft_trends.set_xlabel(f'Window index (ws={window_size}, non-overlapping)', fontsize=10)
         ax_iter_ttft_trends.set_ylabel('Average TTFT (ms)', fontsize=10, fontweight='bold', color='blue')
         ax_iter_ttft_trends.tick_params(axis='y', labelcolor='blue')
-        
-        ax_iter_ttft_trends_right = ax_iter_ttft_trends.twinx()
-        ax_iter_ttft_trends_right.plot(iter_vals, p99_ttft_vals, marker='x', linestyle='--', color='darkblue', linewidth=linewidth, alpha=alpha, label=f'P99: {overall_p99_ttft:.1f}ms')
-        # Add value labels on each dot for P99 (positioned slightly to the right)
-        x_range = max(iter_vals) - min(iter_vals) if len(iter_vals) > 1 else 1
-        x_offset = x_range * 0.08  # Offset to the right
-        for it, val in zip(iter_vals, p99_ttft_vals):
-            ax_iter_ttft_trends_right.text(it, val, f'{val:.0f}', ha='center', va='bottom', fontsize=8, color='darkblue', fontweight='bold')
-        # Add P99.9 line
-        ax_iter_ttft_trends_right.plot(iter_vals, p99_9_ttft_vals, marker='+', linestyle=':', color='brown', linewidth=linewidth, alpha=alpha, label=f'P99.9: {overall_p99_9_ttft:.1f}ms')
-        # Add value labels on each dot for P99.9 (positioned further to the right)
-        for it, val in zip(iter_vals, p99_9_ttft_vals):
-            ax_iter_ttft_trends_right.text(it + x_offset, val, f'{val:.0f}', ha='left', va='center', fontsize=8, color='brown', fontweight='bold')
-        ax_iter_ttft_trends_right.set_ylabel('P99/P99.9 TTFT (ms)', fontsize=10, fontweight='bold', color='darkblue')
-        ax_iter_ttft_trends_right.tick_params(axis='y', labelcolor='darkblue')
-        
-        ax_iter_ttft_trends.set_ylim(0, max(avg_ttft_vals) * 1.4)
-        ax_iter_ttft_trends_right.set_ylim(0, max(max(p99_ttft_vals), max(p99_9_ttft_vals)) * 1.4)
-        ax_iter_ttft_trends.set_title('TTFT Trends by Iterations', fontsize=12, fontweight='bold', pad=10)
+        ax_iter_ttft_trends.set_title(f'Avg TTFT sliding window (ws={window_size})', fontsize=12, fontweight='bold', pad=10)
         ax_iter_ttft_trends.grid(True, alpha=alpha)
-        
-        lines1, labels1 = ax_iter_ttft_trends.get_legend_handles_labels()
-        lines2, labels2 = ax_iter_ttft_trends_right.get_legend_handles_labels()
-        ax_iter_ttft_trends.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left', ncol=3)
+        ax_iter_ttft_trends.legend(fontsize=8, loc='upper left')
         
         # TPOT Trends (Avg + P99 with dual y-axis)
         ax_iter_tpot_trends.plot(iter_vals, avg_tpot_vals, marker='o', linestyle='-', color='green', linewidth=linewidth, alpha=alpha, label=f'Avg: {overall_avg_tpot:.1f}ms')

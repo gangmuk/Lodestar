@@ -2,13 +2,11 @@
 """
 Multi-workload facet plot for raw Mooncake traces.
 
-Each row is one trace file. Six panels per row:
+Each row is one trace file. Panels per row:
   1) Input token distribution
   2) Output token distribution
   3) Prefix / KV cache hit ratio distribution (temporal trie over hash_ids)
-  4) Unique prefix groups in a 30s sliding window (1s step)
-  5) Prefix group size distribution (requests per prefix_group)
-  6) Intra-group distance (consecutive same-group request spacing, seconds)
+  4) Intra-group distance (consecutive same-group request spacing, seconds)
 
 Prefix groups are derived from hash_ids: two requests belong to the same
 group if they share the first MIN_PREFIX_MATCH hash_ids (matching from the
@@ -215,7 +213,7 @@ def analyze(path: str) -> dict:
 
 def plot_facets(analyses: list[dict], out_pdf: str) -> None:
     n = len(analyses)
-    ncol = 5
+    ncol = 4
     cell_size = 7  # square subplots, slightly larger with fewer columns
     fig_w = ncol * cell_size
     fig_h = max(1, n) * cell_size + 1.2
@@ -229,8 +227,7 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
         "Input tokens",
         "Output tokens",
         "Prefix hit ratio",
-        "Prefix group size",
-        "Intra-group distance",
+        "Prefix reuse distance",
     ]
 
     for i, data in enumerate(analyses):
@@ -248,8 +245,7 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
             ax.hist(wl_in, bins=bins_in, alpha=0.75, color="C0", edgecolor="white")
             in_arr = np.array(wl_in)
             ax.axvline(float(in_arr.mean()), color="red", linestyle="--", linewidth=2.0, label=f"mean={in_arr.mean()/1000:.1f}K")
-            ax.axvline(float(np.median(in_arr)), color="orange", linestyle=":", linewidth=2.0, label=f"p50={np.median(in_arr)/1000:.1f}K")
-            ax.legend(loc="center right")
+            ax.legend(loc="upper center")
         ax.set_xlim(0, 100000)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x/1000:.0f}K" if x >= 1000 else f"{x:.0f}"))
         ax.set_ylabel("Count")
@@ -257,16 +253,14 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
             ax.set_xlabel("Tokens")
         if i == 0:
             ax.set_title(col_titles[0])
-        ax.text(
-            0.02,
-            0.98,
+        ax.annotate(
             data["label"],
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=textbox_fontsize,
-            fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.25", fc="white", alpha=0.92),
+            xy=(-0.55, 0.5),
+            xycoords="axes fraction",
+            ha="center",
+            va="center",
+            rotation=90,
+            fontsize=main_title_fontsize,
         )
 
         # 1: output
@@ -276,7 +270,6 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
             ax.hist(wl_out, bins=bins_out, alpha=0.75, color="C1", edgecolor="white")
             out_arr = np.array(wl_out)
             ax.axvline(float(out_arr.mean()), color="red", linestyle="--", linewidth=2.0, label=f"mean={out_arr.mean():.0f}")
-            ax.axvline(float(np.median(out_arr)), color="orange", linestyle=":", linewidth=2.0, label=f"p50={np.median(out_arr):.0f}")
             ax.legend(loc="upper right")
         ax.set_xlim(0, 1000)
         if i == n - 1:
@@ -304,36 +297,8 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
         if i == 0:
             ax.set_title(col_titles[2])
 
-        # 3: prefix group size (linear scale, clipped at p99)
+        # 3: intra-group distance
         ax = row_axes[3]
-        if pg_sizes:
-            pg_arr = np.array(pg_sizes)
-            max_bin = min(int(np.percentile(pg_arr, 99)) + 2, int(pg_arr.max()) + 1)
-            bins_size = np.arange(1, max_bin + 1) - 0.5
-            ax.hist(pg_arr, bins=bins_size, alpha=0.75, color="C0", edgecolor="white")
-            ax.axvline(
-                float(np.mean(pg_arr)),
-                color="red",
-                linestyle="--",
-                linewidth=2.0,
-                label=f"mean={np.mean(pg_arr):.1f}",
-            )
-            ax.axvline(
-                float(np.median(pg_arr)),
-                color="orange",
-                linestyle=":",
-                linewidth=2.0,
-                label=f"p50={np.median(pg_arr):.0f}",
-            )
-            ax.legend(loc="upper right")
-            ax.set_xticks(np.arange(2, max_bin + 1, 2))
-        if i == n - 1:
-            ax.set_xlabel("Requests / group")
-        if i == 0:
-            ax.set_title(col_titles[3])
-
-        # 4: intra-group distance
-        ax = row_axes[4]
         if intra:
             dist_arr = np.array(intra)
             p99 = np.percentile(dist_arr, 99)
@@ -346,24 +311,15 @@ def plot_facets(analyses: list[dict], out_pdf: str) -> None:
                 linewidth=2.0,
                 label=f"mean={np.mean(dist_arr):.0f}",
             )
-            ax.axvline(
-                float(np.median(dist_arr)),
-                color="orange",
-                linestyle=":",
-                linewidth=2.0,
-                label=f"p50={np.median(dist_arr):.0f}",
-            )
             ax.legend(loc="upper right")
         else:
             ax.text(0.5, 0.5, "No multi-req groups", transform=ax.transAxes, ha="center", va="center", fontsize=18)
         if i == n - 1:
             ax.set_xlabel("Requests between")
         if i == 0:
-            ax.set_title(col_titles[4])
+            ax.set_title(col_titles[3])
 
     plt.tight_layout(w_pad=0.1, h_pad=0.1)
-    fig.subplots_adjust(top=0.93)
-    fig.suptitle("Mooncake trace characteristics", y=0.96, fontsize=main_title_fontsize)
     fig.savefig(out_pdf, format="pdf", bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_pdf}")

@@ -384,6 +384,13 @@ func (s *Server) cleanupPerRequestState(routerCtx *types.RoutingContext, request
 	s.requestBuffers.Delete(requestID)
 	s.statusCode.Delete(requestID)
 	s.selectedPodIP.Delete(requestID)
+
+	// Decrement Preble's per-pod ref_counter on every ancestor of the request's
+	// leaf node. Runs unconditionally (from the top-level Process defer) so aborted
+	// / timed-out requests — which never hit HandleResponseBody's EndOfStream path
+	// — still release their ref_counter. No-op for non-Preble requests via
+	// LoadAndDelete on the outstanding-request map.
+	routing.PrebleOnRequestComplete(requestID)
 }
 
 func NewHealthCheckServer() *HealthServer {

@@ -516,7 +516,7 @@ def handle_infer():
         # Extract request ID for logging purposes
         request_id = "default"  # or extract from log_message
         replace_podid_start_time = time.time()
-        log_message = utils.replace_pod_ip_with_generalpodid(log_message)
+        log_message = utils.replace_pod_ip_with_generalpodid(log_message, HYPERPARAMETERS)
         # logger.info(f"log_message_with_replaced_pod_id: {log_message}")
         handle_infer_overhead_summary["replace_podid_overhead"] = time.time() - replace_podid_start_time
         parts = log_message.split("requestID@")
@@ -1187,17 +1187,17 @@ def handle_infer():
         handle_infer_overhead_summary["end_to_end"] = endtoendoverhead
         result['end_to_end_overhead'] = endtoendoverhead
         
-        overhead_log = "oh"
-        for key, value in handle_infer_overhead_summary.items():
-            overhead_log += f", handle_infer_{key}: {value*1000:.0f}ms"
-        for key, value in encode_for_inference_overhead_summary.items():
-            overhead_log += f", encode_{key}: {value*1000:.0f}ms"
-        for key, value in preprocess_dataset_overhead_summary.items():
-            overhead_log += f", preprocess_{key}: {value*1000:.0f}ms"
-        for key, value in infer_from_tensor_overhead_summary.items():
-            overhead_log += f", infer_from_tensor_{key}: {value*1000:.0f}ms"
         
         if int(request_id) % 10 == 0:
+            overhead_log = "oh"
+            for key, value in handle_infer_overhead_summary.items():
+                overhead_log += f", handle_infer_{key}: {value*1000:.4f}ms"
+            for key, value in encode_for_inference_overhead_summary.items():
+                overhead_log += f", encode_{key}: {value*1000:.4f}ms"
+            for key, value in preprocess_dataset_overhead_summary.items():
+                overhead_log += f", preprocess_{key}: {value*1000:.4f}ms"
+            for key, value in infer_from_tensor_overhead_summary.items():
+                overhead_log += f", infer_from_tensor_{key}: {value*1000:.4f}ms"
             logger.info(f"overhead_log: {overhead_log}")
         
         return_predicted_rewards = HYPERPARAMETERS.get('RETURN_PREDICTED_REWARDS', True)
@@ -1242,11 +1242,10 @@ def handle_infer():
         # LMETRIC is a deterministic heuristic — skip all model-specific fallback overrides.
         # OOD detection, reward similarity tiebreaks, and untrained-model guards don't apply.
         if subAlgorithm != 'lmetric':
-            # PC1-biased exploration: when the agent explored, delegate routing to gateway's PC1 fallback
-            # ood_fallback=4: exploration triggered → gateway uses prefix_cache_1 (which considers both prefix hits AND load)
-            if result.get('explored', False):
-                response["ood_fallback"] = 4
-                response["fallback_reason"] = "pc1_biased_exploration"
+            # When the agent explored, keep the random action it already chose.
+            # The previous code set ood_fallback=4 to make the gateway override
+            # with prefix_cache_1, which undid the exploration (PC1 is biased
+            # toward warm A30 pods, so V100s never received any data).
 
             # Tiebreaker: when multiple pods have rewards close to the best pod,
             # the model can't meaningfully differentiate them → pick randomly among top pods.
@@ -2544,13 +2543,18 @@ def initialize():
 
     running_vllm_pods = utils.get_running_pods_by_label(POD_LABEL_SELECTOR)
     sorted_running_pod_ips = utils.fetch_running_pod_ips(running_vllm_pods)
-    pod_ip_to_generalpodid = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
-    generalpodid_to_pod_ip = {}
-    for pod_ip, generalpodid in pod_ip_to_generalpodid.items():
-        generalpodid_to_pod_ip[generalpodid] = pod_ip
-    generalpodid_to_gpu_model = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, pod_ip_to_generalpodid)
-    pod_ip_to_gpu_model, pod_ip_to_gpu_model_encoded = utils.create_pod_ip_to_gpu_model_mapping(generalpodid_to_gpu_model, pod_ip_to_generalpodid)
-    
+    # Use a temporary IP→ID mapping to look up GPU models from k8s — register_pod_ips
+    # below assigns the same IDs (it sees the empty registry and IPs in sorted order).
+    initial_ip_to_id = utils.create_pod_ip_to_generalpodid_mapping(sorted_running_pod_ips)
+    initial_id_to_gpu = utils.fetch_generalpodid_to_gpu_model(running_vllm_pods, initial_ip_to_id)
+    initial_ip_to_gpu = {ip: initial_id_to_gpu[pid] for ip, pid in initial_ip_to_id.items()
+                         if initial_id_to_gpu.get(pid) and initial_id_to_gpu[pid] != 'unknown'}
+
+    # Seed the append-only pod registry. After this call the eight pod-keyed
+    # HYPERPARAMETERS entries are populated from the registry. Any pods that
+    # appear later (e.g. mid-experiment scale-up) will be appended on /infer.
+    utils.register_pod_ips(sorted_running_pod_ips, HYPERPARAMETERS, initial_ip_to_gpu)
+
     logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
     logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
     if 'contextual_bandit' in ROUTING_STRATEGY:
@@ -2579,28 +2583,11 @@ def initialize():
                 CONTEXTUAL_BANDIT_PRELOADED = False
     else:
         CONTEXTUAL_BANDIT_PRELOADED = True
-    logger.info(f"pod_ip_to_generalpodid: {pod_ip_to_generalpodid}")
-    logger.info(f"generalpodid_to_gpu_model: {generalpodid_to_gpu_model}")
-    logger.info(f"pod_ip_to_gpu_model: {pod_ip_to_gpu_model}")
-    logger.info(f"pod_ip_to_gpu_model_encoded: {pod_ip_to_gpu_model_encoded}")
-
-    HYPERPARAMETERS['pod_ip_to_generalpodid'] = pod_ip_to_generalpodid
-    HYPERPARAMETERS['generalpodid_to_pod_ip'] = generalpodid_to_pod_ip
+    logger.info(f"pod_ip_to_generalpodid: {HYPERPARAMETERS['pod_ip_to_generalpodid']}")
+    logger.info(f"generalpodid_to_gpu_model: {HYPERPARAMETERS['generalpodid_to_gpu_model']}")
+    logger.info(f"pod_ip_to_gpu_model: {HYPERPARAMETERS['pod_ip_to_gpu_model']}")
+    logger.info(f"pod_ip_to_gpu_model_encoded: {HYPERPARAMETERS['pod_ip_to_gpu_model_encoded']}")
     logger.info(f"HYPERPARAMETERS['generalpodid_to_pod_ip']: {HYPERPARAMETERS['generalpodid_to_pod_ip']}")
-    HYPERPARAMETERS['sorted_running_pod_ips'] = sorted_running_pod_ips
-    HYPERPARAMETERS['pod_ip_to_gpu_model'] = pod_ip_to_gpu_model
-    HYPERPARAMETERS['pod_ip_to_gpu_model_encoded'] = pod_ip_to_gpu_model_encoded
-    HYPERPARAMETERS['generalpodid_to_gpu_model'] = generalpodid_to_gpu_model
-    # Additional mappings for GPU features expected by preprocess/encoding
-    HYPERPARAMETERS['pod_gpu_mapping'] = generalpodid_to_gpu_model
-    pod_gpu_id_mapping = {}
-    for generalpodid, gpu_model in generalpodid_to_gpu_model.items():
-        if gpu_model in utils.GPU_MODEL_TO_ENCODE:
-            pod_gpu_id_mapping[generalpodid] = utils.GPU_MODEL_TO_ENCODE[gpu_model]
-        else:
-            logger.error(f"Unknown GPU model for {generalpodid}: {gpu_model}")
-            assert False
-    HYPERPARAMETERS['pod_gpu_id_mapping'] = pod_gpu_id_mapping
         
     # Print feature statistics if available
     if stats_instance is not None:

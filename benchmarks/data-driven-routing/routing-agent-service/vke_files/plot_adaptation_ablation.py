@@ -41,24 +41,36 @@ LIMITED_KEY = "maxnumtrains_7"
 PREFIX_CACHE_KEY = "prefix_cache_1"
 
 LABELS = {
-    UNLIMITED_KEY: "QS",
-    LIMITED_KEY: "QS \n(mid-frozen)",
+    UNLIMITED_KEY: "Quicksilver",
+    LIMITED_KEY: "Quicksilver \n(mid-frozen)",
     PREFIX_CACHE_KEY: "Prefix Cache",
 }
 
 COLORS = {
-    UNLIMITED_KEY: "#ff7f00",  # orange
-    LIMITED_KEY: "#4a90d9",    # icy blue
-    PREFIX_CACHE_KEY: "#2ca02c",  # green
+    UNLIMITED_KEY: "#ff7f00",      # orange (CB random-init primary)
+    LIMITED_KEY: "#56B6C6",        # teal (Quicksilver mid-frozen)
+    PREFIX_CACHE_KEY: "#1f77b4",   # blue (prefix_cache_1 palette)
 }
 
 SORT_ORDER = {LIMITED_KEY: 0, PREFIX_CACHE_KEY: 1, UNLIMITED_KEY: 2}
 
 BAR_LABELS = {
-    UNLIMITED_KEY: "QS",
-    LIMITED_KEY: "QS\n(mid-frozen)",
+    UNLIMITED_KEY: "Quicksilver",
+    LIMITED_KEY: "Quicksilver\n(mid-frozen)",
     PREFIX_CACHE_KEY: "Pfx Cache",
 }
+
+# ── Font sizes for paper figure (plot_figure_dense) ───────────
+PAPER_FONT_BASE = 16          # rc default font.size
+PAPER_FONT_TITLE = 19         # subfigure titles: (a) (b) (d) (e) etc.
+PAPER_FONT_LABEL = 19         # x/y axis labels
+PAPER_FONT_TICK = 16          # x/y tick labels
+PAPER_FONT_LEGEND_RC = 19     # matplotlib legend rc default
+PAPER_FONT_PHASE = 13         # phase1/phase2 in-panel annotations
+PAPER_FONT_ANNOT = 12         # "Workload shift" and "Adapted" callouts
+PAPER_FONT_BAR_VALUES = 9     # numeric labels above bars in (c)
+PAPER_FONT_BAR_LEGEND = 14    # Avg/P99 legend inside (c)
+PAPER_FONT_FIG_LEGEND = 20    # figure-level shared legend
 
 
 # ── Discovery ─────────────────────────────────────────────────
@@ -653,6 +665,8 @@ def plot_figure(
     step: int,
     out_path: str,
     rps: float = 7.8,
+    phase1_label: str = "5% sharing",
+    phase2_label: str = "50% sharing",
 ) -> None:
     plt.rcParams.update({
         "font.size": 16,
@@ -717,13 +731,13 @@ def plot_figure(
     # Phase annotations
     ax_ttft.text(
         midpoint * 0.5, ax_ttft.get_ylim()[1] * 0.92,
-        "0% prefix sharing", ha="center", fontsize=12,
+        phase1_label, ha="center", fontsize=12,
         fontstyle="italic", color="#444444",
     )
     ax_ttft.text(
         midpoint + (total_requests - midpoint) * 0.5,
         ax_ttft.get_ylim()[1] * 0.92,
-        "50% prefix sharing", ha="center", fontsize=12,
+        phase2_label, ha="center", fontsize=12,
         fontstyle="italic", color="#444444",
     )
     ax_ttft.annotate(
@@ -853,10 +867,11 @@ def plot_figure(
     # ── Combined TTFT bar chart: Overall | Phase 1 | Phase 2 ──
     phases = [
         ("Overall", lambda r: r["ttft_raw"]),
-        ("Phase 1\n(5% sharing)", lambda r: r["ttft_raw"][:r["half"]]),
-        ("Phase 2\n(50% sharing)", lambda r: r["ttft_raw"][r["half"]:]),
+        (f"Phase 1\n({phase1_label})", lambda r: r["ttft_raw"][:r["half"]]),
+        (f"Phase 2\n({phase2_label})", lambda r: r["ttft_raw"][r["half"]:]),
     ]
-    n_policies = len(all_keys)
+    bar_keys = [k for k in [PREFIX_CACHE_KEY, LIMITED_KEY, UNLIMITED_KEY] if k in data]
+    n_policies = len(bar_keys)
     n_phases = len(phases)
     bar_width = 0.8 / (n_policies * 2)
     positions = []
@@ -867,7 +882,7 @@ def plot_figure(
     for pi, (phase_label, slice_fn) in enumerate(phases):
         phase_center = pi * (group_width + gap)
         positions.append(phase_center)
-        for ki, key in enumerate(all_keys):
+        for ki, key in enumerate(bar_keys):
             d = data[key]
             avg_val, p99_val = _avg_run_stats(d, slice_fn)
             group_offset = (ki - (n_policies - 1) / 2) * (bar_width * 2.2)
@@ -899,7 +914,7 @@ def plot_figure(
     ax_bars.grid(axis="y", alpha=0.2)
 
     bar_legend = [Patch(facecolor=COLORS[k], edgecolor="black", linewidth=0.5,
-                        label=BAR_LABELS[k]) for k in all_keys]
+                        label=BAR_LABELS[k]) for k in bar_keys]
     bar_legend += [
         Patch(facecolor="gray", edgecolor="black", linewidth=0.5,
               label="Avg (left)"),
@@ -911,15 +926,15 @@ def plot_figure(
     # ── Shared timeseries legend ──────────────────────────────
     legend_handles = [
         Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=2,
-               label="QS (mid-frozen): routed inst."),
-        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=1.5, linestyle="--",
-               marker="x", markersize=6, markeredgewidth=1.5,
-               alpha=0.7, label="QS (mid-frozen): system avg."),
+               label="Quicksilver (mid-frozen): routed inst."),
+        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=1.5, linestyle="-.",
+                markersize=6, markeredgewidth=1.5,
+               alpha=0.8, label="Quicksilver (mid-frozen): system avg."),
         Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=2,
-               label="QS: routed inst."),
+               label="Quicksilver: routed inst."),
         Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=1.5, linestyle="--",
-               marker="x", markersize=6, markeredgewidth=1.5,
-               alpha=0.7, label="QS: system avg."),
+                markersize=6, markeredgewidth=1.5,
+               alpha=0.8, label="Quicksilver: system avg."),
     ]
     if PREFIX_CACHE_KEY in data:
         legend_handles += [
@@ -931,9 +946,9 @@ def plot_figure(
         ]
     legend_handles += [
         Patch(facecolor="#e8f0fe", edgecolor="gray", alpha=0.6,
-              label="Phase 1: 5% sharing"),
+              label=f"Phase 1: {phase1_label}"),
         Patch(facecolor="#fce8e6", edgecolor="gray", alpha=0.6,
-              label="Phase 2: 50% sharing"),
+              label=f"Phase 2: {phase2_label}"),
     ]
 
     fig.legend(
@@ -959,16 +974,18 @@ def plot_figure_dense(
     step: int,
     out_path: str,
     rps: float = 7.8,
+    phase1_label: str = "5% sharing",
+    phase2_label: str = "50% sharing",
 ) -> None:
     """Compact 2x2 figure for paper: (TTFT, KV hit) / (MAE, GPU KV) + TTFT bar."""
     plt.rcParams.update({
-        "font.size": 14,
+        "font.size": PAPER_FONT_BASE,
         "font.family": "sans-serif",
-        "axes.titlesize": 15,
-        "axes.labelsize": 15,
-        "xtick.labelsize": 13,
-        "ytick.labelsize": 13,
-        "legend.fontsize": 12,
+        "axes.titlesize": PAPER_FONT_TITLE,
+        "axes.labelsize": PAPER_FONT_LABEL,
+        "xtick.labelsize": PAPER_FONT_TICK,
+        "ytick.labelsize": PAPER_FONT_TICK,
+        "legend.fontsize": PAPER_FONT_LEGEND_RC,
     })
 
     has_convergence = (UNLIMITED_KEY in data and PREFIX_CACHE_KEY in data)
@@ -977,18 +994,21 @@ def plot_figure_dense(
     # Layout: Row 1 = TTFT (2cols) + KV hit (2cols)
     #         Row 2 = MAE (1col) + Bar (1col) + GPU KV (2cols)
     #         MAE and Bar sit under TTFT; GPU KV sits under KV hit
-    fig = plt.figure(figsize=(14, 5.5))
-    gs = fig.add_gridspec(
-        2, 12, height_ratios=[1, 0.85],
-        width_ratios=[1, 1, 1, 0.25, 1, 1, 0.3, 1, 1, 1, 1, 0.3],
-        hspace=0.55, wspace=0.80,
-    )
+    fig = plt.figure(figsize=(14, 8.2))
+    outer_gs = fig.add_gridspec(2, 1, height_ratios=[1, 0.85], hspace=0.45)
 
-    ax_ttft = fig.add_subplot(gs[0, 0:6])
-    ax_kv = fig.add_subplot(gs[0, 7:11])
-    ax_mae = fig.add_subplot(gs[1, 0:3]) if has_mae else None
-    ax_bars = fig.add_subplot(gs[1, 4:6])
-    ax_gpu = fig.add_subplot(gs[1, 7:11])
+    top_gs = outer_gs[0].subgridspec(1, 2, wspace=0.28)
+    ax_ttft = fig.add_subplot(top_gs[0, 0])
+    ax_kv = fig.add_subplot(top_gs[0, 1])
+
+    bot_gs = outer_gs[1].subgridspec(
+        1, 12,
+        width_ratios=[1, 1, 1, 0.85, 1, 1, 0.55, 1, 1, 1, 1, 0.3],
+        wspace=1.0,
+    )
+    ax_mae = fig.add_subplot(bot_gs[0, 0:3]) if has_mae else None
+    ax_bars = fig.add_subplot(bot_gs[0, 4:6])
+    ax_gpu = fig.add_subplot(bot_gs[0, 7:11])
 
     all_keys = [k for k in [LIMITED_KEY, PREFIX_CACHE_KEY, UNLIMITED_KEY] if k in data]
 
@@ -997,7 +1017,7 @@ def plot_figure_dense(
     for key in all_keys:
         d = data[key]
         ax_ttft.plot(d["ttft_centers"], d["ttft_means"],
-                     linewidth=2.0, color=d["color"], zorder=4)
+                     linewidth=3.0, color=d["color"], zorder=4)
     ax_ttft.set_ylabel("Mean TTFT (ms)")
     ax_ttft.set_title("(a) TTFT Time Series", loc="left", fontweight="bold")
     ax_ttft.grid(alpha=0.2)
@@ -1007,13 +1027,13 @@ def plot_figure_dense(
 
     # Phase annotations with opaque background
     ax_ttft.text(midpoint * 0.30, ax_ttft.get_ylim()[1] * 0.85,
-                 "5% sharing", ha="center", fontsize=13,
+                 phase1_label, ha="center", fontsize=PAPER_FONT_PHASE,
                  fontstyle="italic", color="#333333",
                  bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2),
                  zorder=6)
     ax_ttft.text(midpoint + (total_requests - midpoint) * 0.55,
                  ax_ttft.get_ylim()[1] * 0.85,
-                 "50% sharing", ha="center", fontsize=13,
+                 phase2_label, ha="center", fontsize=PAPER_FONT_PHASE,
                  fontstyle="italic", color="#333333",
                  bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2),
                  zorder=6)
@@ -1021,7 +1041,7 @@ def plot_figure_dense(
         "Workload\nshift",
         xy=(midpoint, ax_ttft.get_ylim()[1] * 0.55),
         xytext=(midpoint - total_requests * 0.06, ax_ttft.get_ylim()[1] * 0.72),
-        fontsize=12, ha="center", fontweight="bold",
+        fontsize=PAPER_FONT_ANNOT, ha="center", fontweight="bold",
         arrowprops=dict(arrowstyle="->", color="black", lw=1.2),
         bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2),
         zorder=6,
@@ -1050,23 +1070,22 @@ def plot_figure_dense(
                 f"Adapted\n~{adapt_reqs} reqs\n({adapt_time:.0f}s)",
                 xy=(crossover, ypos),
                 xytext=(crossover - total_requests * 0.25, ypos * 0.60),
-                fontsize=12, ha="center", color="#e67e22", fontweight="bold",
+                fontsize=PAPER_FONT_ANNOT, ha="center", color="#e67e22",
+                fontweight="bold",
                 arrowprops=dict(arrowstyle="->", color="#e67e22", lw=1.5),
                 bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=2),
                 zorder=6)
 
-    # ── KV Cache Hit (solid lines for both routed and system avg) ──
+    # ── KV Cache Hit (routed solid, system avg dotted) ──
     _draw_phase_bg(ax_kv, midpoint, total_requests)
     for key in all_keys:
         d = data[key]
         color = d["color"]
         ax_kv.plot(d["kv_sel_centers"], d["kv_sel_means"],
-                   linewidth=2.0, color=color, linestyle="-", zorder=4)
+                   linewidth=3.0, color=color, linestyle="-", zorder=4)
         ax_kv.plot(d["kv_avg_centers"], d["kv_avg_means"],
-                   linewidth=1.5, color=color, linestyle="-", alpha=0.7,
-                   marker="x", markersize=5,
-                   markevery=max(1, len(d["kv_avg_centers"]) // 20),
-                   markeredgewidth=1.5, zorder=4)
+                   linewidth=2.5, color=color, linestyle="--",
+                   alpha=0.85, zorder=4)
     ax_kv.set_ylabel("KV Hit Ratio (%)")
     ax_kv.set_title("(d) KV Cache Hit Ratio", loc="left", fontweight="bold")
     ax_kv.grid(alpha=0.2)
@@ -1076,7 +1095,7 @@ def plot_figure_dense(
     for key in all_keys:
         d = data[key]
         ax_gpu.plot(d["gpu_avg_centers"], d["gpu_avg_means"],
-                    linewidth=2.0, color=d["color"], zorder=4)
+                    linewidth=3.0, color=d["color"], zorder=4)
     ax_gpu.set_ylabel("GPU KV Cache Util.")
     ax_gpu.set_title("(e) GPU KV Cache Util.", loc="left", fontweight="bold")
     ax_gpu.grid(alpha=0.2)
@@ -1088,7 +1107,7 @@ def plot_figure_dense(
         for key in all_keys:
             d = data[key]
             if d.get("mae_centers") is not None:
-                ax_mae.plot(d["mae_centers"], d["mae_vals"], linewidth=2.0,
+                ax_mae.plot(d["mae_centers"], d["mae_vals"], linewidth=3.0,
                             color=d["color"], zorder=4)
         ax_mae.set_ylabel("MAE")
         ax_mae.set_title("(b) Prediction Error",
@@ -1115,12 +1134,13 @@ def plot_figure_dense(
             ax_bottom.set_xlabel("Time (s)")
 
     # ── Combined TTFT bar ──
-    n_policies = len(all_keys)
+    bar_keys = [k for k in [PREFIX_CACHE_KEY, LIMITED_KEY, UNLIMITED_KEY] if k in data]
+    n_policies = len(bar_keys)
     bar_width = 0.35
     x = np.arange(n_policies)
 
     avgs, p99s, colors, labels = [], [], [], []
-    for key in all_keys:
+    for key in bar_keys:
         d = data[key]
         avg_val, p99_val = _avg_run_stats(d, lambda r: r["ttft_raw"])
         avgs.append(avg_val)
@@ -1134,8 +1154,8 @@ def plot_figure_dense(
     for bar in bars_avg:
         h = bar.get_height()
         ax_bars.text(bar.get_x() + bar.get_width() * 0.3, h,
-                     f"{h:.0f}", ha="left", va="bottom", fontsize=9,
-                     rotation=45)
+                     f"{h:.0f}", ha="left", va="bottom",
+                     fontsize=PAPER_FONT_BAR_VALUES, rotation=45)
 
     # P99 on right axis
     ax2 = ax_bars.twinx()
@@ -1145,11 +1165,11 @@ def plot_figure_dense(
     for bar in bars_p99:
         h = bar.get_height()
         ax2.text(bar.get_x() + bar.get_width() * 0.3, h,
-                 f"{h:.0f}", ha="left", va="bottom", fontsize=9,
-                 rotation=45)
+                 f"{h:.0f}", ha="left", va="bottom",
+                 fontsize=PAPER_FONT_BAR_VALUES, rotation=45)
 
     ax_bars.set_xticks(x)
-    ax_bars.set_xticklabels(labels)
+    ax_bars.set_xticklabels(labels, rotation=45, ha="right")
     ax_bars.set_ylabel("TTFT (ms)")
     ax2.set_yticklabels([])
     ax2.set_ylabel("")
@@ -1168,21 +1188,182 @@ def plot_figure_dense(
         Patch(facecolor="gray", edgecolor="black", linewidth=0.5,
               alpha=0.55, hatch="//", label="P99"),
     ]
-    ax_bars.legend(handles=bar_legend, loc="upper right", fontsize=10)
+    ax_bars.legend(handles=bar_legend, loc="upper right",
+                   fontsize=PAPER_FONT_BAR_LEGEND)
 
     # ── Shared legend ──
     legend_handles = [
-        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=2,
-               label="QS (mid-frozen): routed inst."),
-        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=1.5, linestyle="--",
-               marker="x", markersize=5, markeredgewidth=1.5,
-               alpha=0.7, label="QS (mid-frozen): system avg."),
-        Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=2,
-               label="QS: routed inst."),
-        Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=1.5, linestyle="--",
-               marker="x", markersize=5, markeredgewidth=1.5,
-               alpha=0.7, label="QS: system avg."),
+        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=3,
+               label="Quicksilver (mid-frozen): routed inst."),
+        Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=2.5,
+               linestyle="--",
+               alpha=0.85, label="Quicksilver (mid-frozen): system avg."),
+        Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=3,
+               label="Quicksilver: routed inst."),
+        Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=2.5,
+               linestyle="--",
+               alpha=0.85, label="Quicksilver: system avg."),
     ]
+    if PREFIX_CACHE_KEY in data:
+        legend_handles += [
+            Line2D([0], [0], color=COLORS[PREFIX_CACHE_KEY], lw=3,
+                   label="Prefix Cache: routed inst."),
+            Line2D([0], [0], color=COLORS[PREFIX_CACHE_KEY], lw=2.5,
+                   linestyle="--",
+                   alpha=0.85, label="Prefix Cache: system avg."),
+        ]
+    legend_handles += [
+        Patch(facecolor="#e8f0fe", edgecolor="gray", alpha=0.6,
+              label=f"Phase 1: {phase1_label}"),
+        Patch(facecolor="#fce8e6", edgecolor="gray", alpha=0.6,
+              label=f"Phase 2: {phase2_label}"),
+    ]
+    fig.legend(handles=legend_handles, loc="upper center",
+               bbox_to_anchor=(0.5, 1.10), ncol=2, framealpha=0.9,
+               fontsize=PAPER_FONT_FIG_LEGEND)
+
+    fig.subplots_adjust(top=0.88)
+    fig.savefig(out_path, bbox_inches="tight", dpi=200)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_figure_three_panel(
+    data: dict,
+    midpoint: int,
+    total_requests: int,
+    window: int,
+    step: int,
+    out_path: str,
+    rps: float = 7.8,
+    phase1_label: str = "5% sharing",
+    phase2_label: str = "50% sharing",
+) -> None:
+    """Single-row figure: TTFT bar | KV Hit Ratio | GPU KV Cache Util."""
+    plt.rcParams.update({
+        "font.size": 14,
+        "font.family": "sans-serif",
+        "axes.titlesize": 15,
+        "axes.labelsize": 15,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 15,
+    })
+
+    all_keys = [k for k in [LIMITED_KEY, PREFIX_CACHE_KEY, UNLIMITED_KEY] if k in data]
+    bar_keys = [k for k in [PREFIX_CACHE_KEY, LIMITED_KEY, UNLIMITED_KEY] if k in data]
+
+    fig = plt.figure(figsize=(12, 2.6))
+    gs = fig.add_gridspec(1, 3, width_ratios=[0.8, 1.2, 1.2], wspace=0.35)
+    ax_bars = fig.add_subplot(gs[0, 0])
+    ax_kv = fig.add_subplot(gs[0, 1])
+    ax_gpu = fig.add_subplot(gs[0, 2])
+
+    # ── TTFT bar (avg + p99) ──
+    n_policies = len(bar_keys)
+    bar_width = 0.35
+    x = np.arange(n_policies)
+    avgs, p99s, colors, labels = [], [], [], []
+    for key in bar_keys:
+        d = data[key]
+        avg_val, p99_val = _avg_run_stats(d, lambda r: r["ttft_raw"])
+        avgs.append(avg_val)
+        p99s.append(p99_val)
+        colors.append(d["color"])
+        labels.append(BAR_LABELS[key])
+
+    bars_avg = ax_bars.bar(x - bar_width / 2, avgs, bar_width,
+                           color=colors, edgecolor="black", linewidth=0.5, zorder=3)
+    for bar in bars_avg:
+        h = bar.get_height()
+        ax_bars.text(bar.get_x() + bar.get_width() * 0.3, h,
+                     f"{h:.0f}", ha="left", va="bottom", fontsize=9, rotation=45)
+
+    ax_bars2 = ax_bars.twinx()
+    bars_p99 = ax_bars2.bar(x + bar_width / 2, p99s, bar_width,
+                            color=colors, edgecolor="black", linewidth=0.5,
+                            alpha=0.55, hatch="//", zorder=3)
+    for bar in bars_p99:
+        h = bar.get_height()
+        ax_bars2.text(bar.get_x() + bar.get_width() * 0.3, h,
+                      f"{h:.0f}", ha="left", va="bottom", fontsize=9, rotation=45)
+
+    ax_bars.set_xticks(x)
+    ax_bars.set_xticklabels([lbl.replace("\n", " ") for lbl in labels],
+                            rotation=45, ha="right")
+    ax_bars.set_ylabel("TTFT (ms)")
+    ax_bars2.set_yticklabels([])
+    ax_bars2.set_ylabel("")
+    ax_bars.set_title("(a) TTFT", loc="left", fontweight="bold")
+    ax_bars.grid(axis="y", alpha=0.2)
+    _, ymax_b = ax_bars.get_ylim()
+    ax_bars.set_ylim(0, ymax_b * 1.30)
+    _, ymax_b2 = ax_bars2.get_ylim()
+    ax_bars2.set_ylim(0, ymax_b2 * 1.30)
+    bar_legend = [
+        Patch(facecolor="gray", edgecolor="black", linewidth=0.5, label="Avg"),
+        Patch(facecolor="gray", edgecolor="black", linewidth=0.5,
+              alpha=0.55, hatch="//", label="P99"),
+    ]
+    ax_bars.legend(handles=bar_legend, loc="upper right", fontsize=13)
+
+    # ── KV Cache Hit Ratio (routed solid, system avg dashed with x markers) ──
+    _draw_phase_bg(ax_kv, midpoint, total_requests)
+    for key in all_keys:
+        d = data[key]
+        color = d["color"]
+        ax_kv.plot(d["kv_sel_centers"], d["kv_sel_means"],
+                   linewidth=2.0, color=color, linestyle="-", zorder=4)
+        ax_kv.plot(d["kv_avg_centers"], d["kv_avg_means"],
+                   linewidth=1.5, color=color, linestyle="--", alpha=0.7,
+                   marker="x", markersize=5,
+                   markevery=max(1, len(d["kv_avg_centers"]) // 20),
+                   markeredgewidth=1.5, zorder=4)
+    ax_kv.set_ylabel("KV Hit Ratio (%)")
+    ax_kv.set_title("(b) KV Cache Hit Ratio", loc="left", fontweight="bold")
+    ax_kv.grid(alpha=0.2)
+    _, ymax_kv = ax_kv.get_ylim()
+    ax_kv.set_ylim(0, ymax_kv)
+
+    # ── GPU KV Cache Utilization (system avg) ──
+    _draw_phase_bg(ax_gpu, midpoint, total_requests)
+    for key in all_keys:
+        d = data[key]
+        ax_gpu.plot(d["gpu_avg_centers"], d["gpu_avg_means"],
+                    linewidth=2.0, color=d["color"], zorder=4)
+    ax_gpu.set_ylabel("GPU KV Cache Util.")
+    ax_gpu.set_title("(c) GPU KV Cache Util.", loc="left", fontweight="bold")
+    ax_gpu.grid(alpha=0.2)
+    _, ymax_gpu = ax_gpu.get_ylim()
+    ax_gpu.set_ylim(0, ymax_gpu)
+
+    # X-axis: time in seconds for the two timeseries panels
+    total_time = total_requests / rps
+    for ax_ts in [ax_kv, ax_gpu]:
+        tt = np.arange(0, total_time + 1, 500)
+        ax_ts.set_xticks(tt * rps)
+        ax_ts.set_xticklabels([f"{int(t)}" for t in tt])
+        ax_ts.set_xlim(0, total_requests)
+        ax_ts.set_xlabel("Time (s)")
+
+    # Shared legend for the timeseries panels
+    legend_handles = []
+    if LIMITED_KEY in data:
+        legend_handles += [
+            Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=2,
+                   label="Quicksilver (mid-frozen): routed inst."),
+            Line2D([0], [0], color=COLORS[LIMITED_KEY], lw=1.5, linestyle="--",
+                   marker="x", markersize=5, markeredgewidth=1.5,
+                   alpha=0.7, label="Quicksilver (mid-frozen): system avg."),
+        ]
+    if UNLIMITED_KEY in data:
+        legend_handles += [
+            Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=2,
+                   label="Quicksilver: routed inst."),
+            Line2D([0], [0], color=COLORS[UNLIMITED_KEY], lw=1.5, linestyle="--",
+                   marker="x", markersize=5, markeredgewidth=1.5,
+                   alpha=0.7, label="Quicksilver: system avg."),
+        ]
     if PREFIX_CACHE_KEY in data:
         legend_handles += [
             Line2D([0], [0], color=COLORS[PREFIX_CACHE_KEY], lw=2,
@@ -1193,14 +1374,14 @@ def plot_figure_dense(
         ]
     legend_handles += [
         Patch(facecolor="#e8f0fe", edgecolor="gray", alpha=0.6,
-              label="Phase 1: 5% sharing"),
+              label=f"Phase 1: {phase1_label}"),
         Patch(facecolor="#fce8e6", edgecolor="gray", alpha=0.6,
-              label="Phase 2: 50% sharing"),
+              label=f"Phase 2: {phase2_label}"),
     ]
     fig.legend(handles=legend_handles, loc="upper center",
-               bbox_to_anchor=(0.5, 1.10), ncol=3, framealpha=0.9, fontsize=13)
+               bbox_to_anchor=(0.5, 1.12), ncol=4, framealpha=0.9, fontsize=14)
 
-    fig.subplots_adjust(top=0.88)
+    fig.subplots_adjust(top=0.82)
     fig.savefig(out_path, bbox_inches="tight", dpi=200)
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -1217,6 +1398,10 @@ def main() -> None:
     parser.add_argument("--step", type=int, default=None)
     parser.add_argument("--output", default=None,
                         help="Output path (default: <base_dir>/adaptation_ablation.pdf)")
+    parser.add_argument("--phase1-label", default="5% sharing",
+                        help="Short label for Phase 1 (before midpoint). Default: '5%% sharing'")
+    parser.add_argument("--phase2-label", default="50% sharing",
+                        help="Short label for Phase 2 (after midpoint). Default: '50%% sharing'")
     args = parser.parse_args()
 
     base_dir = os.path.abspath(args.base_dir)
@@ -1338,15 +1523,26 @@ def main() -> None:
             print(f"\n  >> Averaged {len(runs)} runs for {LABELS[key].replace(chr(10), ' ')}")
 
     total_requests = max(d["n"] for d in data.values())
-    plot_figure(data, midpoint, total_requests, args.window_size, step, out_path)
+    plot_figure(data, midpoint, total_requests, args.window_size, step, out_path,
+                phase1_label=args.phase1_label, phase2_label=args.phase2_label)
 
     # Dense paper version
     dense_path = os.path.splitext(out_path)[0] + "_paper.pdf"
-    plot_figure_dense(data, midpoint, total_requests, args.window_size, step, dense_path)
+    plot_figure_dense(data, midpoint, total_requests, args.window_size, step, dense_path,
+                      phase1_label=args.phase1_label, phase2_label=args.phase2_label)
+
+    # Three-panel version: TTFT bar + KV Hit Ratio + GPU KV Cache Util
+    three_panel_path = os.path.splitext(out_path)[0] + "_three_panel.pdf"
+    plot_figure_three_panel(
+        data, midpoint, total_requests, args.window_size, step, three_panel_path,
+        phase1_label=args.phase1_label, phase2_label=args.phase2_label,
+    )
 
     # ── Export sliding-window data to CSV ──
     csv_out = os.path.splitext(out_path)[0] + ".csv"
     rows = []
+    phase1_slug = f"Phase1_{args.phase1_label}"
+    phase2_slug = f"Phase2_{args.phase2_label}"
     for key in [LIMITED_KEY, PREFIX_CACHE_KEY, UNLIMITED_KEY]:
         if key not in data:
             continue
@@ -1356,7 +1552,7 @@ def main() -> None:
             rows.append({
                 "method": label_flat,
                 "request_index": int(d["ttft_centers"][i]),
-                "phase": "Phase1_0pct_sharing" if d["ttft_centers"][i] < midpoint else "Phase2_50pct_sharing",
+                "phase": phase1_slug if d["ttft_centers"][i] < midpoint else phase2_slug,
                 "mean_ttft_ms": round(d["ttft_means"][i], 2),
                 "mean_sel_kv_hit_ratio": round(d["kv_sel_means"][i], 2),
                 "mean_sys_kv_hit_ratio": round(d["kv_avg_means"][i], 2),
