@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "input_rows": 5,
+    "output_cols": 102,
+    "output_rows": 5,
+    "reward_function": "negative_linear"
+  },
+  "reward": {
+    "max": -0.806,
+    "min": -1.596,
+    "n": 5,
+    "sha": "33ba868e322f7784",
+    "sum": -6.386
+  },
+  "tpot_reward": {
+    "max": 0.0,
+    "min": 0.0,
+    "n": 5,
+    "sha": "2c34ce1df23b838c",
+    "sum": 0.0
+  },
+  "ttft_reward": {
+    "max": -0.806,
+    "min": -1.596,
+    "n": 5,
+    "sha": "33ba868e322f7784",
+    "sum": -6.386
+  }
+}

@@ -1,0 +1,39 @@
+{
+    "test_size_ratio": 0.2,
+    "weight_initialization": "xavier",
+    "training_seed": 42,
+    "TTFT_SLO": 1000.0,
+    "AVG_TPOT_SLO": 50.0,
+    "hidden_dim": 128,
+    "TTFT_REWARD_WEIGHT": 1.0,
+    "REWARD_FUNCTION": "negative_linear",
+    "learning_rate": 0.0003,
+    "EXCLUDED_POD_FEATURES": [
+        "cpu_kv_cache",
+        "inflight_requests"
+    ],
+    "EXCLUDED_REQUEST_FEATURES": [
+        "output_tokens",
+        "total_tokens"
+    ],
+    "lr_scheduler_type": "exponential",
+    "lr_scheduler_gamma": 0.95,
+    "NO_NORMALIZE_FEATURES": [
+        "none"
+    ],
+    "MODEL_TYPE": "contextual_bandit_perpodmodel_checkpoint",
+    "n_steps": 32,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "entropy_coeff": 0.02,
+    "vf_coef": 0.5,
+    "max_grad_norm": 1.0,
+    "RL_CHECKPOINT_PATH": "",
+    "LATENCY_METRIC": "ttft",
+    "training_epochs": 20,
+    "batch_size": 256,
+    "INCLUDE_GPU_FEATURES": 0,
+    "buffer_size": 100000,
+    "ONLINE_TRAIN_FROM_SCRATCH": false,
+    "TTFT_THRESHOLD": 15000.0
+}

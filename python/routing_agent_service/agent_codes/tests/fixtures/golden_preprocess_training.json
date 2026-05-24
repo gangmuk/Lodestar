@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "n_cols": 87,
+    "n_rows": 5,
+    "reward_function": "negative_linear",
+    "sorted_pods": [
+      "10.0.169.50",
+      "10.0.169.56",
+      "10.0.169.90",
+      "10.0.169.91",
+      "10.0.169.92",
+      "10.0.169.95",
+      "10.0.169.96"
+    ]
+  },
+  "avg_tpot_slo_satisfied": {
+    "max": 1.0,
+    "min": 1.0,
+    "n": 5,
+    "sha": "6e91e92205f42beb",
+    "sum": 5.0
+  },
+  "avg_ttft_slo_satisfied": {
+    "max": 1.0,
+    "min": 0.0,
+    "n": 5,
+    "sha": "6841360c725e8cfc",
+    "sum": 1.0
+  },
+  "reward": {
+    "max": -0.806,
+    "min": -1.596,
+    "n": 5,
+    "sha": "33ba868e322f7784",
+    "sum": -6.386
+  },
+  "tpot_reward": {
+    "max": -0.0,
+    "min": -0.0,
+    "n": 5,
+    "sha": "0e82de473370cb58",
+    "sum": 0.0
+  },
+  "ttft_reward": {
+    "max": -0.806,
+    "min": -1.596,
+    "n": 5,
+    "sha": "33ba868e322f7784",
+    "sum": -6.386
+  }
+}

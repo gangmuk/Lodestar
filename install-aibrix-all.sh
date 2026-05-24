@@ -12,13 +12,13 @@ node_name=node1.gangmuk-272174.mlproxy-pg0.clemson.cloudlab.us
 kubectl label node $node_name machine.cluster.vke.volcengine.com/gpu-name=NVIDIA-L20
 
 ## RL routing agent service
-kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/routing-agent-service.yaml
+kubectl apply -f python/routing_agent_service/k8s/routing-agent/routing-agent-service.yaml
 
-# kubectl apply -f ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/deployment-routing-agent-service.yaml
+# kubectl apply -f python/routing_agent_service/k8s/routing-agent/deployment-routing-agent-service.yaml
 
-kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/svc-routing-agent-service.yaml
+kubectl apply -f python/routing_agent_service/k8s/routing-agent/svc-routing-agent-service.yaml
 
-kubectl apply -f ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/k8s/routing-agent/sa-clusterrole-rolebinding.yaml
+kubectl apply -f python/routing_agent_service/k8s/routing-agent/sa-clusterrole-rolebinding.yaml
 
 
 ## give permission to get nodes label (gpu model)
@@ -26,7 +26,7 @@ kubectl patch clusterrole aibrix-gateway-plugins-role --type='json' -p='[{"op": 
 
 ## Mock application
 
-kubectl apply -f benchmarks/data-driven-routing/routing-agent-service/k8s/mock-app-yamls/mock-deployment-svc-sa.yaml 
+kubectl apply -f python/routing_agent_service/k8s/mock-app-yamls/mock-deployment-svc-sa.yaml
 
 bash development/app/build-and-push.sh local
 
@@ -35,7 +35,7 @@ bash development/app/build-and-push.sh local
 ## Allocate more than 8 cores for limits field
 
 ## Building routing agent service
-##  ~/projects/aibrix-gangmuk/benchmarks/data-driven-routing/routing-agent-service/build-and-push.sh <build>
+##  python/routing_agent_service/build-and-push.sh <build>
 
 ## Building mock-app
 ##  ~/projects/aibrix-gangmuk/development/app/build-and-push.sh <build>
