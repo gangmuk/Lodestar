@@ -1,0 +1,120 @@
+{
+    "phases": [
+        {
+            "arrival": { "rps": [12, 15, 12] },
+            "repetitions": 1,
+            "reuse_distance_mean": 30,
+            "reuse_distance_std": 10,
+            "workloads": [
+                {
+                    "prompt_length": 1000,
+                    "prompt_length_std": 50,
+                    "shared_proportion": 0.0,
+                    "shared_proportion_std": 0.0,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 2000,
+                    "prompt_length_std": 100,
+                    "shared_proportion": 0.0,
+                    "shared_proportion_std": 0.0,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 4000,
+                    "prompt_length_std": 200,
+                    "shared_proportion": 0.0,
+                    "shared_proportion_std": 0.0,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 6000,
+                    "prompt_length_std": 200,
+                    "shared_proportion": 0.0,
+                    "shared_proportion_std": 0.0,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 8000,
+                    "prompt_length_std": 400,
+                    "shared_proportion": 0.0,
+                    "shared_proportion_std": 0.0,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                }
+            ]
+        },
+        {
+            "arrival": { "rps": [12, 15, 12] },
+            "repetitions": 1,
+            "reuse_distance_mean": 30,
+            "reuse_distance_std": 10,
+            "workloads": [
+                {
+                    "prompt_length": 1000,
+                    "prompt_length_std": 50,
+                    "shared_proportion": 0.5,
+                    "shared_proportion_std": 0.05,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 2000,
+                    "prompt_length_std": 100,
+                    "shared_proportion": 0.5,
+                    "shared_proportion_std": 0.05,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 4000,
+                    "prompt_length_std": 200,
+                    "shared_proportion": 0.5,
+                    "shared_proportion_std": 0.05,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 6000,
+                    "prompt_length_std": 200,
+                    "shared_proportion": 0.5,
+                    "shared_proportion_std": 0.05,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                },
+                {
+                    "prompt_length": 8000,
+                    "prompt_length_std": 400,
+                    "shared_proportion": 0.5,
+                    "shared_proportion_std": 0.05,
+                    "num_requests_per_prefix": 10,
+                    "num_diff_prefix": 200,
+                    "output_length_mean": 100,
+                    "output_length_std": 10
+                }
+            ]
+        }
+    ]
+}
