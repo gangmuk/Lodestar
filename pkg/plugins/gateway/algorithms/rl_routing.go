@@ -905,12 +905,15 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 					}
 					utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
 
-					// Heuristic override: if subAlgorithm names a baseline, replace
-					// the agent's choice with the baseline's. "lodestar" itself
-					// matches no branch in selectHeuristicTargetPod, so this call is
-					// a no-op on the lodestar path — kept for symmetry with the
-					// non-lodestar path (see the else branch above this HTTP block).
-					targetPod = r.selectHeuristicTargetPod(ctx, readyPods, podIPsWithMatchingRatios, lmetricSelectedPodIP, mooncakeSelectedPodIP)
+					// NOTE: do NOT call selectHeuristicTargetPod here. Inside this
+					// branch ctx.SubAlgorithm is always "lodestar" (the outer
+					// guard is `if ctx.SubAlgorithm != "lodestar" { ... } else
+					// { /* HTTP block */ }`), so no heuristic branch in
+					// selectHeuristicTargetPod can match. Calling it would hit
+					// the safety net (routeWithPrefixCache1) and overwrite the
+					// agent's selection (or the OOD-fallback selection set
+					// above), which silently regressed lodestar to prefix_cache_1
+					// for every request.
 					if routeResponse.NumTrains > utils.GetNumTrains() {
 						utils.SetNumTrains(routeResponse.NumTrains)
 					}

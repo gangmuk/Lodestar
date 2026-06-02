@@ -96,7 +96,7 @@ class RewardNetwork(nn.Module):
         return self.scorer(context)  # [batch, 1]
 
 
-class NeuralContextualBandit:
+class RewardPredictor:
     """
     Neural Contextual Bandit with proper online learning
     """
@@ -210,7 +210,7 @@ class NeuralContextualBandit:
             'input_tokens_per_sample': []  # Input tokens for each sample (for stratification)
         }
         
-        logger.info(f"NeuralContextualBandit initialized: exploration={self.exploration_method}")
+        logger.info(f"RewardPredictor initialized: exploration={self.exploration_method}")
     
     def _create_per_pod_contexts(self, pod_features, kv_hit_ratios, request_features):
         """
@@ -675,7 +675,7 @@ def preload_agent_from_metadata(final_model_dir, HYPERPARAMETERS, num_pods=None)
             logger.info("Preload skipped: agent already initialized with matching config")
             return True
 
-        new_agent = NeuralContextualBandit(
+        new_agent = RewardPredictor(
             state_dim={
                 'pod_features': config_snapshot['pod_features'],
                 'kv_hit_ratios': config_snapshot['kv_hit_ratios'],
@@ -782,7 +782,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
                     'request_features': current_config['request_features']
                 }
                 
-                new_agent = NeuralContextualBandit(
+                new_agent = RewardPredictor(
                     state_dim=state_dim,
                     action_dim=current_config['num_pods'],
                     hyperparameters=HYPERPARAMETERS,
@@ -828,7 +828,7 @@ def infer_from_tensor(tensor_data, request_id, model_updated, HYPERPARAMETERS, f
         def _async_reload(state_dim, action_dim, config_snapshot):
             global _cached_agent, _cached_metadata, _cached_config_key, _reload_in_progress, _model_updated_consumed
             try:
-                new_agent = NeuralContextualBandit(
+                new_agent = RewardPredictor(
                     state_dim=state_dim,
                     action_dim=action_dim,
                     hyperparameters=HYPERPARAMETERS,
@@ -1060,7 +1060,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
         
         logger.info(f"Initializing Neural CB agent: state_dim={state_dim}, action_dim={action_dim}")
         
-        _cached_agent = NeuralContextualBandit(
+        _cached_agent = RewardPredictor(
             state_dim=state_dim,
             action_dim=action_dim,
             hyperparameters=HYPERPARAMETERS,
@@ -1093,7 +1093,7 @@ def train(encoded_training_dir, final_model_dir, HYPERPARAMETERS, num_trains):
             }
             action_dim = batch_data['pod_features_with_staleness'].shape[1]
             
-            _cached_agent = NeuralContextualBandit(
+            _cached_agent = RewardPredictor(
                 state_dim=state_dim,
                 action_dim=action_dim,
                 hyperparameters=HYPERPARAMETERS,
@@ -1326,7 +1326,7 @@ def plot_neural_cb_metrics(agent, final_model_dir, training_epochs, total_sample
     Create comprehensive training metrics visualization for Neural Contextual Bandit.
     
     Args:
-        agent: Trained NeuralContextualBandit instance
+        agent: Trained RewardPredictor instance
         final_model_dir: Directory to save plots
         training_epochs: Number of training epochs
         total_samples: Total number of samples processed

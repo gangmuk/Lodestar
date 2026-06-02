@@ -22,7 +22,7 @@ def compute_gradient_features(model, tensor_data, batch_size=512):
     weighted by loss residual magnitude for replay buffer selection.
 
     Args:
-        model: NeuralContextualBandit instance with reward_net
+        model: RewardPredictor instance with reward_net
         tensor_data: dict with 'pod_features_with_staleness', 'kv_hit_ratios',
                      'request_features', 'actions', 'rewards'
         batch_size: processing batch size to limit memory
@@ -280,7 +280,7 @@ class GradientReplayBuffer:
         For model=None (no previous model trained yet), falls back to random selection.
 
         Args:
-            model: NeuralContextualBandit instance (previous round's model)
+            model: RewardPredictor instance (previous round's model)
             tensor_data: encoded tensor dataset dict
             source_df: the DataFrame that tensor_data was encoded from;
                        selected rows are stored directly for use in next round
@@ -394,7 +394,7 @@ class OldTransferMonitor:
         Evaluate model loss on all frozen validation windows.
 
         Args:
-            model: NeuralContextualBandit instance
+            model: RewardPredictor instance
 
         Returns:
             dict of {collection_round: mse_loss}
