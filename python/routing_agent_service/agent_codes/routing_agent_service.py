@@ -248,7 +248,7 @@ def _select_candidate_pods(prefix_hash, all_pod_ids, k):
 
 # GPU features are now always included as one-hot encoded features
 INIT_DONE=False
-CONTEXTUAL_BANDIT_PRELOADED = False
+LODESTAR_PRELOADED = False
 ## colors for logging
 BLUE_COLOR = "\033[94m"
 RED_COLOR = "\033[91m"
@@ -307,7 +307,7 @@ OLD_TRANSFER_MONITOR = None   # OldTransferMonitor instance
 RL_AGENT = None  # Old RL agent (entire cluster as input) - for 'rl_agent' subAlgorithm
 SCALABLE_RL_AGENT = None  # New scalable RL agent (pod-independent) - for 'scalable_rl_agent' subAlgorithm
 LATENCY_PREDICTOR = None  # Latency predictor model - for 'latency_predictor' subAlgorithm
-CONTEXTUAL_BANDIT_AGENT = None  # Neural Contextual Bandit - for 'contextual_bandit' subAlgorithm
+LODESTAR_AGENT = None  # Neural Contextual Bandit - for the 'lodestar' subAlgorithm
 # RWLock enables concurrent predictions (readers) with exclusive updates (writer)
 # - Predictions: use rwlock.read() for high concurrency
 # - Updates: use rwlock.write() for exclusive access
@@ -472,11 +472,11 @@ def handle_flush():
 
 @app.route("/infer", methods=["POST"])
 def handle_infer():
-    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE, CONTEXTUAL_BANDIT_PRELOADED
+    global final_model_dir, NUM_TRAINS, MODEL_UPDATED, first_request_starting_time, stats_instance, HYPERPARAMETERS, PRINT_ONCE_AT_THE_FIRST_REQUEST, INIT_DONE, LODESTAR_PRELOADED
     if not INIT_DONE:
         logger.error(f"init() was not done yet. return 503")
         return jsonify({"error": "init() was not done yet. return 503"}), 503
-    if 'contextual_bandit' in ROUTING_STRATEGY and not CONTEXTUAL_BANDIT_PRELOADED:
+    if ROUTING_STRATEGY == "lodestar" and not LODESTAR_PRELOADED:
         logger.error("Contextual bandit model not ready yet. return 503")
         return jsonify({"error": "contextual bandit model not ready yet"}), 503
     handle_infer_overhead_summary = {}
@@ -847,31 +847,31 @@ def handle_infer():
                     smoothing_threshold=SMOOTHING_THRESHOLD,
                     generalpodid_to_gpu_model=HYPERPARAMETERS['generalpodid_to_gpu_model']
                 )
-        elif 'contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random' in subAlgorithm or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'least_prefill_tokens', 'prefix_cache_1', 'prefix_cache_2', 'prefix_hit_threshold_or_least_request'}:
+        elif subAlgorithm == 'lodestar' or subAlgorithm in {'random', 'least_latency', 'least_request', 'least_kv_cache', 'least_prefill_tokens', 'prefix_cache_1', 'prefix_cache_2', 'prefix_hit_threshold_or_least_request'}:
             # === NEURAL CONTEXTUAL BANDIT (NEW IMPLEMENTATION) ===
             # logger.info(f"requestID: {request_id}, subAlgorithm: {subAlgorithm}, Using Neural Contextual Bandit for inference")
-            global CONTEXTUAL_BANDIT_AGENT
+            global LODESTAR_AGENT
             # OPTIMIZATION: Check without lock first (fast path for initialized state)
-            if CONTEXTUAL_BANDIT_AGENT is None:
-                contextual_bandit_write_lock_start = time.time()
+            if LODESTAR_AGENT is None:
+                lodestar_write_lock_start = time.time()
                 with LATENCY_PREDICTOR_LOCK.write():  # Reuse existing lock infrastructure
-                    handle_infer_overhead_summary['contextual_bandit_write_lock'] = time.time() - contextual_bandit_write_lock_start
+                    handle_infer_overhead_summary['lodestar_write_lock'] = time.time() - lodestar_write_lock_start
                     # Double-check after acquiring lock
-                    if CONTEXTUAL_BANDIT_AGENT is None:
-                        contextual_bandit_create_start = time.time()
+                    if LODESTAR_AGENT is None:
+                        lodestar_create_start = time.time()
                         state_dims = {
                             'pod_features': tensor_data['pod_features_with_staleness'].shape[2],
                             'kv_hit_ratios': tensor_data['kv_hit_ratios'].shape[2],
                             'request_features': tensor_data['request_features'].shape[1],
                             'num_pods': tensor_data['pod_features_with_staleness'].shape[1]
                         }
-                        logger.info(f"🔄 One-time initialization of CONTEXTUAL_BANDIT_AGENT with state_dims={state_dims}")
+                        logger.info(f"🔄 One-time initialization of LODESTAR_AGENT with state_dims={state_dims}")
                         # NOTE: We don't create the agent here - neural_contextual_bandit.infer_from_tensor() 
                         # handles lazy initialization and caching internally
-                        CONTEXTUAL_BANDIT_AGENT = "initialized"  # Marker to prevent re-initialization
-                        handle_infer_overhead_summary["contextual_bandit_create"] = time.time() - contextual_bandit_create_start
+                        LODESTAR_AGENT = "initialized"  # Marker to prevent re-initialization
+                        handle_infer_overhead_summary["lodestar_create"] = time.time() - lodestar_create_start
             # Inference with the neural contextual bandit
-            contextual_bandit_infer_start = time.time()
+            lodestar_infer_start = time.time()
             result, infer_from_tensor_overhead_summary = reward_predictor.infer_from_tensor(
                 tensor_data=tensor_data,
                 request_id=request_id,
@@ -883,7 +883,7 @@ def handle_infer():
             # Reset MODEL_UPDATED after agent has processed it (to avoid reloading on every request)
             if MODEL_UPDATED:
                 MODEL_UPDATED = False
-            handle_infer_overhead_summary['contextual_bandit_infer'] = time.time() - contextual_bandit_infer_start
+            handle_infer_overhead_summary['lodestar_infer'] = time.time() - lodestar_infer_start
             
             # Format result to match expected interface
             # The neural contextual bandit returns 'selected_pod_index' and 'predicted_rewards'
@@ -2130,12 +2130,12 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, CONTEXTUAL_BANDIT_PRELOADED, prefix_group_manager
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, LODESTAR_PRELOADED, prefix_group_manager
     
     # Model directory and offline data are GPU-specific
     # LMETRIC is a heuristic but still needs hyperparameters/normalization stats for the
-    # preprocessing pipeline, so it reuses the contextual_bandit directory layout.
-    if ROUTING_STRATEGY == "latency_predictor" or "contextual_bandit" in ROUTING_STRATEGY or ROUTING_STRATEGY == "lmetric":
+    # preprocessing pipeline, so it reuses the lodestar directory layout.
+    if ROUTING_STRATEGY == "latency_predictor" or ROUTING_STRATEGY == "lodestar" or ROUTING_STRATEGY == "lmetric":
         if TARGET_GPU_MODEL == "NVIDIA-A10" and 'latency_predictor' in ROUTING_STRATEGY:
                 final_model_dir = f"/app/NVIDIA-A10/PrefillOnly/final_model-latency_predictor"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
@@ -2143,7 +2143,7 @@ def initialize():
                 offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 offline_training_data_distribution = f"{final_model_dir}/feature_distribution_statistics.csv"
         elif TARGET_GPU_MODEL in {"NVIDIA-A30"}:
-            if 'contextual_bandit' in ROUTING_STRATEGY or 'latency_predictor' in ROUTING_STRATEGY:
+            if ROUTING_STRATEGY == "lodestar" or 'latency_predictor' in ROUTING_STRATEGY:
                 final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-{ROUTING_STRATEGY}"
                 offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
@@ -2157,7 +2157,7 @@ def initialize():
                 if lmetric_base:
                     final_model_dir = lmetric_base
                 else:
-                    final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear"
+                    final_model_dir = f"/app/{TARGET_GPU_MODEL}/{MODEL_NAME}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-lodestar"
                 offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -2166,7 +2166,7 @@ def initialize():
             else:
                 logger.error(f"Unknown routing strategy: {ROUTING_STRATEGY} in TARGET_GPU_MODEL: {TARGET_GPU_MODEL}")
                 assert False
-                # final_model_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+                # final_model_dir = f"/app/{TARGET_GPU_MODEL}/{OUTPUT_WRK_NAME}/{WORKLOAD_CATEGORY}/final_model-lodestar"
                 # offline_csv_path = f"{final_model_dir}/data-processed.csv"
                 # hyperparameter_file_path = f"{final_model_dir}/model_config.json"
                 # feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -2175,7 +2175,7 @@ def initialize():
             logger.error(f"Unknown target GPU model: {TARGET_GPU_MODEL}")
             assert False
     else:
-        final_model_dir = f"/app/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
+        final_model_dir = f"/app/NVIDIA-A30/llama-3-8b-instruct/maxTokens_1-maxTokensStd_0/mooncake/final_model-lodestar"
         offline_csv_path = f"{final_model_dir}/data-processed.csv"
         hyperparameter_file_path = f"{final_model_dir}/model_config.json"
         feature_normalization_stats_file = f"{final_model_dir}/feature_normalization_statistics.csv"
@@ -2345,32 +2345,32 @@ def initialize():
 
     logger.info(f"POD_LABEL_SELECTOR: {POD_LABEL_SELECTOR}")
     logger.info(f"len(sorted_running_pod_ips): {len(sorted_running_pod_ips)}, sorted_running_pod_ips: {sorted_running_pod_ips}")
-    if 'contextual_bandit' in ROUTING_STRATEGY:
+    if ROUTING_STRATEGY == "lodestar":
         # Skip preload when using new features with random weights — metadata dimensions
         # are from the old model and will mismatch. Let the first request create the agent
         # with correct dimensions from actual tensor data.
         if LOAD_PRETRAINED_MODEL == 0 or RETRAIN_AT_STARTUP:
             logger.info(f"Skipping contextual bandit preload (LOAD_PRETRAINED_MODEL={LOAD_PRETRAINED_MODEL}, RETRAIN_AT_STARTUP={RETRAIN_AT_STARTUP})")
             logger.info("Agent will be lazily initialized on first request with correct feature dimensions")
-            CONTEXTUAL_BANDIT_PRELOADED = True  # Mark as ready so /infer doesn't return 503
+            LODESTAR_PRELOADED = True  # Mark as ready so /infer doesn't return 503
         else:
             preload_start = time.time()
             try:
                 num_pods = len(sorted_running_pod_ips)
-                CONTEXTUAL_BANDIT_PRELOADED = reward_predictor.preload_agent_from_metadata(
+                LODESTAR_PRELOADED = reward_predictor.preload_agent_from_metadata(
                     final_model_dir=final_model_dir,
                     HYPERPARAMETERS=HYPERPARAMETERS,
                     num_pods=num_pods
                 )
-                if CONTEXTUAL_BANDIT_PRELOADED:
+                if LODESTAR_PRELOADED:
                     logger.info(f"Contextual bandit preload completed in {time.time() - preload_start:.3f}s (num_pods={num_pods})")
                 else:
                     logger.error("Contextual bandit preload failed; /infer will return 503 until ready")
             except Exception:
                 logger.exception("Contextual bandit preload failed; /infer will return 503 until ready")
-                CONTEXTUAL_BANDIT_PRELOADED = False
+                LODESTAR_PRELOADED = False
     else:
-        CONTEXTUAL_BANDIT_PRELOADED = True
+        LODESTAR_PRELOADED = True
     logger.info(f"pod_ip_to_generalpodid: {HYPERPARAMETERS['pod_ip_to_generalpodid']}")
     logger.info(f"generalpodid_to_gpu_model: {HYPERPARAMETERS['generalpodid_to_gpu_model']}")
     logger.info(f"pod_ip_to_gpu_model: {HYPERPARAMETERS['pod_ip_to_gpu_model']}")

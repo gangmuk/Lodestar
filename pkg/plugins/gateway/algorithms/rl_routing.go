@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -806,195 +805,141 @@ func (r *rlOnlineRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		prev_reward,
 		jsonStrings["GPU"],
 	)
-	routing_agent_failed := 0
-	reqBody, err := json.Marshal(logMessage)
-	if err != nil {
-		klog.Errorf("failure to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
-		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-		if targetPod == nil {
-			return "", fmt.Errorf("fallback routing failed after marshal error, requestID: %s", ctx.RequestID)
-		}
-		ctx.SetTargetPod(targetPod)
-		return ctx.TargetAddress(), nil
-	}
-	url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
-	http_req_to_routing_agent, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-	if reqErr != nil {
-		klog.Errorf("failure to create request: %v, requestID: %s", reqErr, ctx.RequestID)
-		targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-		if targetPod == nil {
-			return "", fmt.Errorf("fallback routing failed after request creation error, requestID: %s", ctx.RequestID)
-		}
-		ctx.SetTargetPod(targetPod)
-		return ctx.TargetAddress(), nil
-	}
-	http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
 
 	featurePrepOverhead := time.Since(featurePrepStart).Milliseconds()
 	utils.SetFeaturePrepOverheadForRequest(featurePrepOverhead, ctx.RequestID)
 
-	// === Phase 3: HTTP round-trip to routing-agent-service ===
+	// === Phase 3: routing decision ===
+	// Contextual-bandit subAlgorithms consult the routing-agent-service over
+	// HTTP. All other subAlgorithms (random, least_request, prefix_cache_*,
+	// least_kv_cache, least_prefill_tokens, lmetric, mooncake, ...) dispatch
+	// the heuristic locally and skip the round-trip entirely.
 	httpRoundTripStart := time.Now()
-	/////////////////////////////////////////////////
-	// Send HTTP Request to routing-agent-service  //
-	/////////////////////////////////////////////////
-	klog.V(5).Infof("Sending request to routing-agent-service: %s, requestID: %s", url, ctx.RequestID)
-	// lmetricFallback prefers the LMETRIC or MOONCAKE pre-computed pod if available,
-	// otherwise uses the standard fallback — so those decisions still stand when
-	// the routing agent is unreachable.
-	lmetricFallback := func() *v1.Pod {
-		if pod := lmetricFallbackPod(ctx, readyPods, lmetricSelectedPodIP); pod != nil {
-			return pod
+	if ctx.SubAlgorithm != "lodestar" {
+		targetPod = r.selectHeuristicTargetPod(ctx, readyPods, podIPsWithMatchingRatios, lmetricSelectedPodIP, mooncakeSelectedPodIP)
+		utils.SetFailureFallbackForRequest(0, ctx.RequestID)
+	} else {
+		routing_agent_failed := 0
+		reqBody, err := json.Marshal(logMessage)
+		if err != nil {
+			klog.Errorf("failure to marshal RequestToLogMessage: %v, requestID: %s", err, ctx.RequestID)
+			targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+			if targetPod == nil {
+				return "", fmt.Errorf("fallback routing failed after marshal error, requestID: %s", ctx.RequestID)
+			}
+			ctx.SetTargetPod(targetPod)
+			return ctx.TargetAddress(), nil
 		}
-		if mooncakeSelectedPodIP != "" {
-			if pod := GetPod(mooncakeSelectedPodIP, readyPods); pod != nil {
-				klog.Infof("MOONCAKE: using pre-computed selection %s (routing agent unavailable), requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
+		url := fmt.Sprintf("%s%s", routingAgentURL, inferEndpoint)
+		http_req_to_routing_agent, reqErr := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+		if reqErr != nil {
+			klog.Errorf("failure to create request: %v, requestID: %s", reqErr, ctx.RequestID)
+			targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+			if targetPod == nil {
+				return "", fmt.Errorf("fallback routing failed after request creation error, requestID: %s", ctx.RequestID)
+			}
+			ctx.SetTargetPod(targetPod)
+			return ctx.TargetAddress(), nil
+		}
+		http_req_to_routing_agent.Header.Set("Content-Type", "application/json")
+		/////////////////////////////////////////////////
+		// Send HTTP Request to routing-agent-service  //
+		/////////////////////////////////////////////////
+		klog.V(5).Infof("Sending request to routing-agent-service: %s, requestID: %s", url, ctx.RequestID)
+		// lmetricFallback prefers the LMETRIC or MOONCAKE pre-computed pod if available,
+		// otherwise uses the standard fallback — so those decisions still stand when
+		// the routing agent is unreachable.
+		lmetricFallback := func() *v1.Pod {
+			if pod := lmetricFallbackPod(ctx, readyPods, lmetricSelectedPodIP); pod != nil {
 				return pod
 			}
+			if mooncakeSelectedPodIP != "" {
+				if pod := GetPod(mooncakeSelectedPodIP, readyPods); pod != nil {
+					klog.Infof("MOONCAKE: using pre-computed selection %s (routing agent unavailable), requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
+					return pod
+				}
+			}
+			return r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
 		}
-		return r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-	}
 
-	resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
-	if sendErr != nil {
-		klog.Errorf("Request failure!!: %v, requestID: %s", sendErr, ctx.RequestID)
-		targetPod = lmetricFallback()
-		routing_agent_failed = 1
-	} else {
-		if resp.StatusCode != http.StatusOK {
-			klog.Errorf("failure, Received non-200 response: %s, requestID: %s", resp.Status, ctx.RequestID)
-			routing_agent_failed = 1
-		}
-		responseBody, readErr := ioutil.ReadAll(resp.Body) // body: {"request_id":"10","selected_pod":"10.0.1.30"}
-		if readErr != nil {
-			klog.Errorf("failure to read response body: %v, requestID: %s", readErr, ctx.RequestID)
+		resp, sendErr := httpClientForRLAgent.Do(http_req_to_routing_agent)
+		if sendErr != nil {
+			klog.Errorf("Request failure!!: %v, requestID: %s", sendErr, ctx.RequestID)
 			targetPod = lmetricFallback()
 			routing_agent_failed = 1
 		} else {
-			var routeResponse RouteResponse
-			if err := json.Unmarshal(responseBody, &routeResponse); err != nil {
-				klog.Errorf("failure to unmarshal responseBody: %v, requestID: %s", err, ctx.RequestID)
-				if strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
-					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-					routing_agent_failed = 1
-				}
+			if resp.StatusCode != http.StatusOK {
+				klog.Errorf("failure, Received non-200 response: %s, requestID: %s", resp.Status, ctx.RequestID)
+				routing_agent_failed = 1
 			}
-			resp.Body.Close()
-			if targetPod == nil { // This means that routing-agent-service infer http request was successful
-				targetPod = GetPod(routeResponse.SelectedPod, readyPods)
-				klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
-				if targetPod == nil {
-					klog.Errorf("failure, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
-					targetPod = lmetricFallback()
-					routing_agent_failed = 1
-				}
-				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
-				// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
-				if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
-					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
-					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-					routing_agent_failed = 1
-				}
-				utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
-
-				//////////////////////////////////////////////////////////////////
-				// Overwrite the targetPod if the subAlgorithm is heuristics!!! //
-				//////////////////////////////////////////////////////////////////
-				if ctx.SubAlgorithm == "random" {
-					klog.Infof("subAlgorithm, random routing, request_id: %s", ctx.RequestID)
-					targetPod, _ = selectRandomPod(readyPods, rand.Intn)
-				} else if ctx.SubAlgorithm == "least_latency" {
-					klog.Infof("subAlgorithm, least_latency routing, request_id: %s", ctx.RequestID)
-					targetPod = selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
-					if targetPod == nil {
-						klog.Errorf("least_latency routing, No suitable pod found for least latency routing, requestID: %s", ctx.RequestID)
-					} else {
-						klog.Infof("least_latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-				} else if ctx.SubAlgorithm == "least_request" {
-					klog.Infof("subAlgorithm, least_request routing, request_id: %s", ctx.RequestID)
-					targetPod = selectTargetPodWithLeastRequestCount(ctx, r.cache, readyPods)
-					if targetPod == nil {
-						klog.Errorf("least_request routing, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
-					} else {
-						klog.Infof("least_request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-				} else if ctx.SubAlgorithm == "least_kv_cache" {
-					klog.Infof("subAlgorithm, least_kv_cache routing, request_id: %s", ctx.RequestID)
-					targetPod = selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
-					if targetPod == nil {
-						klog.Errorf("least_kv_cache routing, No suitable pod found for least kv cache routing, requestID: %s", ctx.RequestID)
-					} else {
-						klog.Infof("least_kv_cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-				} else if ctx.SubAlgorithm == "prefix_cache_1" {
-					klog.Infof("subAlgorithm, prefix_cache_1 routing, request_id: %s", ctx.RequestID)
-					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
-				} else if ctx.SubAlgorithm == "prefix_cache_2" {
-					targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
-				} else if ctx.SubAlgorithm == "least_prefill_tokens" {
-					klog.Infof("subAlgorithm, least_prefill_tokens routing, request_id: %s", ctx.RequestID)
-					targetPod = selectTargetPodWithLeastPrefillTokens(ctx, readyPods)
-					if targetPod == nil {
-						klog.Errorf("least_prefill_tokens routing, No suitable pod found for least prefill tokens routing, requestID: %s", ctx.RequestID)
-					} else {
-						klog.Infof("least_prefill_tokens routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-				} else if ctx.SubAlgorithm == "prefix_hit_threshold_or_least_request" {
-					klog.Infof("subAlgorithm, prefix_hit_threshold_or_least_request routing (threshold-based), request_id: %s", ctx.RequestID)
-					targetPod = routePrefixHitThresholdOrLeastRequest(ctx, r.cache, readyPods, podIPsWithMatchingRatios)
-				} else if ctx.SubAlgorithm == "lmetric" {
-					targetPod = selectLMetricPod(ctx, readyPods, lmetricSelectedPodIP)
-					if targetPod == nil {
-						targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
-					}
-				} else if ctx.SubAlgorithm == "mooncake" {
-					// MOONCAKE: use the pre-computed pod selection (scored before HTTP call for atomicity)
-					if mooncakeSelectedPodIP != "" {
-						targetPod = GetPod(mooncakeSelectedPodIP, readyPods)
-					}
-					if targetPod == nil {
-						klog.Errorf("MOONCAKE: pre-computed pod %s not in readyPods, falling back. requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
-						utils.RollbackMooncakeForRequest(ctx.RequestID)
-						targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
-					} else {
-						klog.Infof("MOONCAKE: requestID=%s, selectedPod=%s", ctx.RequestID, targetPod.Status.PodIP)
-					}
-				}
-				// Safety check: if targetPod is still nil after routing algorithm execution, use fallback routing
-				if targetPod == nil {
-					klog.Warningf("targetPod is nil after routing algorithm execution, using fallback routing for requestID: %s", ctx.RequestID)
-					targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
-				}
-				if routeResponse.NumTrains > utils.GetNumTrains() {
-					utils.SetNumTrains(routeResponse.NumTrains)
-				}
-				if routeResponse.NumFlush > utils.GetNumFlush() {
-					utils.SetNumFlush(routeResponse.NumFlush)
-				}
-				utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
-				utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
-				utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
-				if len(routeResponse.PredictedRewards) > 0 {
-					utils.SetPredictedRewards(routeResponse.PredictedRewards, ctx.RequestID)
-					klog.V(5).Infof("Predicted rewards for requestID %s: %v)", ctx.RequestID, routeResponse.PredictedRewards)
-				}
-
-				utils.SetChosenPodPredictedReward(routeResponse.ChosenPodPredictedReward, ctx.RequestID)
-				klog.V(5).Infof("ChosenPodPredictedReward for requestID %s: %f", ctx.RequestID, routeResponse.ChosenPodPredictedReward)
-				selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
-				utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
+			responseBody, readErr := ioutil.ReadAll(resp.Body) // body: {"request_id":"10","selected_pod":"10.0.1.30"}
+			if readErr != nil {
+				klog.Errorf("failure to read response body: %v, requestID: %s", readErr, ctx.RequestID)
+				targetPod = lmetricFallback()
+				routing_agent_failed = 1
 			} else {
-				utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
-				// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
-				// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
-				if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && strings.Contains(ctx.SubAlgorithm, "contextual_bandit") {
-					klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
-					targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
-					routing_agent_failed = 1
+				var routeResponse RouteResponse
+				if err := json.Unmarshal(responseBody, &routeResponse); err != nil {
+					klog.Errorf("failure to unmarshal responseBody: %v, requestID: %s", err, ctx.RequestID)
+					if ctx.SubAlgorithm == "lodestar" {
+						targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+						routing_agent_failed = 1
+					}
 				}
-				utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
+				resp.Body.Close()
+				if targetPod == nil { // This means that routing-agent-service infer http request was successful
+					targetPod = GetPod(routeResponse.SelectedPod, readyPods)
+					klog.Infof("RL inference http success, requestID: %s, selectedPod: %s", ctx.RequestID, routeResponse.SelectedPod)
+					if targetPod == nil {
+						klog.Errorf("failure, No suitable pod found for selected pod IP: %s, requestID: %s", routeResponse.SelectedPod, ctx.RequestID)
+						targetPod = lmetricFallback()
+						routing_agent_failed = 1
+					}
+					utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
+					// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
+					// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
+					if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && ctx.SubAlgorithm == "lodestar" {
+						klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
+						targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+						routing_agent_failed = 1
+					}
+					utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
+
+					// Heuristic override: if subAlgorithm names a baseline, replace
+					// the agent's choice with the baseline's. "lodestar" itself
+					// matches no branch in selectHeuristicTargetPod, so this call is
+					// a no-op on the lodestar path — kept for symmetry with the
+					// non-lodestar path (see the else branch above this HTTP block).
+					targetPod = r.selectHeuristicTargetPod(ctx, readyPods, podIPsWithMatchingRatios, lmetricSelectedPodIP, mooncakeSelectedPodIP)
+					if routeResponse.NumTrains > utils.GetNumTrains() {
+						utils.SetNumTrains(routeResponse.NumTrains)
+					}
+					if routeResponse.NumFlush > utils.GetNumFlush() {
+						utils.SetNumFlush(routeResponse.NumFlush)
+					}
+					utils.SetExploration(routeResponse.Exploration, routeResponse.ExplorationEnabled, ctx.RequestID)
+					utils.SetPredictedLatencies(routeResponse.PredictedLatencies, ctx.RequestID)
+					utils.SetChosenPodPredictedLatency(routeResponse.ChosenPodPredictedLatency, ctx.RequestID)
+					if len(routeResponse.PredictedRewards) > 0 {
+						utils.SetPredictedRewards(routeResponse.PredictedRewards, ctx.RequestID)
+						klog.V(5).Infof("Predicted rewards for requestID %s: %v)", ctx.RequestID, routeResponse.PredictedRewards)
+					}
+
+					utils.SetChosenPodPredictedReward(routeResponse.ChosenPodPredictedReward, ctx.RequestID)
+					klog.V(5).Infof("ChosenPodPredictedReward for requestID %s: %f", ctx.RequestID, routeResponse.ChosenPodPredictedReward)
+					selectedPodGPU, _ := utils.GetGPUModel(routeResponse.SelectedPod)
+					utils.SetSelectedPodGPU(selectedPodGPU, ctx.RequestID)
+				} else {
+					utils.SetOODFallbackForRequest(routeResponse.OODFallback, ctx.RequestID)
+					// ood_fallback: 0=normal, 1=OOD detected, 2=model not trained yet, 3=reward tiebreak (agent picked randomly), 4=PC1-biased exploration
+					// ood_fallback=3: agent already picked randomly among near-best pods, trust the agent's choice
+					if routeResponse.OODFallback >= 1 && routeResponse.OODFallback != 3 && ctx.SubAlgorithm == "lodestar" {
+						klog.Infof("subAlgorithm, ood_fallback routing (ood_fallback=%d), request_id: %s", routeResponse.OODFallback, ctx.RequestID)
+						targetPod = r.fallbackRouting(ctx, readyPods, ctx.SubAlgorithm)
+						routing_agent_failed = 1
+					}
+					utils.SetFailureFallbackForRequest(routing_agent_failed, ctx.RequestID)
+				}
 			}
 		}
 	}
@@ -1079,6 +1024,99 @@ func (r *rlOnlineRouter) routeWithPrefixCache1(ctx *types.RoutingContext, readyP
 		if targetPod == nil {
 			klog.Errorf("prefix_cache_1, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
 		}
+	}
+	return targetPod
+}
+
+// selectHeuristicTargetPod dispatches the routing decision to the named heuristic
+// baseline (random, least_request, prefix_cache_1, lmetric, mooncake, ...).
+//
+// Called from two sites in Route():
+//  1. For non-lodestar subAlgorithms — the routing-agent-service is not
+//     consulted at all (no HTTP round-trip).
+//  2. For the lodestar subAlgorithm — invoked as a final stage that can
+//     overwrite the agent's choice if the subAlgorithm name happens to match
+//     one of the branches here. "lodestar" itself does not match any branch,
+//     so this call is a no-op for it; it is kept for symmetry with the
+//     original control flow.
+//
+// Returns the chosen pod. Falls back to routeWithPrefixCache1 if no branch
+// matched or the matched branch produced nil.
+func (r *rlOnlineRouter) selectHeuristicTargetPod(
+	ctx *types.RoutingContext,
+	readyPods []*v1.Pod,
+	podIPsWithMatchingRatios map[string]int,
+	lmetricSelectedPodIP string,
+	mooncakeSelectedPodIP string,
+) *v1.Pod {
+	var targetPod *v1.Pod
+	if ctx.SubAlgorithm == "random" {
+		klog.Infof("subAlgorithm, random routing, request_id: %s", ctx.RequestID)
+		targetPod, _ = selectRandomPod(readyPods, rand.Intn)
+	} else if ctx.SubAlgorithm == "least_latency" {
+		klog.Infof("subAlgorithm, least_latency routing, request_id: %s", ctx.RequestID)
+		targetPod = selectTargetPodWithLeastLatency(r.cache, readyPods, ctx.Model)
+		if targetPod == nil {
+			klog.Errorf("least_latency routing, No suitable pod found for least latency routing, requestID: %s", ctx.RequestID)
+		} else {
+			klog.Infof("least_latency routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+		}
+	} else if ctx.SubAlgorithm == "least_request" {
+		klog.Infof("subAlgorithm, least_request routing, request_id: %s", ctx.RequestID)
+		targetPod = selectTargetPodWithLeastRequestCount(ctx, r.cache, readyPods)
+		if targetPod == nil {
+			klog.Errorf("least_request routing, No suitable pod found for least request count routing, requestID: %s", ctx.RequestID)
+		} else {
+			klog.Infof("least_request routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+		}
+	} else if ctx.SubAlgorithm == "least_kv_cache" {
+		klog.Infof("subAlgorithm, least_kv_cache routing, request_id: %s", ctx.RequestID)
+		targetPod = selectTargetPodWithLeastKVCache(r.cache, readyPods, ctx.Model)
+		if targetPod == nil {
+			klog.Errorf("least_kv_cache routing, No suitable pod found for least kv cache routing, requestID: %s", ctx.RequestID)
+		} else {
+			klog.Infof("least_kv_cache routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+		}
+	} else if ctx.SubAlgorithm == "prefix_cache_1" {
+		klog.Infof("subAlgorithm, prefix_cache_1 routing, request_id: %s", ctx.RequestID)
+		targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
+	} else if ctx.SubAlgorithm == "prefix_cache_2" {
+		targetPod = routePrefixRatioAndLoad(r.cache, readyPods, podIPsWithMatchingRatios)
+	} else if ctx.SubAlgorithm == "least_prefill_tokens" {
+		klog.Infof("subAlgorithm, least_prefill_tokens routing, request_id: %s", ctx.RequestID)
+		targetPod = selectTargetPodWithLeastPrefillTokens(ctx, readyPods)
+		if targetPod == nil {
+			klog.Errorf("least_prefill_tokens routing, No suitable pod found for least prefill tokens routing, requestID: %s", ctx.RequestID)
+		} else {
+			klog.Infof("least_prefill_tokens routing, request_id: %s, targetPod: %s", ctx.RequestID, targetPod.Status.PodIP)
+		}
+	} else if ctx.SubAlgorithm == "prefix_hit_threshold_or_least_request" {
+		klog.Infof("subAlgorithm, prefix_hit_threshold_or_least_request routing (threshold-based), request_id: %s", ctx.RequestID)
+		targetPod = routePrefixHitThresholdOrLeastRequest(ctx, r.cache, readyPods, podIPsWithMatchingRatios)
+	} else if ctx.SubAlgorithm == "lmetric" {
+		targetPod = selectLMetricPod(ctx, readyPods, lmetricSelectedPodIP)
+		if targetPod == nil {
+			targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+		}
+	} else if ctx.SubAlgorithm == "mooncake" {
+		// MOONCAKE: use the pre-computed pod selection (scored before HTTP call for atomicity)
+		if mooncakeSelectedPodIP != "" {
+			targetPod = GetPod(mooncakeSelectedPodIP, readyPods)
+		}
+		if targetPod == nil {
+			klog.Errorf("MOONCAKE: pre-computed pod %s not in readyPods, falling back. requestID=%s", mooncakeSelectedPodIP, ctx.RequestID)
+			utils.RollbackMooncakeForRequest(ctx.RequestID)
+			targetPod = r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
+		} else {
+			klog.Infof("MOONCAKE: requestID=%s, selectedPod=%s", ctx.RequestID, targetPod.Status.PodIP)
+		}
+	}
+	// Safety net: if no branch produced a pod, use prefix_cache_1 as the
+	// universal fallback. This catches both unknown subAlgorithm names and
+	// the case where a matched branch returned nil.
+	if targetPod == nil {
+		klog.Warningf("targetPod is nil after heuristic dispatch, using fallback routing for requestID: %s", ctx.RequestID)
+		targetPod = r.routeWithPrefixCache1(ctx, readyPods, podIPsWithMatchingRatios)
 	}
 	return targetPod
 }
@@ -1228,7 +1266,7 @@ func (r *rlOnlineRouter) fallbackRouting(ctx *types.RoutingContext, readyPods []
 	} else if subAlgorithm == "least_kv_cache" {
 		targetPod := r.fallbackRouting_with_least_kv_cache(ctx, readyPods)
 		return targetPod
-	} else if subAlgorithm == "prefix_cache_1" || strings.Contains(subAlgorithm, "contextual_bandit") {
+	} else if subAlgorithm == "prefix_cache_1" || subAlgorithm == "lodestar" {
 		targetPod := r.fallbackRouting_with_prefix_cache_1(ctx, readyPods)
 		return targetPod
 	} else if subAlgorithm == "least_prefill_tokens" {
