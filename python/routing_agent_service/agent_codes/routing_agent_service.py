@@ -460,6 +460,12 @@ def handle_flush():
         TOTAL_NUM_DATA += len(log_data)
         NUM_NEW_DATA += len(log_data)
         TOTAL_NUM_NEW_DATA += len(log_data)
+        # Debug: confirm the module-level counters actually advanced. If you
+        # ever see this line repeating with 0s after a non-zero "Appended N
+        # samples to ONLINE_DF" line above, the deployed Docker image's
+        # handle_flush is stale (rebuild + push) or some other code path is
+        # resetting the counters.
+        logger.info(f"After flush: NUM_NEW_DATA={NUM_NEW_DATA}, TOTAL_NUM_DATA={TOTAL_NUM_DATA}, TOTAL_NUM_NEW_DATA={TOTAL_NUM_NEW_DATA}")
         return jsonify({"status": "success", "message": f"Successfully processed {len(log_data)} log messages"}), 200
 
     except Exception as e:
@@ -2130,7 +2136,13 @@ def graceful_shutdown(sig=None, frame=None):
 
 
 def initialize():
-    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, LODESTAR_PRELOADED, prefix_group_manager
+    # NUM_NEW_DATA, TOTAL_NUM_DATA, NUM_TRAINS were missing from this global list.
+    # Their assignments later in this function (e.g. NUM_NEW_DATA = TOTAL_NUM_NEW_DATA
+    # in the RETRAIN_AT_STARTUP path) were silently creating function-local
+    # variables, so the module-level counters stayed at their init values of 0.
+    # That made the initial training round always skip the NUM_NEW_DATA check
+    # and never actually run, even when the log said "Triggering initial training."
+    global HYPERPARAMETERS, TARGET_GPU_MODEL, stats_instance, INIT_DONE, final_model_dir, offline_csv_path, hyperparameter_file_path, feature_normalization_stats_file, offline_training_data_distribution, distribution_shift_monitor, TOTAL_NUM_NEW_DATA, NUM_NEW_DATA, TOTAL_NUM_DATA, NUM_TRAINS, ENABLE_ONLINE_LEARNING, OUTPUT_WRK_NAME, LODESTAR_PRELOADED, prefix_group_manager
     
     # Model directory and offline data are GPU-specific
     # LMETRIC is a heuristic but still needs hyperparameters/normalization stats for the
