@@ -98,11 +98,11 @@ experiment_configs=(
     # "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|22|1"
     # "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|22|1"
 
-    # "lodestar-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
-    # "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
-    # "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
-    # "mooncake|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
-    # "preble|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
+    "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
+    "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
+    "least_request|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
+    "mooncake|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
+    "preble|mooncake|conversation-2-extended-ver1|${target_gpu}|21|1"
 
     # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|20|1"
     # "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|20|1"
@@ -520,15 +520,7 @@ experiment_configs=(
     # "prefix_cache_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|18|1"
 
 
-    "prefix_cache_1|mooncake|conversation-2-extended-ver1|${target_gpu}|9|1"
-    # "lodestar-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|9|1"
-    # "lodestar-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|10|1"
-    # "lodestar-onlinelearning_1|mooncake|conversation-2-extended-ver1|${target_gpu}|11|1"
-
-    # "lodestar-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|10|1"
-    # "lodestar-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|11|1"
-    # "lodestar-onlinelearning_1|mooncake|toolagent-2-extended-ver1|${target_gpu}|12|1"
-
+    # "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random-onlinelearning_1|mooncake|original_toolagent-2|${target_gpu}|10|1"
 
 )
 
@@ -596,7 +588,7 @@ shuffle_requests_between_iterations=1
 prompt_token_deduction=0
 
 ## output tokens
-override_workload_output_length=0
+override_workload_output_length=1
 force_exact_output_tokens=1 # must be always 1
 max_tokens=1
 max_tokens_std=0
@@ -704,7 +696,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                     # fi
                     # if the routing policy contains "onlinelearning_1" and routing policy contains "contextual_bandit", then ENABLE_ONLINE_LEARNING=1
                     # if the routing policy contains "onlinelearning_0", then ENABLE_ONLINE_LEARNING=0
-                    if [[ "${routing_policy}" == *"onlinelearning_1"* ]] && [[ "${routing_policy}" == *"lodestar"* ]]; then
+                    if [[ "${routing_policy}" == *"onlinelearning_1"* ]] && [[ "${routing_policy}" == *"contextual_bandit"* ]]; then
                         ENABLE_ONLINE_LEARNING=1
                         # remove "-onlinelearning_1" from routing policy
                         routing_policy="${routing_policy%-onlinelearning_1}"
@@ -729,7 +721,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         PREFIX_HIT_THRESHOLD=50
                     fi
 
-                    if [ "${routing_policy}" == "lodestar" ]; then
+                    if [ "${routing_policy}" == "contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear_random" ]; then
                         LOAD_PRETRAINED_MODEL=0
                     else
                         LOAD_PRETRAINED_MODEL=1
@@ -756,14 +748,14 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                     subAlgorithm="${config#*${delimiter}}"
                     echo "routing_policy: ${routing_policy}"
                     echo "subAlgorithm: ${subAlgorithm}"
-                    if [[ "${routing_policy}" == "lodestar" ]]; then
-                        source_final_model_dir="../experiment_results/${target_gpu}/${output_wrk_name}/${workload_category}/final_model-lodestar"
+                    if [[ "${routing_policy}" == *"contextual_bandit"* ]]; then
+                        source_final_model_dir="../experiment_results/${target_gpu}/${output_wrk_name}/${workload_category}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
                         echo "✓ Using contextual bandit model: ${source_final_model_dir}"
                     elif [[ "${routing_policy}" == *"latency_predictor"* ]]; then
-                        source_final_model_dir="../experiment_results/${target_gpu}/${output_wrk_name}/${workload_category}/final_model-lodestar"
+                        source_final_model_dir="../experiment_results/${target_gpu}/${output_wrk_name}/${workload_category}/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
                         echo "✓ Using contextual bandit model: ${source_final_model_dir}"
                     else
-                        source_final_model_dir="../experiment_results/${target_gpu}/maxTokens_1-maxTokensStd_0/final_model-lodestar"
+                        source_final_model_dir="../experiment_results/${target_gpu}/maxTokens_1-maxTokensStd_0/final_model-contextual_bandit_perpodmodel_checkpoint_negative_linear"
                     fi
 
                     if [ "${ship_model}" == "1" ]; then
@@ -780,7 +772,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         fi
 
                         # Check for model weights based on routing policy
-                        if [[ "${routing_policy}" == "lodestar" ]]; then
+                        if [[ "${routing_policy}" == *"contextual_bandit"* ]]; then
                             if [ ! -f "${source_final_model_dir}/reward_net.pth" ]; then
                                 echo "Error: reward_net.pth does not exist: ${source_final_model_dir}/reward_net.pth"
                                 echo "Exiting... 6"
@@ -841,7 +833,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         experiment_result_output_dir="${experiment_result_output_dir}_threshold_${PREFIX_HIT_THRESHOLD}"
                     fi
 
-                    if [[ "${routing_policy}" == "lodestar" ]]; then
+                    if [[ "${routing_policy}" == *"contextual_bandit_perpodmodel_checkpoint_ttft_negative_linear"* ]]; then
                         experiment_result_output_dir="${experiment_result_output_dir}_${learning_methodology}"
 
                         if [ "${MAX_NUM_ONLINE_TRAINS}" == "-1" ]; then
@@ -857,7 +849,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         fi
                     fi
 
-                    if [[ "${routing_policy}" == "lodestar" ]] || [[ "${routing_policy}" == *"latency_predictor"* ]]; then
+                    if [[ "${routing_policy}" == *"contextual_bandit"* ]] || [[ "${routing_policy}" == *"latency_predictor"* ]]; then
                         experiment_result_output_dir="${experiment_result_output_dir}-onlinelearning_${ENABLE_ONLINE_LEARNING}"
                     fi
                     experiment_result_output_dir="${experiment_result_output_dir}-iter${total_num_episodes}-${timestamp}"
@@ -953,12 +945,12 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         --enable-chunked-prefill ${ENABLE_CHUNKED_PREFILL} \
                         --enable-prefix-caching ${ENABLE_PREFIX_CACHING}
                     
-                    # retry_command python3 update_vllm_args.py \
-                    #     --deployment ${llm_model_v100} \
-                    #     --namespace default \
-                    #     --container vllm-openai \
-                    #     --enable-quantization ${ENABLE_QUANTIZATION} \
-                    #     --quantization-method ${QUANTIZATION_METHOD}
+                    retry_command python3 update_vllm_args.py \
+                        --deployment ${llm_model_v100} \
+                        --namespace default \
+                        --container vllm-openai \
+                        --enable-quantization ${ENABLE_QUANTIZATION} \
+                        --quantization-method ${QUANTIZATION_METHOD}
 
                     echo "Finished updating vLLM args for ${llm_model}"
                     sleep 2
@@ -972,11 +964,11 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                     retry_command python3 check_ready.py --deployment routing-agent-service --namespace default
                     retry_command python3 check_ready.py --deployment client-service --namespace default
                     retry_command python3 check_ready.py --deployment ${llm_model} --namespace default
-                    # retry_command python3 check_ready.py --deployment ${llm_model_v100} --namespace default
+                    retry_command python3 check_ready.py --deployment ${llm_model_v100} --namespace default
                     sleep 2
 
                     retry_command bash -c "kubectl get deploy ${llm_model} -o yaml > ${experiment_result_output_dir}/${llm_model}.yaml"
-                    # retry_command bash -c "kubectl get deploy ${llm_model_v100} -o yaml > ${experiment_result_output_dir}/${llm_model_v100}.yaml"
+                    retry_command bash -c "kubectl get deploy ${llm_model_v100} -o yaml > ${experiment_result_output_dir}/${llm_model_v100}.yaml"
                     retry_command bash -c "kubectl get deploy aibrix-gateway-plugins -n aibrix-system -o yaml > ${experiment_result_output_dir}/aibrix-gateway-plugins.yaml"
                     retry_command bash -c "kubectl get deploy routing-agent-service -n default -o yaml > ${experiment_result_output_dir}/routing-agent-service.yaml"
 
@@ -1167,7 +1159,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                         echo "* final checkpoint: ${experiment_result_output_dir}/checkpoints_${checkpoint_ts}/"
                     fi
 
-                    # kubectl rollout restart deployment ${llm_model} --namespace default
+                    kubectl rollout restart deployment ${llm_model} --namespace default
 
                     python plot_latency_timeseries.py ${experiment_result_output_dir}/filtered-aibrix-gateway-plugins.log.csv
                     python3 plot_latency_analysis_with_client_log.py ${experiment_result_output_dir}/client.log.txt
@@ -1176,7 +1168,7 @@ for learning_methodology in "${learning_methodology_list[@]}"; do
                     # Copy final model
                     # if [ "${routing_policy}" == "contextual_bandit" ] || [ "${routing_policy}" == "latency_predictor" ]; then
                     # if routing_policy has contextual_bandit or latency_predictor in its name, then copy the final model
-                    if [[ "${routing_policy}" == "lodestar" ]] && [[ "${workload_name}" != *"overhead_test"* ]] && [[ "${ENABLE_ONLINE_LEARNING}" == "1" ]]; then
+                    if [[ "${routing_policy}" == *"contextual_bandit"* ]] && [[ "${workload_name}" != *"overhead_test"* ]] && [[ "${ENABLE_ONLINE_LEARNING}" == "1" ]]; then
                         kubectl_cp_start_time=$(date +%s)
                         echo "Copying final_model from pod..."
                         model_dir_in_pod="/app/${target_gpu}/${llm_model}/${output_wrk_name}/${workload_category}/final_model-${routing_policy}"
